@@ -181,7 +181,12 @@ class SourceWorkflowTest(unittest.TestCase):
         self.assertIn("name: OCI regression checks (AMD64)", checks)
         self.assertIn("runs-on: ubuntu-24.04", checks)
         self.assertRegex(workflow_jobs["vs"], r"(?m)^    needs: (?:checks|\[checks\])$")
+        conditions = {"Prepare exact PR pair": "if: env.SONIC_EXACT_PAIR == 'true'",
+                      "Verify exact checkout for source downloads": "if: always() && env.SONIC_EXACT_PAIR == 'true'"}
         for name, step in steps(checks).items():
+            if name in conditions:
+                self.assertIn(conditions[name], step)
+                continue
             script = shell(step)
             if script is not None:
                 with self.subTest(step=name):
@@ -194,6 +199,101 @@ class SourceWorkflowTest(unittest.TestCase):
                              (call["name"] == "bazel" and
                               any(arg in ("build", "test") for arg in call["args"]))
                              for call in calls))
+
+    def test_exact_pair_receipts_cover_all_executing_jobs(self):
+        workflow_jobs = jobs()
+        for job in ("archive", "checks", "vs_container", "swss_layer_runtime", "sysmgr_runtime"):
+            exact = steps(workflow_jobs[job])["Prepare exact PR pair"]
+            self.assertIn("if: env.SONIC_EXACT_PAIR == 'true'", exact)
+            self.assertIn('--expected-merge "$SONIC_PAIR_MERGE"', exact)
+            self.assertIn('--validator-revision "$GITHUB_SHA"', exact)
+        self.assertIn("--submodules", steps(workflow_jobs["vs_container"])["Prepare exact PR pair"])
+        self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
+        self.assertNotIn("SONIC_EXACT_PAIR", workflow_jobs["vs"])
+        check_steps = steps(workflow_jobs["checks"])
+        self.assertLess(list(check_steps).index("Verify exact checkout for source downloads"),
+                        list(check_steps).index("Upload the source downloads for the VS job"))
+        self.assertIn("steps.checkout_artifact.outputs.path", check_steps["Upload the source downloads for the VS job"])
+        self.assertIn("job.status != 'success'", check_steps["Retain exact checkout after hosted failure"])
+        self.assertLess(list(check_steps).index("Prepare repository graph failure receipt"),
+                        list(check_steps).index("Verify exact checkout for repository graph failure"))
+        self.assertLess(list(check_steps).index("Verify exact checkout for repository graph failure"),
+                        list(check_steps).index("Retain repository graph failure receipt"))
+        self.assertIn("steps.repository_graph_checkout.outputs.path", check_steps["Retain repository graph failure receipt"])
+        self.assertIn("steps.repository_graph_checkout.outcome == 'success'", check_steps["Retain repository graph failure receipt"])
+        vs_steps = steps(workflow_jobs["vs_container"])
+        self.assertLess(list(vs_steps).index("Prepare exact PR pair"),
+                        list(vs_steps).index("Download verified source archives"))
+        self.assertLess(list(vs_steps).index("Download verified source archives"),
+                        list(vs_steps).index("Verify exact source download checkout"))
+        self.assertLess(list(vs_steps).index("Verify exact source download checkout"),
+                        list(vs_steps).index("Prepare the privileged SONiC slave"))
+        self.assertIn("artifact-ids: ${{ needs.checks.outputs.p4_sources_artifact_id }}",
+                      vs_steps["Download the pinned P4 source inputs"])
+        self.assertIn("--manifest src/p4lang/source-inputs.json", vs_steps["Verify P4 source bytes before native Make"])
+        self.assertLess(list(vs_steps).index("Verify exact checkout for native image uploads"),
+                        list(vs_steps).index("Publish the installer and matching container archives"))
+        self.assertIn("steps.native_image_checkout.outputs.path", vs_steps["Publish the installer and matching container archives"])
+        for name in ("Preserve build receipts", "Retain shared image validation evidence"):
+            self.assertIn("steps.native_evidence_checkout.outputs.path", vs_steps[name])
+            self.assertIn("steps.native_evidence_checkout.outcome == 'success'", vs_steps[name])
+        archive_steps = steps(workflow_jobs["archive"])
+        self.assertLess(list(archive_steps).index("Bind the tested checkout identity"),
+                        list(archive_steps).index("Prepare exact PR pair"))
+        self.assertLess(list(archive_steps).index("Prepare exact PR pair"),
+                        list(archive_steps).index("Configure remote cache uploads"))
+        self.assertLess(list(archive_steps).index("Verify exact checkout for SWSS image uploads"),
+                        list(archive_steps).index("Retain reviewed artifacts and receipts"))
+        self.assertIn("steps.swss_layer_checkout.outputs.path", archive_steps["Retain reviewed artifacts and receipts"])
+        self.assertIn("steps.swss_layer_checkout.outcome == 'success'", archive_steps["Retain reviewed artifacts and receipts"])
+        swss_steps = steps(workflow_jobs["swss_layer_runtime"])
+        self.assertLess(list(swss_steps).index("Prepare exact PR pair"),
+                        list(swss_steps).index("Verify exact SWSS producer checkout"))
+        self.assertLess(list(swss_steps).index("Verify exact SWSS producer checkout"),
+                        list(swss_steps).index("Verify and load this run's archive"))
+        self.assertIn("--compare artifacts/swss-layer/checkout.json", swss_steps["Verify exact SWSS producer checkout"])
+        self.assertIn("steps.swss_layer_checkout.outputs.path", swss_steps["Retain installed-image evidence"])
+        self.assertIn("steps.swss_layer_checkout.outcome == 'success'", swss_steps["Retain installed-image evidence"])
+        self.assertLess(list(archive_steps).index("Verify exact checkout for Sysmgr image uploads"),
+                        list(archive_steps).index("Retain Sysmgr image artifacts and evidence"))
+        self.assertIn("steps.sysmgr_checkout.outputs.path", archive_steps["Retain Sysmgr image artifacts and evidence"])
+        self.assertIn("steps.sysmgr_checkout.outcome == 'success'", archive_steps["Retain Sysmgr image artifacts and evidence"])
+        sysmgr_steps = steps(workflow_jobs["sysmgr_runtime"])
+        self.assertLess(list(sysmgr_steps).index("Bind the tested checkout identity"),
+                        list(sysmgr_steps).index("Prepare exact PR pair"))
+        self.assertLess(list(sysmgr_steps).index("Prepare exact PR pair"),
+                        list(sysmgr_steps).index("Verify exact Sysmgr producer checkout"))
+        self.assertLess(list(sysmgr_steps).index("Verify exact Sysmgr producer checkout"),
+                        list(sysmgr_steps).index("Check installed Sysmgr startup and private Redis-to-D-Bus notifications"))
+        self.assertIn("--compare artifacts/sysmgr/checkout.json", sysmgr_steps["Verify exact Sysmgr producer checkout"])
+        self.assertIn("steps.sysmgr_checkout.outputs.path", sysmgr_steps["Retain installed Sysmgr evidence"])
+        self.assertIn("steps.sysmgr_checkout.outcome == 'success'", sysmgr_steps["Retain installed Sysmgr evidence"])
+        for step in (archive_steps["Prepare public artifact list"],
+                     archive_steps["Build Sysmgr runtime and debug images"],
+                     archive_steps["Validate Sysmgr image contents and cache reuse"],
+                     sysmgr_steps["Check installed Sysmgr startup and private Redis-to-D-Bus notifications"]):
+            self.assertIn("CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}", step)
+            self.assertIn("CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}", step)
+        text = WORKFLOW.read_text()
+        self.assertIn("format('bazel-oci-pair-{0}', github.run_id)", text)
+        self.assertIn("format('bazel-oci-{0}-{1}-{2}-{3}', github.event.pull_request.number || github.ref, github.sha, inputs.source_image || 'none', inputs.source_revision)", text)
+
+    def test_source_image_mode_rejects_exact_pair_inputs_before_work(self):
+        workflow_jobs = jobs()
+        mode = workflow_jobs["source_image_mode"]
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.source_image != 'none'", mode)
+        script = shell(steps(mode)["Reject exact-pair inputs"])
+        self.assertIsNotNone(script)
+        for exact, expected in (("false", 0), ("true", 1)):
+            with self.subTest(exact=exact):
+                result = subprocess.run(["bash", "-e", "-c", script], cwd=self.directory,
+                                        env={**os.environ, "SONIC_EXACT_PAIR": exact},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+        for name in ("source_image_inputs", "source_worker_preflight"):
+            self.assertIn("needs: source_image_mode", workflow_jobs[name])
+        self.assertIn("needs: [source_image_mode, source_image_inputs]", workflow_jobs["source_image"])
+        self.assertIn("needs.source_image_mode.result == 'success'", workflow_jobs["source_image"])
 
     def test_make_source_validation_reuses_outputs_and_propagates_failures(self):
         workflow_steps = steps(jobs()["vs"])
