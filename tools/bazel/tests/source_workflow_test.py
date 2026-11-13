@@ -98,7 +98,10 @@ class NativeFamilyJobsTest(unittest.TestCase):
             with self.subTest(family=family):
                 job = workflow[family + "_native"]
                 header = job.split("    steps:\n", 1)[0]
-                self.assertIn("runs-on: ubuntu-24.04\n", header)
+                if family in self.receipt_families:
+                    self.assertRegex(header, r"runs-on: (?:\*receipt_metadata_runner|&receipt_metadata_runner \$\{\{)")
+                else:
+                    self.assertIn("runs-on: ubuntu-24.04\n", header)
                 self.assertNotIn("    needs:", header)
                 self.assertNotIn("matrix.", job)
                 if family == "swss_layer":
@@ -206,14 +209,15 @@ class NativeFamilyJobsTest(unittest.TestCase):
             if family not in self.receipt_families:
                 return uploads
             flag = "env." + family.upper() + "_WORKER_RECEIPT"
+            scratch = "${{ env.SONIC_RECEIPT_SCRATCH }}" if kind == "native" else "${{ runner.temp }}"
             receipt_names = {
                 family + "-ci-" + family + "_" + kind + "-${{ github.run_id }}-${{ github.run_attempt }}":
-                    (flag + " == 'true'", "${{ runner.temp }}/" + family + "-ci-verified.json"),
+                    (flag + " == 'true'", scratch + "/" + family + "-ci-verified.json"),
             }
             if kind == "native":
                 receipt_names["${{ steps." + family + "_request.outputs.request_name }}"] = (
                     flag + " == 'true' && steps." + family + "_request.outputs.new_request == 'true'",
-                    "${{ runner.temp }}/" + family + "-ci-request/request.json")
+                    scratch + "/" + family + "-ci-request/request.json")
             native = []
             for block in uploads:
                 name = step_value(block, "name", 10)
