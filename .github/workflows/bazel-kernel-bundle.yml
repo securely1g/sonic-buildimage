@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-kernel-bundle-${{ github.ref }}
+  group: bazel-kernel-bundle-${{ github.run_attempt == '1' && github.event.pull_request.number || format('run-{0}', github.run_id) }}
   cancel-in-progress: true
 
 jobs:
