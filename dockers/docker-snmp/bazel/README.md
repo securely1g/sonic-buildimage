@@ -11,10 +11,21 @@ It does not build Debian packages or import Make-produced project artifacts.
 | AgentX agent | `ASYNCSNMP_PY3` | `@sonic_snmpagent//:sonic_snmpagent_wheel` |
 | `sysDescr_pass.py` | `python3 -m sonic_ax_impl install` | `@sonic_snmpagent//:snmp_install` |
 | Common, py-common and config-engine | Inherited config-engine container | Existing public config-engine OCI target and its source dependency graph |
-| External SNMP tools | Floating Debian repositories | SNMP runtime set in the shared Trixie APT lock |
-| Third-party Python modules | Floating `pip install` | Owner-locked psutil/python-arptable, inherited YAML/natsort, pinned Debian hiredis/smbus |
+| External SNMP tools | Trixie APT repositories | SNMP runtime set in the shared Trixie APT lock |
+| Third-party Python modules | Make’s per-image version list and inherited base wheels | Hashed lock compiled from the same list for hiredis, psutil, python-arptable and smbus. YAML and natsort come from config-engine |
 | Debug OpenSSH client | `FIPS_OPENSSH_CLIENT` | Existing `@sonic_fips//openssh:openssh_client_pkg`, with its matching symbols |
 | Final output | Docker archive | Reproducible `docker-snmp.gz` and `docker-snmp-dbg.gz`, exported through the shared archive rule |
+
+Regenerate the external Python wheel lock with uv 0.12.18 from the repository root:
+
+```sh
+uv --system-certs pip compile files/build/versions-public/dockers/docker-snmp/versions-py3 \
+    --python-version 3.13 --generate-hashes --no-emit-index-url \
+    --output-file dockers/docker-snmp/requirements_lock.txt
+```
+
+The installed-image probes compare the selected Python distribution versions with Make’s
+SNMP and base version lists in both archive variants.
 
 The wheel producers are in their owning repositories. Platform-common remains a
 separate runtime dependency of this Docker; the current SNMP source does not

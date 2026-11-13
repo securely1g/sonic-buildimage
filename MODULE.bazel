@@ -482,8 +482,15 @@ go_patches.module_override(
 # Pinned comparison tool; no image or package build is scheduled by this include.
 include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
 
-# Reuse the SNMP source owner's locked third-party wheels.
-use_repo(pip, "snmpagent_pip")
+# Resolve the deployed image's Python versions from the Make SNMP version list.
+# The smbus source distribution compiles its bundled i2c library and extension.
+pip.parse(
+    environment = {"CC": "gcc"},
+    hub_name = "image_snmp_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-snmp:requirements_lock.txt",
+)
+use_repo(pip, "image_snmp_pip")
 
 # Select SNMP's runtime, debug and test-only Redis packages from the shared lock.
 use_repo(apt, "snmp_debian", "snmp_debug_debian", "snmp_test_debian")

@@ -113,7 +113,13 @@ def validate_images(directory):
         check.require(all(env.get(key) == value for key, value in {
             "IMAGE_VERSION": receipt["image_version"], "PYTHONOPTIMIZE": "1", "DEBIAN_FRONTEND": "noninteractive"}.items()), "SNMP environment differs")
         check.require(config.get("ExposedPorts", {}) == base_config.get("ExposedPorts", {}), "final-stage exposed ports differ from inherited base")
-        manifest = json.loads(config["Labels"]["com.azure.sonic.manifest"])
+        labels = config.get("Labels", {})
+        check.require(labels.get("Tag") == receipt["image_version"], "Make image version label differs: " + name)
+        config_packages = reports[1]["dependency_check"]["packages"]
+        for component in ("libswsscommon", "sonic-supervisord-utilities-rs"):
+            check.require(labels.get("com.azure.sonic.versions." + component) == config_packages[component]["Version"],
+                          "missing or incorrect inherited component label: " + component)
+        manifest = json.loads(labels["com.azure.sonic.manifest"])
         expected = json.loads((ROOT / "target/bazel-manifests" / name / "manifest.json").read_text())
         check.require(manifest == expected, "Make manifest labels changed")
         wheel_checks = {name: wheel_payload(files, directory / name) for name in TARGETS if name.endswith('.whl')}

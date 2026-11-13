@@ -71,6 +71,7 @@ account_layer(
         name = "labels" if suffix == "" else "debug_labels",
         out = "manifest" + suffix + ".labels",
         manifest = "//:target/bazel-manifests/docker-snmp" + suffix + "/manifest.json",
+        image_version = "//dockers/docker-snmp:image_version",
     )
     for suffix in [
         "",

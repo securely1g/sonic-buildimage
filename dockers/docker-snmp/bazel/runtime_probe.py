@@ -35,6 +35,9 @@ def main():
     require(sys.flags.optimize == 1, 'exercise the production PYTHONOPTIMIZE setting')
     require(importlib.metadata.version('asyncsnmp') == '2.1.0', 'wrong SNMP wheel')
     require(importlib.metadata.version('sonic-platform-common') == '1.0', 'wrong platform wheel')
+    expected_versions = json.loads(sys.argv[2])
+    versions = {name: importlib.metadata.version(name) for name in expected_versions}
+    require(versions == expected_versions, f'installed Python distributions differ from Make: {versions} != {expected_versions}')
     for name in ['sonic_ax_impl', 'ax_interface', 'sonic_platform_base', 'sonic_py_common',
                  'swsscommon.swsscommon', 'psutil', 'python_arptable', 'hiredis', 'yaml', 'smbus']:
         module = importlib.import_module(name)
@@ -129,7 +132,7 @@ loop.run_until_complete(Agent(SysNameMIB,False,5,loop).run_in_event_loop())
                         require('.1.3.6.1.2.1.1.5.0' in result.stdout,result.stdout)
                         results.append({'program':program,'response':result.stdout.strip()});break
                     require(time.monotonic()<deadline and agent.poll() is None,result.stdout+result.stderr+details());time.sleep(.25)
-            print(json.dumps({'status':'passed','queries':results,'debug_checks':debug_checks,'templates':['sysDescription','snmpd','supervisord ordinary/chassis'],
+            print(json.dumps({'status':'passed','queries':results,'debug_checks':debug_checks,'python_versions':versions,'templates':['sysDescription','snmpd','supervisord ordinary/chassis'],
                               'scope':'Installed image SysNameMIB via private Redis/Common/AgentX/snmpd; hardware and multi-namespace are outside this fixture'}))
         finally:
             for process in reversed(processes):

@@ -27,6 +27,11 @@ def run_loaded(directory):
     check.require(receipt["images"] == list(IMAGES), "expected both SNMP runtime and debug variants")
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     check.require(receipt["revision"] == revision, "SNMP archives were built from a different revision")
+    # Read the same version lists as the Make image, including its inherited YAML.
+    versions = ROOT / "files/build/versions-public/dockers"
+    snmp_pins = dict(line.split("==") for line in (versions / "docker-snmp/versions-py3").read_text().splitlines())
+    base_pins = dict(line.split("==") for line in (versions / "docker-base-trixie/versions-py3").read_text().splitlines())
+    snmp_pins["pyyaml"] = base_pins["pyyaml"]
     probe = ROOT / "dockers/docker-snmp/bazel/runtime_probe.py"
     redis = directory / "test-redis.tar"
     check.require(check.sha(redis) == receipt["artifacts"][redis.name]["sha256"], "Redis fixture changed")
@@ -58,7 +63,7 @@ def run_loaded(directory):
                            "--mount", "type=bind,src=" + str(fixture) + ",dst=/probe/redis,readonly",
                            "--mount", "type=bind,src=" + str(ROOT / "tools/bazel/oci/runtime_smoke.py") + ",dst=/probe/runtime_smoke.py,readonly",
                            "--mount", "type=bind,src=" + str(report) + ",dst=/probe/validation.json,readonly",
-                           "--entrypoint", "/usr/bin/python3", tag, "-B", "/probe/runtime_probe.py", name]
+                           "--entrypoint", "/usr/bin/python3", tag, "-B", "/probe/runtime_probe.py", name, json.dumps(snmp_pins)]
                 completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=600)
                 check.require(completed.returncode == 0, name + " probe failed:\n" + completed.stdout + completed.stderr)
                 result = json.loads(completed.stdout)
