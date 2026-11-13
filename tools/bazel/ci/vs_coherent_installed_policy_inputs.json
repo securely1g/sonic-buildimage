@@ -1,0 +1,116 @@
+{
+  "architecture": "amd64",
+  "bazel_launcher_sha256": "5a408715e932c0250d28bd84555f12edbf70117de42f9181691c736eacc4a992",
+  "catalog_revision": "e6ef022c94dd2fdeeac364dfd591f9701cd37c29",
+  "expected_native_archives": {
+    "docker-syncd-vs": {
+      "bytes": 679629216,
+      "sha256": "7fef31998236e57eded8c4e251f73bf8f744da48da70b05fbbd69df68681a46a"
+    },
+    "docker-syncd-vs-dbg": {
+      "bytes": 2743212096,
+      "sha256": "44e9c85c64ac9ed8f21b5945114a31e94d067ecf4f9804e7b40874f3e34f7322"
+    }
+  },
+  "exports": {
+    "docker-config-engine-trixie.gz": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.gz",
+    "docker-orchagent-dbg.gz": "//dockers/docker-orchagent:docker-orchagent-dbg.gz",
+    "docker-orchagent.gz": "//dockers/docker-orchagent:docker-orchagent.gz",
+    "docker-syncd-vs-dbg.gz": "//platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz",
+    "docker-syncd-vs.gz": "//platform/vs/docker-syncd-vs:docker-syncd-vs.gz",
+    "swss--base.packages.json": "//dockers/docker-base-trixie:runtime_package_metadata",
+    "swss--base.source.tar": "//dockers/docker-base-trixie:source_runtime",
+    "swss--config-engine.packages.json": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
+    "swss--config-engine.source.tar": "//dockers/docker-config-engine-trixie:source_runtime",
+    "swss--config.tar": "//dockers/docker-orchagent:ci_config",
+    "swss--debug-apt.json": "//dockers/docker-orchagent:debug_apt_selection",
+    "swss--debug.accounts.tar": "//dockers/docker-orchagent:debug_accounts",
+    "swss--debug.packages.json": "//dockers/docker-orchagent:debug_package_metadata",
+    "swss--debug.status": "//dockers/docker-orchagent:debug_installed_packages",
+    "swss--debug.tools.tar": "//dockers/docker-orchagent:debug_tools",
+    "swss--image-debug.tar": "//dockers/docker-orchagent:all_debug_symbols",
+    "swss--openssh.source.tar": "@sonic_fips//openssh:openssh_client_pkg",
+    "swss--python.tar": "//dockers/docker-orchagent:python_runtime",
+    "swss--runtime-apt.json": "//dockers/docker-orchagent:runtime_apt_selection",
+    "swss--scapy-2.6.1.dev0-py3-none-any.whl": "@scapy//:wheel",
+    "swss--source-debug.tar": "//dockers/docker-orchagent:rdeps_debug_symbols",
+    "swss--source-runtime.tar": "//dockers/docker-orchagent:rdeps",
+    "swss--test-redis.tar": "//src/sonic-eventd:test_runtime",
+    "swss-installed-images-policy.json": "//tools/bazel/tests:swss_installed_images_policy",
+    "syncd--base-debug.tar": "//dockers/docker-config-engine-trixie:docker-config-engine-trixie.debug_symbols",
+    "syncd--base-packages.json": "//dockers/docker-base-trixie:runtime_package_metadata",
+    "syncd--config-engine-packages.json": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
+    "syncd--config-engine-source.tar": "//dockers/docker-config-engine-trixie:source_runtime",
+    "syncd--config-files.tar": "//platform/vs/docker-syncd-vs/config:files",
+    "syncd--debug-apt.json": "//platform/vs/docker-syncd-vs:debug_apt_selection",
+    "syncd--debug-packages.json": "//platform/vs/docker-syncd-vs:debug_package_metadata",
+    "syncd--debug-tools.tar": "//platform/vs/docker-syncd-vs:debug_tools",
+    "syncd--debug.status": "//platform/vs/docker-syncd-vs:debug_installed_packages",
+    "syncd--installation-links.tar": "//platform/vs/docker-syncd-vs:installation_links",
+    "syncd--policy.json": "//platform/vs/docker-syncd-vs:package_policy",
+    "syncd--runtime-apt.json": "//platform/vs/docker-syncd-vs:runtime_apt_selection",
+    "syncd--runtime-apt.tar": "//platform/vs/docker-syncd-vs:apt_deps",
+    "syncd--runtime-packages.json": "//platform/vs/docker-syncd-vs:runtime_package_metadata",
+    "syncd--runtime.status": "//platform/vs/docker-syncd-vs:installed_packages",
+    "syncd--source-contract.json": "//platform/vs/docker-syncd-vs:source_contract",
+    "syncd--source-debug.tar": "//platform/vs/docker-syncd-vs:source_debug_payloads",
+    "syncd--source-receipt.json": "//platform/vs/docker-syncd-vs:source_package_receipt",
+    "syncd--source-runtime.tar": "//platform/vs/docker-syncd-vs:source_runtime_payloads",
+    "syncd--test-redis.tar": "//platform/vs/docker-gbsyncd-vs:test_redis",
+    "syncd-installed-images-policy.json": "//tools/bazel/tests:syncd_installed_images_policy"
+  },
+  "minimum_scratch_bytes": 193273528320,
+  "native_files": {
+    "tools/bazel/ci/image_worker_receipt.py": {
+      "bytes": 43504,
+      "sha256": "eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db"
+    },
+    "tools/bazel/ci/native_apt_cache_policy.py": {
+      "bytes": 12232,
+      "sha256": "c5393e4ba76c78d6aef3742ae84c69689b28e6064ae91e36ee3a4eb4d6ac0401"
+    },
+    "tools/bazel/ci/p4rt_receipt_semantics.py": {
+      "bytes": 10420,
+      "sha256": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661"
+    },
+    "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": {
+      "bytes": 6744,
+      "sha256": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9"
+    },
+    "tools/bazel/ci/public_artifacts.py": {
+      "bytes": 33105,
+      "sha256": "74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9"
+    },
+    "tools/bazel/ci/source_image_worker.py": {
+      "bytes": 113520,
+      "sha256": "6209cdc35435169a6a5c3e6d606008523bdc61a7afedd9bf5a4614c79234bdad"
+    },
+    "tools/bazel/ci/source_worker_preflight.py": {
+      "bytes": 11944,
+      "sha256": "9ffde2a7a08e5cb86bf9d91a05c6b462537fe9586c0576ca912f6983e49d9e9f"
+    },
+    "tools/bazel/gzip/source_archive.py": {
+      "bytes": 3773,
+      "sha256": "82aee637250567edf198e9355a5bf6d592ac33460456f7e042c01c3bcb757aa6"
+    }
+  },
+  "native_revision": "1e423956afe2cb706c239c8be93c1000bbc7a479",
+  "policy_targets": {
+    "swss-installed-images-policy.json": "//tools/bazel/tests:swss_installed_images_policy",
+    "syncd-installed-images-policy.json": "//tools/bazel/tests:syncd_installed_images_policy"
+  },
+  "profile": "measured_native_owner",
+  "profile_proof_sha256": "d99ba95c2316f676c8a3857bbf5a31ccf5fe3ea388af2162fae64d783d1fee49",
+  "schema": 1,
+  "scope": "coherent-swss-syncd",
+  "source_head": "f792520ef507a8dcf9ae4c257e5522d4dae129b5",
+  "source_inputs": {
+    "artifact_id": 14039465053,
+    "digest": "sha256:bdcdd06d9d225b5afff724ab31ffa6b14d609d1d73282f8d60b7bfe051f30d5a",
+    "run_id": 43428792950,
+    "zip_bytes": 3672906
+  },
+  "source_mirror_revision": "97cc502556b7ec3435d2d67b105315bcc18bb47e",
+  "source_revision": "3a06e4ec7627390967730b78a34dc00c86bb34dd",
+  "source_tree": "e1db41673e6da5095579e71aff25cddb08e26c3e"
+}
