@@ -18,7 +18,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -28,7 +28,8 @@ from tools.bazel.ci import kernel_scratch as kernel_cleanup
 
 class KernelBundleTest(unittest.TestCase):
     def setUp(self):
-        registry = patch.dict(os.environ, {"SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY})
+        registry = patch.dict(os.environ, {"SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY,
+                                           "SONIC_BAZEL_REMOTE_ONLY_RC": ""})
         registry.start()
         self.addCleanup(registry.stop)
         temporary = tempfile.TemporaryDirectory()
@@ -351,6 +352,21 @@ class KernelBundleTest(unittest.TestCase):
         self.assertNotIn("private.invalid", console.getvalue())
         self.assertEqual(before, {path: path.read_bytes() for path in before})
 
+    def test_remote_cache_policy_is_forwarded_to_isolated_launcher(self):
+        for index, (remote, upload) in enumerate((
+                (None, False), ("grpc://cache.example:9092", False),
+                ("grpc://cache.example:9092", True))):
+            with self.subTest(remote=remote, upload=upload):
+                planned = kernel.plan(self.root, self.root / f"remote-plan-{index}", remote, upload)
+                self.assertEqual(planned["remote_cache"], remote)
+                self.assertEqual(planned["upload_local_results"], upload)
+                argv = planned["argv"]
+                if remote:
+                    self.assertEqual(argv[argv.index("--remote-cache") + 1], remote)
+                else:
+                    self.assertNotIn("--remote-cache", argv)
+                self.assertEqual("--remote-cache-read-only" in argv, not upload)
+
     def test_cli_managed_trust_reaches_plan_with_explicit_override(self):
         managed = self.root / "managed-cacerts"
         managed.write_bytes(b"managed trust fixture")
@@ -446,6 +462,26 @@ class KernelBundleTest(unittest.TestCase):
         self.assertTrue((self.root / "state/kernel-receipt.json").is_file())
         self.assertEqual((self.root / "state").stat().st_mode & 0o077, 0)
         self.assertFalse((self.root / "tools/bazel/kernel/MODULE.bazel.lock").exists())
+
+    def test_managed_kernel_cache_reaches_only_the_isolated_consumer(self):
+        cache_rc = self.root / "worker-cache.bazelrc"
+        cache_rc.write_text("common --remote_cache=https://cache.example.test\n")
+        state = self.root / "managed-state"
+        template = self.root / "tools/bazel/kernel/.bazelrc"
+        original = template.read_bytes()
+        with patch.dict(os.environ, {"SONIC_BAZEL_REMOTE_ONLY_RC": str(cache_rc)}):
+            with self.assertRaisesRegex(ValueError, "explicit kernel cache"):
+                kernel.plan(self.root, state, None, False, cache_directory=self.root / "disk-cache")
+            with self.assertRaisesRegex(RuntimeError, "stop before compilation"):
+                kernel.build(self.root, state, None, False,
+                             execute=Mock(side_effect=RuntimeError("stop before compilation")))
+        rc = (state / "consumer/.bazelrc").read_text()
+        self.assertIn("import " + str(cache_rc), rc.splitlines())
+        self.assertIn("try-import /run/sonic-native-apt/bazel-source.bazelrc", rc.splitlines())
+        self.assertIn('flag_name: "repository_cache" set_value { flag_value: ""', rc)
+        self.assertEqual((state / "consumer" / kernel.DOWNLOADER_CONFIG.name).read_bytes(),
+                         (self.root / kernel.DOWNLOADER_CONFIG).read_bytes())
+        self.assertEqual(template.read_bytes(), original)
 
     def test_build_rejects_privileged_or_weakened_launcher_invocations(self):
         for index, override in enumerate((
@@ -865,7 +901,8 @@ class KernelBundleTest(unittest.TestCase):
 
 class KernelConfigurationTest(unittest.TestCase):
     def setUp(self):
-        registry = patch.dict(os.environ, {"SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY})
+        registry = patch.dict(os.environ, {"SONIC_REVIEW_REGISTRY": kernel.DEFAULT_REGISTRY,
+                                           "SONIC_BAZEL_REMOTE_ONLY_RC": ""})
         registry.start()
         self.addCleanup(registry.stop)
 
