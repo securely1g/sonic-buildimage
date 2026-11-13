@@ -60,7 +60,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.33-0d2435b572eca4a6f1db6e003b04956c09fb1a39",
+    version = "0.0.34-a4723268cd72a573ed316ab75347e698cc3f86ab",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -74,6 +74,8 @@ bazel_dep(
     repo_name = "sonic_sairedis",
 )
 bazel_dep(name = "sonic-swss", version = "0.0.2-ee5a197adb6ae19c891a8844017d590969a10e4c", repo_name = "sonic_swss")
+bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
+bazel_dep(name = "sonic-snmpagent", version = "2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9", repo_name = "sonic_snmpagent")
 bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(name = "hsflowd", version = "2.1.26.sonic.1")
 bazel_dep(name = "sflowtool", version = "6.11.0.sonic.3")
@@ -479,3 +481,14 @@ go_patches.module_override(
 
 # Pinned comparison tool; no image or package build is scheduled by this include.
 include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")
+
+# Reuse the SNMP source owner's locked third-party wheels.
+use_repo(pip, "snmpagent_pip")
+
+# Select SNMP's runtime, debug and test-only Redis packages from the shared lock.
+use_repo(apt, "snmp_debian", "snmp_debug_debian", "snmp_test_debian")
+
+apt_inputs(
+    name = "snmp_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)
