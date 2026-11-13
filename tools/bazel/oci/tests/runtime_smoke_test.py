@@ -128,19 +128,13 @@ class RedisFixtureTests(unittest.TestCase):
             config = root / 'database.json'
             params = {'executable': str(helper), 'sha256': hashlib.sha256(helper.read_bytes()).hexdigest(),
                       'database_config': str(config), 'loopback_tcp': True}
-            external_error = (
-                r'\A(?:Redis fixture TCP endpoint must be unprivileged loopback|'
-                r'Private Redis TCP listener must match the loopback owner configuration)\Z')
-            for host, port, expected_error in [
-                    ('0.0.0.0', 6379, external_error),
-                    ('127.0.0.1', 80, 'unprivileged loopback'),
-                    ('127.0.0.1', '6379', 'unprivileged loopback')]:
+            for host, port in [('0.0.0.0', 6379), ('127.0.0.1', 80), ('127.0.0.1', '6379')]:
                 config.write_text(json.dumps({'INSTANCES': {'redis': {
                     'unix_socket_path': '/run/redis/redis.sock', 'hostname': host, 'port': port}}}))
                 with self.subTest(host=host, port=port), \
                      patch.object(runtime_smoke, 'command', return_value={'returncode': 0, 'stdout': 'Redis server v=7'}), \
                      patch.object(runtime_smoke.subprocess, 'Popen') as launch:
-                    with self.assertRaisesRegex(ValueError, expected_error):
+                    with self.assertRaisesRegex(ValueError, 'unprivileged loopback'):
                         with runtime_smoke.redis_fixture(params):
                             self.fail('Unexpected TCP fixture admission')
                     launch.assert_not_called()

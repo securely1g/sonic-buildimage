@@ -165,19 +165,19 @@ class VerificationWorkflowTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
 
-    def test_swss_layer_evidence_preserves_previous_and_repeated_runs(self):
+    def test_sflow_evidence_preserves_previous_and_repeated_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["archive"]["steps"]
-        upload = next(step for step in steps if step.get("name") == "Retain reviewed artifacts and receipts")
+        upload = next(step for step in steps if step.get("name") == "Retain sFlow archives and source evidence")
         preserve = next(
             step for step in steps
-            if step.get("name") == "Preserve completed SWSS layer evidence before Orchagent acceptance"
+            if step.get("name") == "Preserve completed sFlow evidence before Orchagent acceptance"
         )
         build = next(step for step in steps if step.get("name") == "Build Orchagent variants from source owners")
         self.assertLess(steps.index(upload), steps.index(preserve))
         self.assertLess(steps.index(preserve), steps.index(build))
         self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
-        with tempfile.TemporaryDirectory(prefix="swss-layer evidence ") as temporary:
+        with tempfile.TemporaryDirectory(prefix="sflow evidence ") as temporary:
             root = Path(temporary)
             scratch = root / "scratch"
             old = scratch / "pre-orchagent-artifacts"
@@ -227,6 +227,128 @@ class VerificationWorkflowTest(unittest.TestCase):
             "always() && matrix.architecture == 'amd64' && "
             "(steps.sysmgr_build.outcome == 'success' || steps.sysmgr_build.outcome == 'failure')",
         )
+
+    def test_swss_layer_evidence_preservation_is_unique_and_keeps_previous_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        upload = next(step for step in steps if step.get("name") == "Retain reviewed artifacts and receipts")
+        preserve = next(
+            step for step in steps
+            if step.get("name") == "Preserve completed SWSS layer evidence before sFlow acceptance"
+        )
+        build = next(step for step in steps if step.get("name") == "Build sFlow runtime and debug images from source owners")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(build))
+        self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
+        with tempfile.TemporaryDirectory(prefix="swss layer evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            old = scratch / "pre-sflow-artifacts"
+            old.mkdir()
+            (old / "receipt").write_text("retained")
+            destinations = []
+            for index in range(2):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(str(index))
+                result = subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+                candidates = set(scratch.glob("pre-sflow-artifacts.*")) - set(destinations)
+                self.assertEqual(len(candidates), 1)
+                destination = candidates.pop()
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((destination / "artifacts/receipt").read_text(), str(index))
+                destinations.append(destination)
+            self.assertNotEqual(*destinations)
+            self.assertEqual((old / "receipt").read_text(), "retained")
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
+    def test_sflow_evidence_handles_early_failure_and_binds_checkout_identity(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        archive_steps = workflow["jobs"]["archive"]["steps"]
+        build = next(step for step in archive_steps if step.get("name") == "Build sFlow runtime and debug images from source owners")
+        validate = next(step for step in archive_steps if step.get("name") == "Validate sFlow installed payloads and matching symbols")
+        incremental = next(step for step in archive_steps if step.get("name") == "Verify sFlow no-op, Python source edit and restored archives")
+        public = next(step for step in archive_steps if step.get("name") == "Review public sFlow evidence")
+        self.assertEqual(build["id"], "sflow_build")
+        self.assertEqual(
+            public["if"],
+            "always() && matrix.architecture == 'amd64' && "
+            "(steps.sflow_build.outcome == 'success' || steps.sflow_build.outcome == 'failure')",
+        )
+        for step in (build, validate, incremental):
+            self.assertEqual(step["env"]["CI_HEAD_SHA"], "${{ steps.checkout_identity.outputs.head_sha }}")
+            self.assertEqual(step["env"]["CI_BASE_SHA"], "${{ steps.checkout_identity.outputs.base_sha }}")
+        runtime_steps = workflow["jobs"]["swss_layer_runtime"]["steps"]
+        identity = next(step for step in runtime_steps if step.get("name") == "Bind the tested checkout identity")
+        retain_swss = next(step for step in runtime_steps if step.get("name") == "Retain installed-image evidence")
+        preserve_runtime = next(
+            step for step in runtime_steps
+            if step.get("name") == "Preserve completed SWSS runtime evidence before sFlow acceptance"
+        )
+        download_sflow = next(
+            step for step in runtime_steps
+            if (step.get("with") or {}).get("name") == "sflow-source-amd64"
+        )
+        loaded = next(step for step in runtime_steps if step.get("name") == "Exercise installed sFlow manager, mapper and exporter variants")
+        self.assertEqual(identity["id"], "checkout_identity")
+        self.assertLess(runtime_steps.index(identity), runtime_steps.index(loaded))
+        self.assertLess(runtime_steps.index(retain_swss), runtime_steps.index(preserve_runtime))
+        self.assertLess(runtime_steps.index(preserve_runtime), runtime_steps.index(download_sflow))
+        self.assertLess(runtime_steps.index(download_sflow), runtime_steps.index(loaded))
+        self.assertEqual(loaded["env"]["CI_HEAD_SHA"], "${{ steps.checkout_identity.outputs.head_sha }}")
+        self.assertEqual(loaded["env"]["CI_BASE_SHA"], "${{ steps.checkout_identity.outputs.base_sha }}")
+        with tempfile.TemporaryDirectory(prefix="swss runtime evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            artifacts = root / "artifacts"
+            (artifacts / "swss-layer").mkdir(parents=True)
+            (artifacts / "swss-layer/runtime-smoke.json").write_text('{"status": "passed"}\n')
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve_runtime["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(artifacts.exists())
+            candidates = list(scratch.glob("pre-sflow-runtime-artifacts.*"))
+            self.assertEqual(len(candidates), 1)
+            destination = candidates[0]
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(
+                (destination / "artifacts/swss-layer/runtime-smoke.json").read_text(),
+                '{"status": "passed"}\n',
+            )
+        script = public["run"].split("python3 - <<'PYCODE'\n", 1)[1].split("\nPYCODE", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="sflow early failure ") as temporary:
+            directory = Path(temporary)
+            previous = Path.cwd()
+            sys.path.insert(0, str(ROOT))
+            try:
+                os.chdir(directory)
+                exec(compile(script, "<sflow-public-evidence>", "exec"), {})
+            finally:
+                os.chdir(previous)
+                sys.path.pop(0)
+            root = directory / "artifacts/sflow"
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+            self.assertEqual([path.name for path in root.iterdir()], ["build-summary.json"])
 
     def test_base_image_runtime_uses_guarded_kernel_workspace_repair(self):
         workflow = yaml.safe_load(
