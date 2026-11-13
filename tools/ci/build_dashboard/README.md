@@ -35,6 +35,14 @@ Point tooltips, job details and the latest measurement identify the timing
 boundary. Unknown boundaries remain
 isolated points, and historical durations are preserved.
 
+The chart starts as a scatter overview with a legend for the visible measurement
+scopes. Select one **Measurement series** to show its trend without connecting
+different build paths, architectures or measured steps. Date ranges end at the
+published snapshot time. The default view shows the newest 60 matching points;
+choose **Show all** to remove that display limit. These chart-only controls do
+not filter PR coverage or run history. Hover or focus a point to inspect its
+measured scope, source revision and breakdown availability.
+
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
 skipped contributes only to **Skipped**. The latest associated run containing

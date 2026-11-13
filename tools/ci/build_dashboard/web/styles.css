@@ -291,10 +291,10 @@ p {
 
 .legend {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   align-items: center;
-  white-space: nowrap;
-  padding-top: 17px;
+  padding: 0 25px 15px;
 }
 
 .legend span {
@@ -312,16 +312,9 @@ p {
   display: block;
 }
 
-.make-dot {
-  background: var(--teal);
-}
-
-.bazel-dot {
-  background: var(--navy);
-}
-
 .filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 15px;
   padding: 0 25px 15px;
 }
@@ -337,6 +330,15 @@ p {
 .filters label:last-child {
   min-width: 230px;
   max-width: 410px;
+}
+
+.trend-filters label:first-child {
+  flex: 1;
+  min-width: 260px;
+}
+
+.trend-filters label:last-child {
+  min-width: 150px;
 }
 
 select {
@@ -385,6 +387,35 @@ select {
 
 .chart-point:hover .chart-marker,.chart-point:focus .chart-marker {
   r: 7;
+}
+
+.chart-preview {
+  margin: 4px 25px 0;
+  padding: 12px 15px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f7fafb;
+  min-height: 112px;
+  font-size: .8rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.chart-preview p {
+  margin: 5px 0 0;
+}
+
+.chart-preview-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px 14px;
+}
+
+.chart-preview-heading strong {
+  color: #142b40;
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .panel-footnote {
@@ -1067,10 +1098,25 @@ footer a {
   .filters label {
     min-width: 0;
   }
+  .trend-filters label:first-child {
+    grid-column: 1/-1;
+    min-width: 0;
+  }
+  .legend {
+    padding-left: 17px;
+    padding-right: 17px;
+  }
+  .chart-preview {
+    margin-left: 17px;
+    margin-right: 17px;
+  }
   .filters label:last-child {
     grid-column: 1/-1;
     min-width: 0;
     max-width: none;
+  }
+  .trend-filters label:last-child {
+    grid-column: auto;
   }
   .trend {
     padding: 0 4px;
