@@ -9,10 +9,10 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr]
+        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
-        description: Optional immutable normal-CI request artifact ID for reviewed Syncd or Gearbox validation
+        description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
         type: string
         default: ''
       source_worker_pool:
@@ -169,7 +169,7 @@ jobs:
 
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "p4rt"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -209,7 +209,7 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr"]'), inputs.source_image)
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "p4rt"]'), inputs.source_image)
     runs-on: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && fromJSON('["sonic-slave-container-k3s"]') || fromJSON(format('["sonic-slave-container-dpool","{0}"]', inputs.source_worker)) }}
     concurrency:
       group: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && format('sonic-source-image-k3s-{0}-{1}', inputs.source_image, inputs.source_ci_request) || format('source-image-native-{0}-{1}', github.run_id, github.run_attempt) }}
@@ -228,6 +228,7 @@ jobs:
       SOURCE_REVISION: ${{ inputs.source_revision }}
       SOURCE_REGISTRY_REVISION: ${{ inputs.registry_revision }}
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+      BAZEL_REMOTE_AUTH: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && secrets.BAZEL_REMOTE_AUTH || '' }}
     steps:
       - name: Require fresh native worker paths
         id: worker_paths
@@ -250,7 +251,7 @@ jobs:
                   raise SystemExit("Unexpected dedicated worker identity")
           elif pool == "sonic-slave-container-k3s":
               if (not re.fullmatch(r"ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?", worker) or
-                      os.environ["SELECTED_IMAGE"] not in ("syncd", "gearbox") or
+                      os.environ["SELECTED_IMAGE"] not in ("syncd", "gearbox", "p4rt") or
                       not re.fullmatch(r"[1-9][0-9]*", os.environ.get("SOURCE_CI_REQUEST", "")) or
                       os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch" or
                       os.environ.get("GITHUB_REPOSITORY") != "securely1g/sonic-buildimage" or
@@ -306,7 +307,7 @@ jobs:
           clean: false
           persist-credentials: false
       - name: Verify the normal CI request artifact provenance
-        if: contains(fromJSON('["syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
         id: source_ci_request
         env:
           GH_TOKEN: ${{ github.token }}
@@ -318,7 +319,7 @@ jobs:
             --artifact "$REQUEST_ARTIFACT" \
             --directory "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-request"
       - name: Download the immutable normal CI request
-        if: contains(fromJSON('["syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           artifact-ids: ${{ steps.source_ci_request.outputs.request_artifact }}
@@ -328,7 +329,7 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/${{ steps.worker_paths.outputs.scratch }}/ci-request/payload
       - name: Bind the exact normal CI merge before native work
-        if: contains(fromJSON('["syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -369,10 +370,30 @@ jobs:
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-mirrors \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      # Keep the historical step identity required by original receipt validation.
+      # K3s uses the remote action cache and fresh run-attempt working space.
       - name: Prepare private Docker and persistent worker caches
         id: prepare
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Prepare the P4RT Common SDK and sealed owner TARs
+        if: inputs.source_image == 'p4rt'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-owner \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Prepare the P4RT owner test runtime
+        if: inputs.source_image == 'p4rt'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-owner-runtime \
+            --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
+            --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
+      - name: Test all original and installed P4RT owner targets
+        if: inputs.source_image == 'p4rt'
+        run: |
+          python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" owner-tests \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/$SOURCE_WORKER_SOURCE" --artifacts "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts"
       - name: Build source runtime and debug images
@@ -428,7 +449,7 @@ jobs:
           retention-days: 14
           compression-level: 0
       - name: Package the normal CI acceptance receipts
-        if: contains(fromJSON('["syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
         id: source_ci_acceptance
         run: |
           cd "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL"
@@ -438,7 +459,7 @@ jobs:
             --public "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/artifacts/public" \
             --output "$RUNNER_TEMP/$SOURCE_WORKER_SCRATCH/ci-acceptance"
       - name: Upload the normal CI acceptance receipts
-        if: contains(fromJSON('["syncd", "gearbox"]'), inputs.source_image) && inputs.source_ci_request != ''
+        if: contains(fromJSON('["syncd", "gearbox", "p4rt"]'), inputs.source_image) && inputs.source_ci_request != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.source_ci_acceptance.outputs.acceptance_name }}
@@ -542,17 +563,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: AMD64
-            architecture: amd64
-            machine: x86_64
-            runner: ubuntu-24.04
-            platform: x86_64_trixie
-          - name: ARM64
-            architecture: arm64
-            machine: aarch64
-            runner: ubuntu-24.04-arm
-            platform: aarch64_trixie
+        # This controller PR is AMD64-only; other PRs/events retain their matrix.
+        include: >-
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' && github.event.pull_request.number == 201 &&
+            '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie"}]' || '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie"},{"name":"ARM64","architecture":"arm64","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie"}]'
+          ) }}
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:
@@ -680,7 +697,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current' || github.head_ref == 'codex/source-image-worker-families') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current' || github.head_ref == 'codex/source-image-worker-families' || github.head_ref == 'codex/source-image-worker-p4rt-feature') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -888,7 +905,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current' || github.head_ref == 'codex/source-image-worker-families') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current' || github.head_ref == 'codex/source-image-worker-families' || github.head_ref == 'codex/source-image-worker-p4rt-feature') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1352,6 +1369,7 @@ jobs:
       github.head_ref != 'codex/framework-native-worker' &&
       github.head_ref != 'codex/orchagent-source-worker-current' &&
       github.head_ref != 'codex/source-image-worker-families' &&
+      github.head_ref != 'codex/source-image-worker-p4rt-feature' &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&

@@ -464,10 +464,31 @@ preserve the previous input. Newline, NUL and dollar characters are rejected to
 prevent extra environment records or rules_oci variable expansion. Make exports
 the value to the helper instead of interpolating it into shell code.
 
+### P4RT on the private source-image worker
+
+The `p4rt` selection reuses the source's existing seven phases: prepare the Common
+SDK and sealed owner TARs, prepare the declared owner test runtime, run the complete
+original and installed owner test selection, build, validate, verify incremental
+restoration, and run the loaded service probes. It requires the exact clean
+`sonic-pins` gitlink `e66b705bc9d87a86b555866914dc1909cbf3e092`. The root uses Bazel
+8.5.1; the WORKSPACE owner uses Bazel 6.4.0 with one job, a 2GiB JVM, and its own
+repository/disk/Bazelisk caches and output base. Both retain the existing configured
+no-DEB audits, and the sealed SDK handoff prevents recompiling Common under Bazel6.
+Each phase checks its predecessor's successful receipt before executing.
+
+The controller delegates publication to the existing P4RT artifact selector. It
+retains checked worker/runtime receipts and a bounded per-target XML summary with
+case counts and original XML hashes, while excluding private SDK/runtime paths,
+raw logs and environment data. The historical 59-target/990-case result is not an
+acceptance claim for a new source/catalog selection. A new run must establish its
+actual test graph, image/debug, incremental and private loaded-service results.
+The added controller branch is prepared for a separately reviewed manual request;
+its local mock checks do not establish native or full VS acceptance.
+
 ## Source-worker pool selection
 
 The manual Bazel OCI source worker retains the dedicated dpool route by default.
-For Syncd and Gearbox, `source_worker_pool=sonic-slave-container-k3s` selects the
+For Syncd, Gearbox and P4RT, `source_worker_pool=sonic-slave-container-k3s` selects the
 shared K3s label. This route requires `source_ci_request`, the immutable original
 normal-CI request artifact. The controller checks the complete checked-in worker
 contract hash before admitting its pool, source, catalog and controller identities.
@@ -480,14 +501,27 @@ measured profile, and each phase checks that it has not changed. Resource, priva
 namespace, mount, tool, source, memory-event and original-receipt checks still apply.
 The existing 50-GiB preflight and 90-GiB native workspace gates remain independent.
 
-The K3s cache root is `/actions/_work/.source-image-cache`, outside the fresh
-checkout and temporary directories, on the authenticated `/actions` backing mount.
-The existing `source-images/<actual-runner>` layout separates workers and the
-existing per-image output bases. The preflight checks ownership, permissions,
-writability, filesystem and free space without clearing or migrating caches.
-Workspace and cache capacity on this same filesystem are not additive. Cache
-persistence across replacement runner pods is not established; reuse checks retain
-their within-job baseline/no-op/edit/restore scope. Dpool keeps `/bazel_cache`.
+K3s uses the endpoint selected by the installed, source-verified
+`/opt/sonic-native-runtime/cache_credentials.py` owner. The owner reads its managed
+host configuration and supplies only public endpoint settings to launcher setup.
+Preparation refuses the owner's legacy fallback. The separate bounded access
+probe must pass before native work; access success does not by itself prove that
+an authentication header was needed. Credential values stay inside the existing
+owner interface and are not written to launchers, rc files, action environments
+or public receipts. K3s no longer requires the legacy `BAZEL_REMOTE_AUTH` setting.
+
+Both Bazel launchers disable disk and repository caches and remote execution.
+Bazelisk tools, per-image output bases and the separate P4RT owner output base use
+fresh `/actions/_work/.source-image-cache/source-images/<actual-runner>/run-<id>-<attempt>`
+working directories. Preflight prepares this namespace on `/actions`; no existing
+cache contents or prior registration directory is adopted. Ephemeral space for
+compilation, downloads and image assembly is still required; capacities on the
+same filesystem are not additive. Dpool keeps its existing `/bazel_cache` route.
+Schema 3 records the selected public origin, verified managed owner and access
+result; historical schemas 1 and 2 retain their original meaning. A separate short
+qualification binds the observed origin for that invocation and must demonstrate
+a remote hit from a second fresh output base before long native work. Mocked
+flags, readable rc files and a successful access probe do not establish a hit.
 
 Native K3s concurrency is keyed by image family and original request artifact ID,
 with `cancel-in-progress: false`. Distinct requests can use separate workers while

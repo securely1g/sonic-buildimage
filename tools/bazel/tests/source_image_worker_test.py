@@ -2,6 +2,7 @@
 """Check fixed image dispatch and public artifact boundaries."""
 
 import importlib.util
+from contextlib import ExitStack, contextmanager
 import copy
 import io
 import hashlib
@@ -141,7 +142,7 @@ class ImageWorkerTest(unittest.TestCase):
             opened.assert_called_once_with('https://deb.debian.org/debian/dists/trixie/InRelease', timeout=10)
             worker.safe_json(value)
 
-    def test_execution_network_uses_actual_worker_and_sudo_contexts_and_publishes(self):
+    def test_execution_network_uses_actual_worker_and_sudo_contexts_and_stays_private(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
             with patch.object(worker, 'output', side_effect=[json.dumps(self.network_result(1000)),
@@ -154,10 +155,10 @@ class ImageWorkerTest(unittest.TestCase):
                 ['sudo', '-n', sys.executable, '-I', '-c', worker.EXECUTION_NETWORK_PROBE]])
             for call in output.call_args_list:
                 self.assertEqual(call.kwargs, {'timeout': 20, 'stderr': subprocess.DEVNULL})
-            path = artifacts / 'worker-execution-network.json'
+            path = artifacts / 'private-worker-execution-network.json'
             self.assertEqual(json.loads(path.read_text()), {'worker': self.network_result(1000), 'sudo': self.network_result(0)})
             worker.publish(SimpleNamespace(artifacts=artifacts))
-            self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+            self.assertFalse((artifacts / 'public' / path.name).exists())
 
     def apt_probe(self):
         namespace = {'__name__': 'fixed_apt_diagnostic_test'}
@@ -291,7 +292,7 @@ class ImageWorkerTest(unittest.TestCase):
                 probe['download'](directory, False)
         kill.assert_not_called()
 
-    def test_apt_transport_receipt_rejects_secrets_and_remains_publishable(self):
+    def test_apt_transport_receipt_rejects_secrets_and_stays_private(self):
         result = {'scope': 'transport_only_no_signature_verification', 'status': 'completed',
                   'config': dict(proxy_entries_present=[False] * 8, srv_enabled=True, srv_default=True,
                                  sandbox_kind='_apt', no_drop_privs=False, method_overrides_present=False,
@@ -304,10 +305,10 @@ class ImageWorkerTest(unittest.TestCase):
                 worker.prepare_apt_transport(artifacts)
             output.assert_called_once_with(['sudo', '-n', sys.executable, '-I', '-c', worker.APT_TRANSPORT_PROBE],
                                            timeout=50, stderr=subprocess.DEVNULL)
-            path = artifacts / 'worker-apt-transport.json'
+            path = artifacts / 'private-worker-apt-transport.json'
             self.assertEqual(json.loads(path.read_text()), result)
             worker.publish(SimpleNamespace(artifacts=artifacts))
-            self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+            self.assertFalse((artifacts / 'public' / path.name).exists())
             invalid = [dict(result, extra='private-password'), dict(result, error_class='private-password://host'),
                        {'scope': result['scope'], 'status': 'completed'},
                        {**result, 'config': {**result['config'], 'sandbox_kind': 'private-account'}},
@@ -326,7 +327,7 @@ class ImageWorkerTest(unittest.TestCase):
                         subprocess.TimeoutExpired(['private-command'], 20, output='private-token')]
             with patch.object(worker, 'output', side_effect=failures):
                 worker.prepare_execution_network(artifacts)
-            path = artifacts / 'worker-execution-network.json'
+            path = artifacts / 'private-worker-execution-network.json'
             self.assertEqual(json.loads(path.read_text()), {'worker': {'error_class': 'CalledProcessError'},
                                                           'sudo': {'error_class': 'TimeoutExpired'}})
             self.assertNotIn('private-', path.read_text())
@@ -338,7 +339,8 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(json.loads(path.read_text())['worker'], {'error_class': 'ValueError'})
                 self.assertNotIn('private-', path.read_text())
 
-    def test_execution_network_only_after_apt_failure_and_preserves_original(self):
+    @patch.object(worker, 'select_tools_cache_transport', return_value=False)
+    def test_execution_network_only_after_apt_failure_and_preserves_original(self, _transport):
         update = ['sudo', '-n', 'apt-get', '-o', 'Acquire::EnableSrvRecords=false', 'update']
         install = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get',
                    '-o', 'Acquire::EnableSrvRecords=false', 'install', '-y', '--no-install-recommends', 'libarchive-tools']
@@ -369,7 +371,8 @@ class ImageWorkerTest(unittest.TestCase):
                     self.assertNotIn('private-', stderr.getvalue())
                     self.assertFalse((artifacts / 'worker-execution-tools.json').exists())
 
-    def test_execution_network_is_skipped_when_apt_succeeds_or_tools_exist(self):
+    @patch.object(worker, 'select_tools_cache_transport', return_value=False)
+    def test_execution_network_is_skipped_when_apt_succeeds_or_tools_exist(self, _transport):
         for missing in (False, True):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
                 commands = []
@@ -466,7 +469,7 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(worker.selected_worker_pool(), "sonic-slave-container-dpool")
             worker.selection("sysmgr", "a" * 40)
         with patch.dict(os.environ, {"WORKER_POOL": "sonic-slave-container-k3s"}, clear=True):
-            for image in ("syncd", "gearbox"):
+            for image in ("syncd", "gearbox", "p4rt"):
                 worker.selection(image, "a" * 40)
             with self.assertRaisesRegex(ValueError, "not admitted"):
                 worker.selection("sysmgr", "a" * 40)
@@ -539,7 +542,7 @@ class ImageWorkerTest(unittest.TestCase):
                               "with Path(os.environ['TRACE']).open('a') as out: out.write(json.dumps(sys.argv[1:])+'\\n')\n")
             trace = root / "trace.jsonl"; environment["TRACE"] = str(trace)
             for step in job["steps"][1:]:
-                if step.get("if") == "inputs.source_image == 'teamd'" or "inputs.source_ci_request" in step.get("if", ""):
+                if step.get("if") in ("inputs.source_image == 'teamd'", "inputs.source_image == 'p4rt'") or "inputs.source_ci_request" in step.get("if", ""):
                     continue
                 if "run" in step:
                     subprocess.run(["bash", "-e", "-c", step["run"]], env=environment,
@@ -734,7 +737,8 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertLess(source.index('prepare_tap_fixture(artifacts)'), source.index('prepare_source_downloads('))
         self.assertLess(source.index('prepare_tap_fixture(artifacts)'), source.index('launcher_text('))
 
-    def test_validation_bootstrap_installs_only_missing_execution_tools(self):
+    @patch.object(worker, 'select_tools_cache_transport', return_value=False)
+    def test_validation_bootstrap_installs_only_missing_execution_tools(self, _transport):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
             def available(tool):
@@ -889,7 +893,7 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_fixed_interfaces_do_not_expand_into_owner_suites(self):
         root, artifacts = Path("/source"), Path("/evidence")
-        for image in worker.DRIVERS:
+        for image in worker.DRIVERS.keys() - {"p4rt"}:
             for phase in ("build", "validate", "incremental", "loaded"):
                 command = worker.phase_command(image, phase, root, artifacts)
                 self.assertEqual(command[1], "-B")
@@ -919,6 +923,198 @@ class ImageWorkerTest(unittest.TestCase):
                     self.assertEqual(worker.phase_command(image, phase, root, artifacts), expected)
                 self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
                                  prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
+
+    def p4rt_owner(self, workspace, temporary):
+        launch, rc = temporary / "p4rt-owner-bazel", temporary / "p4rt-owner.bazelrc"
+        launch.write_text("reviewed launcher"); rc.write_text("reviewed rc")
+        return {"source": str(workspace / worker.P4RT_OWNER_PATH), "revision": worker.P4RT_OWNER,
+                "bazel": str(launch), "bazel_sha256": worker.digest(launch), "rc": str(rc),
+                "rc_sha256": worker.digest(rc), "output_base": "/bazel_cache/source-images/sonic-slave-lgh114-1/p4rt-owner/output-base",
+                "jobs": 1}
+
+    def test_p4rt_uses_exact_seven_existing_driver_interfaces(self):
+        workspace, artifacts = Path("/source"), Path("/evidence")
+        owner = {"source": "/source/" + worker.P4RT_OWNER_PATH, "revision": worker.P4RT_OWNER,
+                 "bazel": "/private/owner-bazel", "output_base": "/cache/p4rt-owner/output-base", "jobs": 1}
+        common = ["--directory", str(artifacts), "--owner-source", owner["source"]]
+        prefix = [sys.executable, "-B"]
+        wrapper = "/source/tools/bazel/ci/review_bazel.sh"
+        phases = ("prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded")
+        self.assertEqual(worker.P4RT_PHASES, phases)
+        for phase in phases:
+            if phase == "loaded":
+                expected = prefix + ["/source/tools/bazel/ci/p4rt_loaded.py", *common]
+            elif phase in ("validate", "incremental"):
+                expected = prefix + ["/source/tools/bazel/ci/p4rt_validate.py", phase, *common, "--bazel", wrapper]
+            else:
+                expected = prefix + ["/source/tools/bazel/ci/p4rt_image.py", phase, *common, "--bazel", wrapper,
+                    "--owner-revision", worker.P4RT_OWNER, "--owner-bazel", owner["bazel"],
+                    "--owner-output-base", owner["output_base"], "--jobs", "1"]
+            self.assertEqual(worker.phase_command("p4rt", phase, workspace, artifacts, owner), expected)
+        for change in ({"revision": "a" * 40}, {"source": "/other"}, {"jobs": 2}):
+            with self.assertRaises(ValueError):
+                worker.phase_command("p4rt", "build", workspace, artifacts, {**owner, **change})
+        with self.assertRaises(ValueError):
+            worker.phase_command("p4rt", "build", workspace, artifacts)
+        with self.assertRaises(ValueError):
+            worker.phase_command("frr", "owner-tests", workspace, artifacts, owner)
+
+    def test_p4rt_workflow_preparation_precedes_four_phases_and_stops_on_failure(self):
+        import yaml
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["source_image"]["steps"]
+        selected = []
+        for step in steps:
+            match = re.search(r'source_image_worker.py" ([a-z-]+) ', step.get("run", ""))
+            if match and match.group(1) in worker.P4RT_PHASES:
+                selected.append((match.group(1), step))
+        self.assertEqual(tuple(phase for phase, _ in selected), worker.P4RT_PHASES)
+        for index, (phase, step) in enumerate(selected):
+            self.assertNotIn("continue-on-error", step)
+            if index < 3:
+                self.assertEqual(step["if"], "inputs.source_image == 'p4rt'")
+            else:
+                self.assertNotIn("if", step)  # GitHub's implicit success() gate.
+        self.assertEqual(workflow["jobs"]["source_image"]["timeout-minutes"], 360)
+        self.assertEqual(workflow["jobs"]["source_image"]["runs-on"],
+                         "${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && "
+                         "fromJSON('[\"sonic-slave-container-k3s\"]') || "
+                         "fromJSON(format('[\"sonic-slave-container-dpool\",\"{0}\"]', inputs.source_worker)) }}")
+
+    def test_p4rt_owner_setup_verifies_gitlink_and_separate_cache_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory);workspace = root / "source";workspace.mkdir()
+            (workspace / ".bazelversion").write_text("8.5.1\n")
+            owner = workspace / worker.P4RT_OWNER_PATH;owner.mkdir(parents=True)
+            (owner / ".bazelversion").write_text("6.4.0\n")
+            (owner / "WORKSPACE.bazel").write_text("workspace(name='owner')\n")
+            (owner / "ci").mkdir();(owner / "ci/production_runtime.py").write_text("# reviewed driver\n")
+            temporary = root / "scratch";temporary.mkdir();cache = root / "cache"
+            def output(argv):
+                if "ls-tree" in argv: return "160000 commit " + worker.P4RT_OWNER + "\t" + worker.P4RT_OWNER_PATH
+                if "config" in argv: return "https://github.com/securely1g/sonic-pins.git"
+                if "rev-parse" in argv: return worker.P4RT_OWNER
+                if "status" in argv: return ""
+                raise AssertionError(argv)
+            with patch.object(worker, "output", side_effect=output), patch.object(worker, "run") as run, \
+                    patch.object(worker.shutil, "which", return_value="/tools/bazelisk"):
+                context = worker.prepare_p4rt(workspace, cache, temporary, [cache / "distdir"], temporary / "mirrors.cfg")
+            self.assertEqual(run.call_args_list[0].args[0], ["git", "-C", str(workspace), "submodule", "update", "--init", "--checkout", "--", worker.P4RT_OWNER_PATH])
+            self.assertEqual(context["output_base"], str(cache / "p4rt-owner/output-base"))
+            self.assertNotEqual(context["output_base"], str(cache / "p4rt/output-base"))
+            rc = Path(context["rc"]).read_text()
+            for option in ("common --repository_cache=", "build --disk_cache=", "build --local_ram_resources=4096", "common --distdir=", "common --experimental_downloader_config="):
+                self.assertIn(option, rc)
+            with patch.dict(os.environ, {}, clear=True), patch.object(sys, "argv", [context["bazel"], "build", "//p4rt_app:p4rt_runtime"]), \
+                    patch.object(os, "execv") as execute:
+                exec(compile(Path(context["bazel"]).read_text(), context["bazel"], "exec"), {})
+                self.assertEqual(os.environ["USE_BAZEL_VERSION"], "6.4.0")
+                self.assertEqual(os.environ["BAZELISK_HOME"], str(cache / "p4rt-owner/bazelisk"))
+            argv = execute.call_args.args[1]
+            self.assertIn("--output_base=" + context["output_base"], argv)
+            self.assertIn("--host_jvm_args=-Xmx2g", argv)
+            self.assertIn("--bazelrc=" + context["rc"], argv)
+            self.assertIn("--nohome_rc", argv)
+            self.assertNotIn("--noworkspace_rc", argv)  # Preserve the owner's p4rt-runtime config.
+            self.assertFalse(any("remote_download_regex" in x or "local_resources=" in x for x in argv))
+            self.assertEqual(argv[-2:], ["build", "//p4rt_app:p4rt_runtime"])
+            (workspace / ".bazelversion").write_text("6.4.0\n")
+            with patch.object(worker, "run") as run, self.assertRaises(ValueError):
+                worker.prepare_p4rt(workspace, cache, temporary, [], temporary / "mirror")
+            run.assert_not_called()
+            (workspace / ".bazelversion").write_text("8.5.1\n")
+            with patch.object(worker, "output", return_value="160000 commit " + "a" * 40), \
+                    patch.object(worker, "run") as run, self.assertRaises(ValueError):
+                worker.prepare_p4rt(workspace, cache, temporary, [], temporary / "mirror")
+            run.assert_not_called()
+            (owner / ".bazelversion").write_text("8.5.1\n")
+            with patch.object(worker, "output", side_effect=output), patch.object(worker, "run"), self.assertRaises(ValueError):
+                worker.p4rt_owner_identity(workspace)
+
+    def test_private_transport_diagnostics_stay_out_of_all_public_publishers(self):
+        diagnostics = (
+            "private-worker-execution-network.json",
+            "private-worker-apt-transport.json",
+            "private-worker-apt-transport-selection.json",
+        )
+        for image in ("syncd", "gearbox", "p4rt"):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as directory:
+                artifacts = Path(directory)
+                private = json.dumps({"environment": {"FIXTURE": "private-diagnostic"}}) + "\n"
+                for name in diagnostics:
+                    (artifacts / name).write_text(private)
+                approved = {"status": "passed"}
+                (artifacts / "worker-execution-tools.json").write_text(json.dumps(approved) + "\n")
+                worker.publish(SimpleNamespace(image=image, artifacts=artifacts))
+                public = artifacts / "public"
+                self.assertEqual({path.name for path in public.iterdir()},
+                                 {"worker-execution-tools.json", "build-summary.json"})
+                self.assertEqual(json.loads((public / "worker-execution-tools.json").read_text()), approved)
+                for name in diagnostics:
+                    self.assertEqual((artifacts / name).read_text(), private)
+                    self.assertFalse((public / name).exists())
+
+    def test_public_publishers_still_reject_unredacted_selected_worker_evidence(self):
+        for image in ("syncd", "gearbox", "p4rt"):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as directory:
+                artifacts = Path(directory)
+                (artifacts / "worker-execution-tools.json").write_text(
+                    json.dumps({"environment": {"FIXTURE": "private-diagnostic"}}) + "\n")
+                with self.assertRaises(ValueError):
+                    worker.publish(SimpleNamespace(image=image, artifacts=artifacts))
+
+    def test_p4rt_publication_delegates_before_generic_directory_creation(self):
+        from tools.bazel.ci import p4rt_public
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def prepare(path):
+                self.assertEqual(path, root)
+                self.assertFalse((root / "public").exists())
+                (root / "public").mkdir()
+                return root / "public"
+            with patch.object(p4rt_public, "prepare", side_effect=prepare) as call:
+                self.assertEqual(worker.publish(SimpleNamespace(image="p4rt", artifacts=root)), root / "public")
+            call.assert_called_once_with(root)
+
+    def test_p4rt_phase_receipts_enforce_order_and_preserve_failure(self):
+        memory = {"limit": str(20 * 1024**3), "cpu_max": "400000 100000", "events": {"oom": 0, "oom_kill": 0}}
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory);artifacts = root / "artifacts";artifacts.mkdir()
+                workspace = root / "source";workspace.mkdir();temporary = root / "scratch";temporary.mkdir()
+                args = SimpleNamespace(image="p4rt", revision="a" * 40, workspace=workspace, artifacts=artifacts, phase="prepare-owner")
+                owner = self.p4rt_owner(workspace, temporary)
+                state = {"image": "p4rt", "revision": args.revision, "workspace": str(workspace), "environment": {"BAZEL_REAL": "/root-bazel"},
+                         "p4rt_owner": owner, "build_profile": worker.select_build_profile(20 * 1024**3, 4)}
+                (artifacts / "worker-private.json").write_text(json.dumps(state))
+                def result(argv, **kwargs):
+                    return SimpleNamespace(returncode=1 if fail and "owner-tests" in argv else 0)
+                with patch.dict(os.environ, {"RUNNER_NAME": "sonic-slave-lgh114-1", "SOURCE_REGISTRY_REVISION": ""}), \
+                        patch.object(worker, "temporary_directory", return_value=temporary), \
+                        patch.object(worker, "p4rt_owner_identity", return_value=Path(owner["source"])), \
+                        patch.object(worker, "source_check"), patch.object(worker, "memory_snapshot", return_value=memory), \
+                        patch.object(worker.subprocess, "run", side_effect=result) as run:
+                    args.phase = "build"
+                    with self.assertRaises(FileNotFoundError): worker.execute_phase(args)
+                    run.assert_not_called()
+                    for phase in worker.P4RT_PHASES:
+                        args.phase = phase
+                        if fail and phase == "owner-tests":
+                            with self.assertRaisesRegex(ValueError, "Image phase failed"): worker.execute_phase(args)
+                            self.assertEqual(json.loads((artifacts / "worker-owner-tests.json").read_text())["status"], "failed")
+                            calls = run.call_count;args.phase = "build"
+                            with self.assertRaisesRegex(ValueError, "predecessor"): worker.execute_phase(args)
+                            self.assertEqual(run.call_count, calls)
+                            break
+                        worker.execute_phase(args)
+                        receipt = json.loads((artifacts / ("worker-" + phase + ".json")).read_text())
+                        self.assertEqual(receipt["owner_profile"], worker.P4RT_OWNER_PROFILE)
+                    if not fail:
+                        self.assertEqual(run.call_count, 8)  # Seven phases and the existing root JVM shutdown.
+                        self.assertEqual(run.call_args_list[-2].args[0], ["/root-bazel", "shutdown"])
+                    Path(owner["rc"]).write_text("tampered")
+                    args.phase = "prepare-owner"
+                    with self.assertRaisesRegex(ValueError, "configuration changed"): worker.execute_phase(args)
 
     def test_orchagent_incremental_uses_current_source_parent_and_all_six_targets(self):
         command = worker.phase_command("orchagent", "incremental", Path("/source"), Path("/evidence"))
@@ -1004,7 +1200,7 @@ class ImageWorkerTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "p4rt"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
@@ -1027,7 +1223,7 @@ class ImageWorkerTest(unittest.TestCase):
         guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
                   for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
         self.assertEqual(len(guards), 2)
-        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families"):
+        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families", "codex/source-image-worker-p4rt-feature"):
             for guard in guards:
                 self.assertTrue(condition(guard, event="pull_request", branch=branch))
                 for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
@@ -1272,6 +1468,1066 @@ class ImageWorkerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.publish(SimpleNamespace(artifacts=root))
             self.assertEqual(json.loads((root / "public/loaded-validation.json").read_text()), receipt)
+
+
+class PrivateDockerMountTeardownTest(unittest.TestCase):
+    def cleanup_fixture(self, root, snapshots, clock):
+        """Exercise the exact elevated stdlib program with no process or mount action."""
+        reader = patch.object(Path, "read_text", side_effect=snapshots)
+        return reader, patch.object(worker.time, "monotonic", side_effect=clock)
+
+    def run_cleanup(self, root, snapshots, clock):
+        reader, timer = self.cleanup_fixture(root, snapshots, clock)
+        with reader as reads, timer, patch.object(worker.time, "sleep") as sleep, \
+                patch.object(worker.shutil, "rmtree") as remove, \
+                patch.object(sys, "argv", ["private-docker-cleanup", str(root)]), \
+                patch("sys.stderr", new_callable=io.StringIO) as diagnostic:
+            error = None
+            try:
+                exec(compile(worker.docker_cleanup_script(), "private-docker-cleanup", "exec"), {})
+            except (AssertionError, ValueError, IndexError) as caught:
+                error = caught
+            return error, reads, sleep, remove, diagnostic.getvalue()
+
+    def mount_row(self, root, relative="overlay2/layer/merged", number=100, filesystem="overlay"):
+        target = str(root / relative).replace("\\", "\\134").replace(" ", "\\040")
+        return f"{number} 1 0:42 / {target} rw - {filesystem} private-source rw,private-option\n"
+
+    def test_delayed_teardown_waits_before_removing_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(
+                root, [self.mount_row(root), ""], [0, 0])
+            self.assertIsNone(error)
+            self.assertEqual(reads.call_count, 2)
+            sleep.assert_called_once_with(0.5)
+            remove.assert_called_once_with(root)
+            self.assertEqual(diagnostic, "")
+
+    def test_persistent_mount_refuses_deletion_with_bounded_safe_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            relative = "volumes/private token/merged"
+            row = self.mount_row(root, relative)
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(root, [row, row], [0, 0, 30])
+            self.assertIsInstance(error, AssertionError)
+            self.assertIn("still has a mounted child", str(error))
+            self.assertEqual(reads.call_count, 2)
+            sleep.assert_called_once_with(0.5)
+            remove.assert_not_called()
+            value = json.loads(diagnostic)
+            self.assertEqual((value["phase"], value["wait_limit_seconds"], value["mount_count"]),
+                             ("private_docker_mount_teardown", 30, 1))
+            self.assertEqual(value["reported_mounts"][0], {
+                "mount_id": 100, "parent_id": 1, "filesystem": "overlay", "location": "volumes",
+                "relative_depth": 3, "relative_path_sha256": hashlib.sha256(relative.encode()).hexdigest()})
+            self.assertFalse(value["truncated"])
+            for private in (str(root), "private token", "private-source", "private-option"):
+                self.assertNotIn(private, diagnostic)
+            self.assertTrue(root.is_dir())
+
+    def test_timeout_diagnostics_limit_rows_and_unknown_filesystem(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            rows = "".join(self.mount_row(root, "private-name/" + str(i), i + 100, "private-fstype")
+                           for i in range(20))
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(root, [rows], [0, 30])
+            self.assertIsInstance(error, AssertionError)
+            sleep.assert_not_called()
+            remove.assert_not_called()
+            value = json.loads(diagnostic)
+            self.assertEqual(value["mount_count"], 20)
+            self.assertEqual(len(value["reported_mounts"]), 16)
+            self.assertTrue(value["truncated"])
+            self.assertTrue(all(x["filesystem"] == x["location"] == "other" for x in value["reported_mounts"]))
+            self.assertNotIn("private-name", diagnostic)
+            self.assertNotIn("private-fstype", diagnostic)
+
+    def test_unrelated_prefix_mount_does_not_block_private_data_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            row = self.mount_row(root.with_name(root.name + "-other"))
+            error, reads, sleep, remove, diagnostic = self.run_cleanup(root, [row], [0])
+            self.assertIsNone(error)
+            sleep.assert_not_called()
+            remove.assert_called_once_with(root)
+            self.assertEqual(diagnostic, "")
+
+    def test_symlink_or_unparseable_mount_state_never_deletes_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "private-docker"
+            root.mkdir()
+            link = Path(directory) / "linked-docker"
+            link.symlink_to(root, target_is_directory=True)
+            for selected, snapshots in ((link, []), (root, ["invalid\n"])):
+                with self.subTest(path=selected):
+                    error, reads, sleep, remove, diagnostic = self.run_cleanup(selected, snapshots, [0])
+                    self.assertIsNotNone(error)
+                    remove.assert_not_called()
+                    sleep.assert_not_called()
+                    self.assertTrue(root.is_dir())
+
+
+class ProvedDockerRootMountTest(unittest.TestCase):
+    def program(self):
+        namespace = {"__name__": "owned_mount_fixture"}
+        exec(compile(worker.docker_owned_mount_script(), "owned-mount-fixture", "exec"), namespace)
+        return namespace
+
+    def fixture(self, directory):
+        root = Path(directory) / "source-image-docker-123-1"
+        root.mkdir()
+        pidfile = Path(directory) / "daemon.pid"
+        pidfile.write_text("123\n")
+        functions = self.program()
+        parent = {"id": 10, "parent": 1, "device": "8:1", "root": "/actions",
+                  "point": directory, "options": "rw", "optional": [],
+                  "filesystem": "ext4", "source": "/dev/fixture", "super": ["rw"]}
+        mounted = dict(parent, id=11, parent=10, root="/actions/" + root.name,
+                       point=str(root), optional=["shared:99"])
+        before = {"covering": parent, "mount_ids": [10], "parent": functions["directory"](root.parent)}
+        ready = {"scope": {}, "root_mount": mounted, "directory": functions["directory"](root), "daemon": {"pid": 123}}
+        inventory = {"schema": 1, "scope": {}, "ready_sha256": "ready", "daemon": ready["daemon"],
+                     "monotonic": 100, "inventory": {"root": str(root), "containers": 0,
+                     "running": 0, "paused": 0, "stopped": 0}}
+        return functions, root, pidfile, parent, mounted, before, ready, inventory
+
+    def cleanup_case(self, fixture, rows, *, times=(100, 100), returncode=0, alive_children=()):
+        functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+        original_exists = Path.exists
+        def exists(path):
+            return (False if str(path) == "/proc/123" else True if str(path) in {"/proc/" + str(pid) for pid in alive_children} else original_exists(path))
+        with patch.dict(functions, {"load_proof": lambda *args: (before, ready, "ready"),
+                                    "read_record": lambda path: ({"schema": 1, "scope": {}, "ready_sha256": "ready",
+                                        "daemon": ready["daemon"], "descendants": ready.get("descendants", []),
+                                        "monotonic": 100, "status": "OBSERVED_OWNED_PROCESSES_CLOSED"}, "closed")
+                                        if path.name.endswith(".owned-process-closure.json") else (inventory, "inventory"),
+                                    "namespace": lambda: [1, 2]}), \
+             patch.dict(functions, {"mounts": unittest.mock.Mock(side_effect=rows)}), \
+             patch.object(functions["time"], "monotonic", side_effect=times), \
+             patch.object(functions["time"], "sleep") as sleep, \
+             patch.object(Path, "exists", exists), \
+             patch.object(functions["subprocess"], "run", return_value=SimpleNamespace(returncode=returncode)) as command, \
+             patch.object(functions["shutil"], "rmtree") as remove, \
+             patch("sys.stderr", new_callable=io.StringIO) as diagnostic:
+            error = None
+            try:
+                functions["cleanup"](root, pidfile, {})
+            except (ValueError, OSError) as caught:
+                error = caught
+            return error, command, remove, sleep, diagnostic.getvalue()
+
+    def test_proves_only_new_same_backing_root_self_bind(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions, root, pidfile, parent, mounted, before, ready, inventory = self.fixture(directory)
+            functions["self_bind"](before, mounted, root)
+            for changes in ({"id": 10}, {"parent": 99}, {"device": "8:2"},
+                            {"root": "/different"}, {"source": "/dev/other"},
+                            {"point": str(root / "child")}, {"optional": ["master:99"]}):
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    functions["self_bind"](before, dict(mounted, **changes), root)
+            changed = dict(before, covering=dict(parent, optional=["shared:5"]))
+            with self.assertRaises(ValueError):
+                functions["self_bind"](changed, mounted, root)
+
+    def test_mount_parser_decodes_paths_and_rejects_duplicate_identity(self):
+        functions = self.program()
+        value = "11 10 8:1 /actions/a\\040b /tmp/a\\040b rw shared:99 - ext4 /dev/fixture rw\n"
+        rows = functions["parse_mounts"](value)
+        self.assertEqual((rows[0]["root"], rows[0]["point"]), ("/actions/a b", "/tmp/a b"))
+        for data in (value + value, "invalid\n", "1 0 8:1 / /tmp/../other rw - ext4 fixture rw\n"):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                functions["parse_mounts"](data)
+
+    def test_existing_root_cannot_receive_fresh_before_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions, root, pidfile, parent, mounted, before, ready, inventory = self.fixture(directory)
+            with patch.dict(functions, {"mounts": lambda: [parent], "write_record": unittest.mock.Mock(), "tools_ready": lambda: None}):
+                with self.assertRaises(ValueError):
+                    functions["capture"]("before", root, pidfile, {})
+                functions["write_record"].assert_not_called()
+
+    def test_nonempty_or_wrong_endpoint_root_inventory_is_rejected(self):
+        functions = self.program()
+        root = Path("/actions/_work/root")
+        valid = {"root": str(root), "containers": 0, "running": 0, "paused": 0, "stopped": 0}
+        functions["empty_inventory"](valid, root)
+        for changes in ({"root": "/other"}, {"containers": 1}, {"running": 1},
+                        {"paused": 1}, {"stopped": 1}, {"containers": False}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                functions["empty_inventory"](dict(valid, **changes), root)
+
+    def test_delayed_descendant_then_one_normal_fd_anchored_unmount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            child = dict(mounted, id=12, parent=11, point=str(root / "overlay2/layer/merged"))
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted, child], [parent, mounted], [parent, mounted], [parent]],
+                times=(100, 100, 100))
+            self.assertIsNone(error)
+            sleep.assert_called_once_with(0.5)
+            command.assert_called_once()
+            argv = command.call_args.args[0]
+            self.assertEqual(argv[:-1], ["/usr/bin/umount", "--no-canonicalize", "--internal-only", "--no-mtab", "--"])
+            self.assertRegex(argv[-1], r"^/proc/self/fd/[0-9]+/source-image-docker-123-1$")
+            self.assertEqual(command.call_args.kwargs["timeout"], 10)
+            self.assertEqual(len(command.call_args.kwargs["pass_fds"]), 1)
+            remove.assert_called_once_with(root)
+            self.assertEqual(diagnostic, "")
+
+    def test_busy_normal_unmount_preserves_data_without_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted], [parent, mounted], [parent, mounted]], returncode=32)
+            self.assertIsInstance(error, ValueError)
+            command.assert_called_once()
+            remove.assert_not_called()
+            self.assertTrue(root.is_dir())
+            self.assertEqual(json.loads(diagnostic)["reported_mounts"][0]["location"], "root")
+
+    def test_prior_normal_unmount_attempt_refuses_replay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            record = root.with_name(root.name + ".normal-unmount-attempt.json")
+            functions["write_record"](record, {"status": "previous-attempt"})
+            original = record.read_bytes()
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted], [parent, mounted], [parent, mounted]])
+            self.assertIsInstance(error, FileExistsError)
+            command.assert_not_called()
+            remove.assert_not_called()
+            self.assertEqual(record.read_bytes(), original)
+            self.assertTrue(root.is_dir())
+
+    def test_persistent_descendants_or_changed_root_never_unmount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            child = dict(mounted, id=12, parent=11, point=str(root / "containers/private/merged"))
+            for rows, times in (([parent, mounted, child], (100, 100, 130)),
+                                ([parent, dict(mounted, id=99)], (100, 100))):
+                with self.subTest(rows=rows):
+                    error, command, remove, sleep, diagnostic = self.cleanup_case(fixture, [rows], times=times)
+                    self.assertIsInstance(error, ValueError)
+                    command.assert_not_called()
+                    remove.assert_not_called()
+                    self.assertNotIn(str(root), diagnostic)
+                    self.assertNotIn("private", diagnostic.replace("private_docker_mount_teardown", ""))
+
+    def test_daemon_already_removed_its_root_mount_needs_no_unmount(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            error, command, remove, sleep, diagnostic = self.cleanup_case(fixture, [[parent], [parent]])
+            self.assertIsNone(error)
+            command.assert_not_called()
+            remove.assert_called_once_with(root)
+
+    def test_stale_empty_inventory_never_unmounts_or_deletes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            fixture[-1]["monotonic"] = 0
+            error, command, remove, sleep, diagnostic = self.cleanup_case(fixture, [], times=(100,))
+            self.assertIsInstance(error, ValueError)
+            command.assert_not_called()
+            remove.assert_not_called()
+
+    def test_proof_symlink_and_nonroot_record_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions = self.program()
+            original = Path(directory) / "proof.json"
+            original.write_text("{}\n")
+            original.chmod(0o444)
+            linked = Path(directory) / "link.json"
+            linked.symlink_to(original)
+            with self.assertRaises(OSError):
+                functions["read_record"](linked)
+            if os.getuid() != 0:
+                with self.assertRaises(ValueError):
+                    functions["read_record"](original)
+
+    def test_legacy_state_dispatch_remains_unchanged_and_unknown_protocol_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(artifacts=Path(directory))
+            (args.artifacts / "worker-private.json").write_text("{}\n")
+            with patch.object(worker, "state_for", return_value={}), patch.object(worker, "stop") as legacy, \
+                 patch.object(worker, "stop_with_mount_proof") as current:
+                worker.stop_selected(args)
+                legacy.assert_called_once_with(args)
+                current.assert_not_called()
+            with patch.object(worker, "state_for", return_value={"docker_mount_protocol": True}), \
+                 patch.object(worker, "stop") as legacy, patch.object(worker, "stop_with_mount_proof") as current:
+                with self.assertRaises(ValueError):
+                    worker.stop_selected(args)
+                legacy.assert_not_called()
+                current.assert_not_called()
+
+    def test_inventory_failure_still_stops_reproved_daemon_and_preserves_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir()
+            pidfile = Path(directory) / "daemon.pid"
+            pidfile.write_text("123\n")
+            state = {"docker_root": str(root), "pidfile": str(pidfile)}
+            calls = []
+            def action(args, state, mode):
+                calls.append(mode)
+                if mode == "inventory":
+                    raise ValueError("Inventory cannot be established")
+            with patch.object(worker, "docker_mount_scope", return_value={}), \
+                 patch.object(worker, "run_docker_mount_action", side_effect=action):
+                with self.assertRaisesRegex(ValueError, "Inventory cannot be established"):
+                    worker.stop_with_mount_proof(SimpleNamespace(), state)
+            self.assertEqual(calls, ["inventory", "stop"])
+            self.assertTrue(root.is_dir() and pidfile.exists())
+
+    def stop_case(self, *, mismatch=False, capture_error=False, persistent_child=False, disappearing_tasks=False):
+        functions = self.program()
+        current = {"pid": 123, "start_ticks": 40, "namespace": [1, 2]}
+        child = {"pid": 456, "start_ticks": 50, "namespace": [1, 2]}
+        ready = {"daemon": current, "descendants": [child]}
+        alive = {123: True, 456: not capture_error}
+        def exists(path):
+            return alive.get(int(path.name), False) if str(path).startswith("/proc/") else False
+        def signal_owned(handle, number, info, flags):
+            self.assertEqual((handle, number, info, flags), (99, functions["signal"].SIGTERM, None, 0))
+            alive[123] = bool(disappearing_tasks)
+        def sleep(seconds):
+            self.assertEqual(seconds, 0.5)
+            alive[123] = False
+            if not persistent_child:
+                alive[456] = False
+        functions.update({"load_proof": lambda *args: ({}, ready, "ready"),
+                          "daemon": unittest.mock.Mock(side_effect=ValueError("Daemon generation or mount namespace changed"))
+                            if mismatch else unittest.mock.Mock(return_value=current),
+                          "descendants": unittest.mock.Mock(side_effect=ValueError("Child capture failed"))
+                            if capture_error else (unittest.mock.Mock(side_effect=[[child], FileNotFoundError("task exited")])
+                            if disappearing_tasks else unittest.mock.Mock(return_value=[child])),
+                          "process_start": lambda pid: {123: 40, 456: 50}[pid],
+                          "write_record": unittest.mock.Mock()})
+        with patch.object(Path, "exists", exists), \
+             patch.object(functions["os"].path, "lexists", return_value=False), \
+             patch.object(functions["os"], "pidfd_open", return_value=99) as opened, \
+             patch.object(functions["os"], "close") as closed, \
+             patch.object(functions["signal"], "pidfd_send_signal", side_effect=signal_owned) as sent, \
+             patch.object(functions["time"], "monotonic", side_effect=[0, 60] if persistent_child else None,
+                          return_value=0), \
+             patch.object(functions["time"], "sleep", side_effect=sleep):
+            error = None
+            try:
+                functions["stop_daemon"](Path("/actions/_work/private"), Path("/actions/_work/pid"), {})
+            except ValueError as failure:
+                error = failure
+            if disappearing_tasks:
+                self.assertEqual(functions["descendants"].call_count, 1)
+            return error, opened, sent, closed, functions["write_record"]
+
+    def test_generation_or_namespace_failure_prevents_any_signal(self):
+        error, opened, sent, closed, record = self.stop_case(mismatch=True)
+        self.assertRegex(str(error), "generation or mount namespace")
+        opened.assert_not_called()
+        sent.assert_not_called()
+        closed.assert_not_called()
+        record.assert_not_called()
+
+    def test_proved_pidfd_stop_waits_for_observed_descendant(self):
+        error, opened, sent, closed, record = self.stop_case()
+        self.assertIsNone(error)
+        opened.assert_called_once_with(123, 0)
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        value = record.call_args.args[1]
+        self.assertEqual(value["status"], "OBSERVED_OWNED_PROCESSES_CLOSED")
+        self.assertEqual(value["descendants"][0]["pid"], 456)
+
+    def test_descendant_timeout_retains_data_and_never_records_closure(self):
+        error, opened, sent, closed, record = self.stop_case(persistent_child=True)
+        self.assertRegex(str(error), "descendants have not stopped")
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        record.assert_not_called()
+
+    def test_child_capture_failure_still_stops_proved_daemon_without_closure(self):
+        error, opened, sent, closed, record = self.stop_case(capture_error=True)
+        self.assertRegex(str(error), "Child capture failed")
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        record.assert_not_called()
+
+    def test_cleanup_refuses_live_captured_descendant_even_without_mounts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            fixture[-2]["descendants"] = [{"pid": 456}]
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [], times=(100,), alive_children=(456,))
+            self.assertRegex(str(error), "Observed owned process still exists")
+            command.assert_not_called()
+            remove.assert_not_called()
+
+    def test_fixed_tool_absence_prevents_startup_capture(self):
+        functions = self.program()
+        for missing in ("/usr/bin/docker", "/usr/bin/umount"):
+            def lstat(path):
+                if str(path) == missing:
+                    raise FileNotFoundError(missing)
+                return SimpleNamespace(st_mode=functions["stat"].S_IFREG | 0o755, st_uid=0)
+            with self.subTest(missing=missing), patch.object(Path, "lstat", lstat), \
+                 patch.object(functions["os"], "access", return_value=True), \
+                 patch.dict(functions, {"mounts": lambda: [], "write_record": unittest.mock.Mock()}):
+                with self.assertRaises(FileNotFoundError):
+                    functions["capture"]("before", Path("/actions/_work/root"), Path("/actions/_work/pid"), {})
+                functions["write_record"].assert_not_called()
+
+    def test_descendant_walk_stays_on_proved_tree_and_rejects_excess_depth(self):
+        functions = self.program()
+        identities = {pid: {"pid": pid, "start_ticks": pid, "namespace": [1, 2]}
+                      for pid in range(123, 134)}
+        seen = []
+        def children(value):
+            seen.append(value["pid"])
+            return [value["pid"] + 1] if value["pid"] < 133 else []
+        with patch.dict(functions, {"child_ids": children, "process_identity": lambda pid: identities[pid]}), \
+             patch.object(functions["time"], "monotonic", return_value=0):
+            with self.assertRaisesRegex(ValueError, "traversal bound"):
+                functions["descendants"](identities[123])
+        self.assertEqual(seen, list(range(123, 132)))
+
+    def test_same_pid_comm_and_root_cannot_mask_changed_generation_or_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            pidfile = Path(directory) / "pid"
+            pidfile.write_text("123\n")
+            expected = {"pid": 123, "start_ticks": 40, "namespace": [1, 2]}
+            original_text, original_bytes = Path.read_text, Path.read_bytes
+            def text(path, *args, **kwargs):
+                return "dockerd\n" if str(path) == "/proc/123/comm" else original_text(path, *args, **kwargs)
+            def data(path):
+                return ("dockerd\0--data-root=" + str(root) + "\0").encode() if str(path) == "/proc/123/cmdline" else original_bytes(path)
+            for actual in (dict(expected, start_ticks=41), dict(expected, namespace=[3, 4])):
+                functions = self.program()
+                functions.update({"load_proof": lambda *args: ({}, {"daemon": expected}, "ready"),
+                                  "process_identity": lambda pid: actual,
+                                  "namespace": lambda: actual["namespace"]})
+                with self.subTest(actual=actual), patch.object(Path, "read_text", text), \
+                     patch.object(Path, "read_bytes", data), \
+                     patch.object(functions["os"], "pidfd_open") as opened, \
+                     patch.object(functions["signal"], "pidfd_send_signal") as sent:
+                    with self.assertRaisesRegex(ValueError, "generation or mount namespace"):
+                        functions["stop_daemon"](root, pidfile, {})
+                    opened.assert_not_called()
+                    sent.assert_not_called()
+
+    def test_shutdown_waits_on_preterm_snapshot_without_reenumerating_exited_tasks(self):
+        error, opened, sent, closed, record = self.stop_case(disappearing_tasks=True)
+        self.assertIsNone(error)
+        sent.assert_called_once()
+        closed.assert_called_once_with(99)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[1]["status"], "OBSERVED_OWNED_PROCESSES_CLOSED")
+
+    def test_exit_proof_allows_removed_pidfile_but_not_dangling_or_changed_file(self):
+        for condition in ("removed", "dangling", "changed"):
+            with self.subTest(condition=condition), tempfile.TemporaryDirectory() as directory:
+                fixture = self.fixture(directory)
+                functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+                if condition == "changed":
+                    pidfile.write_text("456\n")
+                else:
+                    pidfile.unlink()
+                    if condition == "dangling":
+                        pidfile.symlink_to(Path(directory) / "missing")
+                rows = [[parent, mounted], [parent, mounted], [parent]] if condition == "removed" else []
+                error, command, remove, sleep, diagnostic = self.cleanup_case(
+                    fixture, rows, times=(100, 100) if condition == "removed" else (100,))
+                if condition == "removed":
+                    self.assertIsNone(error)
+                    command.assert_called_once()
+                    remove.assert_called_once_with(root)
+                    self.assertFalse(os.path.lexists(pidfile))
+                else:
+                    self.assertIsNotNone(error)
+                    command.assert_not_called()
+                    remove.assert_not_called()
+                    self.assertTrue(os.path.lexists(pidfile))
+
+    def test_cgroup_parent_root_metadata_is_preserved_without_path_normalization(self):
+        functions = self.program()
+        for filesystem in ("cgroup", "cgroup2"):
+            for root in ("/..", "/../../ancestor"):
+                with self.subTest(filesystem=filesystem, root=root):
+                    text = f"20 10 0:32 {root} /sys/fs/cgroup rw - {filesystem} cgroup rw\n"
+                    row, = functions["parse_mounts"](text)
+                    self.assertEqual(row["root"], root)
+                    self.assertEqual(row["point"], "/sys/fs/cgroup")
+                    self.assertEqual(row["filesystem"], filesystem)
+
+    def test_namespace_mountpoints_remain_canonical_even_for_cgroup_metadata(self):
+        functions = self.program()
+        for point in ("relative-private", "/tmp/../private", "/sys/./fs/cgroup", "//sys/fs/cgroup"):
+            with self.subTest(point=point):
+                with self.assertRaisesRegex(ValueError, "^Invalid namespace mountpoint$") as caught:
+                    functions["parse_mounts"](f"20 10 0:32 /.. {point} rw - cgroup2 cgroup rw\n")
+                self.assertNotIn(point, str(caught.exception))
+
+    def test_only_absolute_cgroup_metadata_gets_parent_component_exception(self):
+        functions = self.program()
+        for filesystem in ("ext4", "xfs", "overlay", "tmpfs", "unknown"):
+            with self.subTest(filesystem=filesystem), self.assertRaisesRegex(
+                    ValueError, "^Parent components in non-cgroup mount root$"):
+                functions["parse_mounts"](f"20 10 0:32 /../private /tmp/point rw - {filesystem} fixture rw\n")
+        for filesystem in ("cgroup", "cgroup2", "ext4"):
+            with self.subTest(filesystem=filesystem), self.assertRaisesRegex(
+                    ValueError, "^Invalid filesystem mount root$"):
+                functions["parse_mounts"](f"20 10 0:32 ../private /tmp/point rw - {filesystem} fixture rw\n")
+
+    def test_cgroup_root_metadata_cannot_be_selected_as_backing_mount(self):
+        functions = self.program()
+        root = Path("/actions/_work/source-image-docker-123-1")
+        rows = functions["parse_mounts"](
+            "10 1 8:1 /actions /actions/_work rw - ext4 fixture rw\n"
+            "20 1 0:32 /.. /sys/fs/cgroup rw - cgroup2 cgroup rw\n")
+        self.assertEqual(functions["covering"](rows, root), rows[0])
+        self.assertEqual(functions["below"](rows, root), [])
+        for value in (dict(rows[1], point="/actions/_work"),
+                      dict(rows[0], root="/actions/./nested"), dict(rows[0], root="//actions")):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, "^Selected mount root is not canonical$"):
+                functions["covering"]([value], root)
+
+    def test_noncanonical_backing_or_owned_root_cannot_enter_self_bind_proof(self):
+        with tempfile.TemporaryDirectory() as directory:
+            functions, root, pidfile, parent, mounted, before, ready, inventory = self.fixture(directory)
+            for old, current in ((dict(before, covering=dict(parent, root="/..")), mounted),
+                                 (before, dict(mounted, root="/actions/../private")),
+                                 (before, dict(mounted, root="//actions/private"))):
+                with self.subTest(old=old, current=current), self.assertRaisesRegex(
+                        ValueError, "^Selected mount root is not canonical$"):
+                    functions["self_bind"](old, current, root)
+
+    def test_loaded_proof_and_unmount_refuse_noncanonical_selected_root(self):
+        functions = self.program()
+        root = Path("/actions/_work/source-image-docker-123-1")
+        before = {"covering": {"root": "/.."}}
+        ready = {"root_mount": {"root": "/actions/private"}}
+        with patch.dict(functions, {"read_record": unittest.mock.Mock(side_effect=[(before, "b"), (ready, "r")])}):
+            with self.assertRaisesRegex(ValueError, "^Selected mount root is not canonical$"):
+                functions["load_proof"](root, {})
+        for old, current in ((before, ready),
+                             ({"covering": {"root": "/actions"}}, {"root_mount": {"root": "/.."}})):
+            with self.subTest(old=old, current=current), patch.object(functions["os"], "open") as opened:
+                with self.assertRaisesRegex(ValueError, "^Selected mount root is not canonical$"):
+                    functions["normal_unmount"](root, old, current)
+                opened.assert_not_called()
+
+    def test_parent_relative_cgroup_child_still_blocks_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = self.fixture(directory)
+            functions, root, pidfile, parent, mounted, before, ready, inventory = fixture
+            child, = functions["parse_mounts"](
+                f"12 11 0:32 /.. {root}/cgroup rw - cgroup2 cgroup rw\n")
+            error, command, remove, sleep, diagnostic = self.cleanup_case(
+                fixture, [[parent, mounted, child]], times=(100, 100, 130))
+            self.assertRegex(str(error), "Private Docker still has a mounted child")
+            command.assert_not_called()
+            remove.assert_not_called()
+            record = json.loads(diagnostic)
+            self.assertEqual(record["mount_count"], 2)
+            self.assertEqual(record["reported_mounts"][1]["filesystem"], "cgroup2")
+            self.assertNotIn(str(root), diagnostic)
+            self.assertNotIn("/..", diagnostic)
+
+
+
+
+
+
+
+
+
+
+
+class RemoteOnlyWorkerTest(unittest.TestCase):
+    pool = "sonic-slave-container-k3s"
+    runner = "ks-e6fb1976-715102e6996d-0-" + "a" * 32
+    canary = "Basic Zml4dHVyZTpub3QtYS1jcmVkZW50aWFs"
+
+    @contextmanager
+    def fixture(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            workspace = root / "source"; workspace.mkdir()
+            helper = root / "installed/cache_credentials.py"; helper.parent.mkdir()
+            helper.write_bytes(b"from _managed_owner_fixture import HOST_CREDENTIALS, settings, probe_access, imported\nimported()\n".ljust(7646, b" "))
+            helper.chmod(0o755)
+            scratch = root / "scratch"; scratch.mkdir()
+            stack.enter_context(patch.dict(worker.K3S_MANAGED_REMOTE_CACHE_POLICY,
+                {"credential_helper_path": str(helper), "credential_helper_sha256": worker.digest(helper)}))
+            fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+            def owned(info):
+                return SimpleNamespace(**{**{name: getattr(info, name) for name in fields}, "st_uid": 0})
+            original_lstat = Path.lstat
+            original_fstat = os.fstat
+            def root_owned(path, *args, **kwargs):
+                info = original_lstat(path, *args, **kwargs)
+                return owned(info) if path == helper.parent or path.is_relative_to(helper.parent) else info
+            stack.enter_context(patch.object(Path, "lstat", root_owned))
+            stack.enter_context(patch.object(os, "fstat", side_effect=lambda fd: owned(original_fstat(fd))))
+            owner = SimpleNamespace(HOST_CREDENTIALS=SimpleNamespace(is_file=lambda: True),
+                settings=lambda: {"endpoint": "https://managed-cache.invalid/", "host": "managed-cache.invalid"},
+                probe_access=unittest.mock.Mock(), imported=unittest.mock.Mock())
+            stack.enter_context(patch.dict(sys.modules, {"_managed_owner_fixture": owner}))
+            stack.enter_context(patch.object(os, "getuid", return_value=1000))
+            stack.enter_context(patch.object(os, "geteuid", return_value=1000))
+            stack.enter_context(patch.dict(os.environ, {"BAZEL_REMOTE_AUTH": self.canary}, clear=True))
+            yield root, workspace, helper, scratch
+
+    @staticmethod
+    def project_owner(helper):
+        version = helper.parent / "..2026_11_13_00_00_00.1"
+        version.mkdir()
+        target = version / helper.name
+        helper.replace(target)
+        (helper.parent / "..data").symlink_to(version.name)
+        helper.symlink_to("..data/" + helper.name)
+        return target
+
+    def test_projected_owner_uses_canonical_verified_target_and_stable_diagnostic_identity(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            configuration = worker.remote_cache_configuration(workspace)
+            self.assertEqual(configuration["helper"], str(target))
+            self.assertEqual(worker.load_managed_cache_owner(target).__file__, str(helper))
+            self.assertIn("--credential_helper=" + configuration["host"] + "=" + str(target),
+                          worker.remote_cache_options(configuration))
+            owner = self.fake_owner(configuration)
+            code, receipt, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 0)
+            worker.validate_managed_cache_probe(receipt, configuration)
+            imported.assert_called_once_with()
+            owner.probe_access.assert_called_once_with()
+
+    def test_projected_owner_cannot_escape_fixed_runtime_root(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            outside = root / "outside/cache_credentials.py"
+            outside.parent.mkdir()
+            helper.replace(outside)
+            helper.symlink_to(outside)
+            with patch.object(worker, "managed_cache_source") as read:
+                with self.assertRaisesRegex(ValueError, "helper differs"):
+                    worker.managed_cache_helper()
+                read.assert_not_called()
+
+    def test_projected_owner_rotation_during_read_stops_before_import(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            next_version = helper.parent / "..2026_11_13_00_00_00.2"
+            next_version.mkdir()
+            replacement = next_version / helper.name
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o755)
+            read = worker.managed_cache_source
+            def rotate(path, expected):
+                source = read(path, expected)
+                data = helper.parent / "..data"
+                data.unlink()
+                data.symlink_to(next_version.name)
+                return source
+            with patch.object(worker, "managed_cache_source", side_effect=rotate):
+                with self.assertRaisesRegex(ValueError, "selection changed"):
+                    worker.remote_cache_configuration(workspace)
+            sys.modules["_managed_owner_fixture"].imported.assert_not_called()
+
+    def test_projected_owner_directories_require_root_and_no_writes(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            lstat = Path.lstat
+            for directory in (helper.parent, target.parent):
+                for field, value in (("st_uid", 1000), ("st_mode", stat.S_IFDIR | 0o775)):
+                    def changed(path, *args, **kwargs):
+                        info = lstat(path, *args, **kwargs)
+                        return SimpleNamespace(**{**vars(info), field: value}) if path == directory else info
+                    with self.subTest(directory=directory.name, field=field):
+                        with patch.object(Path, "lstat", changed), patch.object(worker, "managed_cache_source") as read:
+                            with self.assertRaisesRegex(ValueError, "helper differs"):
+                                worker.managed_cache_helper()
+                            read.assert_not_called()
+
+    def test_readonly_projection_protects_directory_write_bits_but_not_untrusted_files(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            lstat = Path.lstat
+            def writable_directories(path, *args, **kwargs):
+                info = lstat(path, *args, **kwargs)
+                if path in (helper.parent, target.parent):
+                    return SimpleNamespace(**{**vars(info), "st_mode": stat.S_IFDIR | 0o2777})
+                return info
+            with patch.object(Path, "lstat", writable_directories):
+                with patch.object(os, "statvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+                    self.assertEqual(worker.managed_cache_helper(), target)
+                    target.chmod(0o775)
+                    with self.assertRaisesRegex(ValueError, "helper differs"):
+                        worker.managed_cache_helper()
+                    target.chmod(0o755)
+                with patch.object(os, "statvfs", return_value=SimpleNamespace(f_flag=0)):
+                    with self.assertRaisesRegex(ValueError, "helper differs"):
+                        worker.managed_cache_helper()
+
+    def test_held_owner_read_rejects_untrusted_or_changing_metadata(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            fstat = os.fstat
+            for field, value, only_after in (("st_uid", 1000, False),
+                    ("st_mode", stat.S_IFREG | 0o775, False), ("st_size", 7647, False),
+                    ("st_ctime_ns", 0, True)):
+                calls = []
+                def changed(fd):
+                    info = fstat(fd)
+                    calls.append(fd)
+                    if not only_after or len(calls) > 1:
+                        return SimpleNamespace(**{**vars(info), field: value})
+                    return info
+                with self.subTest(field=field), patch.object(os, "fstat", side_effect=changed):
+                    with self.assertRaisesRegex(ValueError, "helper differs"):
+                        worker.managed_cache_source(helper, worker.K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"])
+
+    def test_probe_rejects_same_size_changed_source_before_owner_import(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            configuration = worker.remote_cache_configuration(workspace)
+            owner = self.fake_owner(configuration)
+            helper.write_bytes(b"raise AssertionError('unverified owner executed')\n".ljust(7646, b" "))
+            with patch.object(worker, "remote_cache_configuration", return_value=configuration):
+                code, receipt, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["stage"], "owner_identity")
+            self.assertEqual(receipt["error_type"], "ValueError")
+            imported.assert_not_called()
+            owner.probe_access.assert_not_called()
+
+    def test_projected_owner_rotation_invalidates_prepared_helper_configuration(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            configuration = worker.remote_cache_configuration(workspace)
+            next_version = helper.parent / "..2026_11_13_00_00_00.2"
+            next_version.mkdir()
+            replacement = next_version / helper.name
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o755)
+            data = helper.parent / "..data"
+            data.unlink()
+            data.symlink_to(next_version.name)
+            with self.assertRaisesRegex(ValueError, "Unexpected managed remote-cache configuration"):
+                worker.remote_cache_options(configuration)
+            self.assertEqual(configuration["helper"], str(target))
+
+    def test_run_attempt_work_is_fresh_and_never_adopts_previous_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / "source-images" / self.runner; parent.mkdir(parents=True)
+            old = parent / "disk/keep"; old.parent.mkdir(); old.write_text("previous registration output")
+            with patch.object(worker, "worker_cache_root", return_value=root), patch.dict(os.environ,
+                    {"GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}, clear=True):
+                first = worker.prepare_work_directory(self.pool, self.runner, "gearbox")
+                self.assertEqual(first, parent / "run-123-1")
+                self.assertEqual(stat.S_IMODE(first.stat().st_mode), 0o700)
+                self.assertEqual({p.name for p in first.iterdir()}, {"repository", "bazelisk", "gearbox"})
+                with self.assertRaises(FileExistsError):
+                    worker.prepare_work_directory(self.pool, self.runner, "gearbox")
+                with patch.dict(os.environ, {"GITHUB_RUN_ATTEMPT": "2"}):
+                    second = worker.prepare_work_directory(self.pool, self.runner, "gearbox")
+                self.assertNotEqual(first, second)
+                for run in ("", "0", "../123"):
+                    with patch.dict(os.environ, {"GITHUB_RUN_ID": run}), self.assertRaises(ValueError):
+                        worker.worker_work_directory(self.pool, self.runner)
+            self.assertEqual(old.read_text(), "previous registration output")
+
+    def test_dpool_keeps_its_cache_layout_without_remote_auth(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            root = Path(directory)
+            with patch.object(worker, "worker_cache_root", return_value=root):
+                cache = worker.prepare_work_directory("sonic-slave-container-dpool", "sonic-slave-lgh114-1", "p4rt")
+                self.assertEqual(cache, root / "source-images/sonic-slave-lgh114-1")
+                self.assertEqual({p.name for p in cache.iterdir()}, {"repository", "disk", "bazelisk", "p4rt"})
+                self.assertEqual(worker.prepare_work_directory("sonic-slave-container-dpool", "sonic-slave-lgh114-1", "p4rt"), cache)
+            self.assertEqual(worker.owner_build_profile("sonic-slave-container-dpool"), worker.P4RT_OWNER_PROFILE)
+
+    def test_missing_managed_owner_stops_before_probe_or_phase_execution(self):
+        with patch.dict(os.environ, {"WORKER_POOL": self.pool}, clear=True), ExitStack() as stack:
+            stack.enter_context(patch.dict(worker.K3S_MANAGED_REMOTE_CACHE_POLICY,
+                {"credential_helper_path": "/absent/native/cache_credentials.py"}))
+            invoke = stack.enter_context(patch.object(worker, "run"))
+            with self.assertRaisesRegex(ValueError, "legacy fallback is disabled"):
+                worker.prepare_remote_cache(Path("/absent/source"), Path("/absent/state"))
+            invoke.assert_not_called()
+            measure = stack.enter_context(patch.object(worker, "measure"))
+            with self.assertRaisesRegex(ValueError, "legacy fallback is disabled"):
+                worker.prepare(SimpleNamespace(workspace=Path("/absent/source"),
+                    artifacts=Path("/absent/state"), image="gearbox"))
+            measure.assert_not_called()
+            stack.enter_context(patch.object(worker, "state_for", return_value={"remote_cache": {}}))
+            stack.enter_context(patch.object(worker, "source_check"))
+            memory = stack.enter_context(patch.object(worker, "memory_snapshot"))
+            phase = stack.enter_context(patch.object(worker.subprocess, "run"))
+            args = SimpleNamespace(workspace=Path("/absent/source"), revision="a" * 40, image="gearbox")
+            with self.assertRaisesRegex(ValueError, "legacy fallback is disabled"):
+                worker.execute_phase(args)
+            memory.assert_not_called(); phase.assert_not_called()
+
+    def test_probe_uses_only_installed_owner_and_does_not_serialize_auth(self):
+        with self.fixture() as (_, workspace, helper, scratch):
+            def complete(argv, **kwargs):
+                self.assertEqual(argv[:5], [sys.executable, "-I", "-S", "-B", "-c"])
+                self.assertEqual(argv[5], worker.managed_cache_owner_program())
+                configuration = json.loads(argv[6])
+                self.assertEqual(configuration["helper"], str(helper))
+                self.assertEqual(kwargs, {"timeout": 45, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL})
+                self.assertNotIn(self.canary, repr(argv))
+                Path(argv[-1]).write_text(json.dumps(self.access_receipt(configuration)))
+            with patch.object(worker, "run", side_effect=complete) as invoke:
+                configuration = worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_called_once()
+            worker.safe_json({"schema": 3, "cache_mode": "remote_only_run_attempt", "remote_cache": {
+                **worker.K3S_MANAGED_REMOTE_CACHE_POLICY, "endpoint": configuration["endpoint"],
+                "host": configuration["host"], "credential_helper_path": "/opt/sonic-native-runtime/cache_credentials.py"}})
+            profile = worker.select_build_profile(20 * 1024**3, 6)
+            rendered = [json.dumps(configuration), (scratch / "remote-cache-access.json").read_text(),
+                worker.launcher_text("/tools/bazel", scratch / "root-output", profile, configuration),
+                worker.owner_launcher_text("/tools/bazel", scratch / "owner-output", scratch / "owner.rc", scratch, configuration),
+                json.dumps(worker.K3S_MANAGED_REMOTE_CACHE_POLICY)]
+            for value in rendered:
+                self.assertNotIn(self.canary, value)
+                self.assertNotIn("BAZEL_REMOTE_AUTH", value)
+                self.assertNotIn("--action_env", value)
+                self.assertNotIn("authenticated", value)
+            with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "fresh"):
+                worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_not_called()
+
+    def test_probe_failure_and_unexpected_receipt_never_fall_back(self):
+        with self.fixture() as (_, workspace, _, scratch):
+            with patch.object(worker, "run", side_effect=subprocess.CalledProcessError(1, ["probe"])):
+                with self.assertRaisesRegex(ValueError, "no local-cache fallback") as error:
+                    worker.prepare_remote_cache(workspace, scratch)
+                self.assertNotIn(self.canary, str(error.exception))
+            valid = self.access_receipt(worker.remote_cache_configuration(workspace))
+            for changes in ({"access_probe": "failed"}, {"access_probe": True}, {"stage": "access"},
+                            {"endpoint": "https://different.invalid"}, {"authenticated": True}):
+                receipt = scratch / "remote-cache-access.json"; receipt.unlink(missing_ok=True)
+                def complete(argv, **kwargs):
+                    Path(argv[-1]).write_text(json.dumps({**valid, **changes}))
+                with self.subTest(changes=changes), patch.object(worker, "run", side_effect=complete):
+                    with self.assertRaisesRegex(ValueError, "did not pass"):
+                        worker.prepare_remote_cache(workspace, scratch)
+
+    def test_changed_or_linked_credential_helper_is_rejected_before_execution(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            original = helper.read_bytes(); helper.write_bytes(original + b"# changed\n")
+            with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "helper differs"):
+                worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_not_called()
+            helper.unlink(); target = root / "other-helper"; target.write_bytes(original); target.chmod(0o755)
+            helper.symlink_to(target)
+            with patch.object(worker, "run") as invoke, self.assertRaisesRegex(ValueError, "helper differs"):
+                worker.prepare_remote_cache(workspace, scratch)
+            invoke.assert_not_called()
+
+    def test_both_launchers_override_local_or_unscoped_caller_cache_flags(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            configuration = worker.remote_cache_configuration(workspace)
+            binary = root / "bazel"
+            binary.write_text("#!" + sys.executable + "\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            root_text = worker.launcher_text(str(binary), scratch / "root-output",
+                worker.select_build_profile(20 * 1024**3, 6), configuration)
+            owner_text = worker.owner_launcher_text(str(binary), scratch / "owner-output",
+                scratch / "owner.rc", scratch, configuration)
+            expected = worker.remote_cache_options(configuration)
+            for name, text in (("root", root_text), ("owner", owner_text)):
+                launch = root / (name + "-launcher"); launch.write_text(text)
+                for command in ("build", "test", "aquery", "cquery"):
+                    with self.subTest(launcher=name, command=command):
+                        argv = json.loads(subprocess.check_output([sys.executable, str(launch), command,
+                            "--remote_cache=", "--disk_cache=/old/local", "--repository_cache=/old/repository",
+                            "--remote_executor=grpc://different.invalid", "//:literal"], text=True))
+                        for prefix in ("--remote_cache=", "--credential_helper=", "--disk_cache=",
+                                       "--repository_cache=", "--remote_executor="):
+                            self.assertEqual([arg for arg in argv if arg.startswith(prefix)][-1],
+                                             next(arg for arg in expected if arg.startswith(prefix)))
+                        self.assertNotIn(self.canary, json.dumps(argv))
+                shutdown = json.loads(subprocess.check_output([sys.executable, str(launch), "shutdown"], text=True))
+                self.assertFalse(any(arg.startswith("--remote_cache=") for arg in shutdown))
+
+    def test_p4rt_context_remains_bound_to_this_run_attempt_and_owner_config(self):
+        with self.fixture() as (root, workspace, _, scratch), ExitStack() as stack:
+            (workspace / ".bazelversion").write_text("8.5.1\n")
+            owner = workspace / worker.P4RT_OWNER_PATH; owner.mkdir(parents=True)
+            cache_root = root / "cache"; parent = cache_root / "source-images" / self.runner; parent.mkdir(parents=True)
+            stack.enter_context(patch.dict(os.environ, {"WORKER_POOL": self.pool, "RUNNER_NAME": self.runner,
+                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1"}))
+            stack.enter_context(patch.object(worker, "worker_cache_root", return_value=cache_root))
+            stack.enter_context(patch.object(worker, "temporary_directory", return_value=scratch))
+            stack.enter_context(patch.object(worker, "p4rt_owner_identity", return_value=owner))
+            def output(argv):
+                if "ls-tree" in argv: return "160000 commit " + worker.P4RT_OWNER + "\t" + worker.P4RT_OWNER_PATH
+                if "config" in argv: return "https://github.com/securely1g/sonic-pins.git"
+                raise AssertionError(argv)
+            stack.enter_context(patch.object(worker, "output", side_effect=output))
+            stack.enter_context(patch.object(worker, "run"))
+            stack.enter_context(patch.object(worker.shutil, "which", return_value="/tools/bazel"))
+            cache = worker.prepare_work_directory(self.pool, self.runner, "p4rt")
+            configuration = worker.remote_cache_configuration(workspace)
+            context = worker.prepare_p4rt(workspace, cache, scratch, [cache / "distdir"], scratch / "mirrors", configuration)
+            self.assertFalse((cache / "p4rt-owner/disk").exists())
+            self.assertIn("build --disk_cache=\n", Path(context["rc"]).read_text())
+            self.assertIn("common --repository_cache=\n", Path(context["rc"]).read_text())
+            self.assertIn("common --distdir=" + str(cache / "distdir"), Path(context["rc"]).read_text())
+            args = SimpleNamespace(workspace=workspace, artifacts=root, revision="a" * 40, phase="prepare-owner")
+            self.assertEqual(worker.p4rt_context(args, {"p4rt_owner": context}), context)
+            with patch.dict(os.environ, {"GITHUB_RUN_ATTEMPT": "2"}), self.assertRaisesRegex(ValueError, "context changed"):
+                worker.p4rt_context(args, {"p4rt_owner": context})
+            self.assertEqual(worker.owner_build_profile(self.pool)["cache_mode"], "separate_remote_only_run_attempt")
+            self.assertEqual(worker.P4RT_OWNER_PROFILE["cache_mode"], "separate_persistent_worker_local")
+
+    def test_changed_prepared_remote_policy_stops_before_phase_execution(self):
+        with self.fixture() as (_, workspace, _, _), ExitStack() as stack:
+            configuration = worker.remote_cache_configuration(workspace)
+            configuration["endpoint"] = "https://different.invalid"
+            stack.enter_context(patch.dict(os.environ, {"WORKER_POOL": self.pool}))
+            stack.enter_context(patch.object(worker, "state_for", return_value={"remote_cache": configuration}))
+            stack.enter_context(patch.object(worker, "source_check"))
+            phase = stack.enter_context(patch.object(worker.subprocess, "run"))
+            with self.assertRaisesRegex(ValueError, "configuration changed"):
+                worker.execute_phase(SimpleNamespace(workspace=workspace, revision="a" * 40, image="gearbox"))
+            phase.assert_not_called()
+
+    def test_remote_auth_workflow_scope_keeps_both_actor_and_pool_guards(self):
+        expression = ImageWorkerTest().native_job()["env"]["BAZEL_REMOTE_AUTH"]
+        for clause in ("github.event_name == 'workflow_dispatch'", "github.repository == 'securely1g/sonic-buildimage'",
+                       "github.actor == 'securely1g'", "github.triggering_actor == 'securely1g'",
+                       "inputs.source_worker_pool == 'sonic-slave-container-k3s'", "secrets.BAZEL_REMOTE_AUTH || ''"):
+            self.assertIn(clause, expression)
+
+    @staticmethod
+    def access_receipt(configuration):
+        return {"schema": 1, "provider": configuration["provider"], "endpoint": configuration["endpoint"],
+                "host": configuration["host"], "helper_sha256": configuration["helper_sha256"],
+                "access_probe": "passed", "stage": "complete"}
+
+    def owner_probe(self, root, workspace, scratch, owner):
+        configuration = worker.remote_cache_configuration(workspace)
+        receipt = scratch / "owned-probe.json"
+        previous_umask = os.umask(0o077)
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.dict(os.environ, {"BAZEL_REMOTE_AUTH": self.canary}, clear=True))
+                stack.enter_context(patch.object(sys, "argv", ["probe", json.dumps(configuration), str(receipt)]))
+                stack.enter_context(patch.object(os, "getuid", return_value=1000))
+                stack.enter_context(patch.object(os, "geteuid", return_value=1000))
+                stack.enter_context(patch.dict(sys.modules, {"_managed_owner_fixture": owner}))
+                with self.assertRaises(SystemExit) as stopped:
+                    exec(worker.managed_cache_owner_program(), {"__name__": "__main__"})
+            value = json.loads(receipt.read_text())
+            self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+            self.assertNotIn(self.canary, receipt.read_text())
+            self.assertNotIn("authenticated", value)
+            return stopped.exception.code, value, owner.imported
+        finally:
+            os.umask(previous_umask)
+
+    def fake_owner(self, configuration):
+        return SimpleNamespace(HOST_CREDENTIALS=SimpleNamespace(is_file=unittest.mock.Mock(return_value=True)),
+            settings=unittest.mock.Mock(return_value={"endpoint": configuration["endpoint"], "host": configuration["host"]}),
+            probe_access=unittest.mock.Mock(), imported=unittest.mock.Mock())
+
+    def test_managed_settings_and_access_do_not_require_legacy_auth(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            with patch.dict(os.environ, {}, clear=True):
+                configuration = worker.remote_cache_configuration(workspace)
+            owner = self.fake_owner(configuration)
+            code, value, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 0)
+            worker.validate_managed_cache_probe(value, configuration)
+            imported.assert_called_once_with()
+            self.assertEqual(owner.settings.call_count, 2)
+            owner.probe_access.assert_called_once_with()
+
+    def test_owner_adapter_refuses_legacy_fallback_before_settings_or_http(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.HOST_CREDENTIALS.is_file.return_value = False
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"], value["error_type"]), (1, "host_configuration", "ValueError"))
+            owner.settings.assert_not_called(); owner.probe_access.assert_not_called()
+
+    def test_owner_adapter_refuses_different_settings_before_http_without_disclosure(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.settings.return_value = {"endpoint": "https://different.invalid/", "host": "different.invalid"}
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"]), (1, "settings"))
+            self.assertNotIn("different.invalid", json.dumps(value))
+            owner.probe_access.assert_not_called()
+
+    def test_owner_adapter_retains_safe_stage_only_on_access_failure(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.probe_access.side_effect = ValueError(self.canary)
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"], value["error_type"]), (1, "access", "ValueError"))
+            self.assertEqual(value["access_probe"], "failed")
+
+    def test_owner_adapter_refuses_settings_changed_after_probe(self):
+        with self.fixture() as (root, workspace, _, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            owner.settings.side_effect = [owner.settings.return_value, {"endpoint": "https://changed.invalid/"}]
+            code, value, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"]), (1, "stable_settings"))
+            owner.probe_access.assert_called_once_with()
+            self.assertNotIn("changed.invalid", json.dumps(value))
+
+    def test_owner_adapter_rechecks_source_identity_before_import(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            owner = self.fake_owner(worker.remote_cache_configuration(workspace))
+            configuration = worker.remote_cache_configuration(workspace)
+            helper.chmod(0o777)
+            with patch.object(worker, "remote_cache_configuration", return_value=configuration):
+                code, value, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual((code, value["stage"]), (1, "owner_identity"))
+            imported.assert_not_called(); owner.settings.assert_not_called(); owner.probe_access.assert_not_called()
+
+
+    def test_operator_public_settings_change_without_source_or_http_change(self):
+        with self.fixture() as (_root, workspace, _helper, _scratch):
+            owner = sys.modules["_managed_owner_fixture"]
+            first = worker.remote_cache_configuration(workspace)
+            owner.settings = unittest.mock.Mock(return_value={
+                "endpoint": "https://next-managed-cache.invalid/", "host": "next-managed-cache.invalid"})
+            second = worker.remote_cache_configuration(workspace)
+            self.assertEqual(second["endpoint"], "https://next-managed-cache.invalid/")
+            self.assertNotEqual(first["endpoint"], second["endpoint"])
+            self.assertEqual(first["helper_sha256"], second["helper_sha256"])
+            self.assertNotIn("endpoint", worker.K3S_MANAGED_REMOTE_CACHE_POLICY)
+            self.assertNotIn("host", worker.K3S_MANAGED_REMOTE_CACHE_POLICY)
+            owner.probe_access.assert_not_called()
+
+    def test_host_mode_disappearance_cannot_pass_even_with_same_public_origin(self):
+        with self.fixture() as (root, workspace, _helper, scratch):
+            configuration = worker.remote_cache_configuration(workspace)
+            owner = self.fake_owner(configuration)
+            owner.HOST_CREDENTIALS.is_file.side_effect = [True, False]
+            code, receipt, _ = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["access_probe"], "failed")
+            self.assertEqual(receipt["stage"], "stable_settings")
+            self.assertEqual(receipt["error_type"], "ValueError")
+            owner.probe_access.assert_called_once_with()
+            owner.settings.assert_called_once_with()
 
 
 if __name__ == "__main__":

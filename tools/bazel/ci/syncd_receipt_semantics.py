@@ -69,6 +69,18 @@ def module_versions(value):
     return result
 
 
+def verify_worker_resources(profile, facts):
+    """Bind the two-action profile to the existing bounded cgroup policy."""
+    from tools.bazel.ci.source_worker_preflight import cpu_limit, select_build_profile
+
+    assert type(facts['cpu_max']) is str and len(facts['cpu_max']) <= 128
+    measured_cpu = cpu_limit(facts['cpu_max'])
+    assert type(facts['cpu_limit']) in (int, float) and facts['cpu_limit'] == measured_cpu
+    expected = select_build_profile(facts['memory_limit_bytes'], measured_cpu)
+    assert facts['memory_limit_bytes'] == 20 * 1024**3
+    assert expected['minimum_cpu'] == 4 and profile == expected
+
+
 def verify(read, raw, *, source, outputs, image='syncd'):
     """Return observations after the selected fixed image receipt checks pass."""
     image_names, owner, runtime_target, debug_target = image_profile(image)
@@ -107,7 +119,7 @@ def verify(read, raw, *, source, outputs, image='syncd'):
     assert profile == preflight['build_profile'] and all(profile[k] == v for k, v in BUILD_PROFILE.items())
     assert preflight['status'] == 'passed' and preflight['checks'] and all(v is True for v in preflight['checks'].values())
     assert preflight['image_build_executed'] is False and preflight['deb_generation_executed'] is False
-    assert preflight['facts']['memory_limit_bytes'] == 20 * 1024**3 and preflight['facts']['cpu_limit'] == 4
+    verify_worker_resources(profile, preflight['facts'])
     for phase in PHASES:
         record = read('worker-' + phase + '.json')
         assert record['phase'] == phase and record['status'] == 'passed' and record['exit_code'] == 0
