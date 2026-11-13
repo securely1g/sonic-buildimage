@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-original-inputs, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,195 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_original_input_recovery:
+    name: Recover fixed original VS input bytes (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-original-inputs' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 35
+    concurrency:
+      group: vs-original-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require fixed recovery scope and fresh private paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_RECOVERY_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Original-byte recovery accepts no native build or replacement-source inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current private K3s worker workspace')
+          # Budget the entire 6.57 GB original artifact, not only its installer member.
+          if shutil.disk_usage(workspace).free < 64 * 1024**3:
+              raise SystemExit('Original artifact extraction requires 64 GiB free temporary storage')
+          name = f'vs-original-inputs-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing recovery work')
+          root.mkdir(mode=0o700)
+          for child in ('inputs', 'outputs', 'temporary'):
+              (root / child).mkdir(mode=0o700)
+          for child in ('platform', 'device-data'):
+              (root / 'inputs' / child).mkdir(mode=0o700)
+              (root / 'outputs' / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'root={root}\ncontrol={name}/control\n')
+          PY_RECOVERY_PATHS
+      - name: Checkout the reviewed recovery code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify recovery source and eleven archive fixtures
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          RECOVERY_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          printf '%s\n' \
+            '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5  tools/bazel/ci/recover_vs_original_inputs.py' \
+            'a642d9ad620e80cc85d53763ee6b9116b29044256c4d1b0b9b92afa051e97a9c  tools/bazel/tests/recover_vs_original_inputs_test.py' \
+            'a9f3521062d967cd4ae1b5715e43e95504d1ce732dd57d747a4bbee1dd2898af  installer/sharch_body.sh' | sha256sum --check --status
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$RECOVERY_ROOT/temporary" TMPDIR="$RECOVERY_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B tools/bazel/tests/recover_vs_original_inputs_test.py
+      - name: Authenticate the two fixed original artifact producers
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          python3 -B - <<'PY_ORIGINAL_PRODUCERS'
+          import json, os
+          from pathlib import Path
+          from tools.bazel.ci.image_worker_receipt import api
+          originals = [
+              dict(kind='platform', artifact=13630197696, run=42504707668, job=128805164461,
+                   producer='15c277f89f12bacd240e160c555263e90d2179fc', name='sonic-vs-slave-amd64',
+                   bytes=6572856746, digest='sha256:f12177539d7338e98f797e5e5217f98fb2ea108b399239051ce7dc707a4fc540'),
+              dict(kind='device-data', artifact=13821942674, run=42945002504, job=130275576933,
+                   producer='d8186092711a0385755fffe9ff229632231df4ef', name='vs-management-image-blobs-42945002504-1',
+                   bytes=16323589, digest='sha256:41d4042058c8fe4f5a3a7f3e1921fa5b5b952a2007eb9b1ce9106a6217294014'),
+          ]
+          rows = []
+          for expected in originals:
+              artifact = api('/actions/artifacts/' + str(expected['artifact']))
+              run = api('/actions/runs/' + str(expected['run']) + '/attempts/1')
+              job = api('/actions/jobs/' + str(expected['job']))
+              assert artifact['id'] == expected['artifact'] and artifact['name'] == expected['name']
+              assert artifact['expired'] is False and artifact['size_in_bytes'] == expected['bytes'] and artifact['digest'] == expected['digest']
+              assert artifact['workflow_run']['id'] == expected['run'] and artifact['workflow_run']['head_sha'] == expected['producer']
+              assert run['repository']['full_name'] == 'securely1g/sonic-buildimage' and run['id'] == expected['run']
+              assert run['head_sha'] == expected['producer'] and run['run_attempt'] == 1
+              assert run['path'] == '.github/workflows/bazel-oci.yml' and run['workflow_id'] == 380324045
+              assert run['event'] == 'workflow_dispatch' and run['status'] == 'completed' and run['conclusion'] == 'success'
+              assert job['id'] == expected['job'] and job['run_id'] == expected['run'] and job['run_attempt'] == 1
+              assert job['head_sha'] == expected['producer'] and job['status'] == 'completed' and job['conclusion'] == 'success'
+              rows.append(dict(expected, original_attempt=1, original_run_conclusion=run['conclusion'], original_job_conclusion=job['conclusion']))
+          with (Path(os.environ['RECOVERY_ROOT']) / 'outputs/original-artifact-lineage.json').open('x') as output:
+              json.dump(dict(repository='securely1g/sonic-buildimage', originals=rows,
+                             transport='pinned upstream actions/download-artifact',
+                             current_source_or_full_vs_admission=False), output, indent=2, sort_keys=True)
+              output.write('\n')
+          PY_ORIGINAL_PRODUCERS
+      - name: Download the fixed original installer artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        timeout-minutes: 20
+        with:
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          run-id: 42504707668
+          artifact-ids: '13630197696'
+          merge-multiple: true
+          digest-mismatch: error
+          path: ${{ steps.paths.outputs.root }}/inputs/platform
+      - name: Download the fixed original management COPY layer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        timeout-minutes: 5
+        with:
+          github-token: ${{ github.token }}
+          repository: securely1g/sonic-buildimage
+          run-id: 42945002504
+          artifact-ids: '13821942674'
+          merge-multiple: true
+          digest-mismatch: error
+          path: ${{ steps.paths.outputs.root }}/inputs/device-data
+      - name: Recover only the two original package byte streams
+        timeout-minutes: 6
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          RECOVERY_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          ulimit -f 65536
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$RECOVERY_ROOT/temporary" TMPDIR="$RECOVERY_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B tools/bazel/ci/recover_vs_original_inputs.py platform \
+              --input "$RECOVERY_ROOT/inputs/platform/target/sonic-vs.bin" \
+              --wrapper "$PWD/installer/sharch_body.sh" \
+              --output-parent "$RECOVERY_ROOT/outputs/platform"
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$RECOVERY_ROOT/temporary" TMPDIR="$RECOVERY_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B tools/bazel/ci/recover_vs_original_inputs.py device-data \
+              --input "$RECOVERY_ROOT/inputs/device-data/layer/stdout.data" \
+              --output-parent "$RECOVERY_ROOT/outputs/device-data"
+      - name: Record recovery lineage without changing original source identities
+        env:
+          RECOVERY_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          python3 -I -S -B - <<'PY_RECOVERY_LINEAGE'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['RECOVERY_ROOT']) / 'outputs'
+          originals = json.loads((root / 'original-artifact-lineage.json').read_text())['originals']
+          packages = []
+          for item in originals:
+              directory = root / item['kind'] / 'execution'
+              receipt = json.loads((directory / 'recovered-original-input.json').read_text())
+              assert receipt['status'] == 'ORIGINAL_INPUT_BYTES_RECOVERED_NOT_ADMITTED'
+              assert receipt['kind'] == item['kind'] and receipt['original_inputs_unchanged']
+              assert all(receipt['original_source_reference'][key] == item[key] for key in ('artifact', 'run', 'job', 'producer'))
+              assert all(receipt[key] is False for key in ('installer_execution', 'package_generation', 'package_installation', 'current_source_or_full_vs_admission'))
+              paths = list(directory.glob('*.deb'))
+              assert len(paths) == 1 and paths[0].is_file() and not paths[0].is_symlink()
+              digest = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+              assert paths[0].stat().st_size == receipt['original_package']['bytes'] and digest == receipt['original_package']['sha256']
+              packages.append(dict(path=str(paths[0].relative_to(root)), bytes=paths[0].stat().st_size,
+                                   sha256=digest, original_source_reference=receipt['original_source_reference']))
+          with (root / 'recovery-lineage.json').open('x') as output:
+              json.dump(dict(status='ORIGINAL_INPUT_BYTES_RECOVERED_NOT_ADMITTED', packages=packages,
+                             recovery_job=dict(repository=os.environ['GITHUB_REPOSITORY'], revision=os.environ['GITHUB_SHA'],
+                                               run=int(os.environ['GITHUB_RUN_ID']), attempt=int(os.environ['GITHUB_RUN_ATTEMPT'])),
+                             package_generation=False, package_installation=False, installer_execution=False,
+                             current_source_or_full_vs_admission=False), output, sort_keys=True, indent=2)
+              output.write('\n')
+          PY_RECOVERY_LINEAGE
+      - name: Upload recovered original bytes and lineage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-recovered-original-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
   vs_management_image_blobs:
     name: Original management image blobs (hosted)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-mgmt-blobs' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
