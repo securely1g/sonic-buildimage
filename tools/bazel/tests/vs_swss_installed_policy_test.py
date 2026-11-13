@@ -213,5 +213,29 @@ class SourceMirrorRevisionTests(_Fixture):
         worker.prepare_remote_cache.assert_not_called()
 
 
+class ArchiveMismatchDiagnosticsTests(_Fixture):
+    def test_all_mismatches_report_only_declared_names_and_exact_hashes(self):
+        policy = copy.deepcopy(self.policy)
+        for row in policy['images'][:2]:
+            row['archive_sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'Policy does not match') as raised:
+            caller.validate_policy(self.write_policy(policy), self.plan)
+        prefix, payload = str(raised.exception).split(': ', 1)
+        observed = json.loads(payload)
+        expected = [{'name': row['name'],
+                     'expected_sha256': self.plan['expected_archives'][row['name']]['sha256'],
+                     'actual_sha256': '0' * 64} for row in policy['images'][:2]]
+        self.assertEqual(observed, expected)
+        self.assertLess(len(str(raised.exception)), 1024)
+
+    def test_malformed_hash_text_is_rejected_without_reflection(self):
+        for value in ['arbitrary-private-value\nnot-a-hash', 'F' * 64, None, {'secret': 'value'}]:
+            policy = copy.deepcopy(self.policy)
+            policy['images'][0]['archive_sha256'] = value
+            with self.subTest(value=value), self.assertRaises(ValueError) as raised:
+                caller.validate_policy(self.write_policy(policy), self.plan)
+            self.assertEqual(str(raised.exception), 'Invalid policy archive hash')
+
+
 if __name__ == '__main__':
     unittest.main()

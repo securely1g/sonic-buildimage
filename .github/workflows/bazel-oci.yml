@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -4386,7 +4386,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads(r'{"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":11922,"sha256":"86c7a047da513ad05bd3214a62c8b486d8990f4baad24f9991d070a797a30276"},"tools/bazel/ci/vs_swss_installed_policy_inputs.json":{"bytes":3012,"sha256":"cc91fd8533d31777bfc38fa10ce75dd5408713b6a0cec140c766b9c8ab9ce696"},"tools/bazel/tests/vs_swss_installed_policy_test.py":{"bytes":11547,"sha256":"9a925942fb08f5a8e7e8bfa98a1068b3cc92db242d9fb9f04c4425bcac00daa3"}}')
+          expected = json.loads(r'{"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_swss_installed_policy_inputs.json":{"bytes":3012,"sha256":"cc91fd8533d31777bfc38fa10ce75dd5408713b6a0cec140c766b9c8ab9ce696"},"tools/bazel/tests/vs_swss_installed_policy_test.py":{"bytes":12909,"sha256":"65f5cb31526289f97401d689d40fbf1ca474a5ea383653b785e4bce83e5e255f"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -4534,3 +4534,151 @@ jobs:
             ${{ steps.paths.outputs.root }}/scratch/resources.json
           if-no-files-found: warn
           compression-level: 0
+
+  vs_native_api_provenance:
+    name: Retain original final206 native API provenance (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-native-provenance' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 15
+    concurrency:
+      group: vs-native-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Reserve fresh temporary metadata paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_NATIVE_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Original API observation accepts no replacement inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current K3s worker workspace')
+          if shutil.disk_usage(workspace).free < 256 * 1024**2:
+              raise SystemExit('Original API observation requires256MiB temporary space')
+          name = f'vs-native-provenance-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing provenance observation')
+          root.mkdir(mode=0o700)
+          for child in ('output', 'temporary', 'requests'):
+              (root / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'relative={name}\nroot={root}\n')
+          with Path(os.environ['GITHUB_ENV']).open('a') as output:
+              output.write(f'PROVENANCE_ROOT={root}\nTMPDIR={root / "temporary"}\n')
+          PY_NATIVE_PATHS
+      - name: Checkout the reviewed observer caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.relative }}/observer
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/observe_final_native_provenance.py
+            tools/bazel/ci/vs_native_api_provenance_inputs.json
+            tools/bazel/ci/native_api_provenance_test.py
+            tools/bazel/ci/vs_native_api_provenance_test_inputs.json
+      - name: Checkout the original final206 receipt owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 3a06e4ec7627390967730b78a34dc00c86bb34dd
+          path: ${{ steps.paths.outputs.relative }}/source
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/image_worker_receipt.py
+            tools/bazel/ci/public_artifacts.py
+            tools/bazel/ci/p4rt_receipt_semantics.py
+            tools/bazel/ci/p4rt_sdk_receipt_semantics.py
+            tools/bazel/ci/syncd_worker_contract.json
+            tools/bazel/ci/gearbox_worker_contract.json
+      - name: Verify fixed owner and mocked metadata boundaries
+        run: |
+          test "$(git -C "$PROVENANCE_ROOT/source" rev-parse HEAD)" = '3a06e4ec7627390967730b78a34dc00c86bb34dd'
+          test "$(git -C "$PROVENANCE_ROOT/source" rev-parse 'HEAD^{tree}')" = 'e1db41673e6da5095579e71aff25cddb08e26c3e'
+          python3 -I -S -B - <<'PY_NATIVE_SEALS'
+          import hashlib, json, os, runpy, sys
+          from pathlib import Path
+          root = Path(os.environ['PROVENANCE_ROOT'])
+          expected = {'tools/bazel/ci/native_api_provenance_test.py': '6059154de8aa7499e8675a640b03f3623adf3c05ab20d5126448871d42f8513e', 'tools/bazel/ci/observe_final_native_provenance.py': '4faa375fced471d30574c984e79c4433bd27d5d1abf87b44cd75a5b6e0c16a9c', 'tools/bazel/ci/vs_native_api_provenance_inputs.json': '9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8', 'tools/bazel/ci/vs_native_api_provenance_test_inputs.json': 'd823f88f4e210af51a6677c784a1d9b3d3f4e48dc33abcb9b6551d6352f050a7'}
+          for relative, digest in expected.items():
+              path = root / 'observer' / relative
+              if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024**2 or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                  raise SystemExit('Reviewed observer source differs')
+          plan = json.loads((root / 'observer/tools/bazel/ci/vs_native_api_provenance_inputs.json').read_bytes())
+          for relative, identity in plan['owner_sources'].items():
+              path = root / 'source' / relative
+              if path.is_symlink() or not path.is_file() or path.stat().st_size != identity['bytes'] or hashlib.sha256(path.read_bytes()).hexdigest() != identity['sha256']:
+                  raise SystemExit('Original final206 receipt owner differs')
+          sys.path[:0] = [str(root / 'source'), str(root / 'observer')]
+          test = root / 'observer/tools/bazel/ci/native_api_provenance_test.py'
+          sys.argv = [str(test), 'NativeProvenanceObservationTest']
+          runpy.run_path(str(test), run_name='__main__')
+          PY_NATIVE_SEALS
+      - name: Authenticate the two original normal-CI request artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for family in syncd gearbox; do
+            python3 -I -S -B "$PROVENANCE_ROOT/observer/tools/bazel/ci/observe_final_native_provenance.py" origin \
+              --family "$family" --source "$PROVENANCE_ROOT/source" \
+              --inputs "$PROVENANCE_ROOT/observer/tools/bazel/ci/vs_native_api_provenance_inputs.json" \
+              --inputs-sha256 9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8 --output "$PROVENANCE_ROOT/output/$family"
+          done
+      - name: Download the exact original Syncd request
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: securely1g/sonic-buildimage
+          run-id: 43472962459
+          artifact-ids: 14062190155
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ steps.paths.outputs.root }}/requests/syncd
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Download the exact original Gearbox request
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: securely1g/sonic-buildimage
+          run-id: 43472962459
+          artifact-ids: 14060809443
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ steps.paths.outputs.root }}/requests/gearbox
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Retain genuine original API objects under the actual observer identity
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for family in syncd gearbox; do
+            python3 -I -S -B "$PROVENANCE_ROOT/observer/tools/bazel/ci/observe_final_native_provenance.py" capture \
+              --family "$family" --source "$PROVENANCE_ROOT/source" \
+              --inputs "$PROVENANCE_ROOT/observer/tools/bazel/ci/vs_native_api_provenance_inputs.json" \
+              --inputs-sha256 9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8 --request "$PROVENANCE_ROOT/requests/$family/request.json" \
+              --output "$PROVENANCE_ROOT/output/$family"
+          done
+      - name: Upload original native API provenance and observer lineage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-original-native-api-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/output
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 14

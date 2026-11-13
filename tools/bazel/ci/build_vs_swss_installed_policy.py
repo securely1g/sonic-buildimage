@@ -136,14 +136,22 @@ def validate_policy(path, plan):
     rows = value.get('images')
     require(isinstance(rows, list) and len(rows) == 3, 'Policy image set differs')
     seen = set()
+    mismatches = []
     for row in rows:
         name = row.get('name')
         require(name in plan['expected_archives'] and name not in seen, 'Policy image differs or repeats')
         require(row.get('archive') == name + '.gz' and row.get('tag') == name + ':latest',
                 'Policy archive or tag differs')
-        require(row.get('archive_sha256') == plan['expected_archives'][name]['sha256'],
-                'Policy does not match the frozen original archive')
+        actual = row.get('archive_sha256')
+        expected = plan['expected_archives'][name]['sha256']
+        require(all(isinstance(value, str) and len(value) == 64 and
+                    all(c in '0123456789abcdef' for c in value)
+                    for value in (actual, expected)), 'Invalid policy archive hash')
+        if actual != expected:
+            mismatches.append({'name': name, 'expected_sha256': expected, 'actual_sha256': actual})
         seen.add(name)
+    require(not mismatches, 'Policy does not match the frozen original archive: ' +
+            json.dumps(mismatches, sort_keys=True, separators=(',', ':')))
     return {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
 
 
