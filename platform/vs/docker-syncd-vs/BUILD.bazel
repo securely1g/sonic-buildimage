@@ -1,4 +1,5 @@
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
@@ -272,7 +273,7 @@ apt_layer(
     name = "runtime_layer",
     base = ":config_engine_base_layout",
     dependency_set = "syncd_vs_debian",
-    lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
     packages = APT_INPUTS["syncd_vs_debian"]["amd64"],
     policy = _APT_POLICY,
     source_receipt = ":source_package_receipt",
@@ -385,9 +386,9 @@ apt_layer(
     name = "debug_layer",
     base = ":docker-syncd-vs",
     base_package_metadata = ":runtime_package_metadata",
-    dependency_set = "syncd_vs_debug_debian",
-    lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
-    packages = APT_INPUTS["syncd_vs_debug_debian"]["amd64"],
+    dependency_set = "syncd_vs_vim_debug_debian",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    packages = APT_INPUTS["syncd_vs_vim_debug_debian"]["amd64"],
     policy = _APT_POLICY,
     source_receipt = ":source_package_receipt",
     variant = "debug",
@@ -429,7 +430,7 @@ installed_packages(
     apt_receipt = ":debug_apt_selection",
     architecture = "amd64",
     base = ":docker-syncd-vs",
-    controls = [label + ":control" for label in APT_INPUTS["syncd_vs_debug_debian"]["amd64"].values()],
+    controls = [label + ":control" for label in APT_INPUTS["syncd_vs_vim_debug_debian"]["amd64"].values()],
     source_spec = ":debug_source_packages",
 )
 
@@ -484,6 +485,7 @@ test_suite(
         "//tools/bazel/tests:oci_package_payloads_test",
         "//tools/bazel/tests:oci_package_receipts_test",
         "//tools/bazel/tests:oci_package_state_layer_test",
+        "//tools/bazel/tests:select_apt_payloads_test",
         "//tools/bazel/tests:source_base_validation_test",
         "//tools/bazel/tests:source_contract_test",
         "//tools/bazel/tests:syncd_manifest_labels_test",
@@ -492,9 +494,16 @@ test_suite(
 
 # Build the real installed-package state from producer TARs before the full VS
 # job. This catches assembly failures that fixture tests and graph analysis miss.
+copy_file(
+    name = "ci_apt_lock",
+    src = "@sonic_build_infra//apt:apt.lock.json",
+    out = "ci/apt.lock.json",
+)
+
 filegroup(
     name = "ci_artifacts",
     srcs = [
+        ":ci_apt_lock",
         ":installed_packages",
         ":runtime_package_metadata",
     ],

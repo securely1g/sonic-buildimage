@@ -1,5 +1,160 @@
 # Shared Bazel CI helpers
 
+## Remote cache uploads
+
+The [native event services](../../../.github/workflows/bazel-eventd.yml),
+[Rust listener](../../../.github/workflows/bazel-supervisor-rust.yml), and
+[YANG model distribution](../../../.github/workflows/bazel-yang-models.yml) jobs
+use `[self-hosted, linux, bazel-x64]` for AMD64 and
+`[self-hosted, linux, bazel-arm64]` for ARM64, matching the cache-reachable agent
+pools used by the archive, base-image, and kernel jobs. The agents, including
+their job containers where applicable, need network access to
+`grpc://172.16.0.4:9092`; public GitHub-hosted runners cannot reach that private
+endpoint.
+
+Private remote services are not workspace defaults. Only the five
+cache-reachable archive, source-base, event-services, Rust-listener and YANG
+jobs opt in with:
+
+```sh
+python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
+```
+
+After validating setup-bazel's local cache settings, this appends the private
+gRPC action cache and remote downloader to the ignored `.bazelrc.user`, retaining
+existing disk/repository caches, source-mirror settings and upload overrides.
+The shared `common.bazelrc` imports that file, including for CI wrappers that
+ignore the root workspace rc. Without the flag, the helper copies only the
+selected local cache settings and never inherits remote settings from the home
+rc. Ordinary builds and hosted validation jobs therefore do not require access
+to the private cache; existing HTTPS-cache callers can retain their own policy.
+Self-hosted status alone does not enable the endpoint. Kernel jobs retain their
+explicit `--remote-cache` selection, including the disposable loopback cache
+used by cold-cache verification. Make/VS worker pools retain their existing
+authenticated cache configuration rather than inheriting the private endpoint.
+
+The remote downloader's local-fallback flag applies to repository downloads;
+it does not make an unreachable gRPC action cache safe for ordinary build
+actions. Keep both services out of default rc files. On opted-in jobs, a caller
+that intentionally disables or replaces the gRPC cache must also disable or
+replace its remote downloader.
+
+The [source base-image workflow](../../../.github/workflows/bazel-base-images.yml)
+and [OCI archive jobs](../../../.github/workflows/bazel-oci.yml) use these
+persistent agents. Neither mounts or deletes host Android, .NET or GHC SDK
+directories to reclaim space, nor runs a GitHub-hosted-only cleanup guard; that
+cleanup was specific to disposable GitHub-hosted runners. Provision sufficient
+build storage and manage host Docker/cache retention outside the job without
+deleting active builds.
+
+AMD64 archive jobs upload generic public evidence before Sysmgr acceptance,
+then move the completed artifacts outside the checkout into a unique private
+`RUNNER_TEMP/pre-sysmgr-artifacts.*` directory. This keeps the source-only fence
+intact without colliding with or deleting prior jobs' evidence. The preserved
+path is logged; retained temporary evidence is subject to agent maintenance.
+Sysmgr public evidence is collected only after its build was attempted,
+including failed builds, not when an earlier step prevented it from running.
+
+The event-services container reports its identity, cache-directory permissions,
+UID/GID mappings and security context before probing Bazel startup. It creates
+and removes only a temporary directory in the cache parent, then checks
+`bazel info output_base` through the same wrapper used by the build.
+Failures stop the job with diagnostics; the probe does not change host
+permissions, relocate caches or delete retained build state.
+
+YANG and base-image runtime host jobs restore checkout-directory access before
+`actions/checkout`, using the kernel workflow's guarded repair for artifacts
+left by container jobs. The repair requires passwordless `sudo`, validates the
+expected physical workspace, stays on its filesystem and skips symlinks and
+hardlinked files.
+It does not delete files or change shared-cache targets. Any repair failure
+stops the job before checkout.
+
+Kernel host jobs retain the master's fixed directory names under the short
+`KERNEL_RUN_TEMP=/mnt/build/k` root; GitHub's `RUNNER_TEMP` is unchanged. Before
+building, [`kernel_scratch.py`](kernel_scratch.py) checks the Speakup path budget,
+including the longest header, encoded path bytes and a ten-digit sandbox ID.
+The workflow first provisions a missing `/mnt/build/k` using noninteractive sudo.
+It requires the physical `/mnt` and `/mnt/build` parents to be root-owned and
+not group/world-writable, and checks that the build disk is the same filesystem
+as the runner's temp storage. An exclusive `mkdir` creates only the absent `k`
+with mode 0700, then `chown --no-dereference` assigns that new directory to the
+runner's numeric UID/GID. Existing directories are never chmodded or chowned;
+the unprivileged preparation step validates their ownership and runner identity.
+Symlinks and non-directory roots are rejected. The agent needs passwordless sudo
+permission for these two provisioning commands; failures stop the job. Parent
+permissions are unchanged, and no repository Python or kernel build runs under
+sudo. There is no fallback to a smaller boot disk.
+
+A retained `.runner-owner` identity binds the root to the runner name and physical
+runner temp directory. A second agent cannot reuse that root: provision a separate
+short root for it and keep one active job per runner work/temp directory. This is
+an operational guard, not isolation from hostile jobs running as the same user.
+After preparing the root and before checking its 45 GiB free-space requirement,
+cleanup removes only the allowlisted kernel build/verification state, disposable
+cache, artifacts and logs. The producer still requires new state directories;
+stale state is deleted, not reused. The same cleanup runs after artifact upload
+and cache-server shutdown, retaining the root and its runner identity.
+It validates all targets before deleting any, rejects workspace overlap,
+redirected paths and nested mounts, and preserves shared-cache symlink targets
+and hardlinked file metadata. An existing live cache PID blocks cleanup rather
+than killing a possibly unrelated process. Cleanup errors fail the job; a cache
+shutdown failure preserves state. Cancelled jobs can leave state for the next job's cleanup;
+old `kernel-job.*` directories still require periodic agent maintenance.
+Bazel's default startup location, cache policy and kernel build settings are
+unchanged. Compared with the observed 36-byte runner temp prefix, the short root
+saves 24 bytes. The longest Speakup input is 238 bytes with the observed sandbox
+ID, or 245 bytes with the reserved ten-digit ID, below its 255-byte limit.
+
+Base-image, event-services, Rust supervisor and OCI archive container jobs keep
+Bazel's default `/github/home/.cache/bazel/_bazel_root` startup directory.
+After cache setup, [`repair_bazel_startup.py`](repair_bazel_startup.py) restores
+ownership of directories in that tree to the root container user. Bazel requires
+the startup directory's owner to match its effective UID even when the process
+can write there. The helper requires GitHub Actions, the expected container home
+and a root job container. Directory descriptors prevent following symlinks, and
+mount checks exclude redirected startup paths and nested mounts. Regular files,
+hardlinks and repository/disk caches are not modified by ownership repair;
+failures stop the job.
+No startup path override is exported. The shared wrapper still accepts explicit
+caller startup options for isolated cache-verification runs.
+
+The helper also verifies a batch Bazel startup without loading rc files. If
+Bazel reports a corrupt extracted installation, it validates the reported
+32-character hash directory under the default `install` tree, removes only that
+directory without following symlinks or crossing mounts, and retries startup
+once so Bazel re-extracts its embedded files. Other installation directories,
+output bases and repository/disk caches are retained. Other startup failures
+and a failed recovery preserve Bazel's exit code and stop the job; installation
+timestamps are never patched to bypass Bazel's validation.
+
+The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
+ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
+and manual runs remain read-only. The archive job overrides the default in its
+ignored `.bazelrc.user`, which the shared Bazel configuration imports without
+modifying tracked files. The active `vs_container` job and the disabled legacy
+`vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. The specialized
+upstream source-image and VS slave worker pools retain their existing selectors.
+
+The agents and builder containers must be able to reach the remote cache, and
+the server must authorize writes. Enforce writer permissions on the server:
+the workflow flag is not an authorization boundary for pull-request code.
+Enabling uploads does not guarantee backfilling results already present in
+local caches.
+
+The fresh-checkout disk-cache verifier explicitly disables the remote cache,
+remote executor, and remote downloader for its isolated builds. This keeps remote
+hits from masking disk-cache misses and avoids enabling the remote downloader
+without the gRPC cache it requires. Normal workflow builds retain their configured
+remote services.
+
+If an isolated build fails, the verifier prints its retained Bazel build log
+and exit code to the CI console before raising the failure. The local
+`agent-cache/<phase>/build.log` remains available on the runner; raw logs are
+not added to public failure artifacts.
+
+## Shared helpers
+
 These helpers validate buildimage artifacts and preserve build evidence. The
 shared container runner discovers the selected owner's Bazel CI targets;
 package expectations remain in the owner declarations and tests.
@@ -26,20 +181,39 @@ job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.
 
+SWSS compilation, package contents and component tests are validated in the
+[SWSS source repository](https://github.com/securely1g/sonic-swss). Buildimage
+consumes those targets and validates the assembled OCI images, including their
+installed behavior and image-cache invalidation.
+
 The native VS Make build produces the runtime and debug archives together for
 each registered Bazel container, using the same builder and Bazel invocation
 for each pair. The normal installer still selects runtime containers;
 `INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
 not add it to the installer.
 
-The active **VS installer in SONiC slave (AMD64)** job prepares the private
-worker, builds `target/sonic-vs.bin` directly through `slave.mk`, and runs
-`verify_vs_oci.sh` before loading the resulting images with the shared
-`validate_runtime.py` validator. It checks the installer version and retains
-the runtime/debug archive identities across validation. The private Docker
-daemon belongs to this worker and is stopped after evidence publication.
+The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
+the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
+registry login, Make reuses a local computed-tag slave image, pulls the matching
+tag if absent, or builds locally if the pull fails. The separate
+[slave publication workflow](../../../.github/workflows/sonic-slave-images.yml)
+publishes generic AMD64 Bookworm and Trixie images on master pushes using the
+Azure slave pipeline's generic build profile, with snapshot mode explicitly enabled.
+Both workflows set `MIRROR_SNAPSHOT=y` to use Debian snapshots under
+`packages.trafficmanager.net/snapshot`. They retain the repository's base-image
+registry and Docker/APT retry defaults, without separate slave-only overrides.
+Registry authentication selects the subscription configured in the repository
+Actions variable `ACR_SUBSCRIPTION_ID` after managed-identity login.
+Both jobs export a private `DOCKER_CONFIG` before Docker operations and always
+attempt registry logout and credential-file removal at job completion. They also
+prune unused Docker images and build cache before checking free space, so their
+agents must not share a Docker daemon with concurrent jobs.
+It does not update image pins or create commits. See the
+[host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
+The installer job checks the installer version and retains runtime/debug archive
+identities across validation, using the shared `validate_runtime.py` validator.
 
-The retained legacy wrapper [`build_vs.sh`](build_vs.sh) runs one
+The host wrapper [`build_vs.sh`](build_vs.sh) runs one
 `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
 The **Build the VS installer (.bin)** workflow step ends
@@ -249,6 +423,12 @@ Run the helper tests from the repository root:
 python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
 ```
 
+Native Debian package analysis also requires `file`, `readelf` (from
+`binutils`) and `pkg-config` on the host running Bazel. `file` distinguishes GNU ld
+linker scripts from ELF libraries; `pkg-config` resolves the declared package
+interfaces. The source-base and Rust listener CI containers install these tools
+for both AMD64 and ARM64 before invoking Bazel.
+
 The ELF tests use `cc`, `readelf` and `objcopy`. The cache integration check uses
 the repository's selected Bazel version and platform; its artifact directory
 must be new:
@@ -270,3 +450,45 @@ explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
 out of public artifacts. A failed job publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
+
+## Debian download mirrors
+
+The root `.bazelrc` selects [`debian_mirrors.cfg`](../debian_mirrors.cfg) for
+Bazel-managed dependency downloads, including image packages and published
+toolchain inputs. The pinned upstream Debian snapshot `20260727T143429Z` maps
+to the SONiC mirror snapshot `20260727T000818Z`; security snapshot
+`20260726T121236Z` maps to `20260727T000824Z`. Original upstream URLs remain
+fallback candidates. Existing image-lock mirror URLs are normalized to HTTPS,
+and their security snapshot `20260726T000750Z` maps to `20260727T000824Z`.
+Other snapshot timestamps retain their upstream location.
+
+The policy changes download locations, not generated locks, package versions
+or checksum verification. When advancing snapshot inputs, verify the matching
+mirror content before updating the mappings. Commands that ignore rc files
+must pass `--downloader_config` explicitly. The policy does not rewrite
+`apt-get` or arbitrary `curl` commands, and does not provide connectivity to the
+private remote cache/downloader. The mirror may redirect HTTPS requests to
+HTTP, so HTTPS source URLs alone do not guarantee end-to-end TLS.
+
+The source-base, OCI archive, and full VS jobs also use the registry's shared
+[`ci/source_mirrors.cfg`](https://github.com/securely1g/sonic-bazel-registry/blob/main/ci/source_mirrors.cfg).
+[`source_mirrors.py`](source_mirrors.py) downloads one commit-pinned copy and
+verifies its SHA256 before adding it after the local Debian rules. CI selects
+the combined file with Bazel's `--downloader_config`, preserving the local
+mirror priorities and the normal repository cache. For example, the unchanged
+BCR `pigz@2.8.bcr.2` archive comes from the registry release, with MacPorts as a
+fallback; Bazel still checks the original SHA256 and applies the BCR patches.
+There is no separate pigz download or pigz distdir.
+
+The native K3s installer tries the locked `snapshot.debian.org` URL first for
+timestamped Debian and Debian security inputs. The SONiC and registry mirrors
+remain available if that snapshot cannot serve the requested bytes.
+
+On native K3s workers, Dockerfile `RUN` steps inherit the job's managed APT
+route for `deb.debian.org` when that route is enabled. BuildKit mounts the APT
+configuration and its public CA for each step. The native preparation receipt
+records the selection in `docker_apt_proxy_enabled`.
+
+The private source-image worker uses the same verified shared configuration
+and retains its additional exact gawk and snapshot fallbacks. Its private
+cache paths and download artifacts are unchanged.

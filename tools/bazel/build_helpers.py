@@ -2,10 +2,16 @@
 
 import argparse
 import filecmp
+import os
 from pathlib import Path
 import shlex
 import shutil
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.bazel.cache import credentials
 
 
 def cache_options(cache_directory):
@@ -19,6 +25,21 @@ def cache_options(cache_directory):
         path.mkdir(parents=True, exist_ok=True)
         options.append(f"--{flag}={path}")
     return options
+
+
+def remote_cache_options():
+    """Read the shared cache without exposing authentication in Bazel options."""
+    if not os.environ.get("BAZEL_REMOTE_AUTH"):
+        return []
+    credentials.authorization()
+    helper = Path(__file__).resolve().parent / "cache/credentials.py"
+    return [
+        "--remote_cache=" + credentials.ENDPOINT + "/",
+        "--credential_helper=" + credentials.HOST + "=" + str(helper),
+        "--remote_executor=",
+        "--remote_accept_cached=true",
+        "--remote_upload_local_results=false",
+    ]
 
 
 def export_archive(source, destination):
@@ -49,6 +70,12 @@ def main():
     args = parser.parse_args()
     if args.command == "options":
         arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
+        try:
+            # Apply the shared cache policy after caller options so Make image
+            # builds cannot accidentally upload results or enable remote execution.
+            arguments += remote_cache_options()
+        except ValueError:
+            parser.exit(2, credentials.ERROR + "\n")
         if any(not value or any(char in value for char in "\r\n\0") for value in arguments):
             parser.error("Bazel options must be nonempty single-line arguments")
         for value in arguments:

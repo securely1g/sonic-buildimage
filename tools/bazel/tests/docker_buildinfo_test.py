@@ -15,6 +15,10 @@ APT_OVERRIDE = "zzzz-sonic-ci-acquire-retries"
 APT_OVERRIDE_CONTENT = (
     "// Temporary SONiC native Docker CI override; Debian bug #1117797.\n"
     'Acquire::Retries "0";\n')
+APT_MOUNTS = (
+    " --mount=type=secret,id=sonic_apt_proxy,target=/etc/apt/apt.conf.d/zzzz-sonic-native-proxy,mode=0444,required=true"
+    " --mount=type=secret,id=sonic_apt_ca,target=/run/secrets/sonic_apt_ca,mode=0444,required=true"
+)
 
 
 class DockerBuildinfoTest(unittest.TestCase):
@@ -46,7 +50,7 @@ class DockerBuildinfoTest(unittest.TestCase):
             DOCKER_USERNAME="sonic", DOCKER_USERTAG="latest", DOCKER_BASE_ARCH="amd64",
             CONFIGURED_ARCH="amd64", **packages)
 
-    def prepare(self, image, original=None, apt_retries=None):
+    def prepare(self, image, original=None, apt_retries=None, apt_proxy=None):
         dockerfile = self.workspace / "dockers" / image / "Dockerfile"
         if original is not None:
             dockerfile.parent.mkdir(parents=True, exist_ok=True)
@@ -55,6 +59,9 @@ class DockerBuildinfoTest(unittest.TestCase):
         environment.pop("SONIC_DOCKER_APT_RETRIES", None)
         if apt_retries is not None:
             environment["SONIC_DOCKER_APT_RETRIES"] = apt_retries
+        environment.pop("SONIC_DOCKER_APT_PROXY", None)
+        if apt_proxy is not None:
+            environment["SONIC_DOCKER_APT_PROXY"] = apt_proxy
         subprocess.run(
             ["bash", str(ROOT / "scripts/prepare_docker_buildinfo.sh"), image,
              str(dockerfile.relative_to(self.workspace)), "amd64", "", "trixie"],
@@ -164,6 +171,56 @@ class DockerBuildinfoTest(unittest.TestCase):
                 generated = self.prepare(image, self.render(image), apt_retries=value)
                 self.assertNotIn(APT_OVERRIDE, generated)
                 self.assertNotIn("SONIC_DOCKER_APT_RETRIES=", generated)
+
+    def test_proxy_secrets_cover_real_runs_in_all_watchdog_stages_and_hooks(self):
+        image = "docker-bmp-watchdog"
+        original = self.render(image)
+        for retries in (None, "0"):
+            with self.subTest(retries=retries):
+                default = self.prepare(image, original, apt_retries=retries)
+                for off in ("", "0"):
+                    self.assertEqual(self.prepare(image, original, apt_retries=retries, apt_proxy=off), default)
+                generated = self.prepare(image, original, apt_retries=retries, apt_proxy="1")
+                expected = default.replace("\nRUN ", "\n# SONIC_DOCKER_APT_PROXY=1\nRUN ", 1)
+                expected = "\n".join("RUN" + APT_MOUNTS + line[3:] if line.startswith("RUN ") else line
+                                     for line in expected.split("\n"))
+                self.assertEqual(generated, expected)
+                self.assertEqual(self.prepare(image, apt_retries=retries, apt_proxy="1"), generated)
+
+    def test_mounts_preserve_json_shell_mounts_continuations_and_heredocs(self):
+        original = (
+            "FROM debian:trixie AS builder\n"
+            'RUN --mount=type=cache,target=/var/cache/apt ["apt-get", "update"]\n'
+            "  rUn\tprintf \\\n# continuation comment\nRUN\n"
+            "COPY <<'SCRIPT' /usr/local/bin/sample\nRUN data inside COPY\nSCRIPT\n"
+            "RUN <<-\"SCRIPT\"\n\tRUN data inside heredoc\n\tSCRIPT\n"
+            "RUN echo 'literal <<SCRIPT'\n"
+            "FROM scratch\nCOPY --from=builder /bin/sh /bin/sh\n")
+        generated = self.prepare("docker-instructions", original, apt_proxy="1")
+        expected_runs = (
+            "RUN" + APT_MOUNTS + ' --mount=type=cache,target=/var/cache/apt ["apt-get", "update"]',
+            "  rUn" + APT_MOUNTS + "\tprintf \\\n# continuation comment\nRUN\n",
+            "COPY <<'SCRIPT' /usr/local/bin/sample\nRUN data inside COPY\nSCRIPT\n",
+            "RUN" + APT_MOUNTS + ' <<-"SCRIPT"\n\tRUN data inside heredoc\n\tSCRIPT\n',
+            "RUN" + APT_MOUNTS + " echo 'literal <<SCRIPT'",
+        )
+        for expected in expected_runs:
+            self.assertIn(expected, generated)
+        self.assertNotIn("sonic_apt_", generated.split("FROM scratch\n")[1])
+
+    def test_proxy_can_switch_modes_when_reusing_generated_input(self):
+        original = "FROM debian:trixie\nRUN true\n"
+        for prefix in ("", "# SKIP_HOOK\n"):
+            with self.subTest(prefix=prefix):
+                default = self.prepare("docker-proxy-mode", prefix + original)
+                enabled = self.prepare("docker-proxy-mode", apt_proxy="1")
+                self.assertIn("RUN" + APT_MOUNTS + " true", enabled)
+                self.assertEqual(self.prepare("docker-proxy-mode", apt_proxy="1"), enabled)
+                self.assertEqual(self.prepare("docker-proxy-mode", apt_proxy="0"), default)
+                self.assertEqual(self.prepare("docker-proxy-mode", apt_proxy="1"), enabled)
+                self.assertEqual(self.prepare("docker-proxy-mode"), default)
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.prepare("docker-proxy-mode", original, apt_proxy="yes")
 
     def test_opt_in_covers_builders_runtime_and_flattening_boundaries(self):
         images = {
