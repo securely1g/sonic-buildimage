@@ -137,7 +137,7 @@ def safe_json(value):
             require(isinstance(key, str), "invalid-json-key")
             normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
             if normalized == "envvariables":
-                require(isinstance(child, dict) and not child, "nonempty-recorded-environment")
+                require(isinstance(child, dict) and all(v is None for v in child.values()), "nonempty-recorded-environment")
             require(normalized not in DIAGNOSTIC_KEYS, "diagnostic-json-field")
             require(not normalized.endswith(("token", "tokens", "password", "passwords", "secret", "secrets",
                                              "credential", "credentials", "authorization", "apikey", "privatekey",
