@@ -63,15 +63,15 @@ class NativeVsStorageTest(unittest.TestCase):
         self.assertIsNone(receipt["available_bytes"])
         self.assertIn("Cannot measure", receipt["error"])
 
-    def test_only_k3s_installer_checks_before_preparation(self):
+    def test_host_installer_uses_host_preflight_before_preparation(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        invocation = "python3 -B tools/bazel/ci/check_native_vs_storage.py"
-        self.assertEqual(workflow.count(invocation), 1)
         native = workflow.split("\n  vs_container:\n", 1)[1]
-        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]", native)
-        self.assertLess(native.index(invocation), native.index("Prepare the privileged SONiC slave"))
+        invocation = "python3 -B tools/ci/runner/preflight.py --host-agent"
+        self.assertNotIn("check_native_vs_storage.py", native)
+        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]", native)
+        self.assertLess(native.index(invocation), native.index("Prepare the host-driven SONiC slave"))
         self.assertIn('--workspace "$PWD"', native)
-        self.assertIn("--output artifacts/vs/workspace-capacity.json", native)
+        self.assertIn("--build-target sonic-vs.bin", native)
         evidence = native.split("- name: Preserve build receipts\n", 1)[1].split("\n      - name:", 1)[0]
         self.assertIn("artifacts/vs/*.json", evidence)
 
