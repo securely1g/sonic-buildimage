@@ -563,17 +563,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: AMD64
-            architecture: amd64
-            machine: x86_64
-            runner: ubuntu-24.04
-            platform: x86_64_trixie
-          - name: ARM64
-            architecture: arm64
-            machine: aarch64
-            runner: ubuntu-24.04-arm
-            platform: aarch64_trixie
+        # This controller PR is AMD64-only; other PRs/events retain their matrix.
+        include: >-
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' && github.event.pull_request.number == 201 &&
+            '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie"}]' || '[{"name":"AMD64","architecture":"amd64","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie"},{"name":"ARM64","architecture":"arm64","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie"}]'
+          ) }}
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
       run:

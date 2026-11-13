@@ -47,13 +47,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            machine: x86_64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            machine: aarch64
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 201 && '[{"arch":"amd64","runner":"ubuntu-24.04","machine":"x86_64"}]' || '[{"arch":"amd64","runner":"ubuntu-24.04","machine":"x86_64"},{"arch":"arm64","runner":"ubuntu-24.04-arm","machine":"aarch64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:

@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/bazel-oci.yml"
 
 
-def jobs():
+def jobs(path=WORKFLOW):
     """Read top-level job blocks; the shell itself is executed without rewriting."""
-    contents = WORKFLOW.read_text().split("\njobs:\n", 1)[1]
+    contents = path.read_text().split("\njobs:\n", 1)[1]
     return dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                            contents, re.MULTILINE | re.DOTALL))
 
@@ -198,6 +198,48 @@ class SourceWorkflowTest(unittest.TestCase):
                     analyses = [call for call in calls if "tools/bazel/ci/bazel_commands.py" in call["args"]]
                     self.assertEqual(len(analyses), int(dash and not source_exit and not make_exit))
                     self.assertFalse(any(call["name"] == "rm" or "clean" in call["args"] for call in calls))
+
+
+
+
+class ScopedWorkflowRoutingTest(unittest.TestCase):
+    @staticmethod
+    def evaluate(expression, values):
+        expression = re.sub(r"(?:github|inputs)\.[A-Za-z0-9_.]+",
+                            lambda item: repr(values[item[0]]), expression)
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        expression = re.sub(r"!(?!=)", " not ", expression)
+        return eval(" ".join(expression.split()), {"__builtins__": {}, "fromJSON": json.loads})
+
+
+    def test_only_pr201_narrows_existing_architecture_matrices(self):
+        seen = 0
+        for filename in ("bazel-oci.yml", "bazel-base-images.yml", "runtime-image-validation.yml"):
+            for job in jobs(ROOT / ".github/workflows" / filename).values():
+                header = job.split("    steps:\n", 1)[0]
+                if "include: >-" not in header or "github.event.pull_request.number == 201" not in header:
+                    continue
+                expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
+                both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
+                amd64 = [row for row in both if row.get("architecture", row.get("arch")) == "amd64"]
+                self.assertEqual(len(both), 2)
+                self.assertEqual(len(amd64), 1)
+                for event, repo, number, expected in (
+                    ("pull_request", "securely1g/sonic-buildimage", 201, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 196, both),
+                    ("pull_request", "example/sonic-buildimage", 201, both),
+                    ("workflow_dispatch", "securely1g/sonic-buildimage", 201, both),
+                    ("push", "securely1g/sonic-buildimage", 201, both),
+                ):
+                    with self.subTest(workflow=filename, event=event, repository=repo, number=number):
+                        self.assertEqual(self.evaluate(expression, {
+                            "github.event_name": event, "github.repository": repo,
+                            "github.event.pull_request.number": number,
+                        }), expected)
+                seen += 1
+        self.assertEqual(seen, 4)
+
+
 
 
 if __name__ == "__main__":
