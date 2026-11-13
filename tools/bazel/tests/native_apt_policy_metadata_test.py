@@ -19,6 +19,9 @@ from tools.bazel.ci import native_apt_cache_policy as policy
 SOURCES = b"Types: deb\nURIs: https://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
 
 
+FIXTURE_ENDPOINT = b"http://192.0.2.1:3128"
+
+
 def proof():
     roles = ("helper", "hook", "endpoint", "policy", "marker", "sources", "keyring")
     result = {"schema": 1, "status": "eligible", "scope": "owned_optional_apt_cache_metadata_only",
@@ -36,7 +39,7 @@ class PolicyTest(unittest.TestCase):
         policy_bytes = ("Acquire::http::Proxy-Auto-Detect \"" + policy.HELPER + "\";\n"
                         "Acquire::https::Proxy-Auto-Detect \"" + policy.HELPER + "\";\n"
                         "Acquire::https::deb.debian.org::CAInfo \"/run/sonic-native-apt/ca-bundle.pem\";\n").encode()
-        bodies = {"native_apt_proxy.py": b"helper", "proxy-job-started.sh": b"hook", "endpoint": policy.ENDPOINT,
+        bodies = {"native_apt_proxy.py": b"helper", "proxy-job-started.sh": b"hook", "endpoint": FIXTURE_ENDPOINT,
                   "policy": policy_bytes, ".native-proxy-owned": b"", "debian.sources": SOURCES,
                   "debian-archive-keyring.gpg": b"public keyring"}
         def read(path, root, cap):
@@ -45,7 +48,7 @@ class PolicyTest(unittest.TestCase):
             if path.name == changed_role:
                 sha = "0" * 64
             return data, {"bytes": len(data), "sha256": sha, "uid": 0, "mode": 0o444}
-        with mock.patch.object(policy.os, "getuid", return_value=0), mock.patch.dict(policy.os.environ, {}, clear=True), mock.patch.object(policy, "read_public_file", side_effect=read) as reads, mock.patch.object(policy, "protected_directory"), mock.patch.object(Path, "resolve", autospec=True, side_effect=lambda p, strict: p), mock.patch.object(Path, "lstat", return_value=SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)), mock.patch.object(policy.os, "readlink", return_value=str(policy.STATE / "policy")), mock.patch.object(Path, "exists", return_value=False), mock.patch.object(Path, "is_symlink", return_value=False), mock.patch.object(Path, "iterdir", return_value=iter([policy.SOURCE])), mock.patch.object(policy, "configuration", return_value=values) as config:
+        with mock.patch.object(policy, "ENDPOINT_SHA", hashlib.sha256(FIXTURE_ENDPOINT).hexdigest()), mock.patch.object(policy.os, "getuid", return_value=0), mock.patch.dict(policy.os.environ, {}, clear=True), mock.patch.object(policy, "read_public_file", side_effect=read) as reads, mock.patch.object(policy, "protected_directory"), mock.patch.object(Path, "resolve", autospec=True, side_effect=lambda p, strict: p), mock.patch.object(Path, "lstat", return_value=SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)), mock.patch.object(policy.os, "readlink", return_value=str(policy.STATE / "policy")), mock.patch.object(Path, "exists", return_value=False), mock.patch.object(Path, "is_symlink", return_value=False), mock.patch.object(Path, "iterdir", return_value=iter([policy.SOURCE])), mock.patch.object(policy, "configuration", return_value=values) as config:
             result = policy.inspect()
         return result, reads.call_args_list, config.call_count
 
@@ -132,7 +135,7 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(policy.validate_report(value)["status"], "eligible")
         self.assertEqual(len(reads), 7)
         self.assertEqual(config_count, 1)
-        self.assertNotIn(policy.ENDPOINT.decode(), json.dumps(value))
+        self.assertNotIn(FIXTURE_ENDPOINT.decode(), json.dumps(value))
         self.assertNotIn(SOURCES.decode(), json.dumps(value))
 
     def test_changed_installed_helper_or_hook_is_rejected_before_config_query(self):
@@ -196,10 +199,6 @@ class HeldPublicFileTest(unittest.TestCase):
             with mock.patch.object(policy, "protected_directory"):
                 with self.assertRaises(ValueError):
                     policy.read_public_file(path, root, 64)
-
-
-
-
 
 
 if __name__ == "__main__":

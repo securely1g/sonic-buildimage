@@ -126,7 +126,7 @@ jobs:
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
           printf '%s\n' \
-            'f47824530a763abc39fd33d65fa4ca5925adb667368f7697c4968bd20f28fe9e  tools/bazel/ci/native_apt_cache_policy.py' \
+            '6b37a911c7bd1d1d0bb074193265bc0fb26d5114b214653a7f9521aa863a09d5  tools/bazel/ci/native_apt_cache_policy.py' \
             '5d793e7e4d2843db738b548b5338beba7ed79c2e0e3b2c5465f60fbaa4f9f798  tools/bazel/ci/observe_native_apt_hook.py' \
             '8f2712e8eef04d221aaa047de5ede98a521f862b0187c6ef4b0fd004501d950a  tools/bazel/tests/observe_native_apt_hook_test.py' \
             'f10ae6635ebd8db99ad573a0f67cfd29507e64f03082220145643ea4ba62cf50  tools/bazel/ci/native_apt_hook_review_recipient.pem' | sha256sum --check --status
@@ -3384,6 +3384,10 @@ jobs:
           path: ${{ steps.paths.outputs.control }}
           persist-credentials: false
           fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/native_apt_cache_policy.py
+            tools/bazel/tests/native_apt_policy_metadata_test.py
       - name: Verify the inspector and20 inert policy fixtures
         working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
         env:
@@ -3393,8 +3397,8 @@ jobs:
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
           printf '%s\n' \
-            'f47824530a763abc39fd33d65fa4ca5925adb667368f7697c4968bd20f28fe9e  tools/bazel/ci/native_apt_cache_policy.py' \
-            '7d13d30d5d8d297e7ac26231bad3e6972997bfa0c7f1e0bab1df55f980ac5f74  tools/bazel/tests/native_apt_policy_metadata_test.py' | sha256sum --check --status
+            '6b37a911c7bd1d1d0bb074193265bc0fb26d5114b214653a7f9521aa863a09d5  tools/bazel/ci/native_apt_cache_policy.py' \
+            '0b605ef14016f939eac40138c32395e31efdb9b68554390db51f72a3b6bc5f58  tools/bazel/tests/native_apt_policy_metadata_test.py' | sha256sum --check --status
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBSERVATION_ROOT/temporary" TMPDIR="$OBSERVATION_ROOT/temporary" \
             /usr/bin/python3 -I -S -B tools/bazel/tests/native_apt_policy_metadata_test.py
       - name: Observe fixed public source identities and effective policy without network

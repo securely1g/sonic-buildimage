@@ -1,6 +1,7 @@
 """Inspect the installed optional native APT cache without changing or probing it."""
 
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -19,8 +20,8 @@ SOURCE = SOURCE_DIR / "debian.sources"
 LEGACY_SOURCE = Path("/etc/apt/sources.list")
 KEYRING = Path("/usr/share/keyrings/debian-archive-keyring.gpg")
 HELPER_SHA = "bb089e8c66b5e501308390f0edfb139fef079d6afb9ae6769590d2d4d4168a7c"
-HOOK_SHA = "b0aadbbf879c9bd0d2df3da08ddd7fff38eaae435b15502b58bbd8806683ecbc"
-ENDPOINT = b"http://10.43.32.189:3128"
+HOOK_SHA = "e1a0b2becd466697bc53c47adff8425f3f9912aafcd26f2595343a90d918d4d3"
+ENDPOINT_SHA = "d8b3d50904b53b8c671cd38a811ba917cd765c7b9bf32e0599e330b2220ded6e"
 HELPER = "/run/sonic-download-proxy/native_apt_proxy.py"
 PROXY_KEYS = tuple("Acquire::" + scheme + "::" + key for scheme in ("http", "https")
                    for key in ("Proxy", "Proxy::deb.debian.org", "Proxy-Auto-Detect", "ProxyAutoDetect"))
@@ -75,6 +76,18 @@ def read_public_file(path, root, limit):
                 path.resolve(strict=True) == resolved and file_identity(resolved.stat()) == file_identity(after))
     return data, {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                   "uid": before.st_uid, "mode": stat.S_IMODE(before.st_mode)}
+
+
+def verified_cache_address():
+    """Keep the exact reviewed endpoint private; never resolve an arbitrary host."""
+    data, info = read_public_file(MOUNT / "endpoint", MOUNT, 256)
+    require(info["sha256"] == ENDPOINT_SHA == hashlib.sha256(data).hexdigest())
+    parsed = urlsplit(data.decode("ascii"))
+    require(parsed.scheme == "http" and parsed.username is None and parsed.password is None
+            and not parsed.path and not parsed.query and not parsed.fragment
+            and parsed.port is not None and 1 <= parsed.port <= 65535)
+    address = ipaddress.IPv4Address(parsed.hostname)
+    return str(address), parsed.port
 
 
 def expected_policy(data):
@@ -167,7 +180,7 @@ def inspect():
         result["stage"] = "owner_identity"
         result["helper_matches"] = result["files"]["helper"]["sha256"] == HELPER_SHA
         result["hook_matches"] = result["files"]["hook"]["sha256"] == HOOK_SHA
-        result["endpoint_matches"] = contents["endpoint"] in (ENDPOINT, ENDPOINT + b"\n")
+        result["endpoint_matches"] = result["files"]["endpoint"]["sha256"] == ENDPOINT_SHA
         require(CONFIG.parent.resolve(strict=True) == CONFIG.parent)
         protected_directory(CONFIG.parent)
         link = CONFIG.lstat()
