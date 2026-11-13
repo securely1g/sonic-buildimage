@@ -149,5 +149,70 @@ class OriginalArchiveObservationTest(unittest.TestCase):
                 self.observe(link)
 
 
+    def make_blob_archive(self, root, *, layer=b"binary layer bytes", config_bytes=None):
+        config = {"os": "linux", "architecture": "amd64", "config": {
+            "Entrypoint": ["/usr/local/bin/supervisord"], "Env": ["IMAGE_VERSION=bazel-ci"]}}
+        data = json.dumps(config).encode() if config_bytes is None else config_bytes
+        config_name = "blobs/sha256/" + hashlib.sha256(data).hexdigest()
+        layer_name = "blobs/sha256/" + hashlib.sha256(layer).hexdigest()
+        manifest = [{"RepoTags": ["docker-eventd:latest"], "Config": config_name, "Layers": [layer_name]}]
+        path = root / "blob-archive.gz"
+        with gzip.GzipFile(filename=str(path), mode="wb", mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w|") as archive:
+                for name, payload in [(layer_name, layer), (config_name, data),
+                                      ("manifest.json", json.dumps(manifest).encode())]:
+                    item = tarfile.TarInfo(name); item.size = len(payload)
+                    archive.addfile(item, io.BytesIO(payload))
+        return path
+
+    def test_binary_blob_before_manifest_is_not_decoded_as_json(self):
+        for layer in (b"raw layer contents", gzip.compress(b"layer data", mtime=0)):
+            with self.subTest(layer=layer[:4]), tempfile.TemporaryDirectory() as tmp:
+                path = self.make_blob_archive(Path(tmp), layer=layer)
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                result = self.observe(path, expected_sha256=digest)
+                self.assertTrue(result["matches_expected_configuration"])
+                self.assertFalse(result["VS_assembly_admission"])
+                self.assertEqual(result["sha256"], digest)
+
+    def test_unselected_object_shaped_blob_is_not_json_decoded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_blob_archive(Path(tmp), layer=b"{not JSON, still an unselected layer")
+            self.assertTrue(self.observe(path)["matches_expected_configuration"])
+
+    def test_large_layer_blob_does_not_consume_json_budget(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_blob_archive(Path(tmp), layer=b"x" * 4096)
+            with mock.patch.object(observer, "MAX_JSON", 1024):
+                self.assertTrue(self.observe(path)["matches_expected_configuration"])
+
+    def test_selected_non_object_config_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_blob_archive(Path(tmp), config_bytes=b"not a config")
+            with self.assertRaisesRegex(ValueError, "configuration is missing"):
+                self.observe(path)
+
+    def test_selected_malformed_object_config_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_blob_archive(Path(tmp), config_bytes=b"{invalid JSON")
+            with self.assertRaises(json.JSONDecodeError):
+                self.observe(path)
+
+    def test_selected_oversized_config_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_blob_archive(Path(tmp), config_bytes=b"{" + b" " * 2048)
+            with mock.patch.object(observer, "MAX_JSON", 1024), self.assertRaises(ValueError):
+                self.observe(path)
+
+    def test_selected_object_whitespace_can_cross_read_chunks(self):
+        data = b" \t\r\n" * 3 + json.dumps({"os": "linux", "architecture": "amd64", "config": {
+            "Entrypoint": ["/usr/local/bin/supervisord"], "Env": ["IMAGE_VERSION=bazel-ci"]}}).encode()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_blob_archive(Path(tmp), config_bytes=data)
+            with mock.patch.object(observer, "CHUNK", 4):
+                self.assertTrue(self.observe(path)["matches_expected_configuration"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

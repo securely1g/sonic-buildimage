@@ -72,20 +72,32 @@ def observe(path, expected_tag, entrypoint, *, expected_sha256=None):
                     if member.isdir():
                         continue
                     require(name not in files, "duplicate Docker archive member")
-                    keep = name == "manifest.json" or CONFIG_NAME.fullmatch(name)
-                    require(not keep or member.size <= MAX_JSON, "Docker JSON exceeds limit")
+                    manifest_member = name == "manifest.json"
+                    require(not manifest_member or member.size <= MAX_JSON, "Docker JSON exceeds limit")
+                    # Docker save may name both config and binary layers by digest.
+                    # Retain only bounded object candidates; select JSON by manifest
+                    # after hashing the complete archive, regardless of member order.
+                    keep = manifest_member or (CONFIG_NAME.fullmatch(name) and member.size <= MAX_JSON)
                     data = bytearray() if keep else None
+                    object_started = manifest_member
                     member_hash = hashlib.sha256()
                     with archive.extractfile(member) as stream:
                         for chunk in iter(lambda: stream.read(CHUNK), b""):
                             member_hash.update(chunk)
                             if data is not None:
+                                if not object_started:
+                                    prefix = chunk.lstrip(b" \t\r\n")
+                                    if prefix and not prefix.startswith(b"{"):
+                                        json_bytes -= len(data)
+                                        data = None
+                                        continue
+                                    object_started = bool(prefix)
                                 json_bytes += len(chunk)
                                 require(json_bytes <= MAX_JSON, "Docker JSON exceeds limit")
                                 data.extend(chunk)
                     files[name] = member_hash.hexdigest()
                     if data is not None:
-                        documents[name] = json.loads(data)
+                        documents[name] = bytes(data)
             # Include the full gzip stream and verify its trailer.
             for _ in iter(lambda: bounded.read(CHUNK), b""):
                 pass
@@ -94,12 +106,14 @@ def observe(path, expected_tag, entrypoint, *, expected_sha256=None):
     digest = reader.hasher.hexdigest()
     require(expected_sha256 is None or digest == expected_sha256,
             "archive differs from original runtime receipt")
-    manifest = documents.get("manifest.json")
+    manifest_raw = documents.get("manifest.json")
+    manifest = json.loads(manifest_raw) if manifest_raw is not None else None
     require(isinstance(manifest, list) and len(manifest) == 1 and isinstance(manifest[0], dict),
             "Docker archive must describe one image")
     entry = manifest[0]
     name = path_name(entry.get("Config", ""))
-    config = documents.get(name)
+    config_raw = documents.get(name)
+    config = json.loads(config_raw) if config_raw is not None else None
     require(isinstance(config, dict), "Docker configuration is missing")
     require(Path(name).name.removesuffix(".json") == files[name], "config digest differs")
     layers = entry.get("Layers")

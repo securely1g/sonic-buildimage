@@ -40,6 +40,21 @@ def observe_member(path, row, scratch):
             "source_admission": False, "VS_assembly_admission": False}
 
 
+def failure_sites(error):
+    """Bounded trusted source sites only; no exception text, values or paths."""
+    allowed = {"observe_vs_legacy_configs.py", "observe_vs_host_binaries.py",
+               "observe_original_archive.py", "recover_vs_original_inputs.py",
+               "vs_archive_reuse.py", "artifact_validation.py"}
+    result, frame, count = [], error.__traceback__, 0
+    while frame is not None and count < 32:
+        code = frame.tb_frame.f_code
+        module = Path(code.co_filename).name
+        if module in allowed:
+            result.append({"module": module, "function": code.co_name[:80], "line": frame.tb_lineno})
+        frame, count = frame.tb_next, count + 1
+    return result[-8:]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
@@ -56,7 +71,7 @@ def main():
     result = {"status": "LEGACY_CONFIGURATION_OBSERVATION_INCOMPLETE",
               "source_admission": False, "VS_assembly_admission": False,
               "package_or_image_generation": False, "cache_restore": False,
-              "results": []}
+              "results": [], "errors": []}
     created = False
     active = "manifest"
     try:
@@ -67,16 +82,29 @@ def main():
         created = True
         for row in value["rows"]:
             active = row["cache_name"]
-            result["results"].extend(binaries.inspect_cached(
-                args.artifact / row["cache_artifact_path"], [row], args.scratch,
-                observer=observe_member, maximum_member=256 * binaries.MIB))
+            try:
+                observed = binaries.inspect_cached(
+                    args.artifact / row["cache_artifact_path"], [row], args.scratch,
+                    observer=observe_member, maximum_member=256 * binaries.MIB)
+            except TimeoutError:
+                # The one-shot whole-observation deadline must remain terminal.
+                raise
+            except Exception as error:
+                result["errors"].append({"name": row["required_name"], "cache_name": row["cache_name"],
+                                         "cache_sha256": row["cache_sha256"],
+                                         "member_sha256": row["member_sha256"],
+                                         "error_type": type(error).__name__, "sites": failure_sites(error)})
+                continue
+            result["results"].extend(observed)
         result["artifact"] = value["artifact"]
         result["tag_contract"] = value["tag_contract"]
-        result["status"] = "LEGACY_CONFIGURATION_OBSERVED_NOT_ADMITTED"
-        code = 0
+        if not result["errors"]:
+            result["status"] = "LEGACY_CONFIGURATION_OBSERVED_NOT_ADMITTED"
+        code = int(bool(result["errors"]))
     except Exception as error:
         result["failed_object"] = active
         result["error_type"] = type(error).__name__
+        result["sites"] = failure_sites(error)
         code = 1
     finally:
         signal.alarm(0)
