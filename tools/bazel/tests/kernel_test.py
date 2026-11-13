@@ -352,6 +352,21 @@ class KernelBundleTest(unittest.TestCase):
         self.assertNotIn("private.invalid", console.getvalue())
         self.assertEqual(before, {path: path.read_bytes() for path in before})
 
+    def test_remote_cache_policy_is_forwarded_to_isolated_launcher(self):
+        for index, (remote, upload) in enumerate((
+                (None, False), ("grpc://cache.example:9092", False),
+                ("grpc://cache.example:9092", True))):
+            with self.subTest(remote=remote, upload=upload):
+                planned = kernel.plan(self.root, self.root / f"remote-plan-{index}", remote, upload)
+                self.assertEqual(planned["remote_cache"], remote)
+                self.assertEqual(planned["upload_local_results"], upload)
+                argv = planned["argv"]
+                if remote:
+                    self.assertEqual(argv[argv.index("--remote-cache") + 1], remote)
+                else:
+                    self.assertNotIn("--remote-cache", argv)
+                self.assertEqual("--remote-cache-read-only" in argv, not upload)
+
     def test_cli_managed_trust_reaches_plan_with_explicit_override(self):
         managed = self.root / "managed-cacerts"
         managed.write_bytes(b"managed trust fixture")
