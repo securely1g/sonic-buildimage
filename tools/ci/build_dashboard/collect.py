@@ -158,6 +158,9 @@ def normalize_job(raw, repo, run_id):
     elapsed = [step["duration_seconds"] for step in image_steps if step["duration_seconds"] is not None]
     success = [step["duration_seconds"] for step in image_steps
                if step["conclusion"] == "success" and step["duration_seconds"] is not None]
+    image_step_numbers = [step["number"] for step in image_steps]
+    if None in image_step_numbers or len(set(image_step_numbers)) != len(image_step_numbers):
+        image_step_numbers = None
     # A partial result from one of several image-build steps is not a full build.
     complete_image = bool(image_steps) and len(success) == len(image_steps)
     return {
@@ -167,6 +170,7 @@ def normalize_job(raw, repo, run_id):
         "started_at": timestamp(raw.get("started_at")), "completed_at": timestamp(raw.get("completed_at")),
         "duration_seconds": seconds(raw), "image_build_seconds": sum(success) if complete_image else None,
         "image_build_elapsed_seconds": sum(elapsed) if elapsed else None,
+        "image_build_step_numbers": image_step_numbers,
         "phases": phases, "steps": steps,
         "url": f"https://github.com/{repo}/actions/runs/{run_id}/job/{job_id}",
     }
@@ -372,6 +376,13 @@ class Associations:
         return [], "none"
 
 
+def run_start(raw):
+    value = raw.get("run_started_at") or raw.get("created_at")
+    started = timestamp(value)
+    source = ("run_started_at" if raw.get("run_started_at") else "created_at") if started else None
+    return started, source
+
+
 def event_bases(raw):
     # Event metadata is evidence of the recorded PR base, not a job checkout.
     return [{"number": pr["number"], "ref": pr.get("base", {}).get("ref"),
@@ -385,6 +396,7 @@ def normalize_run(raw, workflow, repo, jobs, association, association_note=None)
         raise CollectionError("Run response is missing its ID or attempt")
     pr_numbers, method = association
     completed = [job["completed_at"] for job in jobs if job["completed_at"]]
+    started_at, started_at_source = run_start(raw)
     return {
         "run_id": run_id, "attempt": attempt,
         "workflow_name": str(raw.get("name") or workflow),
@@ -393,11 +405,25 @@ def normalize_run(raw, workflow, repo, jobs, association, association_note=None)
         "event": raw.get("event"), "status": raw.get("status"), "conclusion": raw.get("conclusion"),
         "pr_numbers": pr_numbers, "pr_association": method, "pr_association_note": association_note,
         "event_bases": event_bases(raw),
-        "started_at": timestamp(raw.get("run_started_at") or raw.get("created_at")),
+        "started_at": started_at, "started_at_source": started_at_source,
         "completed_at": max(completed) if raw.get("status") == "completed" and completed else None,
         "updated_at": timestamp(raw.get("updated_at")),
         "url": f"https://github.com/{repo}/actions/runs/{run_id}/attempts/{attempt}", "jobs": jobs,
     }
+
+
+def retain_verified_start(old, raw, workflow):
+    """Upgrade a cached latest attempt only from matching observed start metadata."""
+    if old.get("started_at_source") == "run_started_at":
+        return old
+    path = f".github/workflows/{workflow}"
+    if (integer(raw.get("id")) != old.get("run_id") or integer(raw.get("run_attempt")) != old.get("attempt")
+            or not isinstance(old.get("source_sha"), str) or not old["source_sha"]
+            or raw.get("head_sha") != old["source_sha"] or old.get("workflow_path") != path
+            or str(raw.get("path", "")).split("@", 1)[0] != path):
+        return old
+    started = timestamp(raw.get("run_started_at"))
+    return dict(old, started_at=started, started_at_source="run_started_at") if started else old
 
 
 def load_history(path, repo):
@@ -414,9 +440,9 @@ def load_history(path, repo):
     allowed = {
         "document": {"schema_version", "repository", "generated_at", "pull_requests", "runs", "comparisons"},
         "pr": {"number", "title", "state", "draft", "url", "head_sha", "base_sha", "base_branch", "base_target_sha", "base_target_observed_at", "head_branch", "updated_at", "merged_at"},
-        "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "event_bases", "started_at", "completed_at", "updated_at", "url", "jobs"},
+        "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "event_bases", "started_at", "started_at_source", "completed_at", "updated_at", "url", "jobs"},
         "event_base": {"number", "ref", "sha"},
-        "job": {"job_id", "name", "kind", "architecture", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "image_build_seconds", "image_build_elapsed_seconds", "phases", "steps", "url"},
+        "job": {"job_id", "name", "kind", "architecture", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "image_build_seconds", "image_build_elapsed_seconds", "image_build_step_numbers", "phases", "steps", "url"},
         "step": {"number", "name", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "phase", "breakdown"},
     }
     def check_fields(value, kind):
@@ -439,11 +465,17 @@ def load_history(path, repo):
                 raise CollectionError("Dashboard history has an invalid event base PR number")
         if not isinstance(run.get("jobs"), list) or not isinstance(run.get("pr_numbers"), list):
             raise CollectionError("Dashboard history is missing its job or PR list")
+        if run.get("started_at_source") not in (None, "run_started_at", "created_at"):
+            raise CollectionError("Dashboard history has invalid run time provenance")
         for job in run["jobs"]:
             check_fields(job, "job")
             if (not integer(job.get("job_id")) or not isinstance(job.get("steps"), list)
                     or not isinstance(job.get("phases"), dict) or set(job["phases"]) - set(PHASES)):
                 raise CollectionError("Dashboard history contains invalid job details")
+            numbers = job.get("image_build_step_numbers")
+            if numbers is not None and (not isinstance(numbers, list) or not all(integer(number) for number in numbers)
+                                        or len(numbers) != len(set(numbers))):
+                raise CollectionError("Dashboard history contains invalid image step identities")
             for step in job["steps"]:
                 check_fields(step, "step")
                 if "breakdown" in step and not breakdown.valid(step["breakdown"]):
@@ -552,8 +584,10 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs
                     and old.get("conclusion") == latest_raw.get("conclusion")
                     and latest_raw.get("status") == "completed"
                 ):
-                    if attempt == current_attempt and "event_bases" not in old:
-                        old = dict(old, event_bases=event_bases(latest_raw))
+                    if attempt == current_attempt:
+                        old = retain_verified_start(old, latest_raw, workflow)
+                        if "event_bases" not in old:
+                            old = dict(old, event_bases=event_bases(latest_raw))
                         retained[(current_id, attempt)] = old
                     unassociated_head = (not old.get("pr_numbers") and old.get("event") == "pull_request"
                         and any(pr.get("head", {}).get("sha") == old.get("source_sha")
