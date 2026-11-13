@@ -2035,11 +2035,16 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
             scratch = root / "scratch"; scratch.mkdir()
             stack.enter_context(patch.dict(worker.K3S_MANAGED_REMOTE_CACHE_POLICY,
                 {"credential_helper_path": str(helper), "credential_helper_sha256": worker.digest(helper)}))
+            fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+            def owned(info):
+                return SimpleNamespace(**{**{name: getattr(info, name) for name in fields}, "st_uid": 0})
             original_lstat = Path.lstat
+            original_fstat = os.fstat
             def root_owned(path, *args, **kwargs):
                 info = original_lstat(path, *args, **kwargs)
-                return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_size=info.st_size) if path == helper else info
+                return owned(info) if path == helper.parent or path.is_relative_to(helper.parent) else info
             stack.enter_context(patch.object(Path, "lstat", root_owned))
+            stack.enter_context(patch.object(os, "fstat", side_effect=lambda fd: owned(original_fstat(fd))))
             owner = SimpleNamespace(HOST_CREDENTIALS=SimpleNamespace(is_file=lambda: True),
                 settings=lambda: {"endpoint": "https://managed-cache.invalid/", "host": "managed-cache.invalid"},
                 probe_access=unittest.mock.Mock(), imported=unittest.mock.Mock())
@@ -2048,6 +2053,143 @@ class RemoteOnlyWorkerTest(unittest.TestCase):
             stack.enter_context(patch.object(os, "geteuid", return_value=1000))
             stack.enter_context(patch.dict(os.environ, {"BAZEL_REMOTE_AUTH": self.canary}, clear=True))
             yield root, workspace, helper, scratch
+
+    @staticmethod
+    def project_owner(helper):
+        version = helper.parent / "..2026_11_13_00_00_00.1"
+        version.mkdir()
+        target = version / helper.name
+        helper.replace(target)
+        (helper.parent / "..data").symlink_to(version.name)
+        helper.symlink_to("..data/" + helper.name)
+        return target
+
+    def test_projected_owner_uses_canonical_verified_target_and_stable_diagnostic_identity(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            configuration = worker.remote_cache_configuration(workspace)
+            self.assertEqual(configuration["helper"], str(target))
+            self.assertEqual(worker.load_managed_cache_owner(target).__file__, str(helper))
+            self.assertIn("--credential_helper=" + configuration["host"] + "=" + str(target),
+                          worker.remote_cache_options(configuration))
+            owner = self.fake_owner(configuration)
+            code, receipt, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 0)
+            worker.validate_managed_cache_probe(receipt, configuration)
+            imported.assert_called_once_with()
+            owner.probe_access.assert_called_once_with()
+
+    def test_projected_owner_cannot_escape_fixed_runtime_root(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            outside = root / "outside/cache_credentials.py"
+            outside.parent.mkdir()
+            helper.replace(outside)
+            helper.symlink_to(outside)
+            with patch.object(worker, "managed_cache_source") as read:
+                with self.assertRaisesRegex(ValueError, "helper differs"):
+                    worker.managed_cache_helper()
+                read.assert_not_called()
+
+    def test_projected_owner_rotation_during_read_stops_before_import(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            next_version = helper.parent / "..2026_11_13_00_00_00.2"
+            next_version.mkdir()
+            replacement = next_version / helper.name
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o755)
+            read = worker.managed_cache_source
+            def rotate(path, expected):
+                source = read(path, expected)
+                data = helper.parent / "..data"
+                data.unlink()
+                data.symlink_to(next_version.name)
+                return source
+            with patch.object(worker, "managed_cache_source", side_effect=rotate):
+                with self.assertRaisesRegex(ValueError, "selection changed"):
+                    worker.remote_cache_configuration(workspace)
+            sys.modules["_managed_owner_fixture"].imported.assert_not_called()
+
+    def test_projected_owner_directories_require_root_and_no_writes(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            lstat = Path.lstat
+            for directory in (helper.parent, target.parent):
+                for field, value in (("st_uid", 1000), ("st_mode", stat.S_IFDIR | 0o775)):
+                    def changed(path, *args, **kwargs):
+                        info = lstat(path, *args, **kwargs)
+                        return SimpleNamespace(**{**vars(info), field: value}) if path == directory else info
+                    with self.subTest(directory=directory.name, field=field):
+                        with patch.object(Path, "lstat", changed), patch.object(worker, "managed_cache_source") as read:
+                            with self.assertRaisesRegex(ValueError, "helper differs"):
+                                worker.managed_cache_helper()
+                            read.assert_not_called()
+
+    def test_readonly_projection_protects_directory_write_bits_but_not_untrusted_files(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            lstat = Path.lstat
+            def writable_directories(path, *args, **kwargs):
+                info = lstat(path, *args, **kwargs)
+                if path in (helper.parent, target.parent):
+                    return SimpleNamespace(**{**vars(info), "st_mode": stat.S_IFDIR | 0o2777})
+                return info
+            with patch.object(Path, "lstat", writable_directories):
+                with patch.object(os, "statvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+                    self.assertEqual(worker.managed_cache_helper(), target)
+                    target.chmod(0o775)
+                    with self.assertRaisesRegex(ValueError, "helper differs"):
+                        worker.managed_cache_helper()
+                    target.chmod(0o755)
+                with patch.object(os, "statvfs", return_value=SimpleNamespace(f_flag=0)):
+                    with self.assertRaisesRegex(ValueError, "helper differs"):
+                        worker.managed_cache_helper()
+
+    def test_held_owner_read_rejects_untrusted_or_changing_metadata(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            fstat = os.fstat
+            for field, value, only_after in (("st_uid", 1000, False),
+                    ("st_mode", stat.S_IFREG | 0o775, False), ("st_size", 7647, False),
+                    ("st_ctime_ns", 0, True)):
+                calls = []
+                def changed(fd):
+                    info = fstat(fd)
+                    calls.append(fd)
+                    if not only_after or len(calls) > 1:
+                        return SimpleNamespace(**{**vars(info), field: value})
+                    return info
+                with self.subTest(field=field), patch.object(os, "fstat", side_effect=changed):
+                    with self.assertRaisesRegex(ValueError, "helper differs"):
+                        worker.managed_cache_source(helper, worker.K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"])
+
+    def test_probe_rejects_same_size_changed_source_before_owner_import(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            configuration = worker.remote_cache_configuration(workspace)
+            owner = self.fake_owner(configuration)
+            helper.write_bytes(b"raise AssertionError('unverified owner executed')\n".ljust(7646, b" "))
+            with patch.object(worker, "remote_cache_configuration", return_value=configuration):
+                code, receipt, imported = self.owner_probe(root, workspace, scratch, owner)
+            self.assertEqual(code, 1)
+            self.assertEqual(receipt["stage"], "owner_identity")
+            self.assertEqual(receipt["error_type"], "ValueError")
+            imported.assert_not_called()
+            owner.probe_access.assert_not_called()
+
+    def test_projected_owner_rotation_invalidates_prepared_helper_configuration(self):
+        with self.fixture() as (root, workspace, helper, scratch):
+            target = self.project_owner(helper)
+            configuration = worker.remote_cache_configuration(workspace)
+            next_version = helper.parent / "..2026_11_13_00_00_00.2"
+            next_version.mkdir()
+            replacement = next_version / helper.name
+            replacement.write_bytes(target.read_bytes())
+            replacement.chmod(0o755)
+            data = helper.parent / "..data"
+            data.unlink()
+            data.symlink_to(next_version.name)
+            with self.assertRaisesRegex(ValueError, "Unexpected managed remote-cache configuration"):
+                worker.remote_cache_options(configuration)
+            self.assertEqual(configuration["helper"], str(target))
 
     def test_run_attempt_work_is_fresh_and_never_adopts_previous_caches(self):
         with tempfile.TemporaryDirectory() as directory:

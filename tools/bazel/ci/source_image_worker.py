@@ -574,28 +574,69 @@ def prepare_work_directory(pool, runner, image):
     return directory
 
 
-def managed_cache_helper():
-    helper = Path(K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"])
+def managed_cache_source(helper, expected_sha):
+    """Read the exact reviewed source through a held, bounded regular-file FD."""
+    fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+    fd = os.open(helper, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        info = helper.lstat()
-        require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022 and
-                info.st_size == 7646 and helper.resolve() == helper and os.access(helper, os.X_OK) and
-                digest(helper) == K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"],
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_mode & 0o022 or
+                before.st_size != 7646 or helper.resolve(strict=True) != helper or
+                not os.access(helper, os.X_OK)):
+            raise ValueError("Managed remote-cache helper differs from the reviewed installed owner")
+        source = os.read(fd, 7647)
+        after = os.fstat(fd)
+        current = helper.lstat()
+        identity = tuple(getattr(before, field) for field in fields)
+        if (identity != tuple(getattr(after, field) for field in fields) or
+                identity != tuple(getattr(current, field) for field in fields) or
+                helper.resolve(strict=True) != helper or len(source) != 7646 or
+                hashlib.sha256(source).hexdigest() != expected_sha):
+            raise ValueError("Managed remote-cache helper differs from the reviewed installed owner")
+        return source
+    finally:
+        os.close(fd)
+
+
+def managed_cache_helper():
+    selected = Path(K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"])
+    try:
+        root = selected.parent
+        original = selected.lstat()
+        root_info = root.lstat()
+        helper = selected.resolve(strict=True)
+        require(stat.S_ISDIR(root_info.st_mode) and root_info.st_uid == 0 and
+                root.resolve(strict=True) == root and
+                (not root_info.st_mode & 0o022 or os.statvfs(root).f_flag & os.ST_RDONLY),
+                "Managed remote-cache helper differs from the reviewed installed owner: runtime directory")
+        require(helper.name == selected.name and
+                (helper == selected or (stat.S_ISLNK(original.st_mode) and original.st_uid == 0 and
+                 helper.parent.parent == root)),
+                "Managed remote-cache helper differs from the reviewed installed owner: projected selection")
+        directory = helper.parent.lstat()
+        require(stat.S_ISDIR(directory.st_mode) and directory.st_uid == 0 and
+                helper.parent.resolve(strict=True) == helper.parent and
+                (not directory.st_mode & 0o022 or os.statvfs(helper.parent).f_flag & os.ST_RDONLY),
                 "Managed remote-cache helper differs from the reviewed installed owner")
-    except OSError:
+        managed_cache_source(helper, K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"])
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_size", "st_mtime_ns", "st_ctime_ns")
+        for path, before in ((selected, original), (root, root_info), (helper.parent, directory)):
+            after = path.lstat()
+            require(all(getattr(before, field) == getattr(after, field) for field in fields),
+                    "Managed remote-cache helper selection changed")
+        require(selected.resolve(strict=True) == helper, "Managed remote-cache helper selection changed")
+    except (OSError, RuntimeError):
         raise ValueError("Managed remote-cache helper unavailable; legacy fallback is disabled") from None
     return helper
 
 
 def load_managed_cache_owner(helper):
-    # Execute the verified source bytes, never an installed bytecode cache.
+    # Compile the held, verified bytes with the stable owner identity used by diagnostics.
     import types
-    source = helper.read_bytes()
-    require(len(source) == 7646 and hashlib.sha256(source).hexdigest() ==
-            K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"], "Installed cache owner source changed")
+    source = managed_cache_source(helper, K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_sha256"])
     owner = types.ModuleType("reviewed_native_cache_owner")
-    owner.__file__ = str(helper)
-    exec(compile(source, str(helper), "exec"), owner.__dict__)
+    owner.__file__ = K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"]
+    exec(compile(source, owner.__file__, "exec"), owner.__dict__)
     return owner
 
 
@@ -619,8 +660,9 @@ def remote_cache_configuration(workspace):
 def managed_cache_owner_program():
     # The installed owner alone parses credentials and performs the HTTPS probe.
     # Its source identity is checked again inside this isolated bounded child.
-    return r"""import hashlib, json, os, stat, sys, types
-from pathlib import Path
+    import inspect
+    return ("import hashlib, json, os, stat, sys, types\nfrom pathlib import Path\n" +
+            inspect.getsource(managed_cache_source) + r"""
 os.umask(0o077)
 os.environ.pop('BAZEL_REMOTE_AUTH', None)
 configuration = json.loads(sys.argv[1])
@@ -631,15 +673,9 @@ value = {'schema': 1, 'provider': configuration['provider'],
          'stage': 'owner_identity'}
 try:
     helper = Path(configuration['helper'])
-    info = helper.lstat()
-    if (os.getuid() != 1000 or os.geteuid() != 1000 or
-            not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or
-            info.st_size != 7646 or helper.resolve() != helper or not os.access(helper, os.X_OK) or
-            hashlib.sha256(helper.read_bytes()).hexdigest() != configuration['helper_sha256']):
+    if os.getuid() != 1000 or os.geteuid() != 1000:
         raise ValueError('Owner identity differs')
-    source = helper.read_bytes()
-    if len(source) != 7646 or hashlib.sha256(source).hexdigest() != configuration['helper_sha256']:
-        raise ValueError('Owner source changed')
+    source = managed_cache_source(helper, configuration['helper_sha256'])
     owner = types.ModuleType('reviewed_native_cache_owner')
     owner.__file__ = str(helper)
     exec(compile(source, str(helper), 'exec'), owner.__dict__)
@@ -664,7 +700,7 @@ with output.open('x') as stream:
     json.dump(value, stream, sort_keys=True)
     stream.write('\n')
 raise SystemExit(0 if value['access_probe'] == 'passed' else 1)
-"""
+""")
 
 
 def managed_cache_probe_command(configuration, receipt):

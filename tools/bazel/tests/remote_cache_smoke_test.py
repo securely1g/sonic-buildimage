@@ -423,6 +423,18 @@ class ManagedSetupDiagnosticTest(unittest.TestCase):
         self.assertIs(type(sites[0]["line"]), int)
         self.assertNotIn("private", json.dumps(sites))
 
+    def test_held_source_read_failure_exposes_only_the_known_function_site(self):
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / "private-secret-source"
+            try:
+                smoke.worker.managed_cache_source(helper, "0" * 64)
+            except OSError as error:
+                sites = smoke.managed_setup_failure_sites(error)
+            self.assertEqual([(s["source"], s["function"]) for s in sites],
+                             [("native_worker", "managed_cache_source")])
+            self.assertNotIn("private-secret", json.dumps(sites))
+            self.assertNotIn(directory, json.dumps(sites))
+
     def test_suppressed_owner_context_retains_only_known_source_site(self):
         owner = self.error(self.trace(self.owner_code(), self.owner_globals(), 71))
         native = smoke.worker.remote_cache_configuration

@@ -385,7 +385,7 @@ def check_managed_cache_probe_receipt(directory, output_name, configuration, res
 def managed_setup_failure_sites(error):
     """Project only fixed source sites; never read exception text or locals."""
     native = {getattr(worker, name).__code__: name for name in (
-        "require", "digest", "managed_cache_helper", "load_managed_cache_owner",
+        "require", "digest", "managed_cache_source", "managed_cache_helper", "load_managed_cache_owner",
         "remote_cache_configuration")}
     owner = {"origin": (29, 52), "host_configuration": (55, 89),
              "public_settings": (92, 96), "settings": (99, 101)}
