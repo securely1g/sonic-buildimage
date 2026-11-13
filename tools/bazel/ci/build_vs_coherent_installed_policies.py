@@ -11,6 +11,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 
 _spec = importlib.util.spec_from_file_location(
@@ -44,7 +45,7 @@ def load_plan(path):
     return value
 
 
-def environment_check(plan, scratch):
+def environment_check(plan, scratch, source):
     expected = {
         'BAZEL_REAL': str(scratch / 'native-bazel'),
         'SONIC_BAZEL_REGISTRY_REVISION': plan['catalog_revision'],
@@ -54,10 +55,33 @@ def environment_check(plan, scratch):
     }
     require(all(os.environ.get(key) == value for key, value in expected.items()),
             'Build environment differs from the prepared remote-only launcher')
-    # review_bazel_rc reads this file even though Bazel receives --nohome_rc.
-    # Keep the runner's HOME intact and reject inherited local configuration.
+    # Reuse the current source owner: it filters user rc files before Bazel runs.
+    # The sealed native launcher explicitly disables only these two local caches.
     home_rc = Path.home() / '.bazelrc'
-    require(not home_rc.exists() and not home_rc.is_symlink(), 'Unexpected home Bazel rc')
+    if not home_rc.exists() and not home_rc.is_symlink():
+        return
+    setup.source_check(source, plan['source_revision'])
+    owner_path = source / 'tools/bazel/ci/review_bazel_rc.py'
+    spec = importlib.util.spec_from_file_location('_cohort_review_bazel_rc', owner_path)
+    owner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(owner)
+    isolated_home = scratch / 'home'
+    require(not (isolated_home / '.bazelrc').exists() and
+            not (isolated_home / '.bazelrc').is_symlink(), 'Private comparison rc must be absent')
+
+    def effective(configuration):
+        result = []
+        for line in configuration.splitlines():
+            tokens = shlex.split(line, comments=True)
+            if (len(tokens) == 2 and tokens[0] in ('common', 'build', 'test') and
+                    tokens[1].split('=', 1)[0] in ('--disk_cache', '--repository_cache')):
+                continue
+            result.append(line)
+        return result
+
+    require(effective(owner.configuration(source, Path.home())) ==
+            effective(owner.configuration(source, isolated_home)),
+            'Home Bazel rc changes effective source inputs or cache options')
 
 
 def declarations(plan, owners):
@@ -122,7 +146,7 @@ def bind_policies(paths, receipt, plan, check, merge):
 
 def build_cohort(plan, source, scratch, output, owners):
     orch, syncd, audit, builder, logs, exporter, resolution, merge, public_json = owners
-    environment_check(plan, scratch)
+    environment_check(plan, scratch, source)
     images = {'swss': orch, 'syncd': syncd}
     exports, layouts = declarations(plan, images)
     private = scratch / 'cohort-build'
@@ -240,7 +264,7 @@ def main():
     require(len({source, native, scratch}) == 3 and not any(a.is_relative_to(b)
             for a in (source, native, scratch) for b in (source, native, scratch) if a != b),
             'Source and private scratch must be separate')
-    environment_check(plan, scratch)
+    environment_check(plan, scratch, source)
     if args.phase == 'cache':
         setup.prepare_cache(plan, source, native, scratch,
                             args.archives.resolve(strict=True), args.mirrors.resolve(strict=True))

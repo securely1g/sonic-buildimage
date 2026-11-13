@@ -231,11 +231,72 @@ class CohortTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Syncd options'): self.run_cohort()
         self.assertEqual(self.events, [])
 
-    def test_inherited_home_rc_is_rejected_without_changing_home(self):
-        (self.home / '.bazelrc').write_text('build --disk_cache=/unreviewed\n')
-        with self.assertRaisesRegex(ValueError, 'home Bazel rc'): self.run_cohort()
+    def install_review_rc_owner(self):
+        original = Path(os.environ.get('COHORT_REVIEW_RC_OWNER',
+                        ROOT / 'tools/bazel/ci/review_bazel_rc.py'))
+        self.assertEqual(sha(original), '104c74f0845a4a2fdcb6d2bfff7a03978051c66732b2a871fb2191039af09593')
+        owner = self.source / 'tools/bazel/ci/review_bazel_rc.py'
+        owner.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(original, owner)
+        (self.source / 'tools/bazel/common.bazelrc').write_text(
+            'build --compilation_mode=opt\ntry-import %workspace%/.bazelrc.user\n')
+        self.source_check = self.enterContext(mock.patch.object(caller.setup, 'source_check'))
+
+    def test_inherited_distdir_is_rejected_without_changing_home(self):
+        self.install_review_rc_owner()
+        (self.home / '.bazelrc').write_text('build --distdir=/unreviewed\n')
+        with self.assertRaisesRegex(ValueError, 'Home Bazel rc changes'): self.run_cohort()
         self.assertEqual(self.events, [])
         self.assertEqual(os.environ.get('HOME'), self.start_home)
+
+    def test_overridden_caches_and_ignored_home_settings_preserve_validation(self):
+        self.install_review_rc_owner()
+        raw = ('build --disk_cache=/existing --repository_cache=/existing-repository\n'
+               'build --registry=https://ignored.invalid --define=ignored\n'
+               'try-import /ignored-home-import\n')
+        (self.home / '.bazelrc').write_text(raw)
+        result = self.run_cohort()
+        self.assertEqual(self.events, ['swss.manifests', 'syncd.manifests', 'audit', 'build', 'merge',
+                                       'validate:swss', 'validate:syncd'])
+        self.assertTrue(result['accepted_native_archive_equality'])
+        self.source_check.assert_called_once_with(self.source, self.plan['source_revision'])
+        self.assertEqual((self.home / '.bazelrc').read_text(), raw)
+        self.assertEqual(os.environ.get('HOME'), self.start_home)
+
+    def test_inherited_downloader_is_rejected_by_existing_owner_comparison(self):
+        self.install_review_rc_owner()
+        (self.home / '.bazelrc').write_text('common --experimental_downloader_config=/unreviewed\n')
+        with self.assertRaisesRegex(ValueError, 'Home Bazel rc changes'): self.run_cohort()
+        self.assertEqual(self.events, [])
+
+    def test_unoverridden_hardlink_setting_is_not_silently_ignored(self):
+        self.install_review_rc_owner()
+        (self.home / '.bazelrc').write_text('build --experimental_repository_cache_hardlinks\n')
+        with self.assertRaisesRegex(ValueError, 'Home Bazel rc changes'): self.run_cohort()
+        self.assertEqual(self.events, [])
+
+    def test_original_rc_owner_rejects_missing_option_value(self):
+        self.install_review_rc_owner()
+        (self.home / '.bazelrc').write_text('build --disk_cache\n')
+        with self.assertRaisesRegex(ValueError, 'missing cache option value'): self.run_cohort()
+        self.assertEqual(self.events, [])
+
+    def test_source_identity_is_checked_before_loading_the_rc_owner(self):
+        self.install_review_rc_owner()
+        (self.home / '.bazelrc').write_text('# existing runner rc\n')
+        self.source_check.side_effect = ValueError('different source identity')
+        with mock.patch.object(caller.importlib.util, 'spec_from_file_location') as load:
+            with self.assertRaisesRegex(ValueError, 'different source identity'): self.run_cohort()
+        load.assert_not_called()
+        self.assertEqual(self.events, [])
+
+    def test_accepted_home_rc_does_not_relax_the_native_archive_gate(self):
+        self.install_review_rc_owner()
+        (self.home / '.bazelrc').write_text('build --disk_cache=/existing\n')
+        self.problem = 'native'
+        with self.assertRaisesRegex(ValueError, 'Accepted native archive differs'): self.run_cohort()
+        self.assertEqual(self.events, ['swss.manifests', 'syncd.manifests', 'audit', 'build'])
+        self.assertFalse(self.output.exists())
 
     def test_ambient_launcher_is_rejected_before_make(self):
         with mock.patch.dict(os.environ, {'BAZEL_REAL': 'bazel'}):

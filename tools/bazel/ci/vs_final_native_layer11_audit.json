@@ -1,0 +1,199 @@
+{
+  "Make_manifest_equivalence_claimed": false,
+  "api_owner_plan_sha256": "9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8",
+  "consumer_head": "f792520ef507a8dcf9ae4c257e5522d4dae129b5",
+  "downloads": [
+    {
+      "destination": "syncd",
+      "digest": "sha256:a34acb8e6895a300a50fd7dce1eec51a7889bfcc5db2847163a7b3b8e6e82ec7",
+      "id": 14066019866,
+      "name": "syncd-ci-43472962459-3a06e4ec7627390967730b78a34dc00c86bb34dd",
+      "run_id": 43477122783,
+      "size_in_bytes": 1860825
+    },
+    {
+      "destination": "gearbox",
+      "digest": "sha256:abe364fac9333c4464f1bfaf48750f5343c4bffa29f9c2aec5869201d50421cf",
+      "id": 14066259944,
+      "name": "gearbox-ci-43472962459-3a06e4ec7627390967730b78a34dc00c86bb34dd",
+      "run_id": 43478742466,
+      "size_in_bytes": 1858486
+    },
+    {
+      "destination": "provenance",
+      "digest": "sha256:6ea1ee1b190b635e1e34dc3016c81f5e7d3acb192680d1730cefee92b1233445",
+      "id": 14071173858,
+      "name": "vs-original-native-api-provenance-43495953433-1",
+      "run_id": 43495953433,
+      "size_in_bytes": 19841
+    }
+  ],
+  "images": [
+    {
+      "archive": {
+        "bytes": 679629216,
+        "name": "docker-syncd-vs.gz",
+        "sha256": "7fef31998236e57eded8c4e251f73bf8f744da48da70b05fbbd69df68681a46a"
+      },
+      "empty_parent": false,
+      "entrypoint": [
+        "/usr/local/bin/supervisord"
+      ],
+      "evidence": {
+        "kind": "image-validation",
+        "metadata": {
+          "bytes": 47041,
+          "path": "provenance/syncd/provenance.json",
+          "sha256": "fb94c670ada3c3d7fa7922926019f9a639dc361697d8d3ed2711120e20c3f66c"
+        },
+        "producer": {
+          "artifact_digest": "sha256:a34acb8e6895a300a50fd7dce1eec51a7889bfcc5db2847163a7b3b8e6e82ec7",
+          "artifact_id": 14066019866,
+          "build_step": "Build source runtime and debug images",
+          "head_sha": "1e423956afe2cb706c239c8be93c1000bbc7a479",
+          "job_id": 132063731340,
+          "repository": "securely1g/sonic-buildimage",
+          "run_id": 43477122783,
+          "tested_revision": "3a06e4ec7627390967730b78a34dc00c86bb34dd",
+          "upload_step": "Upload the normal CI acceptance receipts",
+          "validation_step": "Validate image contents and symbols"
+        },
+        "receipt": {
+          "bytes": 4922,
+          "path": "syncd/public-receipt.json",
+          "sha256": "4d08242258dfd4e6c18398e0936a7bcaf2861bc5ddd15fbb4b2b8ac2107628e3"
+        },
+        "validation": {
+          "bytes": 543108,
+          "path": "syncd/validation.json",
+          "sha256": "4eadc45223977645fa59607180da7075c39a4b26498b8df91e4c58ce902da775"
+        }
+      },
+      "expected_diff_id": "sha256:5a3f45854e918b1cbd90dc7b73da5e873d491a0cd407a4d0c2be5a7a81eba691",
+      "family": "syncd",
+      "layer_index": 11,
+      "name": "docker-syncd-vs",
+      "tag": "docker-syncd-vs:latest"
+    },
+    {
+      "archive": {
+        "bytes": 702063555,
+        "name": "docker-gbsyncd-vs.gz",
+        "sha256": "e247421fc5e8e4489c66b93dbfd6b538d181186e1e85256364ebd8dc5890dc05"
+      },
+      "empty_parent": false,
+      "entrypoint": [
+        "/usr/local/bin/supervisord"
+      ],
+      "evidence": {
+        "kind": "image-validation",
+        "metadata": {
+          "bytes": 47049,
+          "path": "provenance/gearbox/provenance.json",
+          "sha256": "5cb98558750006b6c2aa3845b0bf65ef4e7cc0174ef51d3f195e0e9723d46789"
+        },
+        "producer": {
+          "artifact_digest": "sha256:abe364fac9333c4464f1bfaf48750f5343c4bffa29f9c2aec5869201d50421cf",
+          "artifact_id": 14066259944,
+          "build_step": "Build source runtime and debug images",
+          "head_sha": "1e423956afe2cb706c239c8be93c1000bbc7a479",
+          "job_id": 132069404617,
+          "repository": "securely1g/sonic-buildimage",
+          "run_id": 43478742466,
+          "tested_revision": "3a06e4ec7627390967730b78a34dc00c86bb34dd",
+          "upload_step": "Upload the normal CI acceptance receipts",
+          "validation_step": "Validate image contents and symbols"
+        },
+        "receipt": {
+          "bytes": 4956,
+          "path": "gearbox/public-receipt.json",
+          "sha256": "ae7ef9daada465a61c3e2d088a3ffea3c1890bd1f0d8e3cf5f807d19eed7eacd"
+        },
+        "validation": {
+          "bytes": 542205,
+          "path": "gearbox/validation.json",
+          "sha256": "361937eb04e83a92b2960cb95c268130adec55d415dbc07c75e3e386fc147f46"
+        }
+      },
+      "expected_diff_id": "sha256:2c5ccd265bea82d8f62719d2accdb11b3193b94c49ee4ceaf085dd7bcd6055f9",
+      "family": "gearbox",
+      "layer_index": 11,
+      "name": "docker-gbsyncd-vs",
+      "tag": "docker-gbsyncd-vs:latest"
+    }
+  ],
+  "inventory_deadline_seconds": 900,
+  "layer_index": 11,
+  "maximum_header_inventory_bytes": 12582912,
+  "maximum_layer_members": 20000,
+  "maximum_report_bytes": 16777216,
+  "minimum_temporary_free_bytes": 12884901888,
+  "native_controller": "1e423956afe2cb706c239c8be93c1000bbc7a479",
+  "source_image_installed_policy_admission": false,
+  "source_owners": {
+    "tools/bazel/ci/artifact_validation.py": {
+      "bytes": 8296,
+      "sha256": "a61840d3a8a9bd6307f55400a02ed1b9ead6b4c24786f74a479e0cebaf91d773"
+    },
+    "tools/bazel/ci/gearbox_worker_contract.json": {
+      "bytes": 4132,
+      "sha256": "9a865bfed85ff03ee64095447054743014fd3676bbc618aa81ce5e941f6233d6"
+    },
+    "tools/bazel/ci/image_worker_receipt.py": {
+      "bytes": 43504,
+      "sha256": "eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db"
+    },
+    "tools/bazel/ci/p4rt_receipt_semantics.py": {
+      "bytes": 10420,
+      "sha256": "0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661"
+    },
+    "tools/bazel/ci/p4rt_sdk_receipt_semantics.py": {
+      "bytes": 6744,
+      "sha256": "d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9"
+    },
+    "tools/bazel/ci/public_artifacts.py": {
+      "bytes": 42677,
+      "sha256": "69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4"
+    },
+    "tools/bazel/ci/syncd_worker_contract.json": {
+      "bytes": 4327,
+      "sha256": "22a03110ee58f25b3ae2c90b28ea8e37385d205ef9c5dc1d7fe8d01be70058ec"
+    },
+    "tools/bazel/ci/vs_archive_reuse.py": {
+      "bytes": 16782,
+      "sha256": "5e4cb0cdee959ac0b05973c6581d9cb7ddc2af74f4f11fa07446d0d9a961acb8"
+    },
+    "tools/bazel/oci/image_validation.py": {
+      "bytes": 39217,
+      "sha256": "10f059c8c0c7dfc12676b7c1b79872516333843b33d7da93202887ce41afb3da"
+    },
+    "tools/bazel/oci/native_packages.py": {
+      "bytes": 30662,
+      "sha256": "76761888065de49bc863ee10b852551f68d19d23d43da73895e5f417d7a91c8e"
+    },
+    "tools/bazel/oci/normalize_layer.py": {
+      "bytes": 7357,
+      "sha256": "0a03bea49205d4693df210dc74ec17fbea7a61d56c1f34d62befa8633016b12a"
+    },
+    "tools/bazel/oci/oci_inventory.py": {
+      "bytes": 4814,
+      "sha256": "8f62454c01e8d281e64b7789de0ae099b255347d23274b9dc8ec9047c5ca331f"
+    },
+    "tools/bazel/oci/oci_layout.py": {
+      "bytes": 3670,
+      "sha256": "dbd133e1b7070f3d0d5faaa471566e8ab9dfe50b548891428431e46c3cca7194"
+    },
+    "tools/bazel/oci/package_contract.py": {
+      "bytes": 36750,
+      "sha256": "8a11a1bb3b3589822b8f73f70dfabb5eed9031ce9666d3e74646b42053fbf7bc"
+    },
+    "tools/bazel/oci/package_payloads.py": {
+      "bytes": 8039,
+      "sha256": "b26e236ada39208ff2fcea1dd24a576b51083958701d93f8bf9ca3f474de4fba"
+    }
+  },
+  "source_revision": "3a06e4ec7627390967730b78a34dc00c86bb34dd",
+  "source_tree": "e1db41673e6da5095579e71aff25cddb08e26c3e",
+  "status": "FIXED_FINAL206_LAYER11_OBSERVATION_ONLY",
+  "transport_plan_sha256": "987d5cf4c93d921f733209bf701d71cf12dc72e0b30079375f254537bcc59190"
+}

@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -4750,24 +4750,6 @@ jobs:
             /tools/bazel/ci/build_vs_coherent_installed_policies.py
             /tools/bazel/ci/vs_coherent_installed_policy_inputs.json
             /tools/bazel/tests/vs_coherent_installed_policy_test.py
-      - name: Verify the fixed caller and its focused fixtures
-        env:
-          POLICY_ROOT: ${{ steps.paths.outputs.root }}
-        run: |
-          python3 -I -S -B - <<'PYTHON'
-          import hashlib, json, os
-          from pathlib import Path
-          root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":14732,"sha256":"32b921a2ff3521be9a30a954e9691345defdecd122de4b10228d41031c4d7c41"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":6561,"sha256":"ade81c11d72348555b81b8a79dee1bf2f8c28aced028b3911509e96ff345200a"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":13164,"sha256":"de633863688409c4362432a6b76205d860f9278b615dc64ba4b91558c3c5e89b"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"}}')
-          for name, identity in expected.items():
-              path = root / name
-              if path.is_symlink() or not path.is_file():
-                  raise SystemExit('Unexpected policy caller file type')
-              raw = path.read_bytes()
-              if len(raw) != identity['bytes'] or hashlib.sha256(raw).hexdigest() != identity['sha256']:
-                  raise SystemExit('Reviewed policy caller seal differs')
-          PYTHON
-          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/tests/vs_coherent_installed_policy_test.py"
       - name: Check out the final VS source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4777,6 +4759,25 @@ jobs:
           clean: false
           fetch-depth: 1
           submodules: false
+      - name: Verify the fixed caller and its focused fixtures
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+          COHORT_REVIEW_RC_OWNER: ${{ steps.paths.outputs.root }}/source/tools/bazel/ci/review_bazel_rc.py
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['POLICY_ROOT']) / 'control'
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":15867,"sha256":"120e3e53a479269841b9e07f0c80627d7db71a31226f405f9399f7061b7da8ed"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":6561,"sha256":"ade81c11d72348555b81b8a79dee1bf2f8c28aced028b3911509e96ff345200a"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":16811,"sha256":"7fedac292cce30258a9d8989f31833e9abe5702e2b694957d834e66df57b7bca"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"}}')
+          for name, identity in expected.items():
+              path = root / name
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit('Unexpected policy caller file type')
+              raw = path.read_bytes()
+              if len(raw) != identity['bytes'] or hashlib.sha256(raw).hexdigest() != identity['sha256']:
+                  raise SystemExit('Reviewed policy caller seal differs')
+          PYTHON
+          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/tests/vs_coherent_installed_policy_test.py"
       - name: Check out the existing native cache and source-input helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4912,3 +4913,176 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
 
+
+  vs_native_layer11:
+    name: Compare original final206 Python and YANG layer metadata (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-native-layer11' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 55
+    concurrency:
+      group: vs-native-layer11-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Reserve fresh temporary original-layer observation paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_LAYER_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Original layer audit accepts no replacement inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current K3s worker workspace')
+          if shutil.disk_usage(workspace).free < 12 * 1024**3:
+              raise SystemExit('Original layer audit requires12GiB temporary space')
+          name = f'vs-native-layer11-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing original-layer observation')
+          root.mkdir(mode=0o700)
+          for child in ('temporary', 'inputs'):
+              (root / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'relative={name}\nroot={root}\n')
+          with Path(os.environ['GITHUB_ENV']).open('a') as output:
+              output.write(f'LAYER11_ROOT={root}\nTMPDIR={root / "temporary"}\n')
+          PY_LAYER_PATHS
+      - name: Checkout the reviewed fixed audit and transport callers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.relative }}/observer
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/final_native_layer11_test.py
+            tools/bazel/ci/observe_final_native_layer11.py
+            tools/bazel/ci/observe_final_native_provenance.py
+            tools/bazel/ci/observe_original_archive.py
+            tools/bazel/ci/observe_vs_original_installed_policy.py
+            tools/bazel/ci/recover_final_native_archives.py
+            tools/bazel/ci/recover_vs_original_inputs.py
+            tools/bazel/ci/vs_final_native_layer11_audit.json
+            tools/bazel/ci/vs_final_native_layer11_inputs.json
+            tools/bazel/ci/vs_native_api_provenance_inputs.json
+      - name: Checkout original final206 archive and inventory owners
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 3a06e4ec7627390967730b78a34dc00c86bb34dd
+          path: ${{ steps.paths.outputs.relative }}/source
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/artifact_validation.py
+            tools/bazel/ci/gearbox_worker_contract.json
+            tools/bazel/ci/image_worker_receipt.py
+            tools/bazel/ci/p4rt_receipt_semantics.py
+            tools/bazel/ci/p4rt_sdk_receipt_semantics.py
+            tools/bazel/ci/public_artifacts.py
+            tools/bazel/ci/syncd_worker_contract.json
+            tools/bazel/ci/vs_archive_reuse.py
+            tools/bazel/oci/image_validation.py
+            tools/bazel/oci/native_packages.py
+            tools/bazel/oci/normalize_layer.py
+            tools/bazel/oci/oci_inventory.py
+            tools/bazel/oci/oci_layout.py
+            tools/bazel/oci/package_contract.py
+            tools/bazel/oci/package_payloads.py
+      - name: Verify actual sources and bounded real-inventory fixtures
+        run: |
+          test "$(git -C "$LAYER11_ROOT/observer" rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C "$LAYER11_ROOT/source" rev-parse HEAD)" = '3a06e4ec7627390967730b78a34dc00c86bb34dd'
+          test "$(git -C "$LAYER11_ROOT/source" rev-parse 'HEAD^{tree}')" = 'e1db41673e6da5095579e71aff25cddb08e26c3e'
+          python3 -I -S -B - <<'PY_LAYER_SEALS'
+          import hashlib, json, os, runpy, sys
+          from pathlib import Path
+          root = Path(os.environ['LAYER11_ROOT'])
+          expected = {'tools/bazel/ci/final_native_layer11_test.py': 'edf20ec23565de8423721f0c2c14c23017ead45051c5672fbc88cd76bd5b335a', 'tools/bazel/ci/observe_final_native_layer11.py': '10dbcb6620b8b98208e1747cd257ea203eaedc8aaf9883e193c08ac652999627', 'tools/bazel/ci/observe_final_native_provenance.py': '4faa375fced471d30574c984e79c4433bd27d5d1abf87b44cd75a5b6e0c16a9c', 'tools/bazel/ci/observe_original_archive.py': '19f55eef22052643ca4eadd62af2620e97821511d932ba8f700a00724d09e20f', 'tools/bazel/ci/observe_vs_original_installed_policy.py': 'dba576f3229df618e1b3afbfa33bcd1a70f861cba1bd41c45b072811520fcfa6', 'tools/bazel/ci/recover_final_native_archives.py': '8440a5cb118f8eb51971039d91aff5944cee785c34def52b3a2129a86616b86c', 'tools/bazel/ci/recover_vs_original_inputs.py': '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5', 'tools/bazel/ci/vs_final_native_layer11_audit.json': '6f4cf23ed7f5d6d0c817c32fa8a9a54bc68f23b2c5e12097d3b1dd568d6772b8', 'tools/bazel/ci/vs_final_native_layer11_inputs.json': '987d5cf4c93d921f733209bf701d71cf12dc72e0b30079375f254537bcc59190', 'tools/bazel/ci/vs_native_api_provenance_inputs.json': '9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8'}
+          for relative, digest in expected.items():
+              path = root / 'observer' / relative
+              if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024**2 or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                  raise SystemExit('Reviewed audit control differs')
+          plan = json.loads((root / 'observer/tools/bazel/ci/vs_final_native_layer11_audit.json').read_bytes())
+          for relative, identity in plan['source_owners'].items():
+              path = root / 'source' / relative
+              if path.is_symlink() or not path.is_file() or path.stat().st_size != identity['bytes'] or hashlib.sha256(path.read_bytes()).hexdigest() != identity['sha256']:
+                  raise SystemExit('Original final206 inventory owner differs')
+          sys.path[:0] = [str(root / 'source'), str(root / 'observer')]
+          test = root / 'observer/tools/bazel/ci/final_native_layer11_test.py'
+          sys.argv = [str(test), 'OriginalLayerInventoryTests']
+          runpy.run_path(str(test), run_name='__main__')
+          PY_LAYER_SEALS
+      - name: Download fixed original syncd evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: securely1g/sonic-buildimage
+          run-id: 43477122783
+          artifact-ids: 14066019866
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ steps.paths.outputs.root }}/inputs/syncd
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Download fixed original gearbox evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: securely1g/sonic-buildimage
+          run-id: 43478742466
+          artifact-ids: 14066259944
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ steps.paths.outputs.root }}/inputs/gearbox
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Download fixed original provenance evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          repository: securely1g/sonic-buildimage
+          run-id: 43495953433
+          artifact-ids: 14071173858
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ steps.paths.outputs.root }}/inputs/provenance
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Recover only two original archives and compare layer11 metadata
+        id: audit
+        timeout-minutes: 40
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 -I -S -B "$LAYER11_ROOT/observer/tools/bazel/ci/observe_final_native_layer11.py" \
+            --control "$LAYER11_ROOT/observer/tools/bazel/ci" --source "$LAYER11_ROOT/source" \
+            --inputs "$LAYER11_ROOT/inputs" --scratch "$LAYER11_ROOT/temporary" \
+            --output "$LAYER11_ROOT/output"
+      - name: Upload the bounded original-layer comparison summary
+        if: always() && steps.paths.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-original-layer11-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/output/layer11-comparison.json
+          if-no-files-found: warn
+          compression-level: 9
+          retention-days: 14
+      - name: Retain complete file and TAR-header metadata without archive payloads
+        if: always() && steps.paths.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-original-layer11-inventories-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/output
+          if-no-files-found: warn
+          compression-level: 9
+          retention-days: 14
