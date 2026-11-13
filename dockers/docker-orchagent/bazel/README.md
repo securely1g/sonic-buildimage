@@ -394,9 +394,10 @@ before starting nested Docker. Static-image, Docker-load and P4RT verification
 use separate Docker storage directories so Make's cleanup does not remove the
 completed build's store.
 
-Workflow concurrency is scoped to the source revision so a new push can run its
-hosted checks while an older full VS build keeps its progress. A rerun of the same
-revision supersedes its earlier run; a new full VS job waits for its runner.
+Each push, manual dispatch and explicit retry runs independently, including
+on the same commit. Automatic checks for the same PR and revision share a
+group. A new PR revision can run its hosted checks while an earlier VS build
+continues. The native VS job has its own worker limit.
 
 The native config-engine base supplies Common's C++ library, Python bindings
 and normalized database configuration from the same Bazel-resolved Common

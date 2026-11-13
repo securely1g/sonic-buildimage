@@ -476,3 +476,6 @@ go_patches.module_override(
     patches = ["@sonic_gnmi//patches/bazel:0008-pam-build.patch"],
     path = "github.com/msteinert/pam",
 )
+
+# Pinned comparison tool; no image or package build is scheduled by this include.
+include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")

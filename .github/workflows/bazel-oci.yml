@@ -33,8 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
+  # Preserve long VS builds across PR revisions and isolate explicit retries.
+  group: bazel-oci-${{ github.run_attempt == '1' && github.event.pull_request.number || format('run-{0}', github.run_id) }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
@@ -1036,6 +1036,8 @@ jobs:
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
+          PYTHONPATH=tools/bazel/registry python3 -B -m unittest discover -s tools/bazel/equivalence_checker -p '*_test.py'
+          PYTHONPATH=tools/bazel/registry python3 -B tools/bazel/registry/registry_lib_test.py
 
       - name: Retain the verified GitLab source downloads
         id: repository_inputs
