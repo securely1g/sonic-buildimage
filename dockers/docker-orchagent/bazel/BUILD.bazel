@@ -1,4 +1,4 @@
-load("@aspect_bazel_lib//lib:jq.bzl", "jq")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_subset_lock")
 
 package(default_visibility = [
     "//dockers/docker-orchagent:__pkg__",
@@ -12,17 +12,9 @@ exports_files([
 
 # The OCI selector validates every member of the supplied dependency set.
 # Give it this layer's exact seven debug roots and closure from the shared lock.
-jq(
+apt_subset_lock(
     name = "debug_lock_view",
-    srcs = ["@sonic_build_infra//apt:apt.lock.json"],
-    args = [
-        "--sort-keys",
-        "--slurpfile",
-        "selection",
-        "$(execpath @orchagent_debug_apt_inputs//:apt_manifest.json)",
-    ],
-    data = ["@orchagent_debug_apt_inputs//:apt_manifest.json"],
-    expand_args = True,
-    filter_file = "debug_lock.jq",
+    selection = "@orchagent_debug_apt_inputs//:apt_manifest.json",
+    dependency_set = "orchagent_debug_subset_debian",
     out = "debug_apt.lock.json",
 )
