@@ -11,6 +11,25 @@ from tools.bazel.ci import observe_vs_legacy_configs as subject
 
 
 class LegacyConfigurationTest(unittest.TestCase):
+    def test_compatibility_scope_selects_only_fixed_nat_and_dhcp(self):
+        rows = [{"required_name": name} for name in ["docker-nat.gz", "docker-dhcp-relay.gz", "docker-other.gz"]]
+        self.assertEqual(subject.compatibility_rows({"rows": rows}), rows[:2])
+        for bad in [rows[1:], rows + [rows[0]]]:
+            with self.subTest(rows=bad), self.assertRaises(ValueError): subject.compatibility_rows({"rows": bad})
+
+    def test_compatibility_callback_requests_actual_tags_and_nat_version_count(self):
+        for name in ("docker-nat", "docker-dhcp-relay"):
+            row = {"required_name": name + ".gz", "family": name, "cache_sha256": "a" * 64,
+                   "member_sha256": "b" * 64, "entrypoint": ["/entry"],
+                   "expected_tags": [name + ":latest", name + ":bazel-ci"]}
+            with self.subTest(name=name), patch.object(subject.archives, "observe", return_value={"repo_tags": [name + ":old"]}) as inspect:
+                result = subject.observe_compatibility_member(Path("held"), row, Path("scratch"))
+            self.assertEqual(inspect.call_count, 1)
+            self.assertEqual(inspect.call_args.kwargs, {"expected_sha256": "b" * 64,
+                "include_repo_tags": True, "allow_absent_image_version": name == "docker-nat"})
+            self.assertEqual(result["configured_tags"], row["expected_tags"])
+            self.assertFalse(result["source_admission"]); self.assertFalse(result["VS_assembly_admission"])
+
     def test_roster_tampering_is_rejected_before_archive_access(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "manifest.json"

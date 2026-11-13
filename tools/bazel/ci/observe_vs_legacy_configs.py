@@ -40,6 +40,27 @@ def observe_member(path, row, scratch):
             "source_admission": False, "VS_assembly_admission": False}
 
 
+
+def compatibility_rows(value):
+    names = {"docker-nat.gz", "docker-dhcp-relay.gz"}
+    rows = [row for row in value["rows"] if row["required_name"] in names]
+    require(len(rows) == 2 and {row["required_name"] for row in rows} == names,
+            "Fixed NAT and DHCP original objects differ")
+    return rows
+
+
+def observe_compatibility_member(path, row, scratch):
+    require(row["required_name"] in {"docker-nat.gz", "docker-dhcp-relay.gz"},
+            "Unselected legacy compatibility object")
+    observed = archives.observe(path, row["expected_tags"][0], row["entrypoint"],
+                                expected_sha256=row["member_sha256"], include_repo_tags=True,
+                                allow_absent_image_version=row["required_name"] == "docker-nat.gz")
+    return {"name": row["required_name"], "family": row["family"],
+            "cache_sha256": row["cache_sha256"], "member_sha256": row["member_sha256"],
+            "configured_tags": row["expected_tags"], "observations": [observed],
+            "source_admission": False, "VS_assembly_admission": False}
+
+
 def failure_sites(error):
     """Bounded trusted source sites only; no exception text, values or paths."""
     allowed = {"observe_vs_legacy_configs.py", "observe_vs_host_binaries.py",
@@ -61,6 +82,7 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--compatibility-only", action="store_true")
     args = parser.parse_args()
 
     def deadline(*_):
@@ -80,12 +102,15 @@ def main():
                 "Original artifact directory must be canonical")
         args.scratch.mkdir(mode=0o700)
         created = True
-        for row in value["rows"]:
+        rows = compatibility_rows(value) if args.compatibility_only else value["rows"]
+        observer = observe_compatibility_member if args.compatibility_only else observe_member
+        result["scope"] = "NAT_AND_DHCP_ONLY" if args.compatibility_only else "FIXED34_ORIGINALS"
+        for row in rows:
             active = row["cache_name"]
             try:
                 observed = binaries.inspect_cached(
                     args.artifact / row["cache_artifact_path"], [row], args.scratch,
-                    observer=observe_member, maximum_member=256 * binaries.MIB)
+                    observer=observer, maximum_member=256 * binaries.MIB)
             except TimeoutError:
                 # The one-shot whole-observation deadline must remain terminal.
                 raise

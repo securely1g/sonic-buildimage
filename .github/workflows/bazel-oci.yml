@@ -3624,7 +3624,7 @@ jobs:
           sparse-checkout: |
             tools/bazel/ci/vs_archive_reuse.py
             tools/bazel/ci/artifact_validation.py
-      - name: Verify exact sources and 21 observation fixtures
+      - name: Verify exact sources and 28 observation fixtures
         env:
           OBS_ROOT: ${{ steps.paths.outputs.root }}
         run: |
@@ -3638,8 +3638,8 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['OBS_ROOT'])
           expected = {
-              'control/tools/bazel/ci/observe_original_archive.py': '808fe8610bd12c046177fb4bb6f19254ee853da74d611dbf2ed54c666c37a7ca',
-              'control/tools/bazel/tests/observe_original_archive_test.py': 'ccca4ea90cb9defce553e77191697c1062728a75a325ebd1714a9eec49b4500f',
+              'control/tools/bazel/ci/observe_original_archive.py': '19f55eef22052643ca4eadd62af2620e97821511d932ba8f700a00724d09e20f',
+              'control/tools/bazel/tests/observe_original_archive_test.py': '4d485ad25ffcfe7a9685b9845adb906ae83c08584114f172f5b53f2790db20ef',
               'control/tools/bazel/ci/original_archive_observation_inputs.json': 'be64c622ba4e455068ca4d88112b8269f068adc98d2d28e0dece230df9496e87',
               'source/tools/bazel/ci/vs_archive_reuse.py': '5e4cb0cdee959ac0b05973c6581d9cb7ddc2af74f4f11fa07446d0d9a961acb8',
               'source/tools/bazel/ci/artifact_validation.py': 'a61840d3a8a9bd6307f55400a02ed1b9ead6b4c24786f74a479e0cebaf91d773',
@@ -3894,13 +3894,13 @@ jobs:
           compression-level: 0
 
   vs_original_binary_configuration:
-    name: Observe original legacy Docker configuration (K3s)
+    name: Copy selected original VS inputs without rebuilding (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-binary-config' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     permissions:
       contents: read
       actions: read
-    timeout-minutes: 48
+    timeout-minutes: 92
     concurrency:
       group: vs-binary-config-${{ github.run_id }}-${{ github.run_attempt }}
       cancel-in-progress: false
@@ -3927,9 +3927,10 @@ jobs:
           workspace = Path(os.environ['GITHUB_WORKSPACE'])
           if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
               raise SystemExit('Expected the current private K3s workspace')
-          # The original legacy ZIP is4.64 GB; retain only one bounded inner copy at a time.
+          # Original ZIPs total4.92 GB; selected direct members total1.21 GB.
+          # Keep only one bounded inner temporary copy at a time.
           if shutil.disk_usage(workspace).free < 12 * 1024**3:
-              raise SystemExit('Original metadata observation requires 12 GiB free temporary storage')
+              raise SystemExit('Original-byte transport requires 12 GiB free temporary storage')
           name = f'vs-binary-config-{run}-{attempt}-{worker}'
           root = workspace / name
           if os.path.lexists(root):
@@ -3942,7 +3943,7 @@ jobs:
           with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
               output.write(f'root={root}\ncontrol={name}/control\nsource={name}/source\n')
           PY_PATHS
-      - name: Checkout the reviewed metadata observers
+      - name: Checkout the reviewed metadata observers and fixed transport selection
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -3961,6 +3962,12 @@ jobs:
             tools/bazel/ci/vs_original_legacy_config_roster.json
             tools/bazel/tests/observe_original_archive_test.py
             tools/bazel/tests/observe_vs_legacy_configs_test.py
+            tools/bazel/ci/promote_vs_original_members.py
+            tools/bazel/ci/vs_selected_original_members.json
+            tools/bazel/ci/observe_original_host_siblings.py
+            tools/bazel/ci/vs_original_host_siblings.json
+            tools/bazel/ci/vs_host_binary_observation.json
+            tools/bazel/tests/promote_vs_original_members_test.py
       - name: Checkout the unchanged archive reader owner
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3974,9 +3981,9 @@ jobs:
           sparse-checkout: |
             tools/bazel/ci/vs_archive_reuse.py
             tools/bazel/ci/artifact_validation.py
-      - name: Verify exact sources and 27 focused legacy metadata fixtures
+      - name: Verify exact sources and 49 bounded metadata and copy fixtures
         id: sources
-        timeout-minutes: 2
+        timeout-minutes: 3
         env:
           OBS_ROOT: ${{ steps.paths.outputs.root }}
         run: |
@@ -3990,14 +3997,20 @@ jobs:
           from pathlib import Path
           root = Path(os.environ['OBS_ROOT'])
           expected = {
-              'control/tools/bazel/ci/observe_original_archive.py': '808fe8610bd12c046177fb4bb6f19254ee853da74d611dbf2ed54c666c37a7ca',
+              'control/tools/bazel/ci/observe_original_archive.py': '19f55eef22052643ca4eadd62af2620e97821511d932ba8f700a00724d09e20f',
               'control/tools/bazel/ci/observe_vs_host_binaries.py': 'ad0af004e1d84ca178798b4d16fee7062275d1d36b1e7dfa8cd61771a271304c',
-              'control/tools/bazel/ci/observe_vs_legacy_configs.py': '8bb304e7a5306e5d4cfd0aa7fc0fc80705b133c16b597514d688db3b9c847723',
+              'control/tools/bazel/ci/observe_vs_legacy_configs.py': 'fe80077ea5223233e7876b698c8ef7f0ea66b8b43eb2aca0730dcfcd820fa07a',
               'control/tools/bazel/ci/recover_vs_original_inputs.py': '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5',
               'control/tools/bazel/ci/vs_original_binary_artifacts.json': '8334736fa50eb466d3d25761e41fc236a62cd11038eb99658821481543c05965',
               'control/tools/bazel/ci/vs_original_legacy_config_roster.json': '9cb51e91ddf3726be7e565f14a1eeefafea30e4234ab4be9ffe1e47ee480210f',
-              'control/tools/bazel/tests/observe_original_archive_test.py': 'ccca4ea90cb9defce553e77191697c1062728a75a325ebd1714a9eec49b4500f',
-              'control/tools/bazel/tests/observe_vs_legacy_configs_test.py': '105f7eff98cd3569584cf646e37cd8f0d8f0c70aa83949aab3cec5da06e9c19f',
+              'control/tools/bazel/tests/observe_original_archive_test.py': '4d485ad25ffcfe7a9685b9845adb906ae83c08584114f172f5b53f2790db20ef',
+              'control/tools/bazel/tests/observe_vs_legacy_configs_test.py': 'cfae5ad1cfaa10acffd1e62234e78d735ce7cbefa67026934ac18e7a96535158',
+              'control/tools/bazel/ci/promote_vs_original_members.py': '579de4fb7665072d28e34efc8b4dc877ea793a1793a07e31e1bc94fd8ee8a94c',
+              'control/tools/bazel/ci/vs_selected_original_members.json': '7ca63811c5032792c117a481b6480d89dc64bb869848d253097ad9bba6e16760',
+              'control/tools/bazel/ci/observe_original_host_siblings.py': 'cfa62619d7131fe68e1a90b758f8b6192e8a4a847af24f9af240590ccd7b89ad',
+              'control/tools/bazel/ci/vs_original_host_siblings.json': '845a3de37a00fff7f599b2de42be79540250c83c7f14265fea0b718a85e5ae3c',
+              'control/tools/bazel/ci/vs_host_binary_observation.json': '2ceeb63d802c73fa35a698c56718ad8973970bd43baf0f12778cd6b874b25286',
+              'control/tools/bazel/tests/promote_vs_original_members_test.py': '5f8618911388e2976ed11af4bc87d302fb1528840db81d0c59c61e581bd8e533',
               'source/tools/bazel/ci/artifact_validation.py': 'a61840d3a8a9bd6307f55400a02ed1b9ead6b4c24786f74a479e0cebaf91d773',
               'source/tools/bazel/ci/vs_archive_reuse.py': '5e4cb0cdee959ac0b05973c6581d9cb7ddc2af74f4f11fa07446d0d9a961acb8',
           }
@@ -4014,14 +4027,14 @@ jobs:
               with destination.open('xb') as output:
                   output.write(raw)
           original = json.loads((root / 'inspection/tools/bazel/ci/vs_original_binary_artifacts.json').read_bytes())
-          selected = [row for row in original['artifacts'] if row['id'] == 14037915141]
-          if len(selected) != 1:
-              raise SystemExit('Expected the fixed original legacy artifact')
+          selected = [row for row in original['artifacts'] if row['id'] in (14030424431, 14037915141)]
+          if len(selected) != 2 or {row['id'] for row in selected} != {14030424431, 14037915141}:
+              raise SystemExit('Expected the two fixed original capture artifacts')
           with (root / 'outputs/original-inputs.json').open('xb') as output:
               output.write((json.dumps({'artifacts': selected}, sort_keys=True) + '\n').encode())
           PY_COPY
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBS_ROOT/temporary" TMPDIR="$OBS_ROOT/temporary" \
-            /usr/bin/python3 -I -S -B -c 'import sys,unittest; sys.path.insert(0,sys.argv[1]); suite=unittest.defaultTestLoader.loadTestsFromNames(["tools.bazel.tests.observe_original_archive_test","tools.bazel.tests.observe_vs_legacy_configs_test"]); assert suite.countTestCases() == 27; result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())' "$OBS_ROOT/inspection"
+            /usr/bin/python3 -I -S -B -c 'import sys,unittest; sys.path.insert(0,sys.argv[1]); suite=unittest.defaultTestLoader.loadTestsFromNames(["tools.bazel.tests.observe_original_archive_test","tools.bazel.tests.observe_vs_legacy_configs_test","tools.bazel.tests.promote_vs_original_members_test"]); assert suite.countTestCases() == 49; result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())' "$OBS_ROOT/inspection"
       - name: Confirm immutable original artifact metadata
         id: artifacts
         timeout-minutes: 5
@@ -4042,6 +4055,18 @@ jobs:
               retained.push(actual);
             }
             fs.writeFileSync(root + '/outputs/original-artifact-metadata.json', JSON.stringify(retained, null, 2) + '\n', {flag: 'wx'});
+      - name: Read the fixed original host package objects
+        id: host_download
+        if: always() && !cancelled() && steps.artifacts.outcome == 'success' && steps.sources.outcome == 'success'
+        timeout-minutes: 7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: securely1g/sonic-buildimage
+          github-token: ${{ github.token }}
+          run-id: 43415239936
+          artifact-ids: '14030424431'
+          path: ${{ steps.paths.outputs.root }}/inputs/host
+          digest-mismatch: error
       - name: Read the fixed original legacy Docker objects
         id: legacy_download
         if: always() && !cancelled() && steps.artifacts.outcome == 'success' && steps.sources.outcome == 'success'
@@ -4054,7 +4079,7 @@ jobs:
           artifact-ids: '14037915141'
           path: ${{ steps.paths.outputs.root }}/inputs/legacy
           digest-mismatch: error
-      - name: Observe 34 original legacy archives and both possible DHCP tags
+      - name: Observe only the original NAT version and DHCP tags
         id: legacy_observation
         if: always() && !cancelled() && steps.legacy_download.outcome == 'success' && steps.sources.outcome == 'success'
         timeout-minutes: 16
@@ -4063,19 +4088,48 @@ jobs:
         run: |
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBS_ROOT/temporary" TMPDIR="$OBS_ROOT/temporary" \
             /usr/bin/python3 -I -S -B "$OBS_ROOT/inspection/tools/bazel/ci/observe_vs_legacy_configs.py" \
+            --compatibility-only \
             --manifest "$OBS_ROOT/inspection/tools/bazel/ci/vs_original_legacy_config_roster.json" \
             --artifact "$OBS_ROOT/inputs/legacy" --scratch "$OBS_ROOT/legacy-scratch" \
             --report "$OBS_ROOT/outputs/legacy/legacy-image-configurations.json"
-      - name: Retain only the small legacy configuration report
-        if: always() && steps.legacy_observation.outcome != 'skipped'
+      - name: Copy the fixed 74 original members with their lineage
+        id: promote
+        if: always() && !cancelled() && steps.host_download.outcome == 'success' && steps.legacy_download.outcome == 'success' && steps.legacy_observation.outcome == 'success' && steps.sources.outcome == 'success'
+        timeout-minutes: 20
+        env:
+          OBS_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBS_ROOT/temporary" TMPDIR="$OBS_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B "$OBS_ROOT/inspection/tools/bazel/ci/promote_vs_original_members.py" \
+            --selection "$OBS_ROOT/inspection/tools/bazel/ci/vs_selected_original_members.json" \
+            --host-roster "$OBS_ROOT/inspection/tools/bazel/ci/vs_host_binary_observation.json" \
+            --legacy-roster "$OBS_ROOT/inspection/tools/bazel/ci/vs_original_legacy_config_roster.json" \
+            --companion-roster "$OBS_ROOT/inspection/tools/bazel/ci/vs_original_host_siblings.json" \
+            --host-artifact "$OBS_ROOT/inputs/host" --legacy-artifact "$OBS_ROOT/inputs/legacy" \
+            --output "$OBS_ROOT/outputs/direct" --scratch "$OBS_ROOT/promotion-scratch" \
+            --report "$OBS_ROOT/outputs/direct/lineage.json"
+      - name: Retain the small observation and transport reports
+        if: always() && steps.sources.outcome == 'success'
         timeout-minutes: 3
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vs-legacy-configuration-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          name: vs-selected-original-input-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ steps.paths.outputs.root }}/outputs/legacy/*.json
+            ${{ steps.paths.outputs.root }}/outputs/direct/lineage.json
+            ${{ steps.paths.outputs.root }}/outputs/original-inputs.json
             ${{ steps.paths.outputs.root }}/outputs/original-artifact-metadata.json
           if-no-files-found: error
+          retention-days: 30
+      - name: Retain unchanged direct members for the existing VS importer
+        if: success() && steps.promote.outcome == 'success'
+        timeout-minutes: 12
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-selected-original-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/direct/
+          if-no-files-found: error
+          compression-level: 0
           retention-days: 30
   vs_original_socat_comparison:
     name: Compare three original Socat binaries (K3s)

@@ -49,7 +49,8 @@ class ObservationTarInfo(tarfile.TarInfo):
     _proc_gnusparse_10 = _proc_gnusparse_00
 
 
-def observe(path, expected_tag, entrypoint, *, expected_sha256=None):
+def observe(path, expected_tag, entrypoint, *, expected_sha256=None,
+            allow_absent_image_version=False, include_repo_tags=False, include_loader_metadata=False):
     """Read stored bytes and bounded JSON; never extract or execute layers."""
     documents, files = {}, {}
     expanded = json_bytes = count = 0
@@ -125,20 +126,57 @@ def observe(path, expected_tag, entrypoint, *, expected_sha256=None):
     require(isinstance(environment, list) and all(isinstance(x, str) and "=" in x for x in environment),
             "Docker environment is invalid")
     versions = [x.split("=", 1)[1] for x in environment if x.startswith("IMAGE_VERSION=")]
-    require(len(versions) == 1, "expected exactly one image version")
-    version = versions[0]
+    require(len(versions) == 1 or (allow_absent_image_version and not versions),
+            "expected exactly one image version")
+    version = versions[0] if versions else None
     # Only the version is public; never publish arbitrary environment/labels.
-    safe_version = version if re.fullmatch(r"[A-Za-z0-9._+:-]{1,128}", version) else None
+    safe_version = version if version is not None and re.fullmatch(r"[A-Za-z0-9._+:-]{1,128}", version) else None
     checks = {"linux_amd64": config.get("os") == "linux" and config.get("architecture") == "amd64",
               "tag_matches": entry.get("RepoTags") == [expected_tag],
               "entrypoint_matches": settings.get("Entrypoint") == entrypoint,
               "image_version_matches": version == "bazel-ci"}
-    return {"status": "ORIGINAL_ARCHIVE_CONFIGURATION_OBSERVED", "sha256": digest,
+    result = {"status": "ORIGINAL_ARCHIVE_CONFIGURATION_OBSERVED", "sha256": digest,
             "bytes": reader.size, "config_sha256": files[name], "expected_tag": expected_tag,
-            "image_version": safe_version, "image_version_sha256": hashlib.sha256(version.encode()).hexdigest(),
+            "image_version": safe_version, "image_version_sha256": hashlib.sha256(version.encode()).hexdigest() if version is not None else None,
             "checks": checks, "matches_expected_configuration": all(checks.values()),
             "full_layer_validation": False, "independent_Make_manifest_checked": False,
             "source_admission": False, "VS_assembly_admission": False}
+    if include_repo_tags:
+        tags = entry.get("RepoTags")
+        require(isinstance(tags, list) and 1 <= len(tags) <= 16 and
+                all(isinstance(tag, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", tag)
+                    for tag in tags) and len(set(tags)) == len(tags), "Docker repository tags exceed observation bounds")
+        result["repo_tags"] = tags
+    if include_loader_metadata:
+        labels = settings.get("Labels")
+        label = labels.get("com.azure.sonic.manifest") if isinstance(labels, dict) else None
+        latest_tag = expected_tag.rsplit(":", 1)[0] + ":latest"
+        facts = {"expected_latest_tag": latest_tag,
+                 "latest_tag_present": isinstance(entry.get("RepoTags"), list) and latest_tag in entry["RepoTags"],
+                 "manifest_label_is_string": isinstance(label, str), "manifest_label_within_bound": False,
+                 "manifest_label_json_valid": False, "manifest_label_jq_truthy": False,
+                 "manifest_label_kind": None, "manifest_label_sha256": None, "manifest_label_bytes": None}
+        if isinstance(label, str) and len(label) <= 65536:
+            try:
+                raw_label = label.encode("utf-8")
+                require(len(raw_label) <= 65536, "Manifest label exceeds observation bound")
+                facts.update(manifest_label_within_bound=True, manifest_label_bytes=len(raw_label),
+                             manifest_label_sha256=hashlib.sha256(raw_label).hexdigest())
+                def reject_constant(_):
+                    raise ValueError("Nonstandard JSON literal")
+                decoded = json.loads(label, parse_constant=reject_constant)
+                kind = ("null" if decoded is None else "boolean" if isinstance(decoded, bool) else
+                        "object" if isinstance(decoded, dict) else "array" if isinstance(decoded, list) else
+                        "string" if isinstance(decoded, str) else "number")
+                facts.update(manifest_label_json_valid=True, manifest_label_kind=kind,
+                             manifest_label_jq_truthy=decoded is not None and decoded is not False)
+            except (ValueError, UnicodeError, RecursionError):
+                pass
+        result["make_loader_observation"] = facts
+    if include_repo_tags or allow_absent_image_version:
+        result["image_version_entries"] = len(versions)
+        result["absent_image_version_allowed"] = allow_absent_image_version
+    return result
 
 
 def main():

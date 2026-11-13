@@ -15,16 +15,17 @@ from tools.bazel.ci import observe_original_archive as observer
 
 class OriginalArchiveObservationTest(unittest.TestCase):
     def make_archive(self, root, *, version="bazel-ci", architecture="amd64", tag="docker-eventd:latest",
-                     extra=(), tamper_config=False, missing_layer=False, duplicate_version=False):
-        env = ["IMAGE_VERSION=" + version, "PRIVATE_VALUE=do-not-publish"]
+                     extra=(), tamper_config=False, missing_layer=False, duplicate_version=False, tags=None, manifest_label="unverified-label"):
+        env = [] if version is None else ["IMAGE_VERSION=" + version]
+        env.append("PRIVATE_VALUE=do-not-publish")
         if duplicate_version:
             env.append("IMAGE_VERSION=" + version)
         config = {"os": "linux", "architecture": architecture,
                   "config": {"Entrypoint": ["/usr/local/bin/supervisord"], "Env": env,
-                             "Labels": {"com.azure.sonic.manifest": "unverified-label"}}}
+                             "Labels": {"com.azure.sonic.manifest": manifest_label}}}
         data = json.dumps(config).encode()
         name = ("0" * 64 if tamper_config else hashlib.sha256(data).hexdigest()) + ".json"
-        manifest = [{"RepoTags": [tag], "Config": name, "Layers": ["layer.tar"]}]
+        manifest = [{"RepoTags": [tag] if tags is None else tags, "Config": name, "Layers": ["layer.tar"]}]
         members = [(name, data), ("manifest.json", json.dumps(manifest).encode())]
         if not missing_layer:
             members.append(("layer.tar", b"not validated or extracted as a layer"))
@@ -45,6 +46,71 @@ class OriginalArchiveObservationTest(unittest.TestCase):
 
     def observe(self, path, **kwargs):
         return observer.observe(path, "docker-eventd:latest", ["/usr/local/bin/supervisord"], **kwargs)
+
+    def test_absent_version_is_explicit_only_for_requested_observation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.make_archive(Path(tmp), version=None)
+            with self.assertRaisesRegex(ValueError, "exactly one image version"):
+                self.observe(path)
+            result = self.observe(path, allow_absent_image_version=True, include_repo_tags=True)
+            self.assertEqual(result["image_version_entries"], 0)
+            self.assertIsNone(result["image_version"]); self.assertIsNone(result["image_version_sha256"])
+            self.assertFalse(result["checks"]["image_version_matches"])
+            self.assertFalse(result["source_admission"]); self.assertFalse(result["VS_assembly_admission"])
+            self.assertNotIn("PRIVATE_VALUE", json.dumps(result))
+
+    def test_optional_absence_does_not_allow_duplicate_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "exactly one image version"):
+                self.observe(self.make_archive(Path(tmp), duplicate_version=True), allow_absent_image_version=True)
+
+    def test_actual_versioned_repository_tags_are_retained_without_matching_claim(self):
+        tags = ["docker-dhcp-relay:HEAD.1248-9621c2d4", "docker-dhcp-relay:old"]
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.observe(self.make_archive(Path(tmp), tags=tags), include_repo_tags=True)
+            self.assertEqual(result["repo_tags"], tags)
+            self.assertFalse(result["checks"]["tag_matches"])
+            self.assertFalse(result["matches_expected_configuration"])
+            self.assertEqual(result["image_version_entries"], 1)
+
+    def test_repository_tag_count_length_duplicates_and_credentials_are_bounded(self):
+        for tags in [["tag:" + str(i) for i in range(17)], ["a" * 257], ["user:password@host/image:tag"],
+                     ["same:tag", "same:tag"]]:
+            with self.subTest(tags=tags), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaisesRegex(ValueError, "repository tags exceed"):
+                    self.observe(self.make_archive(Path(tmp), tags=tags), include_repo_tags=True)
+
+    def test_loader_label_facts_match_single_value_jq_truthiness_without_raw_labels(self):
+        for value, kind, truthy in [({}, "object", True), ([], "array", True), (0, "number", True),
+                                   ("", "string", True), (False, "boolean", False), (None, "null", False)]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
+                label = json.dumps(value)
+                result = self.observe(self.make_archive(Path(tmp), manifest_label=label), include_loader_metadata=True)
+                facts = result["make_loader_observation"]
+                self.assertTrue(facts["manifest_label_json_valid"])
+                self.assertEqual(facts["manifest_label_jq_truthy"], truthy)
+                self.assertEqual(facts["manifest_label_kind"], kind)
+                self.assertEqual(facts["manifest_label_sha256"], hashlib.sha256(label.encode()).hexdigest())
+                self.assertTrue(facts["latest_tag_present"])
+                self.assertFalse(result["source_admission"]); self.assertFalse(result["VS_assembly_admission"])
+                self.assertNotIn("manifest_label", facts)
+
+    def test_invalid_or_oversized_loader_labels_are_observed_without_admission(self):
+        for label in ("not JSON", "NaN", "{", "x" * 65537, None):
+            with self.subTest(size=len(label) if isinstance(label, str) else None), tempfile.TemporaryDirectory() as tmp:
+                result = self.observe(self.make_archive(Path(tmp), manifest_label=label), include_loader_metadata=True)
+                facts = result["make_loader_observation"]
+                self.assertFalse(facts["manifest_label_json_valid"])
+                self.assertFalse(facts["manifest_label_jq_truthy"])
+                self.assertFalse(result["VS_assembly_admission"])
+
+    def test_loader_latest_presence_is_membership_not_singleton_tag_equality(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tags = ["docker-eventd:old", "docker-eventd:latest"]
+            result = self.observe(self.make_archive(Path(tmp), tags=tags, manifest_label="{}"), include_loader_metadata=True)
+            self.assertTrue(result["make_loader_observation"]["latest_tag_present"])
+            self.assertFalse(result["checks"]["tag_matches"])
+            self.assertFalse(result["matches_expected_configuration"])
 
     def test_exact_configuration_is_observation_not_admission(self):
         with tempfile.TemporaryDirectory() as tmp:
