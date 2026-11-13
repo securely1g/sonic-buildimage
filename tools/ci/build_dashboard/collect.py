@@ -32,6 +32,7 @@ REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 IMAGE_JOBS = {
     "Make VS with Bazel SWSS (AMD64)": "make-vs",
+    "VS installer in SONiC slave (AMD64)": "make-vs",
     "Bazel VS installer (AMD64)": "bazel-vs",
 }
 IMAGE_STEPS = {
@@ -39,6 +40,7 @@ IMAGE_STEPS = {
     "Build the VS image",
     "Build the VS image with Bazel SWSS archives",
     "Build the VS image and both OCI container variants",
+    "Build sonic-vs.bin directly with slave.mk",
     "Build the Bazel VS installer",
     "Build Bazel VS installer",
     "Build and verify sonic-vs.bin with Bazel",
@@ -92,11 +94,17 @@ def seconds(item):
     return elapsed if elapsed >= 0 else None
 
 
-def phase(name):
+def phase(name, job_name=None):
     lower = name.lower()
     if lower.startswith(("post ", "remove ", "complete job")):
         return "other"
-    if "upload" in lower:
+    if "upload" in lower or (
+        job_name == "VS installer in SONiC slave (AMD64)"
+        and name in (
+            "Publish the installer and matching container archives",
+            "Preserve build receipts",
+        )
+    ):
         return "upload"
     if lower.startswith(("verify", "test", "validate", "check")) and not any(
         word in lower for word in ("prerequisite", "capacity", "nested docker", "checkout")
@@ -135,7 +143,7 @@ def normalize_job(raw, repo, run_id):
             "status": raw_step.get("status"), "conclusion": raw_step.get("conclusion"),
             "started_at": timestamp(raw_step.get("started_at")),
             "completed_at": timestamp(raw_step.get("completed_at")),
-            "duration_seconds": seconds(raw_step), "phase": phase(step_name),
+            "duration_seconds": seconds(raw_step), "phase": phase(step_name, name),
         })
     phases = {}
     for category in PHASES:
