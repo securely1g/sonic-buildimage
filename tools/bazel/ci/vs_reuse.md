@@ -32,6 +32,18 @@ contents. Its assembly commit/tree must match the real merge checkout; the
 canonical PR head remains a separate field. Existing native requests cannot
 be relabeled after the head, base, merge or controller changes.
 
+Each of the 42 migrated container archives also has a `bazel_archive_builds`
+entry, keyed by its `target/...gz` destination. The entry records its original
+`artifact_id`, exact file `sha256`, and reviewed `build_step` name. The build
+step must have completed successfully before that artifact's successful upload
+step in the authenticated producer job. Review the pinned producer workflow to
+confirm that the named step actually builds the archive with Bazel.
+
+After checking the imported archive bytes, the metadata-only Make target calls
+the existing container-method stamp rules for those selected archives. This
+restores the `bazel` stamps omitted from image artifact uploads; it does not
+rebuild archives or replace their source, native or content validation.
+
 The explicit task is restricted to the operator account on the maintained
 fork. It does not activate the legacy full-image route for migration PRs.
 

@@ -78,6 +78,32 @@ def transfers(value):
     return rows
 
 
+def bazel_builds(value):
+    """Bind reviewed Bazel producer steps to the exact imported archive members.
+
+    The independently reviewed inventory identifies the actual build step in
+    each immutable producer workflow. This is build-method provenance only;
+    owner, native, image-content and source checks remain separate.
+    """
+    proofs = value.get("bazel_archive_builds")
+    require(isinstance(proofs, dict) and len(proofs) <= 42,
+            "Reviewed Bazel archive build evidence is required")
+    owners = {target: row for row in transfers(value) for target in row["members"].values()}
+    for target, proof in proofs.items():
+        require(isinstance(target, str) and re.fullmatch(r"target/docker-[a-z0-9-]+\.gz", target)
+                and target in owners, "Bazel evidence does not name an imported archive")
+        row = owners[target]
+        require(isinstance(proof, dict) and set(proof) == {"artifact_id", "sha256", "build_step"}
+                and positive(proof["artifact_id"]) and proof["artifact_id"] == row["artifact_id"]
+                and proof["sha256"] == value["files"][target]["sha256"],
+                "Bazel build evidence differs from the imported archive identity")
+        step = proof["build_step"]
+        require(isinstance(step, str) and 0 < len(step) <= 256
+                and not any(c in step for c in "\0\r\n") and step != row["upload_step"],
+                "An independently reviewed Bazel build step is required")
+    return proofs
+
+
 def storage_budget(value):
     """Use original member sizes; the pinned upstream action streams ZIP extraction."""
     rows = transfers(value)
@@ -127,6 +153,7 @@ def check_producer(row, artifact, run, job):
 
 def admit(value, api_read=api):
     result, runs, jobs = {}, {}, {}
+    builds = bazel_builds(value)
     for row in transfers(value):
         artifact = api_read("/actions/artifacts/" + str(row["artifact_id"]))
         key = (row["run_id"], row["attempt"])
@@ -134,7 +161,23 @@ def admit(value, api_read=api):
             runs[key] = api_read("/actions/runs/%s/attempts/%s" % key)
         if row["job_id"] not in jobs:
             jobs[row["job_id"]] = api_read("/actions/jobs/" + str(row["job_id"]))
-        result[str(row["artifact_id"])] = check_producer(row, artifact, runs[key], jobs[row["job_id"]])
+        accepted = check_producer(row, artifact, runs[key], jobs[row["job_id"]])
+        accepted["bazel_archive_builds"] = {}
+        for target, proof in builds.items():
+            if proof["artifact_id"] != row["artifact_id"]:
+                continue
+            steps = [step for step in jobs[row["job_id"]]["steps"]
+                     if step["name"] == proof["build_step"]]
+            require(len(steps) == 1 and steps[0]["status"] == "completed"
+                    and steps[0]["conclusion"] == "success",
+                    "Original Bazel build step did not succeed: " + target)
+            upload = next(step for step in jobs[row["job_id"]]["steps"]
+                          if step["name"] == row["upload_step"])
+            require(jobs[row["job_id"]]["steps"].index(steps[0])
+                    < jobs[row["job_id"]]["steps"].index(upload),
+                    "Original Bazel build step follows its artifact upload: " + target)
+            accepted["bazel_archive_builds"][target] = proof
+        result[str(row["artifact_id"])] = accepted
     return result
 
 

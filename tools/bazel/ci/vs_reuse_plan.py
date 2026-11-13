@@ -218,6 +218,19 @@ def kernel_arguments(root, value, args):
             "SONIC_BAZEL_KERNEL_PRODUCER_WORKSPACE=" + make_path(args.producer_workspace, directory=True),
             "SONIC_BAZEL_KERNEL_REGISTRY_WORKSPACE=" + make_path(args.registry_workspace, directory=True)]
 
+def bazel_marker_archives(value):
+    """Select only imported modern archives with separately admitted build evidence."""
+    from tools.bazel.ci import vs_final23, vs_reuse_stage
+    expected = {"target/" + name + ".gz" for name in (*vs_final23.PARENTS, *vs_final23.RUNTIMES)}
+    expected.update("target/" + name + "-dbg.gz" for name in vs_final23.RUNTIMES
+                    if name != vs_final23.ENGINE)
+    proofs = vs_reuse_stage.bazel_builds(value)
+    require(len(expected) == 42 and set(proofs) == expected
+            and expected <= set(value["groups"]["archives"]),
+            "Every modern archive requires its original Bazel build evidence")
+    return sorted(expected)
+
+
 def archive_paths(receipt, value):
     paths = {"target/" + name + ".gz" for name in receipt["archives"]} | set(receipt["legacy"])
     require(len(receipt["archives"]) == 42, "All42 final23 archives are required")
@@ -741,6 +754,7 @@ def plan(args):
     root, value = inputs(args)
     common, workers = verify_native_inputs(root, value, args)
     from tools.bazel.ci import vs_final23
+    bazel_marker_archives(value)
     receipt = vs_final23.capture(root, installer="sonic-vs.bin", debug=False)
     vs_final23.verify(root, receipt)
     paths = archive_paths(receipt, value)
@@ -828,8 +842,9 @@ def main():
     if args.mode == "metadata":
         root, value = inputs(args)
         kernel = kernel_arguments(root, value, args)
+        markers = "VS_REUSE_BAZEL_ARCHIVES=" + " ".join(bazel_marker_archives(value))
         print(json.dumps({"status": "METADATA_COMMAND_ONLY", "argv": ["make", "--jobs=1", "-f", "slave.mk",
-              "-f", str(Path(__file__).with_name("vs_reuse_selection.mk")), "vs-reuse-selection", *FLAGS,
+              "-f", str(Path(__file__).with_name("vs_reuse_selection.mk")), "vs-reuse-selection", *FLAGS, markers,
               *package_cache_overrides(package_paths(value), wheel_paths(value)), *kernel],
               "scope": "Run only after admitted worker preparation: reviewed assembly slave.mk parsing has host setup side effects."}, indent=2))
         return

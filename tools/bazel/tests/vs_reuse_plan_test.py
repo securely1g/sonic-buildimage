@@ -564,6 +564,7 @@ class ExplicitWheelReuseTests(unittest.TestCase):
              mock.patch.object(plan, "verify_native_inputs", return_value=({}, {})), \
              mock.patch.dict(plan.sys.modules, {"tools.bazel.ci.vs_final23": final23}), \
              mock.patch.object(plan, "archive_paths", return_value=["target/docker-x.gz"]), \
+             mock.patch.object(plan, "bazel_marker_archives", return_value=["target/docker-fixture.gz"]), \
              mock.patch.object(plan, "kernel_arguments", return_value=[]), \
              mock.patch.object(plan, "save_capture", return_value="e" * 64), \
              mock.patch.object(plan, "safe", return_value=args.make_inputs), \
@@ -1070,6 +1071,7 @@ class MetadataCachePolicyTests(unittest.TestCase):
              mock.patch.object(plan, "package_paths", return_value=debs), \
              mock.patch.object(plan, "wheel_paths", return_value=wheels), \
              mock.patch.object(plan, "kernel_arguments", return_value=["KERNEL_FIXTURE=unchanged"]), \
+             mock.patch.object(plan, "bazel_marker_archives", return_value=["target/docker-example.gz"]), \
              mock.patch.object(subprocess, "Popen", side_effect=AssertionError("No subprocess")), \
              contextlib.redirect_stdout(output):
             plan.main()
@@ -1219,6 +1221,7 @@ class ConfiguredSourceClosureTests(unittest.TestCase):
                  mock.patch.object(plan, "inputs", return_value=(root, {"groups": {"kernel": []}})), \
                  mock.patch.object(plan, "verify_native_inputs", return_value=({}, {})), \
                  mock.patch.object(plan, "archive_paths", return_value=["target/docker-fixture.gz"]), \
+                 mock.patch.object(plan, "bazel_marker_archives", return_value=["target/docker-fixture.gz"]), \
                  mock.patch.object(plan, "package_paths", return_value=sorted(case.debs)), \
                  mock.patch.object(plan, "wheel_paths", return_value=[]), \
                  mock.patch.object(plan, "kernel_arguments", return_value=[]), \
@@ -1233,6 +1236,7 @@ class ConfiguredSourceClosureTests(unittest.TestCase):
 class FrozenInventoryBoundaryTests(unittest.TestCase):
     def fixture(self, root):
         value = {"schema": 1, "kind": "sonic-final23-reuse-input-inventory",
+                 "bazel_archive_builds": {},
                  "source": {"head": SOURCE_HEAD, "tree": SOURCE_TREE, "merge": "b" * 40,
                             "controller": plan.WORKER, "catalog": plan.CATALOG, "pr": 206},
                  "assembly": dict(ASSEMBLY),

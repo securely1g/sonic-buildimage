@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import os
+import subprocess
 import sys
 from pathlib import Path
 import tempfile
@@ -19,7 +20,7 @@ def fixtures():
            "head": "b" * 40, "event": "workflow_dispatch", "workflow": ".github/workflows/bazel-oci.yml",
            "members": {"runtime.gz": "target/docker-example.gz"}}
     value = {"files": {"MODULE.bazel": record(b"source"), "target/docker-example.gz": record(b"original")},
-             "groups": {"source": ["MODULE.bazel"]}, "transfer": [row]}
+             "groups": {"source": ["MODULE.bazel"]}, "transfer": [row], "bazel_archive_builds": {}}
     artifact = {"id": 123, "name": "original-images", "digest": row["digest"], "size_in_bytes": 100,
                 "expired": False, "workflow_run": {"id": 456, "head_sha": row["head"]},
                 "created_at": "2026-11-10T10:02:00Z"}
@@ -164,6 +165,86 @@ class OriginalArtifactStagingTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 stage.stage(root, inbox, value)
             self.assertFalse((root / "target").exists())
+
+
+class ImportedBazelMarkerTest(unittest.TestCase):
+    def proven(self):
+        value, artifact, run, job = fixtures()
+        target = "target/docker-example.gz"
+        value["bazel_archive_builds"][target] = {
+            "artifact_id": 123, "sha256": value["files"][target]["sha256"],
+            "build_step": "Build source runtime and debug images"}
+        job["steps"].insert(0, {"name": "Build source runtime and debug images",
+                               "status": "completed", "conclusion": "success"})
+        responses = {"/actions/artifacts/123": artifact, "/actions/runs/456/attempts/1": run,
+                     "/actions/jobs/789": job}
+        return value, job, responses
+
+    def test_authenticates_actual_build_step_without_claiming_source_acceptance(self):
+        value, job, responses = self.proven()
+        result = stage.admit(value, responses.__getitem__)
+        self.assertEqual(result["123"]["bazel_archive_builds"], value["bazel_archive_builds"])
+        self.assertFalse(result["123"]["raw_zip_digest_recomputed_here"])
+
+    def test_failed_missing_or_duplicate_build_step_cannot_create_a_marker_claim(self):
+        for change in ("failed", "missing", "duplicate", "upload-only", "after-upload"):
+            value, job, responses = self.proven()
+            if change == "failed":
+                job["steps"][0]["conclusion"] = "failure"
+            elif change == "missing":
+                job["steps"].pop(0)
+            elif change == "duplicate":
+                job["steps"].append(copy.deepcopy(job["steps"][0]))
+            elif change == "after-upload":
+                job["steps"].append(job["steps"].pop(0))
+            else:
+                value["bazel_archive_builds"]["target/docker-example.gz"]["build_step"] = "Retain original outputs"
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                stage.admit(value, responses.__getitem__)
+
+    def test_wrong_archive_hash_or_artifact_is_rejected_before_api_reads(self):
+        for field, wrong in (("sha256", "f" * 64), ("artifact_id", 124)):
+            value, _, _ = self.proven()
+            value["bazel_archive_builds"]["target/docker-example.gz"][field] = wrong
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                stage.admit(value, lambda _: self.fail("Unproven input reached API"))
+
+    def test_modern_profile_refuses_missing_and_wrong_family_proofs(self):
+        with self.assertRaises(ValueError):
+            stage.policy.bazel_marker_archives(fixtures()[0])
+        value, _, _ = self.proven()
+        value["groups"]["archives"] = ["target/docker-example.gz"]
+        with self.assertRaises(ValueError):
+            stage.policy.bazel_marker_archives(value)
+
+    def test_existing_make_writer_preserves_archive_and_unchanged_stamp(self):
+        source = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools/bazel").mkdir(parents=True)
+            for name in ("docker.mk", "manifests.mk"):
+                (root / "tools/bazel" / name).write_bytes((source / "tools/bazel" / name).read_bytes())
+            (root / "target").mkdir()
+            archive = root / "target/docker-example.gz"
+            archive.write_bytes(b"unchanged plain fixture; not an archive")
+            before = archive.stat().st_mtime_ns
+            (root / "Makefile").write_text(
+                "TARGET_PATH := target\nSONIC_BAZEL_DOCKER_IMAGES := docker-example.gz\n"
+                "SONIC_BAZEL_SWITCHABLE_IMAGES := docker-example.gz\n"
+                "docker-example.gz_BAZEL_TARGET := //unused:forbidden\n"
+                "docker-example.gz_PATH := dockers/example\n"
+                "include tools/bazel/docker.mk\n")
+            argv = ["make", "--no-print-directory", "target/.container-build-method/docker-example.gz"]
+            options = {"cwd": root, "env": {**os.environ, "BAZEL": "/bin/false"},
+                       "capture_output": True, "text": True, "timeout": 10, "check": True}
+            subprocess.run(argv, **options)
+            stamp = root / "target/.container-build-method/docker-example.gz"
+            self.assertEqual(stamp.read_bytes(), b"bazel\n")
+            stamp_time = stamp.stat().st_mtime_ns
+            subprocess.run(argv, **options)
+            self.assertEqual(stamp.stat().st_mtime_ns, stamp_time)
+            self.assertEqual(archive.stat().st_mtime_ns, before)
+            self.assertEqual(archive.read_bytes(), b"unchanged plain fixture; not an archive")
 
 
 if __name__ == "__main__":

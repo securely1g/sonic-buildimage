@@ -63,6 +63,22 @@ $(foreach input,$(RULES_PATH)/config.organization files/build_templates/build_de
 $(file >>$(_VS_REUSE_METADATA_PATH),end	sonic-vs-make-inputs-v1)
 endef
 
+# Reuse the existing Make marker writer only after artifact admission has
+# authenticated the actual Bazel build step and exact imported archive hash.
+# These metadata targets cannot invoke an archive or package build recipe.
+ifneq ($(filter vs-reuse-selection,$(MAKECMDGOALS)),)
+ifeq ($(strip $(VS_REUSE_BAZEL_ARCHIVES)),)
+$(error VS reuse requires admitted modern archive build evidence)
+endif
+ifneq ($(filter-out $(addprefix $(TARGET_PATH)/,$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)),$(VS_REUSE_BAZEL_ARCHIVES)),)
+$(error VS reuse marker names an archive not selected for Bazel)
+endif
+ifneq ($(filter-out $(addprefix $(TARGET_PATH)/,$(SONIC_BAZEL_SWITCHABLE_IMAGES)),$(VS_REUSE_BAZEL_ARCHIVES)),)
+$(error VS reuse marker has no existing Make owner)
+endif
+vs-reuse-selection: $(addprefix $(TARGET_PATH)/.container-build-method/,$(notdir $(VS_REUSE_BAZEL_ARCHIVES)))
+endif
+
 .PHONY: vs-reuse-selection
 vs-reuse-selection: private export SONIC_IMAGE_VERSION := $(SONIC_IMAGE_VERSION)
 vs-reuse-selection: private export VS_ARCHITECTURE := $(CONFIGURED_ARCH)
