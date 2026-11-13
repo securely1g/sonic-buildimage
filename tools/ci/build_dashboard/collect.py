@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
-"""Collect public build metadata without executing builds or reading their logs."""
+"""Collect public build metadata and bounded, allowlisted log timing summaries."""
 from __future__ import annotations
 
 import argparse
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import selectors
 import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import quote
+
+# Load the reviewed sibling directly. PYTHONSAFEPATH deliberately excludes the
+# script directory, and falling back to a module from the working directory
+# could load unrelated code when this collector is launched elsewhere.
+_breakdown_spec = importlib.util.spec_from_file_location(
+    "build_dashboard_breakdown", Path(__file__).resolve().with_name("breakdown.py"))
+breakdown = importlib.util.module_from_spec(_breakdown_spec)
+_breakdown_spec.loader.exec_module(breakdown)
 
 WORKFLOWS = ("bazel-swss-oci.yml", "bazel-oci.yml", "bazel.yml")
 PHASES = ("setup", "build", "validation", "upload", "other")
@@ -20,14 +32,31 @@ REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 IMAGE_JOBS = {
     "Make VS with Bazel SWSS (AMD64)": "make-vs",
+    "VS installer in SONiC slave (AMD64)": "make-vs",
     "Bazel VS installer (AMD64)": "bazel-vs",
 }
 IMAGE_STEPS = {
+    "Build the VS installer (.bin)",
+    "Build the VS image",
     "Build the VS image with Bazel SWSS archives",
+    "Build the VS image and both OCI container variants",
+    "Build sonic-vs.bin directly with slave.mk",
     "Build the Bazel VS installer",
     "Build Bazel VS installer",
     "Build and verify sonic-vs.bin with Bazel",
 }
+MAX_LOG_JOBS = 20
+LOG_TIMEOUT_SECONDS = 45
+
+
+class LogReadError(RuntimeError):
+    """Optional log read failed; only this fixed reason can become public."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        if reason not in breakdown.REASONS:
+            raise ValueError("Unknown log failure")
+        self.reason = reason
 
 
 class CollectionError(RuntimeError):
@@ -65,11 +94,17 @@ def seconds(item):
     return elapsed if elapsed >= 0 else None
 
 
-def phase(name):
+def phase(name, job_name=None):
     lower = name.lower()
     if lower.startswith(("post ", "remove ", "complete job")):
         return "other"
-    if "upload" in lower:
+    if "upload" in lower or (
+        job_name == "VS installer in SONiC slave (AMD64)"
+        and name in (
+            "Publish the installer and matching container archives",
+            "Preserve build receipts",
+        )
+    ):
         return "upload"
     if lower.startswith(("verify", "test", "validate", "check")) and not any(
         word in lower for word in ("prerequisite", "capacity", "nested docker", "checkout")
@@ -108,7 +143,7 @@ def normalize_job(raw, repo, run_id):
             "status": raw_step.get("status"), "conclusion": raw_step.get("conclusion"),
             "started_at": timestamp(raw_step.get("started_at")),
             "completed_at": timestamp(raw_step.get("completed_at")),
-            "duration_seconds": seconds(raw_step), "phase": phase(step_name),
+            "duration_seconds": seconds(raw_step), "phase": phase(step_name, name),
         })
     phases = {}
     for category in PHASES:
@@ -137,6 +172,55 @@ class GitHub:
     def __init__(self, executable="gh", retries=4):
         self.executable = executable
         self.retries = retries
+
+    def job_log(self, repo, job_id):
+        """Stream one public job log with strict memory and wall-time limits.
+
+        gh follows GitHub's log redirect. Neither the redirect URL, stderr, nor
+        raw stdout is written to disk or forwarded to the published document.
+        A transient failure is retried by the next dashboard refresh.
+        """
+        if not REPOSITORY_RE.fullmatch(repo) or not integer(job_id):
+            raise LogReadError("logs-temporarily-unavailable")
+        command = [self.executable, "api", "--allow-escape-sequences", "--method", "GET",
+                   f"repos/{repo}/actions/jobs/{job_id}/logs"]
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as error:
+            raise LogReadError("logs-temporarily-unavailable") from error
+        output, errors = bytearray(), bytearray()
+        deadline = time.monotonic() + LOG_TIMEOUT_SECONDS
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, output)
+                selector.register(process.stderr, selectors.EVENT_READ, errors)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise LogReadError("logs-temporarily-unavailable")
+                    for key, _ in selector.select(min(remaining, 1)):
+                        chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        key.data.extend(chunk)
+                        if len(output) > breakdown.MAX_LOG_BYTES:
+                            raise LogReadError("logs-too-large")
+                        if len(errors) > 64 * 1024:
+                            raise LogReadError("logs-temporarily-unavailable")
+            status = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+            if status:
+                reason = "logs-expired" if re.search(rb"HTTP (?:404|410)\b", errors) else "logs-temporarily-unavailable"
+                raise LogReadError(reason)
+            return bytes(output)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise LogReadError("logs-temporarily-unavailable") from error
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            process.stderr.close()
 
     def get(self, endpoint):
         for attempt in range(self.retries):
@@ -185,7 +269,26 @@ class GitHub:
             page += 1
 
 
-def normalize_pr(raw, repo):
+def selected_bases(api, repo, pulls):
+    """Resolve selected refs independently of historical pull-request base.sha."""
+    bases = {}
+    for branch in sorted({pr.get("base", {}).get("ref") for pr in pulls} - {None, ""}):
+        try:
+            ref = api.get(f"repos/{repo}/git/ref/heads/{quote(branch, safe='')}")
+        except CollectionError as error:
+            if error.http_status != 404:
+                raise
+            bases[branch] = None  # A closed PR's selected branch may be gone.
+            continue
+        target = ref.get("object", {})
+        if (ref.get("ref") != f"refs/heads/{branch}" or target.get("type") != "commit"
+                or not SHA_RE.fullmatch(str(target.get("sha", "")))):
+            raise CollectionError("Selected base ref response does not match the requested branch")
+        bases[branch] = target["sha"]
+    return bases
+
+
+def normalize_pr(raw, repo, bases=None, observed_at=None):
     number = integer(raw.get("number"))
     if not number:
         raise CollectionError("Pull-request response is missing a positive integer number")
@@ -194,6 +297,9 @@ def normalize_pr(raw, repo):
         "state": raw.get("state"), "draft": bool(raw.get("draft")),
         "url": f"https://github.com/{repo}/pull/{number}",
         "head_sha": raw.get("head", {}).get("sha"), "base_sha": raw.get("base", {}).get("sha"),
+        "base_branch": raw.get("base", {}).get("ref"),
+        "base_target_sha": (bases or {}).get(raw.get("base", {}).get("ref")),
+        "base_target_observed_at": observed_at,
         "head_branch": raw.get("head", {}).get("ref"),
         "updated_at": timestamp(raw.get("updated_at")), "merged_at": timestamp(raw.get("merged_at")),
     }
@@ -216,6 +322,20 @@ class Associations:
             return direct, "github"
         branch, sha = raw.get("head_branch"), raw.get("head_sha")
         source_repo = (raw.get("head_repository") or {}).get("full_name")
+        if (raw.get("event") == "pull_request" and isinstance(source_repo, str)
+                and source_repo.lower() != self.repo.lower()):
+            # Fork runs can omit pull_requests while waiting for approval. Only
+            # the exact current fork/branch/commit tuple proves their PR; do not
+            # infer historical fork membership from a branch name or commit API.
+            if (not branch or not REPOSITORY_RE.fullmatch(source_repo)
+                    or not isinstance(sha, str) or not SHA_RE.fullmatch(sha)):
+                return [], "none"
+            candidates = [pr for pr in self.pulls.values()
+                          if ((pr.get("head", {}).get("repo") or {}).get("full_name", "").lower()
+                              == source_repo.lower())
+                          and pr.get("head", {}).get("ref") == branch
+                          and pr.get("head", {}).get("sha") == sha]
+            return ([candidates[0]["number"]], "commit") if len(candidates) == 1 else ([], "none")
         if (not branch or branch == self.default_branch or not isinstance(sha, str)
                 or not SHA_RE.fullmatch(sha) or (source_repo and source_repo.lower() != self.repo.lower())):
             return [], "none"
@@ -248,6 +368,13 @@ class Associations:
         return [], "none"
 
 
+def event_bases(raw):
+    # Event metadata is evidence of the recorded PR base, not a job checkout.
+    return [{"number": pr["number"], "ref": pr.get("base", {}).get("ref"),
+             "sha": pr.get("base", {}).get("sha")}
+            for pr in raw.get("pull_requests", []) if integer(pr.get("number"))]
+
+
 def normalize_run(raw, workflow, repo, jobs, association, association_note=None):
     run_id, attempt = integer(raw.get("id")), integer(raw.get("run_attempt"))
     if not run_id or not attempt:
@@ -261,6 +388,7 @@ def normalize_run(raw, workflow, repo, jobs, association, association_note=None)
         "source_sha": raw.get("head_sha"), "branch": raw.get("head_branch"),
         "event": raw.get("event"), "status": raw.get("status"), "conclusion": raw.get("conclusion"),
         "pr_numbers": pr_numbers, "pr_association": method, "pr_association_note": association_note,
+        "event_bases": event_bases(raw),
         "started_at": timestamp(raw.get("run_started_at") or raw.get("created_at")),
         "completed_at": max(completed) if raw.get("status") == "completed" and completed else None,
         "updated_at": timestamp(raw.get("updated_at")),
@@ -281,10 +409,11 @@ def load_history(path, repo):
         raise CollectionError("Dashboard history schema or repository does not match")
     allowed = {
         "document": {"schema_version", "repository", "generated_at", "pull_requests", "runs", "comparisons"},
-        "pr": {"number", "title", "state", "draft", "url", "head_sha", "base_sha", "head_branch", "updated_at", "merged_at"},
-        "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "started_at", "completed_at", "updated_at", "url", "jobs"},
+        "pr": {"number", "title", "state", "draft", "url", "head_sha", "base_sha", "base_branch", "base_target_sha", "base_target_observed_at", "head_branch", "updated_at", "merged_at"},
+        "run": {"run_id", "attempt", "workflow_name", "workflow_path", "source_sha", "branch", "event", "status", "conclusion", "pr_numbers", "pr_association", "pr_association_note", "event_bases", "started_at", "completed_at", "updated_at", "url", "jobs"},
+        "event_base": {"number", "ref", "sha"},
         "job": {"job_id", "name", "kind", "architecture", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "image_build_seconds", "image_build_elapsed_seconds", "phases", "steps", "url"},
-        "step": {"number", "name", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "phase"},
+        "step": {"number", "name", "status", "conclusion", "started_at", "completed_at", "duration_seconds", "phase", "breakdown"},
     }
     def check_fields(value, kind):
         if not isinstance(value, dict) or set(value) - allowed[kind]:
@@ -298,6 +427,12 @@ def load_history(path, repo):
     keys = set()
     for run in history["runs"]:
         check_fields(run, "run")
+        if not isinstance(run.get("event_bases", []), list):
+            raise CollectionError("Dashboard history contains invalid event base metadata")
+        for base in run.get("event_bases", []):
+            check_fields(base, "event_base")
+            if not integer(base.get("number")):
+                raise CollectionError("Dashboard history has an invalid event base PR number")
         if not isinstance(run.get("jobs"), list) or not isinstance(run.get("pr_numbers"), list):
             raise CollectionError("Dashboard history is missing its job or PR list")
         for job in run["jobs"]:
@@ -307,6 +442,8 @@ def load_history(path, repo):
                 raise CollectionError("Dashboard history contains invalid job details")
             for step in job["steps"]:
                 check_fields(step, "step")
+                if "breakdown" in step and not breakdown.valid(step["breakdown"]):
+                    raise CollectionError("Dashboard history contains invalid build breakdown details")
         key = (integer(run.get("run_id")), integer(run.get("attempt")))
         if None in key or key in keys or run.get("workflow_path") not in {f".github/workflows/{w}" for w in WORKFLOWS}:
             raise CollectionError("Dashboard history has invalid or duplicate run attempts")
@@ -314,15 +451,78 @@ def load_history(path, repo):
     return history
 
 
-def collect(api, repo, history, run_id=None, backfill=False, workers=4):
+def step_identity(step):
+    return tuple(step.get(field) for field in (
+        "number", "name", "status", "conclusion", "started_at", "completed_at"))
+
+
+def retain_breakdowns(jobs, old_jobs):
+    """Reuse only exact job/step identities within the same run attempt."""
+    old = {job["job_id"]: job for job in old_jobs}
+    for job in jobs:
+        previous = old.get(job["job_id"], {})
+        details = {step_identity(step): step["breakdown"] for step in previous.get("steps", [])
+                   if "breakdown" in step and breakdown.valid(step["breakdown"])}
+        for step in job["steps"]:
+            if step_identity(step) in details:
+                step["breakdown"] = copy.deepcopy(details[step_identity(step)])
+
+
+def enrich_breakdowns(api, repo, runs, limit):
+    """Enrich at most limit newest missing jobs, including cached run attempts."""
+    fetched = 0
+    for run in sorted(runs, key=lambda item: (item["run_id"], item["attempt"]), reverse=True):
+        for job in run["jobs"]:
+            if job["kind"] != "make-vs":
+                continue
+            pending = []
+            for step in job["steps"]:
+                if step["name"] not in IMAGE_STEPS:
+                    continue
+                if step["status"] != "completed" or step["conclusion"] != "success":
+                    step["breakdown"] = breakdown.unavailable("step-not-successful")
+                elif breakdown.retry_needed(step.get("breakdown")):
+                    step["breakdown"] = breakdown.unavailable("pending-collection")
+                    pending.append(step)
+            if not pending or job["status"] != "completed" or fetched >= limit:
+                continue
+            fetched += 1
+            try:
+                log = api.job_log(repo, job["job_id"])
+            except LogReadError as error:
+                for step in pending:
+                    step["breakdown"] = breakdown.unavailable(error.reason)
+                continue
+            for step in pending:
+                step["breakdown"] = breakdown.parse_log(log, step)
+
+
+def completed_job_details(run):
+    """A completed run can arrive before its jobs and steps have concluded."""
+    for job in run["jobs"]:
+        for item in (job, *job["steps"]):
+            if item.get("status") != "completed" or item.get("conclusion") is None:
+                return False
+    return True
+
+
+def collect(api, repo, history, run_id=None, backfill=False, workers=4, log_jobs=MAX_LOG_JOBS):
     repository = api.get(f"repos/{repo}")
     if repository.get("private") is not False or repository.get("full_name", "").lower() != repo.lower():
         raise CollectionError("Dashboard collection requires the requested public repository")
     pulls = api.pages(f"repos/{repo}/pulls?state=all&sort=updated&direction=desc")
+    bases = selected_bases(api, repo, pulls)
+    base_observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     associations = Associations(api, repo, repository.get("default_branch"), pulls)
     historical_prs = {pr["number"]: pr for pr in history["pull_requests"]}
-    historical_prs.update({pr["number"]: normalize_pr(pr, repo) for pr in pulls})
-    retained = {(run["run_id"], run["attempt"]): run for run in history["runs"]}
+    historical_prs.update({pr["number"]: normalize_pr(pr, repo, bases, base_observed_at) for pr in pulls})
+    retained = {(run["run_id"], run["attempt"]): copy.deepcopy(run) for run in history["runs"]}
+    # Recompute derived image totals from cached public steps as recognition
+    # evolves; keep precise measurements even when old logs have expired.
+    for old in retained.values():
+        jobs = [normalize_job(dict(job, id=job["job_id"]), repo, old["run_id"]) for job in old["jobs"]]
+        retain_breakdowns(jobs, old["jobs"])
+        old["jobs"] = jobs
     latest = []
     if run_id and not backfill:
         raw = api.get(f"repos/{repo}/actions/runs/{run_id}")
@@ -341,15 +541,30 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4):
             raise CollectionError("Run-list response is missing its ID or attempt")
         for attempt in range(1, current_attempt + 1):
             old = retained.get((current_id, attempt))
-            if not backfill and old and old.get("status") == "completed" and old.get("conclusion") is not None:
+            if (not backfill and old and old.get("status") == "completed"
+                    and old.get("conclusion") is not None and completed_job_details(old)):
                 if attempt < current_attempt or (
                     old.get("updated_at") == timestamp(latest_raw.get("updated_at"))
                     and old.get("conclusion") == latest_raw.get("conclusion")
                     and latest_raw.get("status") == "completed"
                 ):
-                    if str(old.get("pr_association_note") or "").startswith("PR association temporarily unavailable:"):
-                        retry_raw = {"head_branch": old.get("branch"), "head_sha": old.get("source_sha"),
-                                     "head_repository": {"full_name": repo}, "pull_requests": []}
+                    if attempt == current_attempt and "event_bases" not in old:
+                        old = dict(old, event_bases=event_bases(latest_raw))
+                        retained[(current_id, attempt)] = old
+                    unassociated_head = (not old.get("pr_numbers") and old.get("event") == "pull_request"
+                        and any(pr.get("head", {}).get("sha") == old.get("source_sha")
+                                and pr.get("head", {}).get("ref") == old.get("branch") for pr in pulls))
+                    if ((attempt == current_attempt and not old.get("pr_numbers")) or unassociated_head
+                            or str(old.get("pr_association_note") or "").startswith(
+                                "PR association temporarily unavailable:")):
+                        # Retry missing links from fresh metadata, including
+                        # terminal zero-job fork runs. Keep cached job evidence.
+                        retry_raw = latest_raw if attempt == current_attempt else api.get(
+                            f"repos/{repo}/actions/runs/{current_id}/attempts/{attempt}")
+                        if (retry_raw.get("id") != current_id or retry_raw.get("run_attempt") != attempt
+                                or retry_raw.get("head_sha") != old.get("source_sha")
+                                or retry_raw.get("head_branch") != old.get("branch")):
+                            raise CollectionError("Cached run association metadata does not match the attempt")
                         numbers, method = associations.identify(retry_raw)
                         retained[(current_id, attempt)] = dict(old, pr_numbers=numbers, pr_association=method,
                             pr_association_note=associations.notes.get(old.get("source_sha")))
@@ -374,7 +589,10 @@ def collect(api, repo, history, run_id=None, backfill=False, workers=4):
     # Only read-only job requests are concurrent. All must succeed before output.
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for run in pool.map(fetch, pending):
+            previous = retained.get((run["run_id"], run["attempt"]), {})
+            retain_breakdowns(run["jobs"], previous.get("jobs", []))
             retained[(run["run_id"], run["attempt"])] = run
+    enrich_breakdowns(api, repo, retained.values(), max(0, min(MAX_LOG_JOBS, log_jobs)))
     return {
         "schema_version": 1, "repository": repo,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -409,6 +627,8 @@ def main():
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--backfill", action="store_true", help="Re-read all available allowlisted run attempts, including completed history")
     parser.add_argument("--workers", type=int, default=4, choices=range(1, 9))
+    parser.add_argument("--log-jobs", type=int, default=MAX_LOG_JOBS, choices=range(MAX_LOG_JOBS + 1),
+                        help="Maximum newest missing Make VS job logs to summarize per refresh (default: 20; 0 skips reads)")
     args = parser.parse_args()
     if not REPOSITORY_RE.fullmatch(args.repo) or args.repo.split("/")[-1] in (".", ".."):
         parser.error("--repo must be an owner/repository name")
@@ -416,7 +636,7 @@ def main():
         parser.error("--run-id must be positive")
     try:
         history = load_history(args.history if args.history is not None else args.output, args.repo)
-        result = collect(GitHub(args.github_cli), args.repo, history, args.run_id, args.backfill, args.workers)
+        result = collect(GitHub(args.github_cli), args.repo, history, args.run_id, args.backfill, args.workers, args.log_jobs)
         write_atomic(args.output, result)
     except CollectionError as error:
         print(f"Collection failed; published history was not replaced: {error}", file=sys.stderr)

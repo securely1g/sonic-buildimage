@@ -1,15 +1,43 @@
-# One-job VS build runner
+# VS build runner pools
+
+## Current ONIE workflow
+
+The [native VS installer job](container-vs.md#dedicated-host-agent-route) uses
+`[self-hosted, linux, bazel-x64, vs]` host agents. The Actions runner stays on
+the host, and `make target/sonic-vs.bin` launches the SONiC build containers.
+Same-repository PRs, pushes to master, and manual runs with the installer enabled
+use this pool. The job explicitly selects `grpc://172.16.0.4:9092` for Bazel's
+remote cache and downloader, with persistent Bazel and Make package caches under
+the runner workspace. Remote uploads are enabled only for master pushes.
+It does not require the K3s worker's managed cache configuration or `/actions`
+layout. The job validates the installer and the SWSS and Syncd runtime/debug
+image pairs before publishing them. Building this ONIE installer does not require
+KVM.
+
+GitHub-hosted Ubuntu runs the OCI regression checks and supplies verified
+source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
+run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Fork PRs and manual
+runs with `skip_vs=true` skip the native installer.
+
+## Legacy one-job runner helpers
 
 These scripts provision a dedicated Linux x86_64 host and arm one GitHub Actions
-runner for one full VS image job. The default repository is
-`securely1g/sonic-buildimage`; select a job explicitly with `--pr NUMBER` or
-`--master`, and pass `--repo owner/name` to select another repository.
-The optional manager below registers replacements automatically after each job.
-The workflow routes PR jobs to `sonic-vs-source-pr-NUMBER` and push/manual jobs
-to `sonic-vs-source-master`. A runner gets only its selected custom label plus
-GitHub's default `self-hosted`, `linux`, `x64` labels.
+runner for one job. Their default repository is `securely1g/sonic-buildimage`;
+`--master` selects the legacy `sonic-vs-source-master` route, and
+`--repo owner/name` selects another repository. The label does not force a PR
+build onto master: the queued workflow selects its source revision.
 
-## Prepare a host once
+`--pr NUMBER` remains available for older or separately configured workflows
+that request `sonic-vs-source-pr-NUMBER`. A runner gets only its selected custom
+label plus GitHub's default `self-hosted`, `linux`, `x64` labels.
+The optional manager below registers replacements automatically after each job.
+
+## Prepare a legacy KVM host once
+
+Bootstrap, rearm and the manager omit `--build-target` and retain KVM
+preflight for their legacy routes, which can receive `.img.gz` jobs. Those
+helpers therefore still require a KVM-capable host. The host setup below
+prepares that legacy pool; it does not register a host agent with the `vs` label.
 
 Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
 host uses Ubuntu 26.04; passing preflight does not establish full compatibility.
@@ -42,7 +70,9 @@ build sizes; monitor available space during the build. The workflow itself
 requires 100 GiB workspace space. Docker's containerd image store can also use
 `/var/lib/containerd`; if separately mounted, budget and monitor that filesystem
 as well. The initial host keeps both Docker and containerd on the root filesystem.
-Prefer at least 12 GiB RAM available; the image installer VM alone requests 10 GiB.
+For VM-image jobs, preflight requires at least 10 GiB RAM available and recommends
+12 GiB for headroom. ONIE preflight does not apply that VM-specific
+threshold; the installer build and source checks still need adequate RAM.
 Avoid running multiple full builds on the same host.
 
 From a reviewed checkout, preview and then install:
@@ -61,7 +91,8 @@ root-owned location accessible to the runner. Runner runtime dependencies must
 also be available; if `config.sh` reports a missing library, review and run the
 verified archive's `bin/installdependencies.sh`, then retry.
 
-SONiC uses privileged Docker, chroot, device nodes, loop mounts and a KVM VM.
+SONiC uses privileged Docker, chroot, device nodes and loop mounts. VM-image
+targets additionally use KVM.
 A `/data` mount with `nodev,nosuid` can let checkout and compilation succeed but
 break image assembly. Bootstrap adds a self-bind mount only at
 `/data/sonic-runner`; `sonic-vs-workspace-permissions.service` explicitly remounts
@@ -71,6 +102,10 @@ Bootstrap backs up fstab before adding its entry and refuses a conflicting
 existing entry. Preflight checks effective flags, Docker/buildx as the runner
 user, workspace and Docker disk budgets, RAM, overlay, legacy IPv4 NAT, j2 rendering, KVM API,
 and both the process and runner service file-creation masks.
+For a standalone ONIE build check, use the reviewed helper with
+`--build-target sonic-vs.bin`; KVM API checks apply to other targets and callers
+that omit the target. This ONIE check does not replace the legacy pool's registration
+preflight.
 
 The runner service uses `UMask=0022`, while its home and attempt directories
 remain `0700`. A restrictive `0077` mask makes checked-out configuration files
@@ -113,7 +148,7 @@ labels and cancellation cleanup as the build. It does not test child-container
 DNS or HTTPS access. Run it only while no other builder uses that checkout:
 Make clears the checkout's inner Docker store before each invocation.
 
-## Keep a runner available automatically
+## Keep a legacy runner available automatically
 
 On an already prepared host, install the manager from a reviewed checkout.
 Run `gh api user --jq .login` as the normal operator first; it should report
@@ -128,17 +163,18 @@ sudo journalctl -u sonic-vs-runner-manager.service -n 50 --no-pager
 ```
 
 For P330, the operator is `lgh`. `--master` selects the
-`sonic-vs-source-master` routing label used by push/manual VS jobs. To maintain a
-runner for one reviewed PR instead, select `--pr NUMBER`. The manager maintains
+`sonic-vs-source-master` routing label used by legacy VS workflows. To maintain
+a runner for one reviewed PR route instead, select `--pr NUMBER`. The manager maintains
 only the configured route; it does not dispatch workflows, cancel queued runs,
-or change the source revision of an existing job.
+change the source revision of an existing job, or register the current
+`sonic-slave-container-k3s` route.
 
 The systemd timer checks 30 seconds after boot and one minute after each check
 finishes. It waits while a runner service, Listener/Worker process or Docker
 container is active. Once the host is idle, it checks the configured GitHub
 identity, runs preflight, and uses `rearm.py` to create one fresh ephemeral
 runner. After that runner consumes a job and unregisters, the next timer check
-registers its replacement. Build caches and previous attempt directories remain
+registers its replacement. Shared caches and previous attempt directories remain
 in place. Authentication or preflight failures appear in the service journal
 and can be retried by the next timer check after the underlying issue is fixed.
 
@@ -183,29 +219,30 @@ steps below. After resolving that attempt and confirming the host is idle,
 remove only this marker to allow a fresh registration; reinstalling the manager
 does not clear it. The marker contains configuration and time, never tokens.
 
-## Arm a runner manually for the next attempt
+## Arm a legacy runner manually for the next attempt
 
 Run these as the normal operator who is already authenticated to GitHub with
 repository runner administration access. Keep that login out of `sonic-runner`.
-Inspect the queued runs and cancel obsolete attempts before arming; a PR label
-selects the PR, not an individual commit or run.
+Inspect the queued runs and cancel obsolete attempts before arming. The shared
+label selects the pool, not an individual PR, commit or run.
 
 ```sh
 gh auth status
-gh run list --repo securely1g/sonic-buildimage --workflow bazel-swss-oci.yml --limit 10
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9 --dry-run
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+gh run list --repo securely1g/sonic-buildimage --workflow bazel-oci.yml --limit 10
+python3 /opt/sonic-runner-tools/runner/rearm.py --master --dry-run
+python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
-Use `--master` for a push/manual job. Arm only after reviewing the PR code and
-workflow that will run. For a failed attempt, retry the workflow with
+Use `--master` only for workflows requesting the legacy shared pool. It does
+not arm a runner for the current host-agent installer workflow. Arm only after reviewing
+the PR code and workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
 run's workflow. A new registration is required after each consumed job.
-The workflow's concurrency group includes the tested revision, so pushing a
-new commit preserves a full build of an earlier revision. Runs of the same
-revision supersede one another. A cancelled job also consumes its one-job
-runner; arm a new runner for the replacement run.
+Only automatic runs for the same PR and revision supersede one another.
+Each push, manual dispatch and explicit retry has its own workflow group.
+A cancelled job also consumes its one-job runner. Arm a new runner for the
+replacement run.
 The workflow labels Make builder containers with its repository, run and attempt.
 An `always()` cleanup step saves their container logs and removes only those
 containers. Stopping the runner alone does not stop Docker containers. After a
@@ -230,7 +267,7 @@ runner already consumed a job before retrying.
 GitHub runner auto-update remains enabled; update the archive version and its
 verified checksum together when maintaining the bootstrap baseline.
 
-## Observe and recover
+## Observe and recover a legacy runner
 
 ```sh
 gh run watch RUN_ID --repo securely1g/sonic-buildimage --exit-status
@@ -256,7 +293,7 @@ the reviewed checkout, then recheck capacity and arm the desired queued run:
 ```sh
 sudo install -m 0755 -o root -g root tools/ci/runner/preflight.py tools/ci/runner/rearm.py /opt/sonic-runner-tools/runner/
 sudo -u sonic-runner /usr/bin/python3 /opt/sonic-runner-tools/runner/preflight.py
-python3 /opt/sonic-runner-tools/runner/rearm.py --pr 9
+python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
 The additional check prevents registration when extraction uses the remaining
@@ -288,7 +325,7 @@ with the preserved old `/data/sonic-runner/runner` directory.
 | Interrupted submodule checkout left `.git/modules/.../HEAD` pointing at `.invalid` | Fresh runner directory for each registration; workflow checkout also uses run/attempt-specific paths |
 | Missing host `j2` or service PATH differs from operator shell | Pinned root-owned virtual environment, explicit service PATH and render check |
 | Restrictive service umask made copied pip/APT config root-only | `UMask=0022`, private runner directories, process/service umask checks, fresh checkout and rebuilt affected images |
-| Root or inaccessible Docker/KVM | Dedicated account, groups, actual daemon and KVM ioctl checks |
+| Root or inaccessible Docker/KVM | Dedicated account and actual daemon checks; KVM ioctl check for VM jobs and legacy shared-pool registration |
 | `/data` `nodev,nosuid` blocked device access in privileged containers | Scoped self-bind plus boot-time remount and effective mount-flag check |
 | Docker consumes a different filesystem from checkout | Separate capacity checks and summed budget if shared |
 | Runner extraction uses the remaining workspace headroom | Repeat preflight against the fresh attempt before registration |
@@ -308,8 +345,8 @@ a disposable VM or host and destroy it afterward. Repository labels are routing,
 not a security boundary. No full host image/package lock, automatic cleanup,
 network mirror, remote execution, or unattended runner autoscaler is provided.
 Downloads still depend on GitHub, package registries and upstream repositories.
-Fresh attempts use separate checkouts and Bazel working directories. The VS
-workflow shares Bazel's download/result cache and Make's package cache under
+Fresh attempts use separate checkouts and Bazel working directories. The legacy
+VS job shares Bazel's download/result cache and Make's package cache under
 `/data/sonic-runner/cache/sonic-buildimage`, outside the attempt directories.
 Those caches survive builder removal and runner rearming. Make's package cache
 runs in `rwcache` mode; Bazel still checks the SWSS source inputs on every request.

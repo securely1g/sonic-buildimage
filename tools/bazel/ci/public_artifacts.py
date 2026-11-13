@@ -48,11 +48,16 @@ FILES = {
         ("startup-hash", "artifacts/config-engine/sha256.txt", "hashes"),
         ("common-wheel", "artifacts/config-engine/sonic_py_common-1.0-py3-none-any.whl", "binary"),
         ("config-wheel", "artifacts/config-engine/sonic_config_engine-1.0-py3-none-any.whl", "binary"),
+        ("yang-mgmt-wheel", "artifacts/config-engine/sonic_yang_mgmt-1.0-py3-none-any.whl", "binary"),
+        ("containercfgd-wheel", "artifacts/config-engine/sonic_containercfgd-1.0-py3-none-any.whl", "binary"),
+        ("supervisor-wheel", "artifacts/config-engine/sonic_supervisord_utilities-1.0-py3-none-any.whl", "binary"),
         ("wheel-hashes", "artifacts/config-engine/wheels-sha256.txt", "hashes"),
     ],
     "source": [
         ("swss-tar", "artifacts/swss/swss.tar", "binary"),
         ("protobuf-tar", "artifacts/swss/protobuf.tar", "binary"),
+        ("libteam-tar", "artifacts/swss/libteam.tar", "binary"),
+        ("libteamdctl-tar", "artifacts/swss/libteamdctl.tar", "binary"),
         ("runtime-dependencies", "artifacts/swss/rdeps.tar", "binary"),
         ("startup-files", "artifacts/swss/config.tar", "binary"),
         ("debug-symbols", "artifacts/swss/debug-symbols.tar", "binary"),
@@ -64,23 +69,30 @@ FILES = {
         ("input-locks", "artifacts/syncd-vs/input-locks.sha256", "hashes"),
         ("module-lock", "artifacts/syncd-vs/bazel/MODULE.bazel.lock", "lock"),
         ("module-graph", "artifacts/syncd-vs/bazel/module-graph.json", "graph"),
+        ("installed-package-status", "artifacts/syncd-vs/bazel/installed_packages.status", "binary"),
+        ("installed-package-metadata", "artifacts/syncd-vs/bazel/installed_packages.json", "binary"),
     ],
     "vs": [],
 }
 BEP = {
     "archive": [
-        ("archive-tests", "artifacts/archive/test-events.jsonl", 5),
-        ("python-tests", "artifacts/config-engine/test-events.jsonl", 10),
+        ("archive-tests", "artifacts/archive/test-events.jsonl", 12),
+        ("python-tests", "artifacts/config-engine/test-events.jsonl", 18),
     ],
-    "source": [("source-tests", "artifacts/swss/test-events.jsonl", 12)],
-    "syncd": [],
+    "source": [("source-tests", "artifacts/swss/test-events.jsonl", None)],
+    "syncd": [("syncd-tests", "artifacts/syncd-vs/bazel/test-events.jsonl", None)],
     "vs": [],
 }
+RECEIPT_TEST_COUNTS = {"archive": ("python", 13)}
 SUMMARY = {
     "archive": "artifacts/archive/public-summary.json",
     "source": "artifacts/swss/public-summary.json",
     "syncd": "artifacts/syncd-vs/public-summary.json",
     "vs": "artifacts/vs/public-summary.json",
+}
+SOURCE_ARTIFACT_TARGETS = {
+    "source": "//dockers/docker-orchagent:ci_artifacts",
+    "syncd": "//platform/vs/docker-syncd-vs:ci_artifacts",
 }
 
 
@@ -125,7 +137,7 @@ def safe_json(value):
             require(isinstance(key, str), "invalid-json-key")
             normalized = re.sub(r"[^a-z0-9]", "", key.casefold())
             if normalized == "envvariables":
-                require(isinstance(child, dict) and not child, "nonempty-recorded-environment")
+                require(isinstance(child, dict) and all(v is None for v in child.values()), "nonempty-recorded-environment")
             require(normalized not in DIAGNOSTIC_KEYS, "diagnostic-json-field")
             require(not normalized.endswith(("token", "tokens", "password", "passwords", "secret", "secrets",
                                              "credential", "credentials", "authorization", "apikey", "privatekey",
@@ -248,8 +260,88 @@ def relative_name(value):
     return value
 
 
+def artifact_hashes(value):
+    """Accept only public archive basenames and full SHA256 validation bindings."""
+    require(isinstance(value, dict), "invalid-artifact-bindings")
+    hashes = {}
+    for name, item in value.items():
+        name = relative_name(name)
+        require(PurePosixPath(name).name == name and name not in (".", ".."), "invalid-artifact-basename")
+        hashes[name] = digest(item)
+    return hashes
+
+
+def cache_reuse_summary(value):
+    """Publish only aggregate action identities and verified cache-hit counts."""
+    require(isinstance(value, dict) and set(value) == {
+        "artifact_target", "phase", "action_count", "cache_hit_count", "executed_count", "actions",
+    }, "invalid-cache-reuse")
+    require(value["phase"] == "before_tests", "invalid-cache-reuse-phase")
+    counts = {name: integer(value[name]) for name in ("action_count", "cache_hit_count", "executed_count")}
+    require(counts["action_count"] > 0 and isinstance(value["actions"], list) and value["actions"],
+            "empty-cache-reuse")
+    actions, keys = [], []
+    for item in value["actions"]:
+        require(isinstance(item, dict) and set(item) == {"target", "mnemonic", "runner", "cache_hit", "count"},
+                "invalid-cache-reuse-action")
+        target = None if item["target"] is None else label(item["target"])
+        mnemonic, runner = item["mnemonic"], item["runner"]
+        require(isinstance(mnemonic, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,79}", mnemonic),
+                "invalid-cache-reuse-mnemonic")
+        require(isinstance(runner, str) and re.fullmatch(r"[A-Za-z0-9_. -]{1,80}", runner),
+                "invalid-cache-reuse-runner")
+        require(isinstance(item["cache_hit"], bool) and integer(item["count"]) > 0,
+                "invalid-cache-reuse-count")
+        require(item["cache_hit"] == (runner in {"disk cache hit", "remote cache hit"}),
+                "contradictory-cache-reuse-runner")
+        actions.append({"target": target, "mnemonic": mnemonic, "runner": runner,
+                        "cache_hit": item["cache_hit"], "count": item["count"]})
+        keys.append((target or "", mnemonic, runner, item["cache_hit"]))
+    require(keys == sorted(set(keys)), "duplicate-or-unsorted-cache-reuse-actions")
+    hits = sum(item["count"] for item in actions if item["cache_hit"])
+    executed = sum(item["count"] for item in actions if not item["cache_hit"])
+    require(counts == {"action_count": hits + executed, "cache_hit_count": hits, "executed_count": executed},
+            "inconsistent-cache-reuse-counts")
+    return {"artifact_target": label(value["artifact_target"]), "phase": "before_tests", **counts, "actions": actions}
+
+
 def receipt_summary(value, kind):
     require(isinstance(value, dict), "invalid-receipt")
+    if kind == "resolution":
+        fields = {"schema", "status", "returncode", "stdout", "stderr_tail_truncated",
+                  "signals", "origins", "http_statuses"}
+        # Older schema-1 receipts have no counts; preserve them without defaults.
+        require(set(value) in (fields, fields | {"diagnostic_counts"}), "invalid-resolution-fields")
+        require(type(value["schema"]) is int and value["schema"] == 1 and
+                value["status"] == "failed", "invalid-resolution-status")
+        require(type(value["returncode"]) is int and -128 <= value["returncode"] <= 255,
+                "invalid-resolution-returncode")
+        require(value["stdout"] in ("empty", "nonempty") and
+                type(value["stderr_tail_truncated"]) is bool, "invalid-resolution-output")
+        choices = {
+            "signals": {"http_error", "timeout", "connection_error", "disk_full", "memory_exhaustion",
+                        "extension_load_error", "missing_symbol", "missing_extension", "extension_summary"},
+            "origins": {"bazel_registry", "debian_snapshot", "debian_pool", "github_release", "github_raw", "other"},
+        }
+        for name, allowed in choices.items():
+            items = value[name]
+            require(isinstance(items, list) and all(type(item) is str and item in allowed for item in items)
+                    and items == sorted(set(items)), "invalid-resolution-" + name)
+        codes = value["http_statuses"]
+        require(isinstance(codes, list) and all(type(code) is int and 400 <= code <= 599 for code in codes)
+                and codes == sorted(set(codes)), "invalid-resolution-http-statuses")
+        require(bool(codes) == ("http_error" in value["signals"]), "inconsistent-resolution-http-statuses")
+        if "diagnostic_counts" in value:
+            counts = value["diagnostic_counts"]
+            require(isinstance(counts, dict) and set(counts) == {
+                "error_lines", "unclassified_error_lines", "extension_summaries"}, "invalid-resolution-counts")
+            require(all(type(count) is int and 0 <= count <= 65536 for count in counts.values()),
+                    "invalid-resolution-counts")
+            require(counts["unclassified_error_lines"] + counts["extension_summaries"] <= counts["error_lines"]
+                    and bool(counts["extension_summaries"]) == ("extension_summary" in value["signals"]),
+                    "inconsistent-resolution-counts")
+        safe_json(value)
+        return value
     if kind == "python":
         require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
         require(value.get("architecture") in {"amd64", "arm64"}, "invalid-architecture")
@@ -275,15 +367,24 @@ def receipt_summary(value, kind):
         require(isinstance(validation.get("programs", []), list) and isinstance(validation.get("debug_pairs", []), list), "invalid-validation-lists")
         require(isinstance(validation.get("source_contract", {}), dict), "invalid-source-contract")
         contract = {relative_name(name): digest(item) for name, item in validation.get("source_contract", {}).items()}
-        return {"status": value["status"], "revision": revision, "tests": tests,
-                "program_count": len(validation.get("programs", [])),
-                "debug_pair_count": len(validation.get("debug_pairs", [])), "source_contract": contract}
+        result = {"status": value["status"], "revision": revision, "tests": tests,
+                  "program_count": len(validation.get("programs", [])),
+                  "debug_pair_count": len(validation.get("debug_pairs", [])), "source_contract": contract,
+                  "artifact_sha256": artifact_hashes(validation.get("artifact_sha256", {}))}
+        if "cache_reuse" in value:
+            result["cache_reuse"] = cache_reuse_summary(value["cache_reuse"])
+        return result
     if kind == "syncd":
         require(isinstance(value.get("targets", []), list) and isinstance(value.get("source_hashes", {}), dict), "invalid-syncd-receipt")
         targets = [label(item) for item in value.get("targets", [])]
         hashes = {relative_name(name): digest(item) for name, item in value.get("source_hashes", {}).items()}
-        return {"targets": targets, "source_hashes": hashes,
-                "module_lock_sha256": digest(value.get("module_lock_sha256"))}
+        require(value.get("status") in {"running", "passed", "failed"}, "invalid-receipt-status")
+        require(len(set(targets)) == len(targets), "duplicate-test-target")
+        result = {"status": value["status"], "targets": targets, "source_hashes": hashes,
+                  "module_lock_sha256": digest(value.get("module_lock_sha256"))}
+        if "cache_reuse" in value:
+            result["cache_reuse"] = cache_reuse_summary(value["cache_reuse"])
+        return result
     if kind == "p4rt":
         require(value.get("status") == "passed", "invalid-p4rt-status")
         require(isinstance(value.get("with_dwp", {}), dict) and isinstance(value.get("packages", {}), dict), "invalid-p4rt-receipt")
@@ -295,6 +396,109 @@ def receipt_summary(value, kind):
                 "source_found": found, "source_line_number": integer(value.get("with_dwp", {}).get("line")),
                 "packages": {name: digest(value.get("packages", {}).get(name)) for name in ("runtime_sha256", "debug_sha256")}}
     raise PublicArtifactError("unknown-receipt-kind")
+
+
+def graph_failure_summary(stdout, stderr, returncode):
+    """Project failure clues into fixed values; never publish captured text."""
+    # The cache verifier prints filtered text. Graph receipts deliberately expose
+    # only fixed classifications from fatal lines, not warnings or free text.
+    limit = 65536
+    tail = stderr[-limit:].encode("utf-8")
+    truncated = len(stderr) > limit or len(tail) > limit
+    tail = tail[-limit:]
+    if truncated:
+        tail = tail.partition(b"\n")[2]
+    lines = []
+    in_error = False
+    for line in tail.decode("utf-8", errors="replace").splitlines():
+        if line.startswith(("ERROR:", "Error:", "Error in download:")):
+            lines.append(line)
+            in_error = True
+        elif line.startswith(("WARNING:", "INFO:", "DEBUG:", "::", "##[")):
+            in_error = False
+        elif in_error and re.match(r"^\s*https?://\S+\s+(?:GET returned|HTTP[ /:])", line):
+            # Repository failures can put the causal HTTP status below a stack trace.
+            lines[-1] += " " + line
+    signals, origins, codes = set(), set(), set()
+    # Counts describe retained fatal lines only; summaries count lines, not extensions.
+    counts = {"error_lines": len(lines), "unclassified_error_lines": 0, "extension_summaries": 0}
+    for line in lines:
+        lower = line.lower()
+        line_signals = set()
+        for name, fragments in {
+            "timeout": ("timed out", "time out", "timeoutexception"),
+            "connection_error": ("connection reset", "connection refused", "unknownhostexception"),
+            "disk_full": ("no space left on device",),
+            "memory_exhaustion": ("outofmemoryerror", "cannot allocate memory"),
+        }.items():
+            if any(fragment in lower for fragment in fragments):
+                line_signals.add(name)
+        line_codes = {int(code) for code in re.findall(
+            r"(?:response code[: ]+|http(?:/[0-9.]+)?[ :]+|get returned[: ]+)([45][0-9]{2})\b", lower)}
+        if line_codes:
+            line_signals.add("http_error")
+        codes.update(line_codes)
+        if line.startswith("ERROR: Error loading ") and " for module extensions" in line:
+            line_signals.add("extension_load_error")
+        if (re.match(r"Error: '[^']+' value has no field or method '[^']+'", line) or
+                re.match(r"Error: (?:file .+ does not contain symbol|name '[^']+' is not defined)", line)):
+            line_signals.add("missing_symbol")
+        if " does not export a module extension called " in line:
+            line_signals.add("missing_extension")
+        if re.fullmatch(r"ERROR: Results may be incomplete as [0-9]+ extensions? failed\.", line):
+            line_signals.add("extension_summary")
+            counts["extension_summaries"] += 1
+        if not line_signals:
+            counts["unclassified_error_lines"] += 1
+        signals.update(line_signals)
+        for url in re.findall(r"https?://[^\s\]\[<>'\"]+", line):
+            try:
+                parsed = urlsplit(url)
+                host = parsed.hostname
+            except ValueError:
+                continue
+            origin = "other"
+            if host == "bcr.bazel.build":
+                origin = "bazel_registry"
+            elif host in {"snapshot.debian.org", "snapshot-cloudflare.debian.org"}:
+                origin = "debian_snapshot"
+            elif host in {"deb.debian.org", "security.debian.org"}:
+                origin = "debian_pool"
+            elif host == "raw.githubusercontent.com":
+                origin = "github_raw"
+            elif host == "release-assets.githubusercontent.com" or (
+                    host == "github.com" and "/releases/download/" in parsed.path):
+                origin = "github_release"
+            origins.add(origin)
+    return receipt_summary({"schema": 1, "status": "failed", "returncode": returncode,
+                            "stdout": "nonempty" if stdout else "empty",
+                            "stderr_tail_truncated": truncated, "signals": sorted(signals),
+                            "origins": sorted(origins), "http_statuses": sorted(codes),
+                            "diagnostic_counts": counts}, "resolution")
+
+
+def source_validation_summary(value, kind, identity):
+    """Bind completed source checks to this image build without republishing them."""
+    require(isinstance(value, dict) and value.get("schema") == 1, "invalid-source-summary")
+    require(value.get("kind") == kind and value.get("job_status") == "success" and
+            value.get("complete") is True and value.get("missing") == [] and
+            value.get("blocked") == [], "incomplete-source-summary")
+    require(all(key in value and value[key] == expected for key, expected in identity.items()),
+            "source-summary-identity-mismatch")
+    build = value.get("builds", {}).get(kind + "-tests", {})
+    require(isinstance(build, dict) and build.get("command") == "test" and
+            build.get("finished") == {"success": True, "exit_code": 0} and
+            build.get("truncated") is False, "incomplete-source-tests")
+    tests = build.get("tests")
+    require(isinstance(tests, dict) and bool(tests), "missing-source-tests")
+    for name, result in tests.items():
+        label(name)
+        require(isinstance(result, dict) and result.get("status") in {"PASSED", "FLAKY"},
+                "failed-source-test")
+    reuse = cache_reuse_summary(value.get("receipts", {}).get(kind, {}).get("cache_reuse"))
+    require(reuse["artifact_target"] == SOURCE_ARTIFACT_TARGETS[kind], "wrong-cache-reuse-target")
+    return {"test_count": len(tests),
+            "cache_reuse": {key: item for key, item in reuse.items() if key != "actions"}}
 
 
 def prepare(kind, workspace, upload_root, job_status, revision, architecture, head_sha=None, base_sha=None):
@@ -325,12 +529,12 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             blocked.append({"input": logical, "reason": "unreadable-or-unsafe-input"})
         return None
 
-    def read_json(logical, relative):
+    def read_json(logical, relative, maximum=64 * 1024 * 1024):
         path = input_path(logical, relative)
         if path is None:
             return None
         try:
-            require(path.stat().st_size <= 64 * 1024 * 1024, "oversized-json")
+            require(path.stat().st_size <= maximum, "oversized-json")
             return load_json(path.read_bytes())
         except (OSError, ValueError, TypeError, RecursionError):
             blocked.append({"input": logical, "reason": "invalid-json"})
@@ -343,7 +547,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             continue
         try:
             if file_kind in {"lock", "graph", "cache"}:
-                require(path.stat().st_size <= 64 * 1024 * 1024, "oversized-json")
+                maximum = (128 if file_kind == "lock" else 64) * 1024 * 1024
+                require(path.stat().st_size <= maximum, "oversized-json")
                 dependency_json(load_json(path.read_bytes()), file_kind)
             elif file_kind != "binary":
                 require(path.stat().st_size <= 16 * 1024 * 1024, "oversized-text")
@@ -352,8 +557,11 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                 if file_kind == "revision":
                     require(value.strip() == revision, "revision-mismatch")
             before = path.stat()
+            digest = hashlib.sha256()
             with path.open("rb") as stream:
-                file_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+            file_digest = digest.hexdigest()
             after = path.stat()
             require((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) ==
                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns), "changed-public-file")
@@ -373,7 +581,8 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
                 summary = bep_summary(stream, partial=job_status != "success")
             if job_status == "success":
                 require(summary["finished"] and summary["finished"]["success"], "incomplete-bep")
-                require(len(summary["tests"]) == count and all(item["status"] in {"PASSED", "FLAKY"} for item in summary["tests"].values()), "incomplete-tests")
+                require(bool(summary["tests"]) and (count is None or len(summary["tests"]) == count) and
+                        all(item["status"] in {"PASSED", "FLAKY"} for item in summary["tests"].values()), "incomplete-tests")
             builds[logical] = summary
         except (OSError, ValueError, TypeError, RecursionError):
             blocked.append({"input": logical, "reason": "invalid-bep-summary"})
@@ -385,8 +594,15 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
         "syncd": [("syncd", "artifacts/syncd-vs/bazel/report.json", "syncd")],
         "vs": [("p4rt", "artifacts/vs/p4rt-debug-verification.json", "p4rt")],
     }
+    # Optional: the graph command may not have started. Publish only its checked
+    # projection on failure; raw graph stderr/argv never enter the upload list.
+    graph_failure = "artifacts/archive/module-graph-failure.json"
+    if kind == "archive" and job_status != "success" and (
+            (workspace / graph_failure).exists() or (workspace / graph_failure).is_symlink()):
+        receipt_specs["archive"].append(("resolution", graph_failure, "resolution"))
     for logical, relative, receipt_kind in receipt_specs[kind]:
-        value = read_json(logical + "-receipt", relative)
+        value = read_json(logical + "-receipt", relative,
+                          maximum=4096 if receipt_kind == "resolution" else 64 * 1024 * 1024)
         if value is None:
             continue
         try:
@@ -406,21 +622,47 @@ def prepare(kind, workspace, upload_root, job_status, revision, architecture, he
             except (ValueError, TypeError):
                 blocked.append({"input": "execution-audit", "reason": "invalid-execution-audit"})
     if kind == "vs" and job_status == "success":
+        identity = {"revision": revision, "architecture": architecture,
+                    "head_sha": head_sha or None, "base_sha": base_sha or None}
+        receipts["source_validation"] = {}
+        for source_kind in ("source", "syncd"):
+            logical = source_kind + "-public-summary"
+            value = read_json(logical, SUMMARY[source_kind])
+            try:
+                receipts["source_validation"][source_kind] = source_validation_summary(
+                    value, source_kind, identity)
+            except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+                blocked.append({"input": logical, "reason": "invalid-source-validation"})
         outputs = {}
-        for name in ("sonic-vs.img.gz", "docker-orchagent.gz", "docker-orchagent-dbg.gz"):
+        for name in ("sonic-vs.bin", "docker-orchagent.gz", "docker-orchagent-dbg.gz",
+                     "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"):
             path = input_path("output-" + name, "target/" + name)
             if path is not None:
                 outputs[name] = {"bytes": path.stat().st_size}
         receipts["outputs"] = outputs
 
     if job_status == "success":
-        expected = {"archive": ("python", 5), "source": ("source", 12), "syncd": ("syncd", 7)}
-        if kind in expected:
-            receipt_name, count = expected[kind]
-            value = receipts.get(receipt_name, {})
-            tests = value.get("targets", value.get("tests", {}))
-            if len(tests) != count or value.get("status", "passed") != "passed":
-                blocked.append({"input": receipt_name + "-receipt", "reason": "incomplete-receipt"})
+        if kind == "archive":
+            value = receipts.get("python", {})
+            if len(value.get("tests", {})) != RECEIPT_TEST_COUNTS["archive"][1] or value.get("status") != "passed":
+                blocked.append({"input": "python-receipt", "reason": "incomplete-receipt"})
+        if kind in {"source", "syncd"}:
+            value = receipts.get(kind, {})
+            expected_tests = value.get("targets", value.get("tests", {}))
+            observed = builds.get(kind + "-tests", {}).get("tests", {})
+            if (not expected_tests or set(expected_tests) != set(observed) or
+                    value.get("status") != "passed" or
+                    any(status != "passed" for status in value.get("tests", {}).values())):
+                blocked.append({"input": kind + "-receipt", "reason": "incomplete-receipt"})
+        if kind == "source":
+            value = receipts.get("source", {})
+            if not value.get("program_count") or not value.get("debug_pair_count") or not value.get("source_contract"):
+                blocked.append({"input": "source-receipt", "reason": "missing-package-validation"})
+            published = {PurePosixPath(relative).name: selected[logical]["sha256"]
+                         for logical, relative, file_kind in FILES[kind]
+                         if file_kind == "binary" and logical in selected}
+            if not value.get("artifact_sha256") or value["artifact_sha256"] != published:
+                blocked.append({"input": "source-receipt", "reason": "validated-artifact-mismatch"})
         if kind == "archive" and receipts.get("python", {}).get("architecture") != architecture:
             blocked.append({"input": "python-receipt", "reason": "architecture-mismatch"})
         if kind == "source" and receipts.get("source", {}).get("revision") != revision:

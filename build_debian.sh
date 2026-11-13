@@ -24,6 +24,13 @@
 ## Enable debug output for script
 set -x -e
 
+# Only the final VS recipe owns a receipt; the first rootfs stage is separate.
+if [[ "${RFS_SPLIT_LAST_STAGE:-}" != y || "${RFS_SPLIT_FIRST_STAGE:-}" == y || "${TARGET_MACHINE:-}" != vs || "${IMAGE_TYPE:-}" != kvm ]]; then
+    unset SONIC_IMAGE_TIMING_FILE
+elif [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
+    python3 ./scripts/image_timing.py switch assembly filesystem 2>/dev/null || true
+fi
+
 ORGANIZATION_BUILD_HOOK=files/build_templates/build_debian.organization.sh
 
 run_organization_build_hook()
@@ -157,8 +164,15 @@ sudo LANG=C chroot $FILESYSTEM_ROOT apt-get -y install pigz
 sudo LANG=C chroot $FILESYSTEM_ROOT apt-get -y install busybox linux-base
 echo '[INFO] Install SONiC linux kernel image'
 ## Note: duplicate apt-get command to ensure every line return zero
-sudo cp $debs_path/initramfs-tools-core_*.deb $debs_path/initramfs-tools_*.deb $debs_path/linux-image-${LINUX_KERNEL_VERSION}-*_${CONFIGURED_ARCH}.deb $FILESYSTEM_ROOT
-basename_deb_packages=$(basename -a $debs_path/initramfs-tools-core_*.deb $debs_path/initramfs-tools_*.deb $debs_path/linux-image-${LINUX_KERNEL_VERSION}-*_${CONFIGURED_ARCH}.deb | sed 's,^,./,')
+kernel_image_debs=()
+for kernel_image_deb in "$debs_path"/linux-image-${LINUX_KERNEL_VERSION}-*_${CONFIGURED_ARCH}.deb; do
+    # A retained debug DEB may belong to an earlier Bazel build after switching
+    # back to Make. Only the selected final debug-image step may install it.
+    case "$kernel_image_deb" in *-dbg_*|*-dbgsym_*) continue ;; esac
+    kernel_image_debs+=("$kernel_image_deb")
+done
+sudo cp $debs_path/initramfs-tools-core_*.deb $debs_path/initramfs-tools_*.deb "${kernel_image_debs[@]}" $FILESYSTEM_ROOT
+basename_deb_packages=$(basename -a $debs_path/initramfs-tools-core_*.deb $debs_path/initramfs-tools_*.deb "${kernel_image_debs[@]}" | sed 's,^,./,')
 sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt -y install $basename_deb_packages
 ( cd $FILESYSTEM_ROOT; sudo rm -f $basename_deb_packages )
 sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install acl
@@ -689,7 +703,16 @@ export build_date="$(date -u)"
 export build_number="${BUILD_NUMBER:-0}"
 export built_by="$USER@$BUILD_HOSTNAME"
 export sonic_os_version="${SONIC_OS_VERSION}"
-j2 files/build_templates/sonic_version.yml.j2 | sudo tee $FILESYSTEM_ROOT/etc/sonic/sonic_version.yml
+# Render and validate before replacing the version file. A renderer failure
+# must stop the build instead of being hidden by a successful tee command.
+sonic_version_tmp=$(mktemp)
+trap_push 'rm -f "$sonic_version_tmp"'
+j2 files/build_templates/sonic_version.yml.j2 > "$sonic_version_tmp"
+python3 scripts/validate_sonic_version.py \
+    --secure-upgrade-mode "$SECURE_UPGRADE_MODE" "$sonic_version_tmp"
+sudo install -o root -g root -m 0644 "$sonic_version_tmp" \
+    "$FILESYSTEM_ROOT/etc/sonic/sonic_version.yml"
+rm -f "$sonic_version_tmp"
 
 if [ -f sonic_debian_extension.sh ]; then
     ./sonic_debian_extension.sh $FILESYSTEM_ROOT $PLATFORM_DIR $IMAGE_DISTRO
@@ -785,6 +808,13 @@ if [[ $SECURE_UPGRADE_MODE == 'dev' || $SECURE_UPGRADE_MODE == "prod" ]]; then
     echo "Secure Boot support build stage: END."
 fi
 
+# Install the source-built debug package through its real dpkg lifecycle.
+if [[ $BUILD_WITH_BAZEL_WHEN_AVAILABLE == y && $DEBUG_IMG == y ]]; then
+    kernel_debug_deb=$(basename "$debs_path"/linux-image-"${kversion}"-dbg_*.deb)
+    sudo cp "$debs_path/$kernel_debug_deb" "$FILESYSTEM_ROOT"
+    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot "$FILESYSTEM_ROOT" apt -y install "./$kernel_debug_deb"
+    sudo rm -f "$FILESYSTEM_ROOT/$kernel_debug_deb"
+fi
 ## Update initramfs
 sudo chroot $FILESYSTEM_ROOT update-initramfs -u
 ## Convert initrd image to u-boot format
@@ -939,7 +969,13 @@ if [ "$BUILD_REDUCE_IMAGE_SIZE" = "y" ]; then
       --remove-licenses
 fi
 
+if [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
+    python3 ./scripts/image_timing.py switch compression filesystem 2>/dev/null || true
+fi
 sudo mksquashfs $FILESYSTEM_ROOT $FILESYSTEM_SQUASHFS -comp zstd -b 1M -e boot -e var/lib/docker -e $PLATFORM_DIR
+if [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
+    python3 ./scripts/image_timing.py switch assembly filesystem 2>/dev/null || true
+fi
 
 ## Reduce /boot permission
 sudo chmod -R go-wx $FILESYSTEM_ROOT/boot
@@ -960,6 +996,9 @@ if [[ $MULTIARCH_QEMU_ENVIRON == y || $CROSS_BUILD_ENVIRON == y ]]; then
 fi
 
 ## Compress docker files
+if [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
+    python3 ./scripts/image_timing.py switch compression filesystem 2>/dev/null || true
+fi
 if [ "$BUILD_REDUCE_IMAGE_SIZE" = "y" ]; then
     pushd $FILESYSTEM_ROOT && sudo tar -I pzstd -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
 else
@@ -977,4 +1016,7 @@ if [ $(stat -c %s $FILESYSTEM_DOCKERFS) -lt $((4 * 1024 * 1024 * 1024)) ]; then
     sudo zip -g -n .squashfs:.gz $INSTALLER_PAYLOAD $FILESYSTEM_DOCKERFS
 else
     echo "$FILESYSTEM_DOCKERFS is 4GiB or larger, shipping it outside $INSTALLER_PAYLOAD"
+fi
+if [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
+    python3 ./scripts/image_timing.py switch assembly recipe 2>/dev/null || true
 fi

@@ -77,8 +77,8 @@
 #  *                 BLDENV/arch; reuse at own risk if stale vs. current slave Dockerfiles.
 #  *                 With DPKG cache write modes, a reused tag that differs from the computed
 #  *                 base tag is rejected.
-#  * BUILD_WITH_BAZEL_WHEN_AVAILABLE: Build targets registered in
-#  *                 SONIC_BAZEL_DOCKER_IMAGES with Bazel instead of the legacy
+#  * BUILD_WITH_BAZEL_WHEN_AVAILABLE: Build eligible kernel packages and targets
+#  *                 registered in SONIC_BAZEL_DOCKER_IMAGES with Bazel instead of the legacy
 #  *                 `docker build` flow.
 #  *                 When disabled they fall back to the normal Make docker build.
 #  *                 Default: n
@@ -509,6 +509,15 @@ ifneq ($(SONIC_VERSION_CACHE_SOURCE),)
 	DOCKER_RUN += -v "$(SONIC_VERSION_CACHE_SOURCE):/vcache:rw"
 endif
 
+# Forward cache authentication by name so the value never appears in Make's
+# printed Docker command or its command-line variables. Keep this independent
+# of the optional local cache mount below. Only the Bazel client uses it.
+DOCKER_RUN += -e BAZEL_REMOTE_AUTH
+
+# Forward the isolated kernel cache policy for every slave entry point.
+DOCKER_RUN += -e 'SONIC_BAZEL_KERNEL_REMOTE_CACHE=$(subst ','"'"',$(SONIC_BAZEL_KERNEL_REMOTE_CACHE))' \
+	-e 'SONIC_BAZEL_KERNEL_REMOTE_UPLOAD=$(subst ','"'"',$(SONIC_BAZEL_KERNEL_REMOTE_UPLOAD))'
+
 # Reuse downloads and action outputs across disposable builder containers.
 # Create the bind source as the host build user, before Docker can create a
 # root-owned directory. Keep the output base private to each builder/check-out.
@@ -786,6 +795,7 @@ SONIC_BUILD_INSTRUCTION :=  $(MAKE) \
 						   SBOM_STRICT=$(SBOM_STRICT) \
 						   SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 						   BUILD_WITH_BAZEL_WHEN_AVAILABLE=$(BUILD_WITH_BAZEL_WHEN_AVAILABLE) \
+                           PREFER_DEBIAN_REPO=$(PREFER_DEBIAN_REPO) \
                            $(SONIC_OVERRIDE_BUILD_VARS)
 
 .PHONY: sonic-slave-build sonic-slave-bash sonic-slave-run init reset

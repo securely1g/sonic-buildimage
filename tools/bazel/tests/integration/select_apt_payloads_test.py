@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that orchagent APT assembly preserves locked content and base ELF files."""
+"""Check OCI APT inputs, legacy package roots, locked content and base ELF files."""
 
 import ast
 import hashlib
@@ -16,7 +16,12 @@ from unittest import mock
 GENERATED_INPUTS = Path(sys.argv.pop(1))
 POLICY = Path(sys.argv.pop(1))
 LOCK = Path(sys.argv.pop(1))
-MODULE_INPUTS = Path(sys.argv.pop(1))
+SYNCD_DOCKERFILE = Path(sys.argv.pop(1))
+IMPORTED_PACKAGES = {
+    ("orchagent_debian", "arping"): (Path(sys.argv.pop(1)), Path(sys.argv.pop(1))),
+    ("orchagent_debug_debian", "gdbserver"): (Path(sys.argv.pop(1)), Path(sys.argv.pop(1))),
+}
+from sonic_apt.dependencies import package_from_control
 from tools.bazel.tests.oci_base_fixture import digest, oci_files, layer_tar, write_layout
 from tools.bazel.oci import apt_selection as subject
 from tools.bazel.oci.oci_inventory import assert_overlay_paths
@@ -82,7 +87,13 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.mapping = self.root / "mapping.json"
         self.mapping.write_text(json.dumps({"architecture": "amd64", "locked": mapping}))
         self.policy = self.root / "policy.json"
-        self.policy.write_bytes(POLICY.read_bytes())
+        # These fixtures contain only a base image and Debian additions. Source
+        # receipt binding is covered by apt_selection_test.py; keep this fixture
+        # independent of the packages supplied by the production image policy.
+        self.policy.write_text(json.dumps({
+            "schema": 1, "image": "docker-orchagent", "architecture": "amd64",
+            "distribution": "trixie", "retained_source": "none", "features": {},
+        }))
 
     def write_base(self, *, status=True):
         entries = [("usr/lib/libssl.so.3", self.base_elf), ("etc/base", b"base config")]
@@ -149,18 +160,80 @@ class SelectAptPayloadsTest(unittest.TestCase):
         self.mapping.write_text(json.dumps(value))
         return subject.select(self.base, self.lock, self.policy, self.mapping, variant="runtime")
 
-    def test_public_input_declarations_match_the_reviewed_lock(self):
-        from sonic_apt.inputs import declarations
+    def test_dockerfile_direct_apt_packages_remain_declared(self):
+        """The shared OCI lock must preserve Syncd runtime roots requested by its legacy Dockerfile."""
+        dockerfile = SYNCD_DOCKERFILE.read_text()
+        packages = set()
+        for line in dockerfile.splitlines():
+            if line.startswith("RUN apt-get install -f -y "):
+                packages.update(line.split()[5:])
+        concrete = {"libgrpc++1.51": "libgrpc++1.51t64", "libgrpc29": "libgrpc29t64",
+                    "libprotobuf32": "libprotobuf32t64", "libpcap0.8": "libpcap0.8t64"}
+        packages = {concrete.get(name, name) for name in packages}
+        lock = json.loads(LOCK.read_bytes())
+        declared = {item["name"] for item in lock["packages"].values()
+                    if item["architecture"] in ("amd64", "all")}
+        providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
+        packages = {providers.get(name, name) for name in packages}
+        self.assertTrue(packages.issubset(declared), "Dockerfile APT packages missing from OCI inputs: " +
+                        repr(sorted(packages - declared)))
+        roots = lock["dependency_sets"]["syncd_vs_debian"]["sets"]["amd64"]
+        locked = {key.rsplit("/", 1)[1].split(":", 1)[0] for key in roots}
+        providers = {"libc-ares2": "libcares2", "pkg-config": "pkgconf"}
+        concrete_packages = {providers.get(name, name) for name in packages}
+        self.assertTrue(concrete_packages.issubset(locked), "Dockerfile APT packages missing from canonical lock: " +
+                        repr(sorted(concrete_packages - locked)))
+
+    def test_public_input_mapping_covers_the_reviewed_lock_closures(self):
         self.assertEqual(json.loads(POLICY.read_bytes()), {
             "schema": 1, "image": "docker-orchagent", "architecture": "amd64",
-            "distribution": "trixie", "retained_source": "none",
+            "distribution": "trixie", "retained_source": "source",
             "features": {},
         })
-        module, bzl = declarations(json.loads(LOCK.read_bytes()))
-        self.assertEqual(MODULE_INPUTS.read_text(), module)
-        expected = ast.literal_eval(bzl.split("APT_INPUTS =", 1)[1])
+        lock = json.loads(LOCK.read_bytes())
+        expected = {}
+        for group, dependency_set in lock["dependency_sets"].items():
+            expected[group] = {}
+            for architecture, roots in dependency_set["sets"].items():
+                candidates = {}
+                pending = [key + "=" + version for key, version in roots.items()]
+                while pending:
+                    key = pending.pop()
+                    if key in candidates:
+                        continue
+                    package = lock["packages"][key]
+                    candidates[key] = "@" + group + "//" + package["name"]
+                    pending.extend(package["depends_on"])
+                expected[group][architecture] = candidates
         actual = ast.literal_eval(GENERATED_INPUTS.read_text().split("APT_INPUTS =", 1)[1])
         self.assertEqual(actual, expected)
+
+    def test_production_policy_requires_the_built_source_receipt(self):
+        """The real image cannot select Debian additions without its source evidence."""
+        with self.assertRaisesRegex(ValueError, "source policy requires a source receipt"):
+            subject.select(self.base, self.lock, POLICY, self.mapping, variant="runtime")
+
+    def test_imported_runtime_and_debug_packages_match_locked_bytes_and_identity(self):
+        """Inspect the public import_lock outputs without executing package binaries."""
+        lock = json.loads(LOCK.read_bytes())
+        mapping = ast.literal_eval(GENERATED_INPUTS.read_text().split("APT_INPUTS =", 1)[1])
+        for (group, name), (deb, control) in IMPORTED_PACKAGES.items():
+            with self.subTest(group=group, package=name):
+                keys = [key for key in mapping[group]["amd64"]
+                        if lock["packages"][key]["name"] == name]
+                self.assertEqual(len(keys), 1)
+                package = lock["packages"][keys[0]]
+                self.assertEqual(deb.stat().st_size, package["size"])
+                self.assertEqual(hashlib.sha256(deb.read_bytes()).hexdigest(), package["sha256"])
+                self.assertEqual(control.stat().st_size, package["control_size"])
+                self.assertEqual(hashlib.sha256(control.read_bytes()).hexdigest(), package["control_sha256"])
+                with tarfile.open(control, "r:*") as archive:
+                    members = [member for member in archive.getmembers()
+                               if member.name.removeprefix("./") == "control" and member.isfile()]
+                    self.assertEqual(len(members), 1)
+                    identity = package_from_control(archive.extractfile(members[0]).read(), origin=str(control))
+                self.assertEqual((identity.name, identity.version, identity.architecture),
+                                 (package["name"], package["version"], package["architecture"]))
 
     def test_base_packages_are_retained(self):
         paths, receipt = self.select()

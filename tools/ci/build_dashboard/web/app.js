@@ -4,6 +4,58 @@
 const IMAGE_KINDS = new Set(["make-vs", "bazel-vs"]);
 const KIND_LABELS = {"make-vs": "Make VS", "bazel-vs": "Bazel VS installer", container: "Container", source: "Source", checks: "Checks", other: "Other"};
 const PHASES = ["setup", "build", "validation", "upload", "other"];
+// Match collect.py's IMAGE_STEPS. Exact names preserve historical timing boundaries.
+const IMAGE_STEP_LABELS = {
+  "Build the VS installer (.bin)": "VS installer (.bin); VM generation and boot checks excluded",
+  "Build the VS image": "VS build with embedded boot checks; post-build validation excluded",
+  "Build the VS image with Bazel SWSS archives": "Build the VS image with Bazel SWSS archives",
+  "Build the VS image and both OCI container variants": "VS build, OCI follow-up and archive validation",
+  "Build the Bazel VS installer": "Build the Bazel VS installer",
+  "Build Bazel VS installer": "Build Bazel VS installer",
+  "Build and verify sonic-vs.bin with Bazel": "Build and verify sonic-vs.bin with Bazel",
+};
+// Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
+const SECTION_LABELS = {
+  "oci-session": "OCI archives and verification",
+  "oci-verification": "P4 packages and OCI verification",
+  "vs-image": "VS image, dependencies and cleanup", "orchagent-release": "Orchagent release",
+  "orchagent-debug": "Orchagent debug", "syncd-release": "Syncd release", "syncd-debug": "Syncd debug",
+  "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
+};
+const TASK_LABELS = {
+  "final-image": "Final VS image recipe", rootfs: "Root filesystem squashfs", base: "Base container",
+  "config-engine": "Config-engine container", "orchagent-release": "Orchagent release container",
+  "orchagent-debug": "Orchagent debug container", "syncd-release": "Syncd release container",
+  "syncd-debug": "Syncd debug container", "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
+  "orchagent-pair": "Orchagent runtime and debug containers", "syncd-pair": "Syncd runtime and debug containers",
+  "bmp-watchdog": "BMP watchdog container", "gnmi-watchdog": "gNMI watchdog container",
+  "sonic-otel": "OpenTelemetry container", "router-advertiser": "Router advertiser container",
+  "dash-engine": "DASH engine container", "sonic-mgmt-framework": "Management framework container",
+  database: "Database container", "gnmi-sidecar": "gNMI sidecar container", "sonic-gnmi": "gNMI container",
+  mux: "MUX container", "restapi-sidecar": "REST API sidecar container", sysmgr: "System manager container",
+  lldp: "LLDP container", "sonic-p4rt": "P4RT container", "gbsyncd-vs": "Gearbox syncd container",
+  "platform-monitor": "Platform monitor container", snmp: "SNMP container", "dhcp-relay": "DHCP relay container",
+  eventd: "Event daemon container", "sonic-bmp": "BMP container", "swss-layer": "SWSS layer container",
+  "dash-ha": "DASH HA container", "fpm-frr": "FRR container", nat: "NAT container", sflow: "sFlow container",
+  teamd: "Team daemon container", macsec: "MACsec container",
+};
+const BREAKDOWN_REASONS = {
+  "pending-collection": "Detailed timings have not been collected for this step yet.",
+  "step-not-successful": "A complete breakdown is available only for a successful build step.",
+  "logs-expired": "The job log is no longer available from GitHub.",
+  "logs-too-large": "The job log exceeds the timing collector's size limit.",
+  "logs-temporarily-unavailable": "The job log could not be collected. A later snapshot may include these timings.",
+  "unsupported-log-format": "This job log does not contain a supported timing breakdown.",
+  "incomplete-log": "The job log does not contain all boundaries needed for a complete breakdown.",
+  "invalid-timing": "The log timing boundaries could not be verified.",
+};
+const IMAGE_PHASE_LABELS = {assembly: "Assembly", "boot-checks": "Boot checks", compression: "Compression"};
+const IMAGE_CONTEXT_LABELS = {recipe: "Recipe", filesystem: "Filesystem and payload", installer: "ONIE installer", bios: "BIOS", uefi: "UEFI", "4-asic": "4 ASIC", "6-asic": "6 ASIC"};
+const IMAGE_PHASE_REASONS = {
+  "not-recorded": "Inner phases were not measured in this run. The recipe duration above does not provide separate assembly, boot checks or compression timings.",
+  "invalid-timing": "The inner phase measurements could not be verified. The outer recipe timing is still available above.",
+  "incomplete-timing": "The inner phase measurements are incomplete. The outer recipe timing is still available above.",
+};
 const state = {data: null, selectedRun: null, selectedJob: null, loading: false};
 
 function seconds(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
@@ -21,12 +73,66 @@ function dateTime(value, short = false) {
 }
 function result(item) { return item.conclusion || item.status || "unknown"; }
 function resultLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
+function prStateLabel(pr) {
+  if (pr.merged_at) return "Merged";
+  if (pr.state === "closed") return "Closed";
+  if (pr.state === "open" && pr.draft) return "Draft";
+  return resultLabel(pr.state);
+}
 function runKey(run) { return `${run.run_id}:${run.attempt}`; }
 function imageJob(job) { return IMAGE_KINDS.has(job.kind); }
 function measured(job) { return imageJob(job) && job.conclusion === "success" && seconds(job.image_build_seconds) !== null; }
+function imageMeasurement(job) {
+  const names = (Array.isArray(job.steps) ? job.steps : []).map(step => step?.name)
+    .filter(name => typeof name === "string" && Object.hasOwn(IMAGE_STEP_LABELS, name)).sort();
+  return names.length ? {signature: JSON.stringify(names), label: names.map(name => IMAGE_STEP_LABELS[name]).join(" + ")} :
+    {signature: null, label: "Image step boundary not recorded"};
+}
+function imageTrendGroups(points) {
+  const groups = new Map();
+  for (const item of points) {
+    const signature = imageMeasurement(item.job).signature;
+    // Unknown boundaries are isolated points, even when path and architecture match.
+    const key = signature === null ? item : JSON.stringify([item.job.kind, item.job.architecture || "unknown", signature]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return [...groups.values()];
+}
+function imageResult(jobs) {
+  const outcomes = jobs.filter(imageJob).map(result);
+  if (!outcomes.length) return "unmeasured";
+  if (outcomes.some(value => ["failure", "timed_out", "startup_failure"].includes(value))) return "failure";
+  if (outcomes.some(value => ["in_progress", "queued", "requested", "waiting", "pending"].includes(value))) return "pending";
+  // An unknown or incomplete job result must not turn into a successful or skipped PR.
+  if (outcomes.some(value => !["success", "cancelled", "skipped"].includes(value))) return "unmeasured";
+  if (outcomes.includes("cancelled")) return "cancelled";
+  if (outcomes.includes("success")) return "success";
+  return "skipped";
+}
+function prCoverage(snapshot) {
+  const imageRuns = snapshot.runs.filter(run => run.jobs.some(imageJob)).sort((a, b) => runTime(b) - runTime(a) || b.attempt - a.attempt || b.run_id - a.run_id);
+  return [...snapshot.pull_requests].sort((a, b) => b.number - a.number).map(pr => {
+    const latestImageRun = imageRuns.find(run => prNumbers(run).includes(pr.number)) || null;
+    const jobs = latestImageRun ? latestImageRun.jobs.filter(imageJob) : [];
+    return {pr, classification: imageResult(jobs), latestImageRun, jobs};
+  });
+}
+function summarizePrCoverage(coverage) {
+  const counts = {total: coverage.length, success: 0, failure: 0, cancelled: 0, skipped: 0, pending: 0, unmeasured: 0};
+  for (const row of coverage) counts[row.classification]++;
+  return counts;
+}
 function kindLabel(job) { return KIND_LABELS[job.kind] || "Other"; }
 function architecture(job) { return job.architecture ? String(job.architecture).toUpperCase() : "Unknown architecture"; }
 function runTime(run) { return timestamp(run.started_at) || timestamp(run.completed_at) || 0; }
+function baseSummary(pr, run) {
+  const selected = pr.base_branch ? `${pr.base_branch}@${String(pr.base_target_sha || "unavailable").slice(0, 12)}` : "unavailable";
+  const event = (run?.event_bases || []).find(base => base.number === pr.number);
+  return {selected: `Selected base: ${selected}`, attempt: event?.sha
+    ? `Recorded event base: ${event.ref || "unknown ref"}@${event.sha.slice(0, 12)}. Attempt checkout base is unverified.`
+    : "Attempt checkout base is unverified; no recorded event base is available."};
+}
 function safeGithubUrl(value, repository) {
   try {
     const url = new URL(value);
@@ -42,6 +148,80 @@ function validateSnapshot(data) {
     if (!pr || !Number.isSafeInteger(pr.number) || typeof pr.title !== "string") throw new Error("The published pull request data is incomplete.");
   }
   return data;
+}
+function timingIdentity(id, labels) {
+  const match = typeof id === "string" && /^([a-z][a-z0-9-]*)-([1-9][0-9]{0,5})$/.exec(id);
+  if (!match || !Object.hasOwn(labels, match[1])) return null;
+  return {kind: match[1], label: labels[match[1]] + (Number(match[2]) > 1 ? ` · invocation ${Number(match[2])}` : "")};
+}
+function timingSpan(item, total) {
+  return item && seconds(item.offset_seconds) !== null && seconds(item.duration_seconds) !== null &&
+    item.offset_seconds <= Number.MAX_SAFE_INTEGER && item.duration_seconds <= Number.MAX_SAFE_INTEGER &&
+    item.offset_seconds + item.duration_seconds <= total + .01;
+}
+function normalizePhaseBreakdown(value, parentSeconds, outcome) {
+  const unavailable = reason => ({status: "unavailable", reason, message: IMAGE_PHASE_REASONS[reason]});
+  if (value === undefined) return unavailable("not-recorded");
+  if (!value || value.version !== 1 || value.source !== "build-phase-markers") return unavailable("invalid-timing");
+  if (value.status === "unavailable") return unavailable(typeof value.reason === "string" && Object.hasOwn(IMAGE_PHASE_REASONS, value.reason) ? value.reason : "invalid-timing");
+  if (value.status !== "available" || value.reason !== null || outcome !== "finished" ||
+      seconds(parentSeconds) === null || parentSeconds > Number.MAX_SAFE_INTEGER || seconds(value.duration_seconds) === null ||
+      value.duration_seconds > Number.MAX_SAFE_INTEGER || Math.abs(value.duration_seconds - parentSeconds) > 2 ||
+      !Array.isArray(value.segments) || value.segments.length > 64) return unavailable("invalid-timing");
+  if (!value.segments.length) return unavailable("incomplete-timing");
+  const segments = [], identities = new Set(), totals = {assembly: null, "boot-checks": null, compression: null};
+  let end = 0, sum = 0;
+  for (const segment of value.segments) {
+    if (!segment || typeof segment.phase !== "string" || !Object.hasOwn(IMAGE_PHASE_LABELS, segment.phase) ||
+        typeof segment.context !== "string" || !Object.hasOwn(IMAGE_CONTEXT_LABELS, segment.context) ||
+        seconds(segment.offset_seconds) === null || seconds(segment.duration_seconds) === null ||
+        segment.offset_seconds > Number.MAX_SAFE_INTEGER || segment.duration_seconds > Number.MAX_SAFE_INTEGER) return unavailable("invalid-timing");
+    const identity = JSON.stringify([segment.phase, segment.context, segment.offset_seconds, segment.duration_seconds]);
+    if (identities.has(identity)) return unavailable("invalid-timing");
+    identities.add(identity);
+    if (Math.abs(segment.offset_seconds - end) > .00001) return unavailable("incomplete-timing");
+    end = segment.offset_seconds + segment.duration_seconds;
+    if (end > value.duration_seconds + .00001) return unavailable("incomplete-timing");
+    sum += segment.duration_seconds;
+    totals[segment.phase] = (totals[segment.phase] ?? 0) + segment.duration_seconds;
+    segments.push({phase: segment.phase, context: segment.context, offset_seconds: segment.offset_seconds, duration_seconds: segment.duration_seconds});
+  }
+  if (Math.abs(end - value.duration_seconds) > .00001 || Math.abs(sum - value.duration_seconds) > .00001) return unavailable("incomplete-timing");
+  return {status: "available", duration_seconds: value.duration_seconds, totals, segments};
+}
+function normalizeBreakdown(value) {
+  // A missing optional field preserves historical snapshots. Malformed optional data never breaks the dashboard.
+  if (value === undefined) return null;
+  const unavailable = reason => ({status: "unavailable", reason});
+  const invalid = () => unavailable("The published breakdown is incomplete or unsupported.");
+  if (!value || value.version !== 1 || value.source !== "github-job-log") return invalid();
+  if (value.status === "unavailable") return unavailable(typeof value.reason === "string" && Object.hasOwn(BREAKDOWN_REASONS, value.reason) ? BREAKDOWN_REASONS[value.reason] : "Detailed timings are unavailable for this step.");
+  if (value.status !== "available" || seconds(value.duration_seconds) === null || value.duration_seconds <= 0 ||
+      value.duration_seconds > Number.MAX_SAFE_INTEGER || !Array.isArray(value.sections) || !value.sections.length || value.sections.length > 32) return invalid();
+  let end = 0, taskCount = 0;
+  const sections = [], sectionIds = new Set();
+  for (const section of value.sections) {
+    const identity = timingIdentity(section?.id, SECTION_LABELS);
+    if (!identity || sectionIds.has(section.id) || !timingSpan(section, value.duration_seconds) ||
+        Math.abs(section.offset_seconds - end) > .01 || !Array.isArray(section.tasks)) return invalid();
+    sectionIds.add(section.id);
+    end = section.offset_seconds + section.duration_seconds;
+    taskCount += section.tasks.length;
+    if (taskCount > 512) return invalid();
+    const tasks = [], taskIds = new Set();
+    for (const task of section.tasks) {
+      const taskIdentity = timingIdentity(task?.id, TASK_LABELS);
+      if (!taskIdentity || taskIds.has(task.id) || !timingSpan(task, section.duration_seconds) || !["finished", "cached"].includes(task.outcome)) return invalid();
+      taskIds.add(task.id);
+      const normalized = {...taskIdentity, offset_seconds: task.offset_seconds, duration_seconds: task.duration_seconds, outcome: task.outcome};
+      if (taskIdentity.kind === "final-image") normalized.phase_breakdown = normalizePhaseBreakdown(task.phase_breakdown, task.duration_seconds, task.outcome);
+      tasks.push(normalized);
+    }
+    tasks.sort((a, b) => a.offset_seconds - b.offset_seconds);
+    sections.push({...identity, offset_seconds: section.offset_seconds, duration_seconds: section.duration_seconds, tasks});
+  }
+  if (Math.abs(end - value.duration_seconds) > .01) return invalid();
+  return {status: "available", duration_seconds: value.duration_seconds, sections};
 }
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -86,7 +266,7 @@ function renderMetrics() {
   const latest = successes[0];
   const measuredPrs = new Set(successes.flatMap(item => prNumbers(item.run)));
   const metrics = [
-    ["Latest successful image step", latest ? duration(latest.job.image_build_seconds) : "—", latest ? `${kindLabel(latest.job)} · ${architecture(latest.job)}` : "Waiting for an image measurement"],
+    ["Latest successful image step", latest ? duration(latest.job.image_build_seconds) : "—", latest ? `${kindLabel(latest.job)} · ${architecture(latest.job)} · ${imageMeasurement(latest.job).label}` : "Waiting for an image measurement"],
     ["Successful image measurements", successes.length, "Build steps with a successful result"],
     ["PRs with image measurements", `${state.data.pull_requests.filter(pr => measuredPrs.has(pr.number)).length} / ${state.data.pull_requests.length}`, "Includes historical PR revisions"],
     ["Workflow runs retained", state.data.runs.length, "Each retry attempt is recorded separately"],
@@ -121,7 +301,7 @@ function renderTrend() {
   const points = all.slice(0, 60).reverse();
   const container = byId("trend");
   container.replaceChildren();
-  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching successful image measurements. Select a point to inspect its job. Lines join only the same build path and architecture; they do not imply a controlled comparison.`;
+  byId("trend-note").textContent = `Showing ${points.length} of ${all.length} matching successful image measurements. Select a point to inspect its job. Lines join only the same build path, architecture and measured step; they do not imply a controlled comparison.`;
   if (!points.length) { container.append(el("p", "empty", "No successful image measurements match these filters.\nFailed, skipped, and pending runs remain visible below.")); return; }
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
@@ -144,20 +324,14 @@ function renderTrend() {
     const tick = firstTime + (lastTime - firstTime) * fraction;
     svg.append(svgEl("text", {x: left + fraction * (width - left - right), y: height - 13, "text-anchor": "middle"}, dateTime(new Date(tick).toISOString(), true)));
   }
-  const groups = new Map();
-  for (const item of points) {
-    const group = `${item.job.kind}:${item.job.architecture || "unknown"}`;
-    if (!groups.has(group)) groups.set(group, []);
-    groups.get(group).push(item);
-  }
-  for (const items of groups.values()) {
+  for (const items of imageTrendGroups(points)) {
     const color = items[0].job.kind === "make-vs" ? "#007f78" : "#23548a";
     const line = svgEl("polyline", {points: items.map(item => `${x(item)},${y(item)}`).join(" "), fill: "none", stroke: color, "stroke-opacity": ".45", "stroke-width": "2", "stroke-dasharray": items[0].job.architecture === "arm64" ? "5 4" : "0"});
     svg.append(line);
   }
   for (const item of points) {
     const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ") || item.run.branch || "Branch build";
-    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${dateTime(item.run.started_at)}`;
+    const label = `${prs} · ${kindLabel(item.job)} · ${architecture(item.job)} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · ${dateTime(item.run.started_at)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
@@ -169,14 +343,26 @@ function renderTrend() {
   container.append(svg);
 }
 
+function coverageRows(data) {
+  return prCoverage(data).sort((a, b) => Number(!!b.latestImageRun) - Number(!!a.latestImageRun)
+    || (b.latestImageRun ? runTime(b.latestImageRun) : 0) - (a.latestImageRun ? runTime(a.latestImageRun) : 0)
+    || b.pr.number - a.pr.number);
+}
 function renderCoverage() {
+  const coverage = coverageRows(state.data);
+  const counts = summarizePrCoverage(coverage);
+  byId("coverage-summary").replaceChildren(...[["success", "Success"], ["failure", "Failed"], ["cancelled", "Cancelled"], ["skipped", "Skipped"]].map(([outcome, label]) => {
+    const item = el("div", `coverage-stat ${outcome}`);
+    item.append(el("dt", "", label), el("dd", "", counts[outcome]));
+    return item;
+  }));
+  const note = byId("coverage-other");
+  note.textContent = `${counts.pending} pending · ${counts.unmeasured} unmeasured (no image jobs or result unavailable).`;
+  note.hidden = counts.pending + counts.unmeasured === 0;
   const rows = [];
   const selected = state.data.runs.find(run => runKey(run) === state.selectedRun);
-  for (const pr of [...state.data.pull_requests].sort((a, b) => b.number - a.number)) {
-    const associated = state.data.runs.filter(run => prNumbers(run).includes(pr.number)).sort((a, b) => runTime(b) - runTime(a));
-    const latestImageRun = associated.find(run => run.jobs.some(imageJob));
-    const latest = latestImageRun || associated[0];
-    const jobs = latestImageRun ? latestImageRun.jobs.filter(imageJob) : [];
+  for (const {pr, classification, latestImageRun, jobs} of coverage) {
+    if (classification !== "success" && classification !== "failure") continue;
     const row = el("tr", selected && prNumbers(selected).includes(pr.number) ? "selected" : "");
     const title = el("td");
     const button = el("button", "table-button");
@@ -184,35 +370,32 @@ function renderCoverage() {
     button.append(el("span", "pr-number", `#${pr.number}`), document.createTextNode(pr.title));
     button.addEventListener("click", () => {
       byId("pr-filter").value = String(pr.number);
-      if (latest) { state.selectedRun = runKey(latest); state.selectedJob = jobs[0]?.job_id || null; }
-      else { state.selectedRun = null; state.selectedJob = null; }
+      state.selectedRun = runKey(latestImageRun);
+      state.selectedJob = jobs[0]?.job_id || null;
       renderFiltered();
     });
-    title.append(button, el("span", "subtext", pr.merged_at ? "Merged" : pr.draft ? "Draft" : resultLabel(pr.state)));
+    title.append(button, el("span", "subtext", prStateLabel(pr)));
+    title.append(el("span", "subtext sha", baseSummary(pr, latestImageRun).selected));
     const status = el("td"), timings = el("td", "nowrap");
-    if (!jobs.length) { status.append(badge("unmeasured", "Unmeasured")); timings.textContent = "—"; }
-    else {
-      const stack = el("div", "status-stack");
-      for (const job of jobs) {
-        const item = el("div");
-        item.append(badge(result(job)), el("span", "subtext", `${kindLabel(job)} · ${architecture(job)}`));
-        stack.append(item);
-        const time = el("div", "", measured(job) ? duration(job.image_build_seconds) : "—");
-        time.append(el("span", "subtext", measured(job) ? "successful step" : job.conclusion === "success" ? "no step timing" : "not a successful build"));
-        timings.append(time);
-      }
-      status.append(stack);
+    const stack = el("div", "status-stack");
+    for (const job of jobs) {
+      const item = el("div");
+      item.append(badge(result(job)), el("span", "subtext", `${kindLabel(job)} · ${architecture(job)}`));
+      stack.append(item);
+      const time = el("div", "", measured(job) ? duration(job.image_build_seconds) : "—");
+      time.append(el("span", "subtext", measured(job) ? "successful step" : job.conclusion === "success" ? "no step timing" : "not a successful build"));
+      timings.append(time);
     }
-    if (latestImageRun) {
-      const current = !!pr.head_sha && latestImageRun.source_sha === pr.head_sha;
-      title.append(el("span", "subtext sha", String(latestImageRun.source_sha || "unknown").slice(0, 10)), badge(current ? "current" : "historical", current ? "Current PR head" : "Different revision"));
-      title.append(el("span", "subtext", dateTime(latestImageRun.started_at)));
-    }
+    status.append(stack);
+    const current = !!pr.head_sha && latestImageRun.source_sha === pr.head_sha;
+    title.append(el("span", "subtext sha", String(latestImageRun.source_sha || "unknown").slice(0, 10)), badge(current ? "current" : "historical", current ? "Current PR head" : "Different revision"));
+    title.append(el("span", "subtext", dateTime(latestImageRun.started_at)));
+    title.append(el("span", "subtext", "Attempt base unverified"));
     row.append(title, status, timings); rows.push(row);
   }
   byId("coverage-body").replaceChildren(...rows);
-  byId("coverage-count").textContent = `${rows.length} PRs`;
-  if (!rows.length) { const row = el("tr"), cell = el("td", "empty", "No pull requests have been collected yet."); cell.colSpan = 3; row.append(cell); byId("coverage-body").append(row); }
+  byId("coverage-count").textContent = `${rows.length} of ${counts.total} PRs`;
+  if (!rows.length) { const row = el("tr"), cell = el("td", "empty", counts.total ? "No pull requests have a successful or failed image result in the retained history." : "No pull requests have been collected yet."); cell.colSpan = 3; row.append(cell); byId("coverage-body").append(row); }
 }
 function renderRuns() {
   const all = state.data.runs.filter(run => matchesRun(run) && (byId("path-filter").value === "all" && byId("arch-filter").value === "all" || run.jobs.some(matchesJob))).sort((a, b) => runTime(b) - runTime(a));
@@ -233,6 +416,88 @@ function renderRuns() {
   if (!rows.length) { const row = el("tr"), cell = el("td", "empty", "No workflow runs match these filters."); cell.colSpan = 5; row.append(cell); byId("runs-body").append(row); }
 }
 
+function renderPhaseBreakdown(phases) {
+  const body = el("div", "phase-body");
+  if (phases.status !== "available") {
+    body.append(el("p", "unmeasured-note", phases.message));
+    return body;
+  }
+  body.append(el("p", "breakdown-note", `Measured phase total: ${duration(phases.duration_seconds)}. These markers use the build process clock; the recipe duration above uses streamed log timestamps. Small differences are preserved, not rescaled.`));
+  const totals = el("dl", "phase-totals");
+  for (const [phase, label] of Object.entries(IMAGE_PHASE_LABELS)) {
+    const item = el("div", "phase-total");
+    item.append(el("dt", "", label), el("dd", "", phases.totals[phase] === null ? "No segment recorded" : duration(phases.totals[phase])));
+    totals.append(item);
+  }
+  body.append(totals, el("p", "breakdown-note", "Category totals combine repeated segments. The list below preserves their execution order, including each filesystem, payload or disk compression segment."));
+  const sequence = el("ol", "phase-segments");
+  for (const [index, segment] of phases.segments.entries()) {
+    const item = el("li", "phase-segment"), row = el("div", "timing-row");
+    const name = el("span", "timing-name", `${index + 1}. ${IMAGE_PHASE_LABELS[segment.phase]} · ${IMAGE_CONTEXT_LABELS[segment.context]}`);
+    name.append(el("span", "timing-hint", `Starts at +${duration(segment.offset_seconds)} on the phase clock`));
+    row.append(name, el("span", "timing-duration", duration(segment.duration_seconds)));
+    item.append(row); sequence.append(item);
+  }
+  body.append(sequence);
+  return body;
+}
+function renderBreakdown(breakdown) {
+  const box = el("div", "breakdown-body");
+  if (breakdown.status !== "available") {
+    box.append(el("p", "breakdown-note", `Breakdown unavailable. ${breakdown.reason} The recorded step duration is shown above.`));
+    return box;
+  }
+  box.append(el("p", "breakdown-note", `Measured from job log timestamps · ${duration(breakdown.duration_seconds)}. These sections run sequentially in top-level Make request order; each includes its prerequisites, setup and cleanup. Log timestamps may differ slightly from the rounded step duration.`));
+  const list = el("ol", "breakdown-sections");
+  for (const section of breakdown.sections) {
+    const item = el("li", "breakdown-section");
+    const row = el(section.tasks.length ? "summary" : "div", "timing-row");
+    const name = el("span", "timing-name", section.label);
+    name.append(el("span", "timing-hint", `Starts at +${duration(section.offset_seconds)}${section.tasks.length ? ` · ${section.tasks.length} measured ${section.tasks.length === 1 ? "task" : "tasks"}` : " · no measured task detail"}`));
+    row.append(name, el("span", "timing-duration", duration(section.duration_seconds)));
+    if (!section.tasks.length) item.append(row);
+    else {
+      const details = el("details", "section-breakdown");
+      details.append(row, el("p", "breakdown-note", "Task spans can overlap; do not add their durations. Only recognized task spans are shown; remaining section time is not assigned to tasks. Bars share the section's time scale."));
+      const tasks = el("ol", "breakdown-tasks");
+      for (const task of section.tasks) {
+        const hasPhases = task.kind === "final-image";
+        const taskItem = el("li", "breakdown-task"), taskRow = el(hasPhases ? "summary" : "div", "timing-row");
+        const taskName = el("span", "timing-name", task.label);
+        taskName.append(el("span", "timing-hint", `Starts at +${duration(task.offset_seconds)} in section · log: ${task.outcome}`));
+        if (hasPhases) taskName.append(el("span", "timing-hint", task.phase_breakdown.status === "available" ? "Assembly, boot checks and compression" : task.phase_breakdown.reason === "not-recorded" ? "Inner phases not measured in this run" : "Inner phase breakdown unavailable"));
+        taskRow.append(taskName, el("span", "timing-duration", duration(task.duration_seconds)));
+        const track = el("div", "task-track"), span = el("span", "task-span");
+        track.setAttribute("aria-hidden", "true");
+        span.style.marginLeft = `${section.duration_seconds ? Math.min(100, task.offset_seconds / section.duration_seconds * 100) : 0}%`;
+        span.style.width = `${section.duration_seconds ? Math.min(100, task.duration_seconds / section.duration_seconds * 100) : 0}%`;
+        track.append(span);
+        if (hasPhases) {
+          const details = el("details", "phase-breakdown");
+          taskRow.append(track); details.append(taskRow, renderPhaseBreakdown(task.phase_breakdown)); taskItem.append(details);
+        } else taskItem.append(taskRow, track);
+        tasks.append(taskItem);
+      }
+      details.append(tasks); item.append(details);
+    }
+    list.append(item);
+  }
+  box.append(list);
+  return box;
+}
+function renderStep(step) {
+  const item = el("li", "step-item"), breakdown = normalizeBreakdown(step.breakdown);
+  const row = el(breakdown ? "summary" : "div", "timing-row");
+  const name = el("span", "timing-name", step.name || "Unnamed step"), timing = el("span", "step-duration");
+  timing.append(badge(result(step)), document.createTextNode(duration(step.duration_seconds)));
+  if (breakdown) name.append(el("span", "timing-hint", breakdown.status === "available" ? `Measured breakdown · ${breakdown.sections.length} sections` : "Breakdown unavailable"));
+  row.append(name, timing);
+  if (breakdown) {
+    const details = el("details", "step-breakdown"); details.append(row, renderBreakdown(breakdown)); item.append(details);
+  } else item.append(row);
+  return item;
+}
+
 function renderDetails() {
   const box = byId("details"); box.replaceChildren();
   const run = state.data.runs.find(item => runKey(item) === state.selectedRun);
@@ -247,6 +512,9 @@ function renderDetails() {
     const note = el("p", "detail-meta");
     note.append(link(`PR #${pr.number}`, pr.url), document.createTextNode(` · association: ${run.pr_association || "unknown"}`));
     box.append(note);
+    const base = baseSummary(pr, run);
+    box.append(el("p", "detail-meta", `${base.selected} · observed ${dateTime(pr.base_target_observed_at)}`), el("p", "source-warning", base.attempt));
+    box.append(el("p", "stage-note", "Successful step timings do not establish that an image artifact was published or that this attempt tested the selected base."));
     if (pr.head_sha !== run.source_sha) box.append(el("p", "source-warning", "The recorded source revision differs from the current PR head. This may be a historical revision or a merge build; it is not proof that the current PR head was measured."));
   }
   if (!run.jobs.length) { box.append(el("p", "empty", "No job details are available for this workflow yet.")); return; }
@@ -268,6 +536,7 @@ function renderDetails() {
     const valueBox = el("div", "detail-value"); valueBox.append(el("span", "", name), el("strong", "", duration(value))); values.append(valueBox);
   }
   box.append(values);
+  if (measured(job)) box.append(el("p", "stage-note", `Measured scope: ${imageMeasurement(job).label}.`));
   const phases = job.phases || {};
   const total = PHASES.reduce((sum, phase) => sum + (seconds(phases[phase]) || 0), 0);
   const bar = el("div", "stage-bar"); bar.setAttribute("aria-label", "Recorded step time by phase");
@@ -277,14 +546,10 @@ function renderDetails() {
     if (total > 0 && value !== null) { const segment = el("span", `stage-${phase}`); segment.style.width = `${value / total * 100}%`; segment.title = `${phase}: ${duration(value)}`; bar.append(segment); }
     const item = el("span"); item.append(el("i", `stage-${phase}`), document.createTextNode(phase[0].toUpperCase() + phase.slice(1)), el("b", "", duration(value))); legend.append(item);
   }
-  box.append(bar, legend, el("p", "stage-note", "Stage totals sum recorded step durations. They may not equal job elapsed time, and the build phase can include more work than the image build step. Queue time is excluded. Cache state and runner comparability are unknown."));
+  box.append(bar, legend, el("p", "stage-note", "Stage totals sum recorded step durations. They may not equal job elapsed time, and the build phase can include more work than the image build step. Step times exclude queue time. Total elapsed can include waiting for a runner when a job never starts. Cache state and runner comparability are unknown."));
   const steps = el("details", "steps"); steps.append(el("summary", "", `Step timings · ${job.steps.length} steps`));
   const list = el("ol");
-  for (const step of job.steps) {
-    const item = el("li"); const name = el("span", "", step.name || "Unnamed step"); const timing = el("span");
-    timing.append(badge(result(step)), document.createTextNode(duration(step.duration_seconds)));
-    item.append(name, timing); list.append(item);
-  }
+  for (const step of job.steps) list.append(renderStep(step));
   steps.append(list); box.append(steps);
 }
 function renderFiltered() { renderTrend(); renderCoverage(); renderRuns(); renderDetails(); }
@@ -326,4 +591,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary, prStateLabel};

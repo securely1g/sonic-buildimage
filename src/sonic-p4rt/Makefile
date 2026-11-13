@@ -5,6 +5,10 @@ SHELL = /bin/bash
 BAZEL_TARGET_PATH = p4rt_app
 BAZEL_BUILD_TARGETS = //p4rt_app:p4rt_deb //p4rt_app:p4rt_dbg_deb
 
+# Keep the pinned archives and integrity checks while providing reachable
+# public mirrors for this nested Bazel workspace's source downloads.
+BAZEL_BUILD_OPTS += --experimental_downloader_config=$(CURDIR)/source_mirrors.cfg
+
 # Let Bazel collect split debug symbols into the .dwp for optimized builds.
 # Explicit -g overrides the toolchain's optimized-build default of -g0.
 # GNU dwp 2.44 cannot package GCC 14's default DWARF 5 debug information.

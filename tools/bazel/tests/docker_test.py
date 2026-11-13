@@ -33,8 +33,11 @@ import hashlib, json, os, pathlib, sys
 arguments = sys.argv[1:]
 operation = arguments[0]
 label = arguments[-1]
-archive = json.loads(os.environ['FAKE_BAZEL_LABELS'])[label]
-prerequisites = json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[archive]
+labels = json.loads(os.environ['FAKE_BAZEL_LABELS'])
+archive = labels[label]
+archives = [labels[arg] for arg in arguments if arg in labels]
+prerequisites = [path for name in archives
+                 for path in json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[name]]
 record = {'arguments': arguments,
           'prerequisites_ready': all(pathlib.Path(path).is_file() for path in prerequisites),
           'prerequisite_sha256': {path: hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
@@ -48,12 +51,14 @@ source = pathlib.Path('bazel-bin/archive outputs') / archive
 if operation == 'build':
     if mode == 'build_failure':
         raise SystemExit('fixture build failure')
-    source.parent.mkdir(parents=True, exist_ok=True)
-    if mode == 'directory_output':
-        source.mkdir(exist_ok=True)
-    else:
-        source.write_bytes(b'' if mode == 'empty_output' else
-                           os.environ.get('FAKE_BAZEL_PAYLOAD', 'new ' + archive).encode())
+    for archive in archives:
+        source = pathlib.Path('bazel-bin/archive outputs') / archive
+        source.parent.mkdir(parents=True, exist_ok=True)
+        if mode == 'directory_output':
+            source.mkdir(exist_ok=True)
+        else:
+            source.write_bytes(b'' if mode == 'empty_output' else
+                               os.environ.get('FAKE_BAZEL_PAYLOAD', 'new ' + archive).encode())
 elif operation == 'cquery':
     print('INFO: fixture query diagnostic', file=sys.stderr)
     if mode == 'query_failure':
@@ -92,6 +97,7 @@ else:
 .ONESHELL:
 .SECONDEXPANSION:
 TARGET_PATH = target
+CONFIGURED_ARCH = amd64
 .PHONY: .platform
 """ + f"PROJECT_ROOT = {self.root}\n" + log_setting + "\n" + r"""
 sbom_emit_fragment = printf 'sbom %s %s %s\n' '$(1)' '$(2)' '$(3)' >> publication-markers
@@ -182,6 +188,56 @@ registered: $(SONIC_TARGET_LIST)
         self.assertFalse((self.target / "python-wheels").exists())
         self.assertFalse((self.target / ".swss-build-method").exists())
 
+    def test_configured_native_architecture_reaches_build_and_query(self):
+        """An ARM64 Make build must not inherit the root RC's AMD64 platforms."""
+        original = self.makefile
+        for architecture, platform in (("amd64", "x86_64_trixie"), ("arm64", "aarch64_trixie")):
+            with self.subTest(architecture=architecture):
+                self.makefile = original + "\nCONFIGURED_ARCH = " + architecture + "\n"
+                self.calls.unlink(missing_ok=True)
+                self.assert_success(self.run_make(environment={
+                    "BAZEL_CONTAINER_ARGS": "--platforms=//wrong:target --host_platform=//wrong:host",
+                }))
+                calls = self.recorded_calls()
+                self.assertEqual([call["arguments"][0] for call in calls], ["build", "cquery"])
+                for call in calls:
+                    for flag in ("--platforms=", "--host_platform="):
+                        selected = [arg for arg in call["arguments"] if arg.startswith(flag)]
+                        self.assertEqual(selected[-1], flag + "@sonic_build_infra//platforms:" + platform)
+        self.makefile = original
+
+    def test_unsupported_native_architecture_fails_without_publishing_an_image(self):
+        """An unsupported architecture must never silently produce an AMD64 image."""
+        original = self.makefile
+        for architecture in ("armhf", "riscv64", ""):
+            with self.subTest(architecture=architecture):
+                self.makefile = original + "\nCONFIGURED_ARCH = " + architecture + "\n"
+                result = self.run_make()
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("Unsupported native Bazel container architecture:",
+                              (self.target / (self.archives[0] + ".log")).read_text())
+                self.assertEqual(self.recorded_calls(), [])
+                self.assertEqual((self.target / self.archives[0]).read_bytes(), b"previous image")
+                self.assertFalse(self.markers.exists())
+        self.makefile = original
+
+    def test_image_source_options_apply_to_build_and_query_without_leaking(self):
+        """A DASH image selects its feature flags without changing another image."""
+        selected = self.archives[0]
+        self.makefile += f"{selected}_BAZEL_ARGS = --define=image=dashboard\n"
+        self.assert_success(self.run_make(*self.archives, parallel=True, environment={
+            "BAZEL_CONTAINER_ARGS": "--jobs=2 --define=image=default",
+        }))
+        calls = self.recorded_calls()
+        self.assertEqual(len(calls), 2 * len(self.archives))
+        for call in calls:
+            args = call["arguments"]
+            self.assertIn("--jobs=2", args)
+            if args[-1] == self.labels[selected]:
+                self.assertLess(args.index("--define=image=default"),
+                                args.index("--define=image=dashboard"))
+            else:
+                self.assertNotIn("--define=image=dashboard", args)
     def test_both_lists_register_buildable_targets_and_keep_owner_sbom_paths(self):
         """Keep runtime and debug archives buildable together, with owner-specific SBOM
         attribution and normal logging.

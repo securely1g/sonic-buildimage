@@ -1,25 +1,38 @@
 # Build dashboard data (schema 1)
 
 `collect.py` produces one JSON document, also used as its durable history. It
-reads public GitHub Actions metadata only: no logs, artifacts, machine names,
-workflow inputs, environment variables, credentials, or build execution.
+reads public GitHub Actions metadata and bounded timing markers from selected
+public job logs. Raw logs, artifacts, machine names, workflow inputs, environment
+variables and credentials are never retained in the public document. Collection
+does not execute a build or execute any content from a log.
 
 - `schema_version`: `1`.
 - `repository`: validated `owner/repository`.
 - `generated_at`: UTC collection timestamp.
 - `pull_requests`: current metadata, including closed and unmeasured PRs:
   `number`, `title`, `state`, `draft`, `url`, `head_sha`, `base_sha`,
-  `head_branch`, `updated_at`, `merged_at`. These SHAs describe the **current PR
-  metadata**, never the base/head that an old workflow tested.
+  `head_branch`, `updated_at`, `merged_at`, `base_branch`, `base_target_sha`,
+  `base_target_observed_at`. `base_sha` is GitHub's PR metadata and may be
+  historical even for an open PR. `base_target_sha` is independently read from
+  the selected branch ref, or `null` when that ref no longer exists. Other ref
+  lookup failures abort collection. These fields never establish the base/head
+  that an old workflow tested.
 - `runs`: one entry per `(run_id, attempt)`, retained after Actions history expires:
   `run_id`, `attempt`, `workflow_name`, `workflow_path`, `source_sha`, `branch`,
   `event`, `status`, `conclusion`, `pr_numbers`, `pr_association`, `pr_association_note`, `started_at`,
-  `completed_at`, `updated_at`, `url`, `jobs`.
+  `completed_at`, `updated_at`, `url`, `jobs`, `event_bases`.
   `source_sha` is GitHub's run `head_sha`; it is not replaced by the current PR
   head. `pr_association` is `github` (run's explicit PR links), `commit` (exact
-  current same-repository PR head), `branch` (unique same-repository feature
+  current same-repository PR head, or a unique exact fork repository/branch/head
+  match for a `pull_request` event), `branch` (unique same-repository feature
   branch, additionally verified through GitHub's commit-to-PR endpoint), or
   `none`. Multiple/ambiguous inferred matches are left unassociated.
+  `event_bases` contains only `{number, ref, sha}` from the workflow run's
+  recorded PR metadata. It is never filled from current PR base targets. These
+  event records do not independently verify job checkout bases; absent older
+  records remain unknown. A normal refresh adds event metadata to the latest
+  retained attempt without refetching completed jobs. Successful image timings
+  do not establish that an image artifact was published.
   `pr_association_note` is normally `null`; it discloses HTTP 404/422 when an old
   commit cannot be resolved for optional PR inference. The run stays visible.
   Other optional commit-lookup failures are disclosed as temporarily unavailable
@@ -37,8 +50,55 @@ workflow inputs, environment variables, credentials, or build execution.
   `image_build_seconds` is populated only for successful, explicitly recognized
   image-build steps; `image_build_elapsed_seconds` also records a failed image
   build's elapsed time. A failed job is never a successful benchmark.
+  Exact recognized step names identify the measurement scope. In particular,
+  `Build the VS installer (.bin)` excludes VM generation and boot checks;
+  historical `Build the VS image` measurements include them. Consumers must
+  keep those trend series separate even when job kind and architecture match.
 - Each step: `number`, `name`, `status`, `conclusion`, `started_at`,
   `completed_at`, `duration_seconds`, `phase`.
+  An optional `breakdown` provides nested Make build timings without changing
+  the existing step duration or successful-image measurement:
+  - `version`: `1`; `source`: `github-job-log`.
+  - `status`: `available` or `unavailable`; `reason`: a fixed reason or `null`.
+  - `duration_seconds`: observed log interval, or `null` when unavailable.
+  - `sections`: sequential outer Make invocations. Each contains a known `id`,
+    fixed `label`, `offset_seconds` relative to the observed build-step start,
+    `duration_seconds`, and `tasks`.
+  - Each task contains a known `id`, fixed `label`, `offset_seconds` relative to
+    its containing section, `duration_seconds`, and `outcome` (`finished` or
+    `cached`). Tasks can overlap and are not an additive partition of the
+    section. Unobserved work inside a recipe is not synthesized.
+  - A final-image task may additionally contain `phase_breakdown`:
+    - `version`: `1`; `source`: `build-phase-markers`.
+    - `status`: `available` or `unavailable`; `reason`: `null`, `not-recorded`,
+      `invalid-timing`, or `incomplete-timing`.
+    - `duration_seconds`: the measured producer interval, or `null` when
+      unavailable.
+    - `segments`: at most 64 sequential, contiguous intervals, each with
+      `phase` (`assembly`, `boot-checks`, or `compression`), `context` (`recipe`,
+      `filesystem`, `installer`, `bios`, `uefi`, `4-asic`, or `6-asic`),
+      `offset_seconds` relative to the producer interval, and `duration_seconds`.
+      Labels are derived from these fixed identifiers. Segments partition the
+      producer interval; category totals aggregate repeated segments without
+      changing their timeline order.
+    The producer interval uses a monotonic clock. The containing task uses
+    GitHub log timestamps, so their durations can differ slightly; validation
+    permits an absolute difference of at most two seconds from the containing
+    interval and the receipt's elapsed log interval. It never rescales
+    measurements to force equality. A shorter producer interval does
+    not assign the remaining time to a phase. Missing historical measurements
+    and cache reuse do not supply zero-duration phase measurements.
+    Phase receipts are accepted only inside the matching active final-image
+    recipe, before its successful finish marker. Invalid or incomplete receipts
+    make that inner detail unavailable while preserving valid outer timings.
+    The `.bin` installer and `.img.gz` VM target identities are distinct when
+    associating receipts. Both support outer recipe and root-filesystem task
+    timing; current `.bin` builds do not emit inner-phase receipts.
+    Previously retained tasks without this optional field remain supported.
+  Timing values must be finite and nonnegative; child intervals must fit their
+  parent. Identifiers and labels come from the parser's allowlist, never
+  arbitrary log text. Unavailable detail is not a zero-duration build. The
+  optional field is compatible with older schema-1 snapshots.
 - `comparisons`: empty in this phase. API timing alone does not prove matched
   cache state, toolchain/configuration, hardware, or a historical tested base.
   Therefore no improvement or regression percentage is asserted.

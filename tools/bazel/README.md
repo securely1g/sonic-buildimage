@@ -1,11 +1,16 @@
 # Buildimage Bazel support
 
-Shared support belongs beside the tools it serves; container-specific entrypoints
-and expectations remain with the container integration.
+Shared support belongs beside the tools it serves; container-specific targets
+and expectations remain beside the container's original Dockerfile and startup
+inputs. SWSS is owned by `dockers/docker-orchagent/`; Syncd VS is owned by
+`platform/vs/docker-syncd-vs/`, including its `BUILD.bazel`, `bazel/` and
+`config/` declarations. Syncd does not need a second directory under `dockers/`.
 
 Tracked scripts, templates and Make metadata are exported by `BUILD.bazel` files
 in `files/scripts`, `files/build_templates` and `rules`. The root `BUILD.bazel`
-declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
+declares the Make-generated manifests and Scapy wheel. SWSS consumes the
+source-built config-engine OCI target directly within the Bazel graph, inheriting
+Common's runtime and symbols instead of adding another copy of its runtime TAR.
 
 | Location | Responsibility |
 | --- | --- |
@@ -18,6 +23,7 @@ declares the Make-generated manifests, config-engine OCI files and Scapy wheel.
 | [tests/](tests/README.md) | Unit tests and fixture-based integration checks for the Bazel helpers and container build integration |
 | [ci/](ci/README.md) | Dependency evidence, command logs, archive/ELF inspection and cache verification |
 | [SWSS container](../../dockers/docker-orchagent/bazel/README.md) | SWSS archive selection, Make integration and expected SWSS package contents |
+| [syncd VS container](../../platform/vs/docker-syncd-vs/bazel/README.md) | Complete syncd VS runtime/debug OCI packaging and the declared Make package inputs |
 
 The [VS runner and Make cache tests](../ci/README.md) belong to buildimage CI and
 do not depend on SWSS helper modules. Shared Python libraries use repository
@@ -37,14 +43,58 @@ The shared `docker.mk` recipe owns the Bazel `build` and `cquery` calls.
 With `y`, each container's Make rule registers its Bazel runtime and debug
 archives only when the selected build configuration supports them. Registered
 archives use Bazel; all other containers keep their existing Make Docker build.
-With `n`, all containers use that existing Make path.
+With `n`, all containers use that existing Make path. The same switch also
+automatically selects the registered kernel DEB build for supported native
+AMD64/ARM64 Trixie VS unsigned default configurations; see the
+[kernel integration](kernel/README.md).
 
 Availability means that the container owner has supplied Bazel targets and
 enabled them for the selected architecture, platform and features. Make does
 not probe for a Bazel executable or retry a failed Bazel build with Make.
 Invalid metadata for a selected target and Bazel build errors remain failures.
 
-Keep the container's Make declarations in its existing `rules/docker-*.mk` file.
+### Build runtime and debug archives with the VS image
+
+During `make target/sonic-vs.bin BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`,
+the Trixie builder builds each selected, supported runtime/debug pair in one
+Bazel invocation. The two targets share the owner's configuration and declared
+inputs. This retains the runtime layers and Bazel state while producing the
+matching debug image, before the VS builder exits. Both complete Docker archives
+are exported to `target/`; each archive remains independently cacheable.
+
+For the native AMD64 FIPS/DASH CI configuration, this produces
+`docker-orchagent.gz`, `docker-orchagent-dbg.gz`, `docker-syncd-vs.gz` and
+`docker-syncd-vs-dbg.gz` during the VS build. The existing owner guards determine
+which pairs are available in other configurations.
+
+Building a debug archive does not select it for installation.
+`INSTALL_DEBUG_TOOLS=y` selects the debug containers through the existing VS
+installer list; a normal image continues to install the runtime containers.
+Standalone archive requests and unsupported Make configurations retain their
+existing behavior. A selected pair fails if either build/export fails or the
+owner declares different Bazel arguments for its two variants.
+
+The active VS CI job makes that request directly through `slave.mk` in a
+privileged SONiC slave. Validation checks both pairs and the installer's
+`target/sonic-vs.bin.dockers` selection, then runs the shared SWSS/Syncd static
+image tests and Docker-load checks in the same worker. The verifier also
+resolves the config-engine archive and existing P4RT runtime/debug package
+prerequisites before checking the images and symbols. It does not request the
+Orchagent or Syncd archives again, and their retained bytes must remain unchanged.
+The disabled legacy VS job retains `build_vs.sh`/`validate_vs.sh` dispatch and
+the separate SWSS/Syncd source-package suites; those suites are not currently
+selected by the active direct-slave job.
+See [CI evidence and timing](ci/README.md).
+
+The `.bin` target produces the ONIE installer without KVM. The separate
+`target/sonic-vs.img.gz` target generates BIOS/UEFI VM disks and runs their boot
+checks; the installer CI does not exercise that VM path. Runtime/debug pairing
+also remains available when explicitly building the VM image.
+
+### Register container targets
+
+Keep the container's Make declarations in their existing location, such as
+`rules/docker-orchagent.mk` or `platform/vs/docker-syncd-vs.mk`.
 Select Bazel only under that owner's feature and build-environment guards. The
 shared bridge in `tools/bazel/docker.mk` consumes these declarations:
 
@@ -115,9 +165,13 @@ that archive from a matching Make cache; a failed extraction preserves the prior
 archive and leaves the newer stamp in place for a retry.
 Archives selected for Bazel cannot appear in `SONIC_PACKAGES_LOCAL`: the shared
 archive macro supplies `:latest`, while that Make mode expects versioned tags.
-SWSS remains the only production container registered for Bazel. Its supported
-configuration is native AMD64 Trixie VS without ASAN. Other SWSS configurations
+The base/config-engine images and service images register their own Bazel
+producers. SWSS supports native AMD64 Trixie VS without ASAN. Other SWSS configurations
 keep the Make build even with `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`.
+The syncd VS owner also registers an opt-in for native AMD64 Trixie VS with
+DASH SAI and FIPS enabled, without ASAN, RPC, or a combined `docker-sonic-vs`
+target. Its [owner guide](../../platform/vs/docker-syncd-vs/bazel/README.md) records
+the current image validation requirements and remaining runtime checks.
 The config-engine and py-common wheel targets are separate, directly invoked
 Bazel targets; this switch selects container builders.
 
@@ -222,6 +276,77 @@ An explicitly empty `SONIC_BAZEL_CACHE_SOURCE` omits both this cache mount and
 the mounted system configuration. Bazel still runs with its usual local
 configuration; an empty value does not disable Bazel or its own local caches.
 
+### Read the remote cache from Make image builds
+
+When the host environment contains `BAZEL_REMOTE_AUTH`, Make forwards that
+variable by name into `sonic-slave`. The Bazel image recipe then reads the shared
+HTTPS cache at `lgh-bazel-87263989.eastus.cloudapp.azure.com`. For example, a Make
+build of `target/docker-config-engine-trixie.gz` with
+`BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` can reuse Common compilation seeded by Common
+CI when its source inputs, toolchains and build settings match.
+
+| Authentication | Make's Bazel image recipe |
+| --- | --- |
+| Missing or empty | Uses the existing caller-selected caches |
+| Valid `BAZEL_REMOTE_AUTH` environment value | Reads the shared remote cache with uploads disabled |
+| Malformed value | Stops with a sanitized error before invoking Bazel |
+
+Supply the complete Basic Authorization header through a secret manager or the
+GitHub Actions `BAZEL_REMOTE_AUTH` secret. Do not put its value in a Make argument,
+`BAZEL_CONTAINER_ARGS`, `.bazelrc` or a Docker command. The origin-scoped
+[`credentials.py`](cache/credentials.py) helper supplies it only to this HTTPS
+host. The variable remains in the Bazel client's environment; it is not an
+action/test environment setting.
+
+Remote reads work independently of `SONIC_BAZEL_CACHE_SOURCE`, including when
+that local mount is disabled. The recipe applies the remote endpoint, credential
+helper, local-execution and read-only upload settings after caller options, so
+an accidental `--remote_upload_local_results=true` cannot enable writes. Remove
+`BAZEL_REMOTE_AUTH` from the environment to use ordinary caller-selected cache
+settings instead. This integration covers the Bazel container recipe; it does
+not change legacy DEB/Make compilation or the separate kernel launcher.
+
+Both image builds and Common CI use `--incompatible_strict_action_env`. Bazel
+otherwise inherits the caller's `PATH` and `LD_LIBRARY_PATH` when an action runs:
+for example, sonic-slave adds `/usr/.cargo/bin` to `PATH`, while the Common CI
+job adds its Bazelisk installation. Those differences change cache keys even
+when the C++ sources and compiler arguments match. The strict setting gives
+actions a fixed `PATH` and omits inherited `LD_LIBRARY_PATH`; explicitly declared
+action variables still apply.
+
+Keep raw Bazel Java/client and execution logs private: they can contain client
+environment values. CI publishes only sanitized cache receipts and the explicit
+image-validation artifact list.
+
+To test the real Make path, first run Common's manual **Bazel remote cache
+validation** workflow from `master` with `seed_for_make=true`. After it succeeds, dispatch
+buildimage's **Common cache reuse through Make** workflow with that run ID as
+`seed_run`. Each native AMD64/ARM64 job downloads only seed evidence, checks out
+the exact Common source revision, and starts with no local Bazel outputs or
+action cache. It resolves the published native `sonic-slave-trixie` builder to
+an immutable digest, runs outer Make's `configure` and
+`target/docker-config-engine-trixie.gz` recipes, and requires every executed
+Common C++ compile/link action to be a remote hit matching the producer's seed.
+
+The workflow probes Bazel's Linux sandbox as Make's non-root builder before and
+after host setup. On an AppArmor-restricted GitHub runner, it allows user
+namespaces only for this job's sandbox executable at
+`/sonic/artifacts/private/bazel-install/linux-sandbox`. It leaves the host-wide
+restriction unchanged and removes its own profile after the job. Compilation
+and linking still require the Linux sandbox. Upstream OCI directory-copy actions
+run locally because their rule explicitly disables sandboxing; this exception
+does not allow local Common compilation to pass the cache proof.
+
+The jobs compare all six Common runtime/debug TAR hashes, then load the actual
+Make-produced image and import its Common Python binding and shared library.
+Debug TARs that the runtime image does not need are materialized separately;
+their checks do not replace the image recipe's action evidence. Uploaded
+`make-common-cache-amd64` and `make-common-cache-arm64` artifacts contain the
+builder digest, source revisions, cache counts, action digests, package/image
+hashes and runtime results. `preflight_only=true` checks builder/cache access
+without building. Ordinary PR events run the regression checks; the native
+image proof is explicitly dispatched and does not build a full VS installer.
+
 Inside the builder, `BAZEL` selects the executable or launcher. The bridge accepts:
 
 | Environment variable | Meaning |
@@ -295,16 +420,46 @@ bazel test //tools/bazel/tests:select_apt_payloads_test
 The shared APT baseline was published by
 [registry #45](https://github.com/securely1g/sonic-bazel-registry/pull/45) from
 [build-infra #27](https://github.com/securely1g/sonic-build-infra/pull/27).
-Declarative policy inputs use
-[build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29), proposed
-in [registry #51](https://github.com/securely1g/sonic-bazel-registry/pull/51).
-The Draft consumer pins source `29af37b179d9160cd2a6db0a295492db64017945`
-with a temporary `git_override`, while registry URLs remain on `main`.
-After source and registration land, remove that override and select the landed
-registered version. Commit suffixes do not sort by source history; verify
-resolution against transitive version requests when removing the override.
+Declarative policy inputs originated in
+[build-infra #29](https://github.com/securely1g/sonic-build-infra/pull/29).
+The image root now selects published `sonic-build-infra`
+`0.0.23-5b224d7190d04f1b7b68429eedfc03b7b1565ed0` from the maintained registry.
+Its `single_version_override` keeps transitive consumers on that same registered
+version; no temporary infrastructure source override is needed. Commit suffixes
+do not sort by source history, so verify resolution when updating this pin.
 
 Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.
 Generated resolution receipts list registry lookup URLs from the lock; a reused
 lock can also contain historical lookups.
+
+## Kernel Debian packages in the Make VS flow
+
+The opt-in kernel runtime/debug/header DEB producer and installer handoff are documented
+in [kernel/README.md](kernel/README.md). The separate kernel workspace keeps
+the source/cache graph independent of the container graph and verifies the DEBs
+against the current buildimage inputs and kernel gitlink. Packages go directly
+to the normal `target/debs/trixie` directory.
+
+### Image environment from Make
+
+Images whose Dockerfile uses `ENV IMAGE_VERSION=$image_version` can opt in to the
+existing Make-to-Bazel input boundary:
+
+```make
+SONIC_BAZEL_IMAGE_ENVIRONMENTS += docker-sonic-gnmi
+$(DOCKER_GNMI)_BAZEL_DEPENDS += $(TARGET_PATH)/bazel-manifests/docker-sonic-gnmi/image.env
+```
+
+Use `env = "//:target/bazel-manifests/docker-sonic-gnmi/image.env"` on the
+`oci_image` target. The file contains `DEBIAN_FRONTEND=noninteractive` and the
+exact `SONIC_IMAGE_VERSION` selected by Make. It is independent of the package
+version stored in `manifest.json`; for example, package version `1.0.0` must not
+replace image version `master.42-test`. Debug images inherit the runtime image's
+environment. Images opt in individually, so existing producers are unchanged.
+
+The helper reuses the implementation exercised by the Eventd image: unchanged
+content retains its timestamp, updates are atomic, and invalid or empty values
+preserve the previous input. Newline, NUL and dollar characters are rejected to
+prevent extra environment records or rules_oci variable expansion. Make exports
+the value to the helper instead of interpolating it into shell code.
