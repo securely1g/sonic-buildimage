@@ -157,5 +157,40 @@ class OriginalObjectCaptureTest(unittest.TestCase):
         self.assertFalse((self.output / "execution").exists())
 
 
+    def test_legacy_fixed_manifest_has_the_observed34_scope(self):
+        path = Path(__file__).resolve().parents[1] / "ci/vs_original_legacy_objects.json"
+        with mock.patch.object(capture, "ROOT", Path("/dpkg_cache")):
+            value = capture.selection(path, "legacy")
+        self.assertEqual(len(value["objects"]), 34)
+        self.assertEqual(sum(row["bytes"] for row in value["objects"]), 4644482017)
+        self.assertEqual(value["original_observation"]["run"], 43419969021)
+
+    def test_fixed_scopes_reject_the_other_manifest(self):
+        root = Path(__file__).resolve().parents[1] / "ci"
+        for name, scope in (("vs_original_cache_objects.json", "legacy"),
+                            ("vs_original_legacy_objects.json", "host")):
+            with self.subTest(scope=scope), self.assertRaises(capture.recovery.RecoveryError):
+                capture.selection(root / name, scope)
+
+    def test_legacy_capture_preserves_bytes_and_its_original_lineage(self):
+        item = self.item()
+        value = dict(objects=[item], original_observation={"run": 43419969021})
+        with mock.patch.object(capture.os, "fstatvfs", return_value=SimpleNamespace(
+                f_bavail=20 * 1024**3, f_frsize=1)):
+            result = capture.capture(value, self.output, self.scratch, {"run": 123}, "legacy")
+        self.assertEqual((self.output / "execution/plain.tgz").read_bytes(), b"original bytes")
+        self.assertEqual(result["selection_sha256"], capture.SCOPES["legacy"]["sha256"])
+        self.assertEqual(result["original_observation"], value["original_observation"])
+        self.assertEqual(result["ambiguous_required_names"], 4)
+        self.assertFalse(result["current_source_or_full_vs_admission"])
+
+    def test_host_sized_workspace_cannot_start_the_larger_legacy_capture(self):
+        item = self.item()
+        with self.assertRaises(capture.recovery.RecoveryError):
+            capture.capture(dict(objects=[item], original_observation={}),
+                            self.output, self.scratch, {"run": 123}, "legacy")
+        self.assertFalse((self.output / "execution").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

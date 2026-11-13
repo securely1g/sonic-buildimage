@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-original-inputs, vs-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,114 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_legacy_original_object_capture:
+    name: Capture fixed original legacy Docker bytes (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-legacy-original-objects' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 30
+    concurrency:
+      group: vs-legacy-original-objects-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require fixed original object scope and fresh private paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_CAPTURE_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Original-object capture accepts no native build or replacement-source inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current private K3s worker workspace')
+          # The 34 observed originals total 4.64 GB; preserve staged and retained copies.
+          if shutil.disk_usage(workspace).free < 12 * 1024**3:
+              raise SystemExit('Original object capture requires 12 GiB free temporary storage')
+          name = f'vs-legacy-original-objects-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing original-object capture work')
+          root.mkdir(mode=0o700)
+          for child in ('outputs', 'temporary'):
+              (root / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'root={root}\ncontrol={name}/control\n')
+          PY_CAPTURE_PATHS
+      - name: Checkout the reviewed original-object capture code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/recover_vs_original_inputs.py
+            tools/bazel/ci/capture_vs_original_objects.py
+            tools/bazel/tests/capture_vs_original_objects_test.py
+            tools/bazel/ci/vs_original_cache_objects.json
+            tools/bazel/ci/vs_original_legacy_objects.json
+      - name: Verify capture source and nineteen byte-copy fixtures
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          CAPTURE_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          printf '%s\n' \
+            '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5  tools/bazel/ci/recover_vs_original_inputs.py' \
+            '99047aefc9ffcb487aa05d0c2a2c1ebb8841bb1b34950a0571a62e0a068c0ab6  tools/bazel/ci/capture_vs_original_objects.py' \
+            '074249b772f8803644cfb413cf813db5769dea536794b1e676bca93f465269bd  tools/bazel/tests/capture_vs_original_objects_test.py' \
+            '49bac47857f971e66db7cba347019d37fc7a150b26f339dd5b3a025d43073510  tools/bazel/ci/vs_original_cache_objects.json' \
+            '629d690259c61e9f441fdbca486e83b3e9ebb8489807127759b91b39ed2c2742  tools/bazel/ci/vs_original_legacy_objects.json' | sha256sum --check --status
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$CAPTURE_ROOT/temporary" TMPDIR="$CAPTURE_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B tools/bazel/tests/capture_vs_original_objects_test.py
+      - name: Capture only matching original streams without restoration
+        timeout-minutes: 10
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          CAPTURE_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          ulimit -f 262144
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$CAPTURE_ROOT/temporary" TMPDIR="$CAPTURE_ROOT/temporary" \
+            GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_RUN_ID="$GITHUB_RUN_ID" \
+            GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" GITHUB_SHA="$GITHUB_SHA" RUNNER_NAME="$RUNNER_NAME" \
+            /usr/bin/python3 -I -S -B -c 'import runpy,sys; sys.path.insert(0,"."); runpy.run_module("tools.bazel.ci.capture_vs_original_objects",run_name="__main__")' \
+              --scope legacy --selection "$PWD/tools/bazel/ci/vs_original_legacy_objects.json" \
+              --output-parent "$CAPTURE_ROOT/outputs" --temporary-parent "$CAPTURE_ROOT/temporary"
+      - name: Retain the small original-object capture report separately
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-legacy-original-objects-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/execution/capture-lineage.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Retain verified original objects and explicit partial-capture lineage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-legacy-original-objects-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
   vs_apt_hook_source_observation:
     name: Encrypt the fixed native APT hook for source review (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-apt-hook-source' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
@@ -219,7 +327,7 @@ jobs:
           clean: false
           persist-credentials: false
           fetch-depth: 1
-      - name: Verify capture source and fifteen byte-copy fixtures
+      - name: Verify capture source and nineteen byte-copy fixtures
         working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
         env:
           CAPTURE_ROOT: ${{ steps.paths.outputs.root }}
@@ -229,9 +337,10 @@ jobs:
           git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
           printf '%s\n' \
             '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5  tools/bazel/ci/recover_vs_original_inputs.py' \
-            '0cbf5f49a7f30ec7f3cf822765ff2e5f892bf13e9ee0719b9911ae1c68431bb9  tools/bazel/ci/capture_vs_original_objects.py' \
-            'c9ea651d1fc7143f6147dbe1a49faa00ad68d82061984ae95bd22bc59f991e6d  tools/bazel/tests/capture_vs_original_objects_test.py' \
-            '49bac47857f971e66db7cba347019d37fc7a150b26f339dd5b3a025d43073510  tools/bazel/ci/vs_original_cache_objects.json' | sha256sum --check --status
+            '99047aefc9ffcb487aa05d0c2a2c1ebb8841bb1b34950a0571a62e0a068c0ab6  tools/bazel/ci/capture_vs_original_objects.py' \
+            '074249b772f8803644cfb413cf813db5769dea536794b1e676bca93f465269bd  tools/bazel/tests/capture_vs_original_objects_test.py' \
+            '49bac47857f971e66db7cba347019d37fc7a150b26f339dd5b3a025d43073510  tools/bazel/ci/vs_original_cache_objects.json' \
+            '629d690259c61e9f441fdbca486e83b3e9ebb8489807127759b91b39ed2c2742  tools/bazel/ci/vs_original_legacy_objects.json' | sha256sum --check --status
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$CAPTURE_ROOT/temporary" TMPDIR="$CAPTURE_ROOT/temporary" \
             /usr/bin/python3 -I -S -B tools/bazel/tests/capture_vs_original_objects_test.py
       - name: Capture only matching original streams without restoration
