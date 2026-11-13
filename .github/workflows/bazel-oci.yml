@@ -1893,7 +1893,7 @@ jobs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
-        path: artifacts/source-context/context.json
+        path: ${{ env.SONIC_RECEIPT_WORKSPACE || github.workspace }}/artifacts/source-context/context.json
         if-no-files-found: error
         retention-days: 14
     permissions:
@@ -2285,7 +2285,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
-          path: artifacts/source-context/context.json
+          path: ${{ env.SONIC_RECEIPT_WORKSPACE || github.workspace }}/artifacts/source-context/context.json
           if-no-files-found: error
           retention-days: 14
   syncd_native:
@@ -2563,7 +2563,7 @@ jobs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: source-context-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
-        path: artifacts/source-context/context.json
+        path: ${{ env.SONIC_RECEIPT_WORKSPACE || github.workspace }}/artifacts/source-context/context.json
         if-no-files-found: error
         retention-days: 14
   teamd_native:

@@ -220,21 +220,25 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     outcomes += " || steps.source_context_fallback.outcome == 'success'"
                 self.assertEqual(step_value(block, "if"),
                                  "always() && github.event_name == 'pull_request' && (" + outcomes + ")")
-                self.assertEqual(step_value(block, "path", 10), "artifacts/source-context/context.json")
+                context_path = "artifacts/source-context/context.json"
+                if family in self.receipt_families and kind == "native":
+                    context_path = "${{ env.SONIC_RECEIPT_WORKSPACE || github.workspace }}/" + context_path
+                self.assertEqual(step_value(block, "path", 10), context_path)
                 self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
                 self.assertEqual(step_value(block, "retention-days", 10), "14")
             uploads = [block for block in uploads if block not in contexts]
             if family not in self.receipt_families:
                 return uploads
             flag = "env." + family.upper() + "_WORKER_RECEIPT"
+            scratch = "${{ env.SONIC_RECEIPT_SCRATCH }}" if kind == "native" else "${{ runner.temp }}"
             receipt_names = {
                 family + "-ci-" + family + "_" + kind + "-${{ github.run_id }}-${{ github.run_attempt }}":
-                    (flag + " == 'true'", "${{ runner.temp }}/" + family + "-ci-verified.json"),
+                    (flag + " == 'true'", scratch + "/" + family + "-ci-verified.json"),
             }
             if kind == "native":
                 receipt_names["${{ steps." + family + "_request.outputs.request_name }}"] = (
                     flag + " == 'true' && steps." + family + "_request.outputs.new_request == 'true'",
-                    "${{ runner.temp }}/" + family + "-ci-request/request.json")
+                    scratch + "/" + family + "-ci-request/request.json")
             native = []
             for block in uploads:
                 name = step_value(block, "name", 10)
@@ -308,6 +312,36 @@ class ScopedWorkflowRoutingTest(unittest.TestCase):
         expression = expression.replace("&&", " and ").replace("||", " or ")
         expression = re.sub(r"!(?!=)", " not ", expression)
         return eval(" ".join(expression.split()), {"__builtins__": {}, "fromJSON": json.loads})
+
+
+    def test_source_context_upload_follows_the_selected_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="receipt workspace ") as temporary:
+            workspace = Path(temporary)
+            for receipt_checkout in (str(workspace / "fresh-child"), str(workspace), ""):
+                expected_root = Path(receipt_checkout or str(workspace))
+                expected = expected_root / "artifacts/source-context/context.json"
+                expected.parent.mkdir(parents=True, exist_ok=True)
+                expected.write_text('{"retained":"original-context"}\n')
+
+                def expand(value):
+                    return re.sub(r"\$\{\{ (.*?) \}\}", lambda match: self.evaluate(
+                        match[1].replace("env.SONIC_RECEIPT_WORKSPACE", repr(receipt_checkout)),
+                        {"github.workspace": str(workspace)}), value)
+
+                for family in NativeFamilyJobsTest.receipt_families:
+                    blocks = step_blocks(jobs()[family + "_native"])
+                    upload = next(block for block in blocks if block.startswith(
+                        "      - name: Retain the tested PR source context\n"))
+                    context_id = "source_context" if receipt_checkout else "source_context_fallback"
+                    source = next(block for block in blocks if step_value(block, "id") == context_id)
+                    writer = Path(expand(step_value(source, "working-directory") or str(workspace)))
+                    directory = re.search(r"--directory ([^\s]+)", shell(source))[1]
+                    produced = writer / directory / "context.json"
+                    retained = Path(expand(step_value(upload, "path", 10)))
+                    with self.subTest(family=family, receipt_checkout=receipt_checkout):
+                        self.assertEqual(produced, expected)
+                        self.assertEqual(retained, produced)
+                        self.assertEqual(retained.read_text(), '{"retained":"original-context"}\n')
 
     def test_only_pr206_narrows_existing_architecture_matrices(self):
         seen = 0
