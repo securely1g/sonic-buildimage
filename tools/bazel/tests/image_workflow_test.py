@@ -18,6 +18,57 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def run_sysmgr_public_evidence(self, directory):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        step = next(step for step in workflow["jobs"]["archive"]["steps"]
+                    if step.get("name") == "Prepare reviewed public evidence")
+        # The existing guard owns when the step runs. Exercise its Python
+        # publication boundary after an attempted build, including early failure.
+        script = step["run"].split("python3 - <<'PYCODE'\n", 1)[1].split("\nPYCODE", 1)[0]
+        previous = Path.cwd()
+        sys.path.insert(0, str(ROOT))
+        try:
+            os.chdir(directory)
+            exec(compile(script, "<sysmgr-public-evidence>", "exec"), {})
+        finally:
+            os.chdir(previous)
+            sys.path.pop(0)
+
+    def test_sysmgr_public_evidence_handles_failure_before_build_directory_exists(self):
+        with tempfile.TemporaryDirectory(prefix="sysmgr early failure ") as temporary:
+            directory = Path(temporary)
+            self.run_sysmgr_public_evidence(directory)
+            root = directory / "artifacts/sysmgr"
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+            self.assertEqual([path.name for path in root.iterdir()], ["build-summary.json"])
+
+    def test_sysmgr_public_evidence_preserves_failed_receipt_without_private_commands(self):
+        with tempfile.TemporaryDirectory(prefix="sysmgr failed receipt ") as temporary:
+            directory = Path(temporary)
+            root = directory / "artifacts/sysmgr"
+            root.mkdir(parents=True)
+            receipt = {"status": "failed", "architecture": "amd64", "revision": "a" * 40,
+                       "artifacts": {}, "commands": [["private diagnostic"]]}
+            (root / "build-receipt.json").write_text(json.dumps(receipt))
+            self.run_sysmgr_public_evidence(directory)
+            self.assertEqual(json.loads((root / "public-receipt.json").read_text()),
+                             {key: value for key, value in receipt.items() if key != "commands"})
+            self.assertEqual(json.loads((root / "build-summary.json").read_text()), {})
+
+    def test_sysmgr_public_evidence_rejects_malformed_or_private_present_evidence(self):
+        for name, contents in (("validation.json", "{malformed"),
+                               ("validation.json", '{"environment": {"PRIVATE": "value"}}'),
+                               ("build-receipt.json", "{malformed")):
+            with self.subTest(name=name, contents=contents):
+                with tempfile.TemporaryDirectory(prefix="sysmgr rejected evidence ") as temporary:
+                    directory = Path(temporary)
+                    root = directory / "artifacts/sysmgr"
+                    root.mkdir(parents=True)
+                    (root / name).write_text(contents)
+                    with self.assertRaises(ValueError):
+                        self.run_sysmgr_public_evidence(directory)
+                    self.assertFalse((root / "build-summary.json").exists())
+
     def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["archive"]["steps"]
@@ -72,6 +123,45 @@ class VerificationWorkflowTest(unittest.TestCase):
                 cwd=root, capture_output=True, text=True,
                 env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
             )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
+    def test_sysmgr_evidence_preserves_previous_and_repeated_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        preserve = next(
+            step for step in workflow["jobs"]["archive"]["steps"]
+            if step.get("name") == "Preserve completed Sysmgr evidence before SWSS layer acceptance"
+        )
+        with tempfile.TemporaryDirectory(prefix="sysmgr evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            old = scratch / "pre-swss-layer-artifacts"
+            old.mkdir(parents=True)
+            (old / "receipt").write_text("previous")
+
+            def run(directory=scratch):
+                return subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(directory)),
+                )
+
+            for value in ("first", "second"):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(value)
+                result = run()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+            receipts = {p: p.read_text() for p in scratch.rglob("receipt")}
+            self.assertCountEqual(receipts.values(), ["previous", "first", "second"])
+            self.assertEqual((old / "receipt").read_text(), "previous")
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual({p: p.read_text() for p in scratch.rglob("receipt")}, receipts)
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = run(root / "missing")
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
 
@@ -355,23 +445,38 @@ class VerificationWorkflowTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         legacy, active = workflow.split("\n  vs_container:\n", 1)
         self.assertIn("if: ${{ false }}", legacy.split("\n  vs:\n", 1)[1])
-        self.assertIn("runs-on: [self-hosted, linux, x64, sonic-slave-container]", active)
+        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]", active)
         names = [line.split(": ", 1)[1] for line in active.splitlines()
                  if line.startswith("      - name: ")]
         self.assertLess(names.index("Validate the installer and retained container pairs"),
                         names.index("Verify installed base, SWSS and Syncd images"))
         self.assertLess(names.index("Verify installed base, SWSS and Syncd images"),
                         names.index("Publish the installer and matching container archives"))
-        self.assertIn("bash tools/bazel/ci/verify_vs_oci.sh make -f slave.mk", active)
+        self.assertIn("bash tools/bazel/ci/validate_vs.sh", active)
         installed = active.split("      - name: Verify installed base, SWSS and Syncd images\n", 1)[1].split(
             "\n      - ", 1)[0]
         script = textwrap.dedent(installed.split("        run: |\n", 1)[1])
-        self.assertNotIn("sonic-slave-run", script)
-        self.assertNotIn("dockerd", script)
+        self.assertIn("sonic-slave-run", script)
+        self.assertIn("SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n", script)
+        self.assertIn('--cgroupns=private', script)
         with tempfile.TemporaryDirectory(prefix="active-image-validation-") as temporary:
             directory = Path(temporary)
             (directory / "artifacts/vs").mkdir(parents=True)
-            (directory / "sonic-vs-slave.env").write_text("export DOCKER_HOST=unix:///worker-private.sock\n")
+            make = directory / "make"
+            make.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
+                import os, subprocess, sys
+                args = sys.argv[1:]
+                if "sonic-slave-run" in args:
+                    command = next(arg.split("=", 1)[1] for arg in args
+                                   if arg.startswith("SONIC_RUN_CMDS="))
+                    environment = dict(os.environ, DOCKER_HOST="unix:///worker-private.sock")
+                    sys.exit(subprocess.run(["bash", "-c", command], env=environment).returncode)
+                assert "docker-start" in args, args
+                '''))
+            make.chmod(0o755)
+            sudo = directory / "sudo"
+            sudo.write_text("#!/bin/sh\nexit 0\n")
+            sudo.chmod(0o755)
             python = directory / "python3"
             python.write_text(f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
                               "Path('docker-call.json').write_text(json.dumps({'args': sys.argv[1:], "
@@ -398,8 +503,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 sys.exit(int(os.environ['DOCKER_EXIT']))
                 '''))
             docker.chmod(0o755)
-            # Bind the workflow's /sonic location to this test checkout.
-            shell = 'cd() { test "$1" = /sonic; builtin cd "$TEST_WORKSPACE"; }\n' + script
+            shell = script
             cases = (
                 ("resolved", 0, 0, "libnl-3.so.200 => /usr/lib/libnl-3.so.200\n", 0),
                 ("probe failed", 19, 0, "", 19),
@@ -418,6 +522,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
                         env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
                                  RUNNER_TEMP=str(directory), TEST_WORKSPACE=str(directory),
+                                 SONIC_CI_CONTAINER_LABEL="fixture-vs",
                                  PROBE_EXIT=str(probe_exit), DOCKER_EXIT=str(docker_exit),
                                  EXPECTED_DOCKER_ARGUMENTS=json.dumps(docker_arguments), LINKAGE_OUTPUT=output),
                         capture_output=True, text=True)

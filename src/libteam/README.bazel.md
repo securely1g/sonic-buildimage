@@ -19,8 +19,8 @@ registered SWSS and libteam versions.
 ## Validation
 
 The native workflow retains its AMD64/ARM64 matrix, 11 selected output targets,
-uncached owner consumer test and AMD64 installed-SDK/debug checks. The installed
-check verifies all five ELF/debug pairs, SONAME and SDK links, public headers,
+uncached owner consumer test and installed-SDK/debug checks on both architectures.
+The installed check verifies all five ELF/debug pairs, SONAME and SDK links, public headers,
 pkg-config flags and zero development-TAR timestamps. The shared owner's
 incremental probe performs baseline, no-op, config-edit and restoration builds
 using the same Bazel entry point, flags, caches and execution root. The consumer
@@ -38,4 +38,5 @@ the verified pigz release without changing source checksums. Root `.bazelrc`
 keeps `tools/bazel/debian_mirrors.cfg` and canonical `sonic-bazel-registry/main`.
 Pure caller tests verify script resolution and flag forwarding. The native
 workflow retains generated module-resolution evidence for both architectures,
-plus installed-output and four-phase probe receipts for AMD64, in its artifacts.
+plus installed-output and four-phase probe receipts for both architectures,
+in its artifacts.

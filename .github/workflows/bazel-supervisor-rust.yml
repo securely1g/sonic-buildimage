@@ -4,9 +4,13 @@ on:
   pull_request:
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
+      - .bazelrc
+      - .bazelversion
       - MODULE.bazel
       - tools/bazel/common.bazelrc
-      - tools/bazel/tests/runtime.bzl
+      - tools/bazel/go-lock
+      - tools/bazel/go/**
+      - tools/bazel/tests/**
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
@@ -16,9 +20,13 @@ on:
     branches: [master]
     paths:
       - .github/workflows/bazel-supervisor-rust.yml
+      - .bazelrc
+      - .bazelversion
       - MODULE.bazel
       - tools/bazel/common.bazelrc
-      - tools/bazel/tests/runtime.bzl
+      - tools/bazel/go-lock
+      - tools/bazel/go/**
+      - tools/bazel/tests/**
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
@@ -51,6 +59,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      BAZEL: tools/bazel/ci/libteam_draft_bazel.sh
     defaults:
       run:
         shell: bash
@@ -99,6 +109,12 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
+      - name: Check the root Go ZIP lock
+        if: matrix.arch == 'AMD64'
+        run: |
+          tools/bazel/go-lock --check
+          git diff --exit-code
+
       - name: Audit and test source runtime and debug packages
         env:
           MACHINE: ${{ matrix.machine }}
@@ -111,7 +127,8 @@ jobs:
           targets=(//src/sonic-supervisord-utilities-rs:unit_tests
             //src/sonic-supervisord-utilities-rs:integration_tests
             //src/sonic-supervisord-utilities-rs:listener_tests
-            //src/sonic-supervisord-utilities-rs:package_test)
+            //src/sonic-supervisord-utilities-rs:package_test
+            @sonic_swss//crates/countersyncd:common_rust_test)
           audit_flags=()
           for flag in "${flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
           python3 tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
@@ -122,6 +139,8 @@ jobs:
             > artifacts/supervisor-rust/rust-libraries.txt
           cp MODULE.bazel.lock artifacts/supervisor-rust/MODULE.bazel.lock
           cp -aL bazel-testlogs/src/sonic-supervisord-utilities-rs artifacts/supervisor-rust/tests
+          common_repo="$("$BAZEL" mod dump_repo_mapping '' | python3 -c 'import json, sys; print(json.load(sys.stdin)["sonic_swss"])')"
+          cp -aL "bazel-testlogs/external/$common_repo/crates/countersyncd/common_rust_test" artifacts/supervisor-rust/tests/
           git diff --exit-code
 
       - name: Retain source and installed-package evidence
