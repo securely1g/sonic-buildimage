@@ -1,36 +1,75 @@
-#!/usr/bin/env python3
-"""Inert metadata-policy fixtures: no APT acquisition, network, root writes, or packages."""
+"""Inert policy and retry fixtures: no APT, network, root writes, or packages."""
+
+
+import ast
+
+
+import copy
+
+
+import errno
+
 
 import hashlib
+
+
 import io
+
+
 import json
+
+
 from pathlib import Path
+
+
+import re
+
+
 import stat
+
+
+import subprocess
+
+
 import sys
+
+
 import tempfile
+
+
 from types import SimpleNamespace
+
+
 import unittest
+
+
 from unittest import mock
 
+
 ROOT = Path(__file__).resolve().parents[3]
+
+
 sys.path.insert(0, str(ROOT))
+
+
 from tools.bazel.ci import native_apt_cache_policy as policy
 
-SOURCES = b"Types: deb\nURIs: https://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n"
 
-
-FIXTURE_ENDPOINT = b"http://192.0.2.1:3128"
+SOURCES = b"Types: deb\nURIs: https://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.pgp\n"
 
 
 def proof():
     roles = ("helper", "hook", "endpoint", "policy", "marker", "sources", "keyring")
-    result = {"schema": 1, "status": "eligible", "scope": "owned_optional_apt_cache_metadata_only",
+    result = {"schema": 1, "status": "eligible", "scope": "owned_optional_apt_cache_debian_source_only",
               "uid": 0, "stage": "complete", "files": {name: {"bytes": 8, "sha256": "a" * 64,
                   "uid": 0, "mode": 0o444} for name in roles}}
     for name in ("proxy_environment_absent", "helper_matches", "hook_matches", "endpoint_matches",
-                 "owned_policy_link", "policy_matches", "official_signed_sources", "configuration_matches"):
+                 "owned_policy_link", "policy_matches", "keyring_matches", "official_signed_sources", "configuration_matches"):
         result[name] = True
     return result
+
+
+FIXTURE_ENDPOINT = b"http://192.0.2.1:3128"
 
 
 class PolicyTest(unittest.TestCase):
@@ -41,14 +80,14 @@ class PolicyTest(unittest.TestCase):
                         "Acquire::https::deb.debian.org::CAInfo \"/run/sonic-native-apt/ca-bundle.pem\";\n").encode()
         bodies = {"native_apt_proxy.py": b"helper", "proxy-job-started.sh": b"hook", "endpoint": FIXTURE_ENDPOINT,
                   "policy": policy_bytes, ".native-proxy-owned": b"", "debian.sources": SOURCES,
-                  "debian-archive-keyring.gpg": b"public keyring"}
+                  "debian-archive-keyring.pgp": b"public keyring"}
         def read(path, root, cap):
             data = bodies[path.name]
-            sha = {"native_apt_proxy.py": policy.HELPER_SHA, "proxy-job-started.sh": policy.HOOK_SHA}.get(path.name, hashlib.sha256(data).hexdigest())
+            sha = {"native_apt_proxy.py": policy.HELPER_SHA, "proxy-job-started.sh": policy.HOOK_SHA, "debian-archive-keyring.pgp": policy.KEYRING_SHA}.get(path.name, hashlib.sha256(data).hexdigest())
             if path.name == changed_role:
                 sha = "0" * 64
             return data, {"bytes": len(data), "sha256": sha, "uid": 0, "mode": 0o444}
-        with mock.patch.object(policy, "ENDPOINT_SHA", hashlib.sha256(FIXTURE_ENDPOINT).hexdigest()), mock.patch.object(policy.os, "getuid", return_value=0), mock.patch.dict(policy.os.environ, {}, clear=True), mock.patch.object(policy, "read_public_file", side_effect=read) as reads, mock.patch.object(policy, "protected_directory"), mock.patch.object(Path, "resolve", autospec=True, side_effect=lambda p, strict: p), mock.patch.object(Path, "lstat", return_value=SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)), mock.patch.object(policy.os, "readlink", return_value=str(policy.STATE / "policy")), mock.patch.object(Path, "exists", return_value=False), mock.patch.object(Path, "is_symlink", return_value=False), mock.patch.object(Path, "iterdir", return_value=iter([policy.SOURCE])), mock.patch.object(policy, "configuration", return_value=values) as config:
+        with mock.patch.object(policy, "ENDPOINT_SHA", hashlib.sha256(FIXTURE_ENDPOINT).hexdigest()), mock.patch.object(policy.os, "getuid", return_value=0), mock.patch.dict(policy.os.environ, {}, clear=True), mock.patch.object(policy, "read_public_file", side_effect=read) as reads, mock.patch.object(policy, "protected_directory"), mock.patch.object(Path, "resolve", autospec=True, side_effect=lambda p, strict: p), mock.patch.object(Path, "lstat", return_value=SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)), mock.patch.object(policy.os, "readlink", return_value=str(policy.STATE / "policy")), mock.patch.object(Path, "exists", return_value=False), mock.patch.object(Path, "is_symlink", return_value=False), mock.patch.object(Path, "iterdir", side_effect=AssertionError("Unrelated source directory must not be read")), mock.patch.object(policy, "configuration", return_value=values) as config:
             result = policy.inspect()
         return result, reads.call_args_list, config.call_count
 
@@ -72,7 +111,7 @@ class PolicyTest(unittest.TestCase):
     def test_alternative_origins_credentials_and_unsigned_sources_are_rejected(self):
         for old, new in ((b"deb.debian.org", b"mirror.example"),
                          (b"https://", b"https://user:password@"),
-                         (b"Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg", b"Trusted: yes"),
+                         (b"Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp", b"Trusted: yes"),
                          (b"Suites: trixie trixie-updates", b"Suites: unstable")):
             with self.assertRaises(ValueError):
                 policy.official_sources(SOURCES.replace(old, new))
@@ -145,6 +184,33 @@ class PolicyTest(unittest.TestCase):
             self.assertEqual(value["stage"], "owner_identity")
             self.assertEqual(config_count, 0)
 
+    def test_referenced_pgp_keyring_identity_is_checked_before_configuration(self):
+        value, _, calls = self.installed_inspection("debian-archive-keyring.pgp")
+        self.assertFalse(value["keyring_matches"])
+        self.assertEqual(value["status"], "not_eligible")
+        self.assertEqual(calls, 0)
+
+    def test_other_source_directories_are_not_part_of_the_selected_scope(self):
+        value, reads, _ = self.installed_inspection()
+        self.assertEqual(value["status"], "eligible")
+        self.assertEqual(value["scope"], "owned_optional_apt_cache_debian_source_only")
+        paths = [call.args[0] for call in reads]
+        self.assertIn(policy.SOURCE, paths)
+        self.assertIn(policy.KEYRING, paths)
+        self.assertNotIn(Path("/etc/apt/sources.list"), paths)
+
+    def test_reviewed_stock_source_uses_the_referenced_pgp_keyring(self):
+        source = (b"Types: deb\n# http://snapshot.debian.org/archive/debian/20260824T000000Z\n"
+                  b"URIs: http://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\n"
+                  b"Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp\n\n"
+                  b"Types: deb\n# http://snapshot.debian.org/archive/debian-security/20260824T000000Z\n"
+                  b"URIs: http://deb.debian.org/debian-security\nSuites: trixie-security\nComponents: main\n"
+                  b"Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp\n")
+        self.assertEqual(hashlib.sha256(source).hexdigest(), "46b768cfd5db09b20052dccc2cfd365fa90277491b767035cfd8b0078b42d33c")
+        self.assertTrue(policy.official_sources(source))
+        with self.assertRaises(ValueError):
+            policy.official_sources(source.replace(b".pgp", b".gpg"))
+
 
 class HeldPublicFileTest(unittest.TestCase):
     def info(self, **changed):
@@ -203,3 +269,4 @@ class HeldPublicFileTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

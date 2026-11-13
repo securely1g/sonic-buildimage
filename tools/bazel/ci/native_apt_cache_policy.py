@@ -17,8 +17,8 @@ STATE = Path("/run/sonic-native-apt")
 CONFIG = Path("/etc/apt/apt.conf.d/99sonic-native-squid")
 SOURCE_DIR = Path("/etc/apt/sources.list.d")
 SOURCE = SOURCE_DIR / "debian.sources"
-LEGACY_SOURCE = Path("/etc/apt/sources.list")
-KEYRING = Path("/usr/share/keyrings/debian-archive-keyring.gpg")
+KEYRING = Path("/usr/share/keyrings/debian-archive-keyring.pgp")
+KEYRING_SHA = "506b815cbb32d9b6066b4a2aa524071e071761e7e7f68c3ac74f3061ba852017"
 HELPER_SHA = "bb089e8c66b5e501308390f0edfb139fef079d6afb9ae6769590d2d4d4168a7c"
 HOOK_SHA = "e1a0b2becd466697bc53c47adff8425f3f9912aafcd26f2595343a90d918d4d3"
 ENDPOINT_SHA = "d8b3d50904b53b8c671cd38a811ba917cd765c7b9bf32e0599e330b2220ded6e"
@@ -161,7 +161,7 @@ def configuration_matches(values):
 
 def inspect():
     """Return only public identities and booleans, with no network or file mutation."""
-    result = {"schema": 1, "status": "not_eligible", "scope": "owned_optional_apt_cache_metadata_only",
+    result = {"schema": 1, "status": "not_eligible", "scope": "owned_optional_apt_cache_debian_source_only",
               "uid": os.getuid(), "files": {}, "proxy_environment_absent": proxy_environment_absent(os.environ),
               "stage": "uid_and_environment"}
     try:
@@ -181,18 +181,17 @@ def inspect():
         result["helper_matches"] = result["files"]["helper"]["sha256"] == HELPER_SHA
         result["hook_matches"] = result["files"]["hook"]["sha256"] == HOOK_SHA
         result["endpoint_matches"] = result["files"]["endpoint"]["sha256"] == ENDPOINT_SHA
+        result["keyring_matches"] = result["files"]["keyring"]["sha256"] == KEYRING_SHA
         require(CONFIG.parent.resolve(strict=True) == CONFIG.parent)
         protected_directory(CONFIG.parent)
         link = CONFIG.lstat()
         result["owned_policy_link"] = stat.S_ISLNK(link.st_mode) and link.st_uid == 0 and os.readlink(CONFIG) == str(STATE / "policy")
         result["policy_matches"] = expected_policy(contents["policy"])
         require(all(result[key] for key in ("helper_matches", "hook_matches", "endpoint_matches",
-                                            "owned_policy_link", "policy_matches")))
+                                            "owned_policy_link", "policy_matches", "keyring_matches")))
         result["stage"] = "official_signed_sources"
-        if LEGACY_SOURCE.exists() or LEGACY_SOURCE.is_symlink():
-            legacy, result["files"]["legacy_sources"] = read_public_file(LEGACY_SOURCE, LEGACY_SOURCE.parent, 16384)
-            require(all(not line.strip() or line.lstrip().startswith(b"#") for line in legacy.splitlines()))
-        require({path.name for path in SOURCE_DIR.iterdir() if path.suffix in {".sources", ".list"}} == {"debian.sources"})
+        # The direct invocation selects only this verified file and a fresh empty
+        # sourceparts directory. Other configured repositories stay untouched.
         result["official_signed_sources"] = official_sources(contents["sources"])
         result["stage"] = "apt_configuration"
         result["configuration_matches"] = configuration_matches(configuration())
@@ -206,14 +205,14 @@ def inspect():
 
 def validate_report(value):
     booleans = {"proxy_environment_absent", "helper_matches", "hook_matches", "endpoint_matches",
-                "owned_policy_link", "policy_matches", "official_signed_sources", "configuration_matches"}
+                "owned_policy_link", "policy_matches", "keyring_matches", "official_signed_sources", "configuration_matches"}
     stages = {"uid_and_environment", "owner_identity", "official_signed_sources", "apt_configuration", "complete"}
-    roles = {"helper", "hook", "endpoint", "policy", "marker", "sources", "keyring", "legacy_sources"}
+    roles = {"helper", "hook", "endpoint", "policy", "marker", "sources", "keyring"}
     stages |= {"read_" + name for name in roles}
     require(type(value) is dict and set(value) <= booleans | {
         "schema", "status", "scope", "uid", "files", "stage", "error_class"})
     require(value["schema"] == 1 and value["status"] in {"eligible", "not_eligible"} and
-            value["scope"] == "owned_optional_apt_cache_metadata_only" and value["uid"] == 0 and
+            value["scope"] == "owned_optional_apt_cache_debian_source_only" and value["uid"] == 0 and
             value["stage"] in stages and type(value["files"]) is dict and set(value["files"]) <= roles)
     require(all(type(value[key]) is bool for key in booleans if key in value))
     for row in value["files"].values():
@@ -225,7 +224,7 @@ def validate_report(value):
         require(type(value["error_class"]) is str and re.fullmatch("[A-Za-z][A-Za-z0-9_]{0,63}", value["error_class"]))
     if value["status"] == "eligible":
         require(value["stage"] == "complete" and "error_class" not in value and
-                all(value.get(key) is True for key in booleans) and roles - {"legacy_sources"} <= set(value["files"]))
+                all(value.get(key) is True for key in booleans) and roles <= set(value["files"]))
     return value
 
 

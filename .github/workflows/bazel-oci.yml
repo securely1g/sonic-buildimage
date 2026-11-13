@@ -234,7 +234,7 @@ jobs:
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
           printf '%s\n' \
-            '6b37a911c7bd1d1d0bb074193265bc0fb26d5114b214653a7f9521aa863a09d5  tools/bazel/ci/native_apt_cache_policy.py' \
+            'c5393e4ba76c78d6aef3742ae84c69689b28e6064ae91e36ee3a4eb4d6ac0401  tools/bazel/ci/native_apt_cache_policy.py' \
             '5d793e7e4d2843db738b548b5338beba7ed79c2e0e3b2c5465f60fbaa4f9f798  tools/bazel/ci/observe_native_apt_hook.py' \
             '8f2712e8eef04d221aaa047de5ede98a521f862b0187c6ef4b0fd004501d950a  tools/bazel/tests/observe_native_apt_hook_test.py' \
             'f10ae6635ebd8db99ad573a0f67cfd29507e64f03082220145643ea4ba62cf50  tools/bazel/ci/native_apt_hook_review_recipient.pem' | sha256sum --check --status
@@ -3496,9 +3496,8 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             tools/bazel/ci/native_apt_cache_policy.py
-            tools/bazel/ci/observe_native_apt_sources.py
-            tools/bazel/tests/observe_native_apt_sources_test.py
-      - name: Verify the inspectors and 12 inert source-shape fixtures
+            tools/bazel/tests/native_apt_policy_metadata_test.py
+      - name: Verify the inspector and 23 inert scoped-source fixtures
         working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
         env:
           OBSERVATION_ROOT: ${{ steps.paths.outputs.root }}
@@ -3507,11 +3506,10 @@ jobs:
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
           printf '%s\n' \
-            '6b37a911c7bd1d1d0bb074193265bc0fb26d5114b214653a7f9521aa863a09d5  tools/bazel/ci/native_apt_cache_policy.py' \
-            'e3dca8eea5739f54dab38c75a87e257c309e7e814949b491d73ec8bd88337bdc  tools/bazel/ci/observe_native_apt_sources.py' \
-            'f27bb3dad614badb18c55deebed9f5bb45e94c685b6f2b2d71832505e7e5b9fe  tools/bazel/tests/observe_native_apt_sources_test.py' | sha256sum --check --status
+            'c5393e4ba76c78d6aef3742ae84c69689b28e6064ae91e36ee3a4eb4d6ac0401  tools/bazel/ci/native_apt_cache_policy.py' \
+            '1946a413653e3b761033e78bbf10594740af2dafbe7e8968172815c6e0110699  tools/bazel/tests/native_apt_policy_metadata_test.py' | sha256sum --check --status
           env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBSERVATION_ROOT/temporary" TMPDIR="$OBSERVATION_ROOT/temporary" \
-            /usr/bin/python3 -I -S -B tools/bazel/tests/observe_native_apt_sources_test.py
+            /usr/bin/python3 -I -S -B tools/bazel/tests/native_apt_policy_metadata_test.py
       - name: Observe fixed public source identities and effective policy without network
         timeout-minutes: 1
         working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
@@ -3523,7 +3521,6 @@ jobs:
           ulimit -f 128
           # Preserve the normal sudo environment; caller proxy presence must remain observable.
           sudo -n /usr/bin/python3 -I -S -B tools/bazel/ci/native_apt_cache_policy.py > "$OBSERVATION_ROOT/outputs/installed-policy.json"
-          sudo -n /usr/bin/python3 -I -S -B tools/bazel/ci/observe_native_apt_sources.py > "$OBSERVATION_ROOT/outputs/source-shape.json"
           /usr/bin/python3 -I -S -B - <<'PY_APT_REPORT'
           import hashlib, importlib.util, json, os
           from pathlib import Path
@@ -3542,7 +3539,6 @@ jobs:
                     'worker': os.environ['RUNNER_NAME'], 'worker_uid': os.getuid(),
                     'worker_proxy_environment_absent': policy.proxy_environment_absent(os.environ),
                     'installed_policy_report_sha256': hashlib.sha256(raw).hexdigest(),
-                    'source_shape_sha256': hashlib.sha256((root / 'source-shape.json').read_bytes()).hexdigest(),
                     'installed_policy_status': observed['status'], 'inspector_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                     'network_probe': False, 'APT_mutation': False, 'ConfigMap_mutation': False,
                     'Bazel_or_package_build': False, 'fallback_activated': False}
