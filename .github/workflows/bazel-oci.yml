@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-original-inputs, vs-original-objects, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-original-inputs, vs-original-objects, vs-apt-policy, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -3226,3 +3226,110 @@ jobs:
             ${{ runner.temp }}/${{ steps.paths.outputs.collection }}/loaded-probe-inputs/docker-sonic-p4rt-dbg.runtime.json
           if-no-files-found: error
           retention-days: 14
+
+  vs_apt_policy_observation:
+    name: Observe installed optional APT cache policy (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-apt-policy' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: vs-apt-policy-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require metadata-only scope and fresh private paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_APT_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('APT metadata accepts no native build or replacement-source inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current private K3s worker workspace')
+          if shutil.disk_usage(workspace).free < 64 * 1024**2:
+              raise SystemExit('APT metadata needs64 MiB temporary space')
+          name = f'vs-apt-policy-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing APT metadata work')
+          root.mkdir(mode=0o700)
+          for child in ('outputs', 'temporary'):
+              (root / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'root={root}\ncontrol={name}/control\n')
+          PY_APT_PATHS
+      - name: Checkout the reviewed read-only policy inspector
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Verify the inspector and20 inert policy fixtures
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          OBSERVATION_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          printf '%s\n' \
+            'f47824530a763abc39fd33d65fa4ca5925adb667368f7697c4968bd20f28fe9e  tools/bazel/ci/native_apt_cache_policy.py' \
+            '7d13d30d5d8d297e7ac26231bad3e6972997bfa0c7f1e0bab1df55f980ac5f74  tools/bazel/tests/native_apt_policy_metadata_test.py' | sha256sum --check --status
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBSERVATION_ROOT/temporary" TMPDIR="$OBSERVATION_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B tools/bazel/tests/native_apt_policy_metadata_test.py
+      - name: Observe fixed public source identities and effective policy without network
+        timeout-minutes: 1
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          OBSERVATION_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ulimit -f 128
+          # Preserve the normal sudo environment; caller proxy presence must remain observable.
+          sudo -n /usr/bin/python3 -I -S -B tools/bazel/ci/native_apt_cache_policy.py > "$OBSERVATION_ROOT/outputs/installed-policy.json"
+          /usr/bin/python3 -I -S -B - <<'PY_APT_REPORT'
+          import hashlib, importlib.util, json, os
+          from pathlib import Path
+          source = Path('tools/bazel/ci/native_apt_cache_policy.py').resolve()
+          spec = importlib.util.spec_from_file_location('reviewed_apt_policy', source)
+          policy = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(policy)
+          root = Path(os.environ['OBSERVATION_ROOT']) / 'outputs'
+          raw = (root / 'installed-policy.json').read_bytes()
+          if len(raw) > 16384:
+              raise SystemExit('Oversized APT metadata')
+          observed = policy.validate_report(json.loads(raw))
+          report = {'schema': 1, 'scope': 'installed_optional_APT_policy_metadata_only',
+                    'repository': os.environ['GITHUB_REPOSITORY'], 'run': int(os.environ['GITHUB_RUN_ID']),
+                    'attempt': int(os.environ['GITHUB_RUN_ATTEMPT']), 'source': os.environ['GITHUB_SHA'],
+                    'worker': os.environ['RUNNER_NAME'], 'worker_uid': os.getuid(),
+                    'worker_proxy_environment_absent': policy.proxy_environment_absent(os.environ),
+                    'installed_policy_report_sha256': hashlib.sha256(raw).hexdigest(),
+                    'installed_policy_status': observed['status'], 'inspector_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                    'network_probe': False, 'APT_mutation': False, 'ConfigMap_mutation': False,
+                    'Bazel_or_package_build': False, 'fallback_activated': False}
+          (root / 'observation.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+          PY_APT_REPORT
+      - name: Retain only bounded optional APT policy metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-apt-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
