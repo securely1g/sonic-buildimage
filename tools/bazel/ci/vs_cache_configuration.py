@@ -1,4 +1,4 @@
-"""Read bounded cache-URL candidates without execution, auth, DNS or HTTP."""
+"""Observe bounded cache configuration and public helper identities without execution."""
 import argparse
 import ast
 import hashlib
@@ -296,7 +296,107 @@ def validate_candidate(row, provenance=None):
     require(set(row) == keys, "Unexpected candidate fields")
 
 
+HELPER_PATHS = {
+    "native_runtime": Path("/opt/sonic-native-runtime/cache_credentials.py"),
+    "runner_runtime": Path("/opt/sonic-runner/cache_credentials.py"),
+}
+
+
+def helper_stat(info):
+    kind = ("regular" if stat.S_ISREG(info.st_mode) else
+            "symlink" if stat.S_ISLNK(info.st_mode) else
+            "directory" if stat.S_ISDIR(info.st_mode) else "special")
+    return {"kind": kind, "uid": info.st_uid, "gid": info.st_gid,
+            "mode": stat.S_IMODE(info.st_mode), "bytes": info.st_size}
+
+
+def helper_source_metadata(role, path):
+    """Observe public installed source only; never execute it or read settings."""
+    try:
+        initial = path.lstat()
+    except FileNotFoundError:
+        return {"role": role, "status": "absent"}
+    except OSError:
+        return {"role": role, "status": "refused"}
+    row = {"role": role, "status": "observed", "metadata": helper_stat(initial),
+           "canonical_path": False, "executable": os.access(path, os.X_OK),
+           "content_status": "unavailable"}
+    try:
+        resolved = path.resolve(strict=True)
+        row["canonical_path"] = resolved == path
+        # ConfigMap links are observable, but never followed outside these two
+        # installed source directories. Do not publish their target path.
+        if (resolved.name != "cache_credentials.py" or
+                not any(resolved.is_relative_to(p.parent) for p in HELPER_PATHS.values())):
+            row["content_status"] = "outside_runtime_roots"
+            return row
+        target = resolved.lstat()
+        row["target_metadata"] = helper_stat(target)
+        if not stat.S_ISREG(target.st_mode):
+            row["content_status"] = "nonregular"
+            return row
+        if not 0 <= target.st_size <= RC_LIMIT:
+            row["content_status"] = "oversized"
+            return row
+        raw = transport.read_under(Path("/"), str(resolved.relative_to("/")), RC_LIMIT)
+        stable = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                               info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if (stable(initial) != stable(path.lstat()) or path.resolve(strict=True) != resolved
+                or stable(target) != stable(resolved.lstat()) or len(raw) != target.st_size):
+            row["content_status"] = "changed"
+            return row
+        row.update(content_status="hashed", sha256=hashlib.sha256(raw).hexdigest())
+    except (OSError, ValueError, RuntimeError, transport.DiagnosticFailure):
+        row["content_status"] = "refused"
+    return row
+
+
+def collect_helper_sources():
+    require("BAZEL_REMOTE_AUTH" not in os.environ, "Authentication must be absent")
+    return {"schema": 3, "helper_sources": [
+        helper_source_metadata(role, path) for role, path in HELPER_PATHS.items()]}
+
+
+def validate_helper_sources(detail):
+    require(set(detail) == {"schema", "helper_sources"} and
+            type(detail["helper_sources"]) is list and len(detail["helper_sources"]) == 2,
+            "Invalid helper observation")
+    for role, row in zip(("native_runtime", "runner_runtime"), detail["helper_sources"]):
+        require(type(row) is dict and row.get("role") == role and
+                row.get("status") in ("absent", "refused", "observed"),
+                "Invalid helper source role")
+        keys = {"role", "status"}
+        if row["status"] == "observed":
+            keys |= {"metadata", "canonical_path", "executable", "content_status"}
+            require(type(row.get("canonical_path")) is bool and type(row.get("executable")) is bool,
+                    "Invalid helper path flags")
+            require(row.get("content_status") in ("unavailable", "outside_runtime_roots",
+                    "nonregular", "oversized", "changed", "refused", "hashed"),
+                    "Invalid helper content observation")
+            if "target_metadata" in row:
+                keys.add("target_metadata")
+            for name in ("metadata", "target_metadata"):
+                if name not in row:
+                    continue
+                value = row[name]
+                require(type(value) is dict and set(value) == {"kind", "uid", "gid", "mode", "bytes"} and
+                        value["kind"] in ("regular", "symlink", "directory", "special"),
+                        "Invalid public source metadata")
+                require(all(type(value[k]) is int and value[k] >= 0 for k in ("uid", "gid", "mode", "bytes"))
+                        and value["mode"] <= 0o7777, "Invalid public source stat")
+            if row["content_status"] == "hashed":
+                keys.add("sha256")
+                require("target_metadata" in row and row["target_metadata"]["kind"] == "regular" and
+                        row["target_metadata"]["bytes"] <= RC_LIMIT and
+                        type(row.get("sha256")) is str and re.fullmatch(r"[0-9a-f]{64}", row["sha256"]),
+                        "Invalid public source digest")
+        require(set(row) == keys, "Unexpected helper observation fields")
+    return detail
+
+
 def validate_files(detail):
+    if type(detail) is dict and type(detail.get("schema")) is int and detail["schema"] == 3:
+        return validate_helper_sources(detail)
     require(type(detail) is dict and type(detail.get("schema")) is int and detail["schema"] in (1, 2),
             "Invalid file schema")
     keys = {"schema", "rc_files", "runtime_endpoint"} | ({"first_hop_rc", "runtime_source"} if detail["schema"] == 2 else set())
@@ -403,6 +503,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--child", action="store_true")
     parser.add_argument("--detail-output", type=Path)
+    parser.add_argument("--helper-sources-only", action="store_true")
     args = parser.parse_args()
     os.umask(0o077)
     smoke, _credentials = transport.load_native(args.native_root)
@@ -414,7 +515,8 @@ def main():
                     not os.path.lexists(args.detail_output), "Different private output")
             require(expected.resolve() == expected and stat.S_ISDIR(expected.lstat().st_mode) and
                     stat.S_IMODE(expected.lstat().st_mode) == 0o700, "Different private directory")
-            transport.write_fresh(args.detail_output, validate_files(collect_files()))
+            detail = collect_helper_sources() if args.helper_sources_only else collect_files()
+            transport.write_fresh(args.detail_output, validate_files(detail))
             return 0
         except BaseException:
             return 1
@@ -426,8 +528,10 @@ def main():
                "scope": "BOUNDED_CACHE_CONFIGURATION_CANDIDATES_ONLY", "native_revision": transport.NATIVE,
                "DNS_calls": 0, "HTTP_requests": 0, "credential_API_calls": 0, "bazel_invocations": 0,
                "cache_qualified": False, "effective_Bazel_configuration_determined": False}
+    if args.helper_sources_only:
+        receipt["scope"] = "BOUNDED_MANAGED_HELPER_SOURCE_METADATA_ONLY"
     try:
-        candidates = environment_candidates(os.environ)
+        candidates = environment_candidates({} if args.helper_sources_only else os.environ)
         for name, row in zip(URL_ENV_NAMES, candidates):
             require(row["env_name"] == name, "Different environment category")
             validate_candidate(row, "env_name")
@@ -435,6 +539,8 @@ def main():
         detail_path = directory / "configuration-detail.json"
         argv = [sys.executable, "-I", "-S", "-B", str(Path(__file__).resolve()), "--native-root",
                 str(args.native_root), "--child", "--detail-output", str(detail_path)]
+        if args.helper_sources_only:
+            argv.append("--helper-sources-only")
         result = smoke.run_command(directory, argv, child_environment(smoke, os.environ, directory),
             cwd=args.native_root, seconds=45, record=lambda record: None)
         require(result["returncode"] == 0 and result["reason"] is None and

@@ -414,5 +414,125 @@ class ManagedRemoteRcTest(unittest.TestCase):
         self.assertNotIn("private", json.dumps(result))
 
 
+class HelperSourceMetadataTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.paths = {role: self.root / role / "cache_credentials.py"
+                      for role in ("native_runtime", "runner_runtime")}
+        for path in self.paths.values():
+            path.parent.mkdir()
+        patcher = mock.patch.object(config, "HELPER_PATHS", self.paths)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_source(self, role="native_runtime"):
+        path = self.paths[role]
+        path.write_bytes(b"raise RuntimeError('source must never execute')\n")
+        path.chmod(0o755)
+        return path
+
+    def test_regular_helper_source_metadata_and_hash(self):
+        path = self.write_source()
+        row = config.helper_source_metadata("native_runtime", path)
+        self.assertEqual(row["status"], "observed")
+        self.assertTrue(row["canonical_path"])
+        self.assertTrue(row["executable"])
+        self.assertEqual(row["metadata"], row["target_metadata"])
+        self.assertEqual(row["metadata"]["mode"], 0o755)
+        self.assertEqual(row["content_status"], "hashed")
+        self.assertEqual(row["sha256"], config.hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertNotIn("source must never execute", json.dumps(row))
+
+    def test_projected_source_symlink_is_observed_without_execution(self):
+        path = self.paths["native_runtime"]
+        target = path.parent / ".revision" / "cache_credentials.py"
+        target.parent.mkdir()
+        target.write_bytes(b"raise RuntimeError('source must never execute')\n")
+        target.chmod(0o555)
+        path.symlink_to(Path(".revision/cache_credentials.py"))
+        row = config.helper_source_metadata("native_runtime", path)
+        self.assertEqual(row["metadata"]["kind"], "symlink")
+        self.assertFalse(row["canonical_path"])
+        self.assertTrue(row["executable"])
+        self.assertEqual(row["target_metadata"]["mode"], 0o555)
+        self.assertEqual(row["content_status"], "hashed")
+        self.assertEqual(row["sha256"], config.hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertNotIn(".revision", json.dumps(row))
+
+    def test_outside_runtime_or_private_target_is_never_read(self):
+        target = self.root / "credential.json"
+        target.write_text("private-marker")
+        path = self.paths["native_runtime"]
+        path.symlink_to(target)
+        with mock.patch.object(config.transport, "read_under", side_effect=AssertionError("Read forbidden")) as read:
+            row = config.helper_source_metadata("native_runtime", path)
+        read.assert_not_called()
+        self.assertEqual(row["content_status"], "outside_runtime_roots")
+        self.assertNotIn("sha256", row)
+        self.assertNotIn("private-marker", json.dumps(row))
+
+    def test_missing_directory_and_oversized_sources_are_bounded(self):
+        path = self.paths["native_runtime"]
+        self.assertEqual(config.helper_source_metadata("native_runtime", path),
+                         {"role": "native_runtime", "status": "absent"})
+        path.mkdir()
+        with mock.patch.object(config.transport, "read_under", side_effect=AssertionError("Read forbidden")):
+            self.assertEqual(config.helper_source_metadata("native_runtime", path)["content_status"], "nonregular")
+        path.rmdir()
+        path.write_bytes(b"x" * (config.RC_LIMIT + 1))
+        with mock.patch.object(config.transport, "read_under", side_effect=AssertionError("Read forbidden")):
+            self.assertEqual(config.helper_source_metadata("native_runtime", path)["content_status"], "oversized")
+        path.unlink()
+        path.symlink_to(path.name)
+        self.assertEqual(config.helper_source_metadata("native_runtime", path)["content_status"], "refused")
+
+    def test_source_change_discards_digest(self):
+        path = self.write_source()
+        original = path.read_bytes()
+        def changed(*args):
+            path.write_bytes(original + b"changed\n")
+            return original
+        with mock.patch.object(config.transport, "read_under", side_effect=changed):
+            row = config.helper_source_metadata("native_runtime", path)
+        self.assertEqual(row["content_status"], "changed")
+        self.assertNotIn("sha256", row)
+
+    def test_validation_refuses_extra_fields_and_private_values(self):
+        self.write_source()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            detail = config.collect_helper_sources()
+        self.assertEqual(config.validate_files(detail), detail)
+        detail["helper_sources"][0]["private_value"] = "private-marker"
+        with self.assertRaises(config.transport.DiagnosticFailure):
+            config.validate_files(detail)
+
+    def test_validation_refuses_wrong_role_or_boolean_metadata(self):
+        self.write_source()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            detail = config.collect_helper_sources()
+        for change in ("role", "uid"):
+            candidate = json.loads(json.dumps(detail))
+            if change == "role":
+                candidate["helper_sources"][0]["role"] = "arbitrary"
+            else:
+                candidate["helper_sources"][0]["metadata"]["uid"] = True
+            with self.assertRaises(config.transport.DiagnosticFailure):
+                config.validate_files(candidate)
+
+    def test_helper_only_collection_avoids_configuration_and_commands(self):
+        self.write_source()
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, {}, clear=True))
+            stack.enter_context(mock.patch.object(config, "read_rc", side_effect=AssertionError("RC forbidden")))
+            stack.enter_context(mock.patch.object(config, "read_runtime_endpoint", side_effect=AssertionError("API forbidden")))
+            stack.enter_context(mock.patch("subprocess.Popen", side_effect=AssertionError("Execution forbidden")))
+            detail = config.collect_helper_sources()
+        self.assertEqual(detail["schema"], 3)
+        self.assertEqual(len(detail["helper_sources"]), 2)
+        self.assertEqual(config.validate_files(detail), detail)
+
+
 if __name__ == "__main__":
     unittest.main()

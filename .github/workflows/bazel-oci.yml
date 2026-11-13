@@ -2631,7 +2631,7 @@ jobs:
           retention-days: 14
 
   vs_cache_configuration:
-    name: Remote cache configuration discovery (K3s)
+    name: Remote cache helper identity observation (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-cache-config' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 5
@@ -2681,7 +2681,7 @@ jobs:
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
-      - name: Check source identities and 40 pure configuration fixtures
+      - name: Check source identities and 48 pure configuration and helper fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           NATIVE: ${{ steps.paths.outputs.native }}
@@ -2710,10 +2710,10 @@ jobs:
             b6482f26f057d1d822792f12ccb330083ef4e0804e2845d5e4595dff3cb54809 tools/bazel/ci/vs_cache_dns.py \
             18c980acf16e36f286c4e0c62cf816a4a4bb647f0c1f622bb6cdaa597f6f40f7 tools/bazel/tests/vs_cache_dns_test.py | sha256sum --check --status
           printf '%s  %s\n' \
-            1726d4ea570993b9fc38b5f5b826b7c95a6f2545393559a36cd705ab584d5bc4 tools/bazel/ci/vs_cache_configuration.py \
-            2d3a60c05bb2cbe8ab21e0930607f5bee788339b8fc01c3791b396225e92b9be tools/bazel/tests/vs_cache_configuration_test.py | sha256sum --check --status
+            526ff2efdb7147b2880a6b5c4809429ea31acf726c4e7610d82c3923f39376cb tools/bazel/ci/vs_cache_configuration.py \
+            2b47ecc404dcb88f53beaa00c105515e3bda9ebc4b5812e1a3b18e71e6800f42 tools/bazel/tests/vs_cache_configuration_test.py | sha256sum --check --status
           python3 -B -m unittest -v tools.bazel.tests.vs_cache_configuration_test
-      - name: Read only fixed cache URL candidates and literal rc or runtime endpoints
+      - name: Read only public helper metadata and source hashes
         id: diagnostic
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
@@ -2722,7 +2722,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -I -S -B "$GITHUB_WORKSPACE/$CONTROL/tools/bazel/ci/vs_cache_configuration.py" \
-            --native-root "$GITHUB_WORKSPACE/$NATIVE" \
+            --native-root "$GITHUB_WORKSPACE/$NATIVE" --helper-sources-only \
             --output "$RUNNER_TEMP/$RECEIPT"
       - name: Retain only sanitized configuration origins and provenance
         if: always() && (steps.diagnostic.outcome == 'success' || steps.diagnostic.outcome == 'failure')
