@@ -4536,7 +4536,7 @@ jobs:
           compression-level: 0
 
   vs_native_api_provenance:
-    name: Retain original final206 native API provenance (K3s)
+    name: Retain original final206 P4RT API provenance (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-native-provenance' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     permissions:
@@ -4592,9 +4592,9 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             tools/bazel/ci/observe_final_native_provenance.py
-            tools/bazel/ci/vs_native_api_provenance_inputs.json
-            tools/bazel/ci/native_api_provenance_test.py
-            tools/bazel/ci/vs_native_api_provenance_test_inputs.json
+            tools/bazel/ci/vs_native_api_provenance_p4rt_inputs.json
+            tools/bazel/ci/native_api_provenance_p4rt_test.py
+            tools/bazel/ci/vs_native_api_provenance_p4rt_test_inputs.json
       - name: Checkout the original final206 receipt owner
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -4608,8 +4608,7 @@ jobs:
             tools/bazel/ci/public_artifacts.py
             tools/bazel/ci/p4rt_receipt_semantics.py
             tools/bazel/ci/p4rt_sdk_receipt_semantics.py
-            tools/bazel/ci/syncd_worker_contract.json
-            tools/bazel/ci/gearbox_worker_contract.json
+            tools/bazel/ci/p4rt_worker_contract.json
       - name: Verify fixed owner and mocked metadata boundaries
         run: |
           test "$(git -C "$PROVENANCE_ROOT/source" rev-parse HEAD)" = '3a06e4ec7627390967730b78a34dc00c86bb34dd'
@@ -4618,62 +4617,61 @@ jobs:
           import hashlib, json, os, runpy, sys
           from pathlib import Path
           root = Path(os.environ['PROVENANCE_ROOT'])
-          expected = {'tools/bazel/ci/native_api_provenance_test.py': '6059154de8aa7499e8675a640b03f3623adf3c05ab20d5126448871d42f8513e', 'tools/bazel/ci/observe_final_native_provenance.py': '4faa375fced471d30574c984e79c4433bd27d5d1abf87b44cd75a5b6e0c16a9c', 'tools/bazel/ci/vs_native_api_provenance_inputs.json': '9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8', 'tools/bazel/ci/vs_native_api_provenance_test_inputs.json': 'd823f88f4e210af51a6677c784a1d9b3d3f4e48dc33abcb9b6551d6352f050a7'}
+          expected = {'tools/bazel/ci/native_api_provenance_p4rt_test.py': 'eadc991e62498492dfdc42224817c10b9853bf96223818d19167098a5266a05f', 'tools/bazel/ci/observe_final_native_provenance.py': '4faa375fced471d30574c984e79c4433bd27d5d1abf87b44cd75a5b6e0c16a9c', 'tools/bazel/ci/vs_native_api_provenance_p4rt_inputs.json': '476ed64bb2eecec1cfc5e6919ba11a862339077bdbe87b222d3c368a4f493ddb', 'tools/bazel/ci/vs_native_api_provenance_p4rt_test_inputs.json': 'b3ccf8f988704df700dce2d5d07c5f0981a5381fcbbd941e5115e459f1676382'}
           for relative, digest in expected.items():
               path = root / 'observer' / relative
               if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024**2 or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
                   raise SystemExit('Reviewed observer source differs')
-          plan = json.loads((root / 'observer/tools/bazel/ci/vs_native_api_provenance_inputs.json').read_bytes())
+          plan = json.loads((root / 'observer/tools/bazel/ci/vs_native_api_provenance_p4rt_inputs.json').read_bytes())
           for relative, identity in plan['owner_sources'].items():
               path = root / 'source' / relative
               if path.is_symlink() or not path.is_file() or path.stat().st_size != identity['bytes'] or hashlib.sha256(path.read_bytes()).hexdigest() != identity['sha256']:
                   raise SystemExit('Original final206 receipt owner differs')
           sys.path[:0] = [str(root / 'source'), str(root / 'observer')]
-          test = root / 'observer/tools/bazel/ci/native_api_provenance_test.py'
+          test = root / 'observer/tools/bazel/ci/native_api_provenance_p4rt_test.py'
           sys.argv = [str(test), 'NativeProvenanceObservationTest']
           runpy.run_path(str(test), run_name='__main__')
           PY_NATIVE_SEALS
-      - name: Authenticate the two original normal-CI request artifacts
+      - name: Authenticate the original P4RT normal-CI request artifact
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for family in syncd gearbox; do
-            python3 -I -S -B "$PROVENANCE_ROOT/observer/tools/bazel/ci/observe_final_native_provenance.py" origin \
-              --family "$family" --source "$PROVENANCE_ROOT/source" \
-              --inputs "$PROVENANCE_ROOT/observer/tools/bazel/ci/vs_native_api_provenance_inputs.json" \
-              --inputs-sha256 9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8 --output "$PROVENANCE_ROOT/output/$family"
-          done
-      - name: Download the exact original Syncd request
+          python3 -I -S -B - <<'PY_P4RT_ORIGIN'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['PROVENANCE_ROOT'])
+          sys.path[:0] = [str(root / 'source'), str(root / 'observer')]
+          from tools.bazel.ci import observe_final_native_provenance as observe
+          plan_path = root / 'observer/tools/bazel/ci/vs_native_api_provenance_p4rt_inputs.json'
+          plan = json.loads(observe.checked_bytes(plan_path, {'bytes': 2617, 'sha256': '476ed64bb2eecec1cfc5e6919ba11a862339077bdbe87b222d3c368a4f493ddb'}))
+          owner = observe.load_owner(root / 'source', plan)
+          observe.authenticate_origin(owner, plan, 'p4rt', root / 'output/p4rt')
+          PY_P4RT_ORIGIN
+      - name: Download the exact original P4RT request
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           repository: securely1g/sonic-buildimage
           run-id: 43472962459
-          artifact-ids: 14062190155
+          artifact-ids: 14061533960
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: ${{ steps.paths.outputs.root }}/requests/syncd
-          merge-multiple: true
-          digest-mismatch: error
-      - name: Download the exact original Gearbox request
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          repository: securely1g/sonic-buildimage
-          run-id: 43472962459
-          artifact-ids: 14060809443
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path: ${{ steps.paths.outputs.root }}/requests/gearbox
+          path: ${{ steps.paths.outputs.root }}/requests/p4rt
           merge-multiple: true
           digest-mismatch: error
       - name: Retain genuine original API objects under the actual observer identity
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          for family in syncd gearbox; do
-            python3 -I -S -B "$PROVENANCE_ROOT/observer/tools/bazel/ci/observe_final_native_provenance.py" capture \
-              --family "$family" --source "$PROVENANCE_ROOT/source" \
-              --inputs "$PROVENANCE_ROOT/observer/tools/bazel/ci/vs_native_api_provenance_inputs.json" \
-              --inputs-sha256 9f26b6dcd24c111b1baa1974e90258ff9a1a3eb78c1e0e079a017994f2dff3e8 --request "$PROVENANCE_ROOT/requests/$family/request.json" \
-              --output "$PROVENANCE_ROOT/output/$family"
-          done
+          python3 -I -S -B - <<'PY_P4RT_CAPTURE'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['PROVENANCE_ROOT'])
+          sys.path[:0] = [str(root / 'source'), str(root / 'observer')]
+          from tools.bazel.ci import observe_final_native_provenance as observe
+          plan_path = root / 'observer/tools/bazel/ci/vs_native_api_provenance_p4rt_inputs.json'
+          plan = json.loads(observe.checked_bytes(plan_path, {'bytes': 2617, 'sha256': '476ed64bb2eecec1cfc5e6919ba11a862339077bdbe87b222d3c368a4f493ddb'}))
+          owner = observe.load_owner(root / 'source', plan)
+          observe.capture(owner, plan, 'p4rt', root / 'source', root / 'requests/p4rt/request.json', root / 'output/p4rt')
+          PY_P4RT_CAPTURE
       - name: Upload original native API provenance and observer lineage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
