@@ -651,7 +651,7 @@ jobs:
 
       - name: Observe resources and VS prerequisites only
         id: observe
-        if: contains(fromJSON('["vs-inspect","vs-inputs"]'), inputs.source_image)
+        if: inputs.source_image == 'vs-inspect'
         env:
           EXPECTED_WORKER: ${{ steps.paths.outputs.worker }}
           CONTROL: ${{ steps.paths.outputs.control }}
@@ -670,7 +670,7 @@ jobs:
           import os, re
           from pathlib import Path
           revision = os.environ['SOURCE_REVISION']
-          if not re.fullmatch(r'[0-9a-f]{40}', revision) or revision != '7fd710f546704092c75fc5643f10413295c8a4f4':
+          if not re.fullmatch(r'[0-9a-f]{40}', revision) or revision != 'dd645a247805d3b1300feb9c4d25216e00d1a68f':
               raise SystemExit('Inventory requires an immutable reviewed source commit')
           name = os.environ['CONTROL'] + '-source'
           source = Path(os.environ['GITHUB_WORKSPACE']) / name
@@ -701,14 +701,18 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$SOURCE"
           test "$(git -c protocol.allow=never rev-parse HEAD)" = "$SOURCE_REVISION"
-          test "$(git -c protocol.allow=never rev-parse HEAD^)" = 89c87c62080595678966c9916d13856591543906
-          python3 -B -m unittest -v tools.bazel.tests.kernel_reuse_context_test tools.bazel.tests.vs_input_inventory_test
-      - name: Inventory configured final23 inputs without generation
+          test "$(git -c protocol.allow=never rev-parse HEAD^)" = cf07bf776521e28063cb316713355391b55e6670
+          test "$(git -c protocol.allow=never rev-parse HEAD^{tree})" = ff5ff0605cd13d90c45fcdff96eeb1b4e38d4e06
+          git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          test -z "$(git -c protocol.allow=never ls-files --others)"
+          python3 -B -m unittest -v tools.bazel.ci.vs_reuse_selection_test
+      - name: Record current configured VS input declarations
         id: inventory
         if: inputs.source_image == 'vs-inputs'
         env:
           SOURCE_REVISION: ${{ inputs.source_revision }}
           SOURCE: ${{ steps.inventory_paths.outputs.source }}
+          CONTROL: ${{ steps.paths.outputs.control }}
           GIT_NO_LAZY_FETCH: '1'
           GIT_NO_REPLACE_OBJECTS: '1'
           GIT_OPTIONAL_LOCKS: '0'
@@ -717,22 +721,56 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$SOURCE"
           test ! -e target && test ! -L target
-          mkdir target
+          working="$RUNNER_TEMP/$CONTROL-metadata"
+          test ! -e "$working" && test ! -L "$working"
+          mkdir -m 700 "$working" "$working/packages" target
           env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES \
             make --no-builtin-rules --no-print-directory -f slave.mk \
               SONIC_VS_INPUT_INVENTORY=y SONIC_DEB_BUILD_POLICY=reuse-only \
               SONIC_BAZEL_KERNEL_PREPARE=verify SONIC_BAZEL_VS_ARCHIVE_PROFILE=final23 \
-              BUILD_WITH_BAZEL_WHEN_AVAILABLE=y PLATFORM=vs CONFIGURED_ARCH=amd64 \
-              CROSS_BUILD_ENVIRON=n MULTIARCH_QEMU_ENVIRON=n \
+              BUILD_WITH_BAZEL_WHEN_AVAILABLE=y PLATFORM=vs CONFIGURED_PLATFORM=vs CONFIGURED_ARCH=amd64 \
+              CROSS_BUILD_ENVIRON=n MULTIARCH_QEMU_ENVIRON=n INSTALL_DEBUG_TOOLS=n \
               BLDENV=trixie INCLUDE_FIPS=y INCLUDE_VS_DASH_SAI=y ENABLE_ASAN=n ENABLE_SYNCD_RPC=n \
-              VS_INPUT_SOURCE_REVISION="$SOURCE_REVISION" vs-input-inventory
-          test -z "$(git -c protocol.allow=never status --porcelain --untracked-files=no)"
-      - name: Retain configured input inventory
+              SONIC_IMAGE_VERSION=bazel-ci SONIC_CONFIG_BUILD_JOBS=1 SONIC_CONFIG_MAKE_JOBS=2 \
+              SONIC_DPKG_CACHE_METHOD=none SONIC_DPKG_CACHE_METHOD_OVERRIDE=none \
+              SONIC_DPKG_CACHE_SOURCE="$working/packages" SONIC_DPKG_CACHE_DIR="$working/packages" \
+              SONIC_BAZEL_CACHE_POLICY=remote-only SONIC_ROOTFS_DOCKER_NETWORK=none \
+              BAZEL=/usr/bin/false BAZEL_REAL=/usr/bin/false vs-input-inventory
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$SOURCE_REVISION"
+          test "$(git -c protocol.allow=never rev-parse HEAD^{tree})" = ff5ff0605cd13d90c45fcdff96eeb1b4e38d4e06
+          git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          python3 - <<'PY_CAPTURE_PROVENANCE'
+          import hashlib, json, os, stat
+          from pathlib import Path
+          capture = Path("target/sonic-vs.bin.make-inputs.tsv")
+          info = capture.lstat()
+          if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 2 * 1024 * 1024:
+              raise SystemExit("Configured input capture is absent or out of bounds")
+          raw = capture.read_bytes()
+          if not raw.startswith(b"sonic-vs-make-inputs-v1\n") or not raw.endswith(b"end\tsonic-vs-make-inputs-v1\n"):
+              raise SystemExit("Configured input capture is incomplete")
+          value = {
+              "schema": 1, "kind": "sonic-vs-configured-declarations-only",
+              "source_revision": os.environ["SOURCE_REVISION"],
+              "source_tree": "ff5ff0605cd13d90c45fcdff96eeb1b4e38d4e06",
+              "worker": os.environ["RUNNER_NAME"],
+              "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "capture": {"path": str(capture), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()},
+              "native_or_full_VS_acceptance": False,
+              "scope": "Configured declarations in a fresh checkout. Package glob matches may be empty; no input availability or assembly claim.",
+          }
+          with Path("target/vs-configured-inputs-provenance.json").open("x") as output:
+              json.dump(value, output, indent=2, sort_keys=True)
+              output.write("\n")
+          PY_CAPTURE_PROVENANCE
+      - name: Retain current configured input declarations
         if: always() && steps.inventory.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vs-input-inventory-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ steps.inventory_paths.outputs.source }}/target/vs-input-inventory.json
+          name: vs-configured-inputs-${{ steps.paths.outputs.worker }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.inventory_paths.outputs.source }}/target/sonic-vs.bin.make-inputs.tsv
+            ${{ steps.inventory_paths.outputs.source }}/target/vs-configured-inputs-provenance.json
           if-no-files-found: error
           retention-days: 14
       - name: Retain the observation without claiming qualification
