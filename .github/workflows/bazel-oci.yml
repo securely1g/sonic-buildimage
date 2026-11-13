@@ -33,8 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
+  # Preserve long VS builds across PR revisions and isolate explicit retries.
+  group: bazel-oci-${{ github.run_attempt == '1' && github.event.pull_request.number || format('run-{0}', github.run_id) }}-${{ github.sha }}
   cancel-in-progress: true
 
 env:
