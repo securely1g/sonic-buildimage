@@ -19,10 +19,16 @@ generate a package, modify a runner, or clear a cache.
 - Keep the Make VS and Bazel installer paths separate. The current Make VS step
   builds the `sonic-vs.bin` ONIE installer and the Orchagent/Syncd runtime and
   debug archives. It excludes VM disk generation and BIOS/UEFI guest boot checks.
+  `VS installer in SONiC slave (AMD64)` builds the same installer directly with
+  `slave.mk` and retains the matching runtime/debug archive pairs.
   Post-build archive and P4 validation have their own CI step and are excluded
   from the image-build duration.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
+- Resolve each PR's selected base branch independently of historical PR metadata.
+  Display that target separately from the run's recorded event base. Neither
+  proves which base a job checked out; the dashboard labels attempt bases as
+  unverified and does not infer image artifact publication from successful timings.
 
 Trend lines also separate exact measured step names. **Build the VS installer
 (.bin)** has its own series. The earlier **Build the VS image** step included
@@ -49,8 +55,14 @@ least one successful image job and all other image jobs successful or skipped;
 evidence is **Unmeasured**, never an inferred success or skip. Historical results
 retain their source revision and current-head annotation.
 
-The initial collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`, and
-`bazel.yml`. It can report observed durations from earlier builds, but their
+The collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`,
+`bazel-vs-unprivileged.yml`, and `bazel.yml`. The unprivileged workflow's final
+`sonic-vs.bin` assembly job uses the Bazel installer path; its explicit build
+step includes installer verification. Native preparation remains a separate
+job and does not supply an image result. Cancelled jobs retain their status and
+have no successful image timing.
+
+The dashboard can report observed durations from earlier builds, but their
 cache state, hardware/configuration match, and historical tested base are not
 recorded. It therefore makes **no improvement or regression percentage claim**.
 Controlled baseline/head benchmarking is a separate change and must preserve

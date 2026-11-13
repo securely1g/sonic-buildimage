@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from tools.bazel.ci.artifact_validation import require, sha
+from tools.bazel.ci.validation_inputs import validation_input_cache
 from tools.bazel.oci import image_validation, native_packages
 from tools.bazel.oci.package_contract import read_contract, read_policy, receipt_records
 from tools.bazel.oci.source_base_validation import validate_source_base
@@ -48,24 +49,25 @@ def main():
     for name in (*IMAGE_INPUTS, *SOURCE_BASE_INPUTS, "policy", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy"):
         parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
     inputs = vars(parser.parse_args())
-    policy = read_policy(inputs["policy"])
-    p4 = check_p4_inputs(inputs["source_contract_path"], inputs["source_receipt"])
-    for variant in ("runtime", "debug"):
-        require(sha(inputs["make_" + variant + "_archive"]) == sha(inputs[variant + "_archive"]),
-                variant + " Make archive differs from the Bazel output")
-    images = image_validation.validate_images(
-        source_root=Path.cwd(), policy=policy, runtime_handoff=None, debug_handoff=None,
-        **{name: inputs[name] for name in IMAGE_INPUTS})
-    native = native_packages.validate_native(
-        None, None, policy=policy,
-        readelf=str(inputs["readelf"].resolve()), objcopy=str(inputs["objcopy"].resolve()),
-        **{name: inputs[name] for name in NATIVE_INPUTS})
-    inherited = validate_source_base(
-        inputs["runtime_path"], inputs["debug_path"],
-        metadata_paths=[inputs["base_metadata"], inputs["config_metadata"]],
-        source_debug_tar=inputs["base_symbols"], architecture=policy["architecture"],
-        workspace_module=inputs["workspace_module"],
-        readelf=str(inputs["readelf"].resolve()), objcopy=str(inputs["objcopy"].resolve()))
+    with validation_input_cache(inputs.values()):
+        policy = read_policy(inputs["policy"])
+        p4 = check_p4_inputs(inputs["source_contract_path"], inputs["source_receipt"])
+        for variant in ("runtime", "debug"):
+            require(sha(inputs["make_" + variant + "_archive"]) == sha(inputs[variant + "_archive"]),
+                    variant + " Make archive differs from the Bazel output")
+        images = image_validation.validate_images(
+            source_root=Path.cwd(), policy=policy, runtime_handoff=None, debug_handoff=None,
+            **{name: inputs[name] for name in IMAGE_INPUTS})
+        native = native_packages.validate_native(
+            None, None, policy=policy,
+            readelf=str(inputs["readelf"].resolve()), objcopy=str(inputs["objcopy"].resolve()),
+            **{name: inputs[name] for name in NATIVE_INPUTS})
+        inherited = validate_source_base(
+            inputs["runtime_path"], inputs["debug_path"],
+            metadata_paths=[inputs["base_metadata"], inputs["config_metadata"]],
+            source_debug_tar=inputs["base_symbols"], architecture=policy["architecture"],
+            workspace_module=inputs["workspace_module"],
+            readelf=str(inputs["readelf"].resolve()), objcopy=str(inputs["objcopy"].resolve()))
     report = {"_generated": {"notice": "AUTO-GENERATED. DO NOT EDIT MANUALLY.",
                              "generator": "tools/bazel/tests/integration/syncd_p4_images_test.py"},
               "schema": 1, "p4": p4, "images": images, "native": native, "source_base": inherited,
