@@ -15,6 +15,7 @@ ARCHIVES = ["docker-orchagent.gz", "docker-orchagent-dbg.gz",
             "docker-syncd-vs.gz", "docker-syncd-vs-dbg.gz"]
 PACKAGES = ["sonic-p4rt_0.0.1_amd64.deb", "sonic-p4rt-dbgsym_0.0.1_amd64.deb"]
 DEB_PATHS = ["target/debs/trixie/" + name for name in PACKAGES]
+BASE_ARCHIVE = "target/docker-config-engine-trixie.gz"
 
 
 class VsOciSessionTest(unittest.TestCase):
@@ -22,9 +23,11 @@ class VsOciSessionTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
-        (self.directory / "tools/bazel/ci").mkdir(parents=True)
-        for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/build_helpers.py"):
-            shutil.copyfile(ROOT / source, self.directory / source)
+        for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/build_helpers.py",
+                       "tools/bazel/cache/credentials.py"):
+            destination = self.directory / source
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / source, destination)
         (self.directory / "tools/bazel/ci/verify_p4rt_debug.py").write_text(
             "import json, os, pathlib, sys\n"
             "pathlib.Path('debug-arguments.json').write_text(json.dumps(sys.argv[1:]))\n"
@@ -33,14 +36,22 @@ class VsOciSessionTest(unittest.TestCase):
         self.bazel = self.directory / "bazel"
         self.bazel.write_text("""#!/usr/bin/env python3
 import json, os, pathlib, sys
-pathlib.Path('bazel-arguments.json').write_text(json.dumps(sys.argv[1:]))
-output = pathlib.Path('bazel-testlogs/tools/bazel/tests/syncd_p4_images_test')
-for name in ('test.log', 'test.xml', 'test.outputs/validation.json'):
-    target = output / name
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(name)
-print('image verification output')
-sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
+args = sys.argv[1:]
+with pathlib.Path('bazel-arguments.jsonl').open('a') as output:
+    output.write(json.dumps(args) + '\\n')
+if args[0] == 'test':
+    target = next(arg.split(':')[1] for arg in args if arg.startswith('//'))
+    output = pathlib.Path('bazel-testlogs/tools/bazel/tests') / target
+    for name in ('test.log', 'test.xml', 'test.outputs/validation.json'):
+        path = output / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name)
+    print('image verification output')
+    sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
+if args[0] == 'cquery':
+    policy = pathlib.Path('policy.json')
+    policy.write_text('{}')
+    print(policy)
 """)
         self.bazel.chmod(0o755)
         self.make = self.directory / "make command"
@@ -54,7 +65,8 @@ sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y", "BLDENV": "trixie", "CONFIGURED_PLATFORM": "vs",
             "CONFIGURED_ARCH": "amd64", "INCLUDE_FIPS": "y", "INCLUDE_VS_DASH_SAI": "y",
             "TARGET_PATH": "target", "DEBS_PATH": "target/debs/$(BLDENV)",
-            "SONIC_BAZEL_DOCKER_IMAGES": " ".join(ARCHIVES[::2]),
+            "DOCKER_CONFIG_ENGINE_TRIXIE": "docker-config-engine-trixie.gz",
+            "SONIC_BAZEL_DOCKER_IMAGES": " ".join([*ARCHIVES[::2], "docker-config-engine-trixie.gz"]),
             "SONIC_BAZEL_DBG_DOCKER_IMAGES": " ".join(ARCHIVES[1::2]),
             "SONIC_P4RT_VERSION": "0.0.1",
             "SONIC_P4RT": "sonic-p4rt_$(SONIC_P4RT_VERSION)_$(CONFIGURED_ARCH).deb",
@@ -69,7 +81,7 @@ forbidden-default:
 	@echo 'The metadata query must not build the default goal' >&2; exit 39
 input.ready: input.source
 	@cp "$<" "$@"
-$(addprefix $(DEBS_PATH)/,$(SONIC_P4RT) $(SONIC_P4RT_DBG)): input.ready
+$(addprefix $(DEBS_PATH)/,$(SONIC_P4RT) $(SONIC_P4RT_DBG)) $(TARGET_PATH)/$(DOCKER_CONFIG_ENGINE_TRIXIE): input.ready
 	@mkdir recipe-lock
 	@printf '%s\n' '$@' >> producers.log
 	@sleep 0.02
@@ -109,15 +121,21 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         result = self.run_verifier(BAZEL_CONTAINER_CACHE_DIR=str(cache),
                                    BAZEL_CONTAINER_ARGS="--distdir='/input with spaces' --jobs=3")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        arguments = json.loads((self.directory / "bazel-arguments.json").read_text())
-        self.assertEqual(arguments, [
-            "test", f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
-            "--distdir=/input with spaces", "--jobs=3", "--config=syncd-dash",
-            "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
-            "--host_platform=@sonic_build_infra//platforms:x86_64_trixie",
-            "//tools/bazel/tests:syncd_p4_images_test", "--nocache_test_results", "--nozip_undeclared_test_outputs"])
-        for name in ("test.log", "test.xml", "validation.json"):
-            self.assertTrue((self.directory / "artifacts/vs/syncd-p4-images" / name).is_file())
+        arguments = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
+        self.assertEqual(len(arguments), 6)
+        common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
+                  "--distdir=/input with spaces", "--jobs=3",
+                  "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
+                  "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
+        for index, (target, flags) in enumerate((("swss_images_test", []),
+                                               ("syncd_p4_images_test", ["--config=syncd-dash"]))):
+            self.assertEqual(arguments[index], ["test", *common, *flags, "//tools/bazel/tests:" + target,
+                "--nocache_test_results", "--nozip_undeclared_test_outputs"])
+        for family in ("swss-images", "syncd-p4-images"):
+            for name in ("test.log", "test.xml", "validation.json"):
+                self.assertTrue((self.directory / "artifacts/vs" / family / name).is_file())
+        for family in ("swss", "syncd"):
+            self.assertTrue((self.directory / "artifacts/vs" / (family + "-installed-images-policy.json")).is_file())
         self.assertIn("image verification output", (self.directory / "artifacts/vs/syncd-p4-images.log").read_text())
         debug = json.loads((self.directory / "debug-arguments.json").read_text())
         self.assertEqual(debug[:4], ["--runtime-deb", DEB_PATHS[0], "--debug-deb", DEB_PATHS[1]])
@@ -139,13 +157,13 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         result = self.run_verifier(settings=settings)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         expected = ["target/selected-debs/" + name.replace("0.0.1", "7.4.9") for name in PACKAGES]
-        self.assertEqual(self.producers(), expected)
+        self.assertEqual(self.producers(), [*expected, BASE_ARCHIVE])
         calls = self.make_calls()
         self.assertEqual(len(calls), 2)
         self.assertIn("-", calls[0])
         self.assertNotIn("-", calls[1])
         self.assertIn("-j1", calls[1])
-        self.assertEqual(calls[1][-2:], expected)
+        self.assertEqual(calls[1][-3:], [*expected, BASE_ARCHIVE])
         for call in calls:
             self.assertIn("SONIC_P4RT_VERSION=7.4.9", call)
             self.assertIn("DEBS_PATH=target/selected-debs", call)
@@ -155,36 +173,37 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
     def test_existing_outputs_still_check_prerequisite_freshness(self):
         result = self.run_verifier()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.producers(), DEB_PATHS)
+        self.assertEqual(self.producers(), [*DEB_PATHS, BASE_ARCHIVE])
         result = self.run_verifier()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.producers(), DEB_PATHS)
+        self.assertEqual(self.producers(), [*DEB_PATHS, BASE_ARCHIVE])
         (self.directory / "input.source").write_text("changed source revision\n")
         result = self.run_verifier()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.producers(), DEB_PATHS * 2)
+        self.assertEqual(self.producers(), [*DEB_PATHS, BASE_ARCHIVE] * 2)
         for name in DEB_PATHS:
             self.assertEqual((self.directory / name).read_text(), "changed source revision\n")
 
     def test_build_failure_stops_later_outputs_and_verification(self):
-        for index, target in enumerate(DEB_PATHS):
+        dependencies = [*DEB_PATHS, BASE_ARCHIVE]
+        for index, target in enumerate(dependencies):
             with self.subTest(target=target):
                 shutil.rmtree(self.directory / "target", ignore_errors=True)
                 (self.directory / "producers.log").unlink(missing_ok=True)
                 result = self.run_verifier(settings={"FAIL_TARGET": target})
                 self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(self.producers(), DEB_PATHS[:index + 1])
-                self.assertFalse((self.directory / "bazel-arguments.json").exists())
+                self.assertEqual(self.producers(), dependencies[:index + 1])
+                self.assertFalse((self.directory / "bazel-arguments.jsonl").exists())
                 self.assertFalse((self.directory / "debug-arguments.json").exists())
 
     def test_missing_or_empty_package_outputs_stop_before_image_validation(self):
         for mode in ("OMIT_OUTPUT", "EMPTY_OUTPUT"):
-            for target in DEB_PATHS:
+            for target in [*DEB_PATHS, BASE_ARCHIVE]:
                 with self.subTest(mode=mode, target=target):
                     shutil.rmtree(self.directory / "target", ignore_errors=True)
                     result = self.run_verifier(settings={mode: target})
                     self.assertNotEqual(result.returncode, 0)
-                    self.assertFalse((self.directory / "bazel-arguments.json").exists())
+                    self.assertFalse((self.directory / "bazel-arguments.jsonl").exists())
                     self.assertFalse((self.directory / "debug-arguments.json").exists())
 
     def test_unsupported_profiles_fail_before_any_producer(self):
@@ -194,20 +213,22 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
                           {"ENABLE_SYNCD_RPC": "y"}, {"CROSS_BUILD_ENVIRON": "y"},
                           {"MULTIARCH_QEMU_ENVIRON": "y"},
                           {"SONIC_BAZEL_DOCKER_IMAGES": "docker-orchagent.gz"},
+                          {"SONIC_BAZEL_DOCKER_IMAGES": " ".join(ARCHIVES[::2])},
                           {"SONIC_BAZEL_DBG_DOCKER_IMAGES": "docker-syncd-vs-dbg.gz"},
-                          {"SONIC_P4RT": ""}, {"SONIC_P4RT_DBG": ""}):
+                          {"SONIC_P4RT": ""}, {"SONIC_P4RT_DBG": ""},
+                          {"TARGET_PATH": ""}, {"DOCKER_CONFIG_ENGINE_TRIXIE": ""}):
             with self.subTest(overrides=overrides):
                 result = self.run_verifier(settings=overrides)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.producers(), [])
-                self.assertFalse((self.directory / "bazel-arguments.json").exists())
+                self.assertFalse((self.directory / "bazel-arguments.jsonl").exists())
 
     def test_missing_make_command_fails_without_validation(self):
         result = subprocess.run(["bash", "tools/bazel/ci/verify_vs_oci.sh"], cwd=self.directory,
                                 env=self.environment, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.producers(), [])
-        self.assertFalse((self.directory / "bazel-arguments.json").exists())
+        self.assertFalse((self.directory / "bazel-arguments.jsonl").exists())
 
 
 if __name__ == "__main__":

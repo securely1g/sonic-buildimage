@@ -19,10 +19,16 @@ generate a package, modify a runner, or clear a cache.
 - Keep the Make VS and Bazel installer paths separate. The current Make VS step
   builds the `sonic-vs.bin` ONIE installer and the Orchagent/Syncd runtime and
   debug archives. It excludes VM disk generation and BIOS/UEFI guest boot checks.
+  `VS installer in SONiC slave (AMD64)` builds the same installer directly with
+  `slave.mk` and retains the matching runtime/debug archive pairs.
   Post-build archive and P4 validation have their own CI step and are excluded
   from the image-build duration.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
+- Resolve each PR's selected base branch independently of historical PR metadata.
+  Display that target separately from the run's recorded event base. Neither
+  proves which base a job checked out; the dashboard labels attempt bases as
+  unverified and does not infer image artifact publication from successful timings.
 
 Trend lines also separate exact measured step names. **Build the VS installer
 (.bin)** has its own series. The earlier **Build the VS image** step included

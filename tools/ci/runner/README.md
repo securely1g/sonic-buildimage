@@ -2,41 +2,22 @@
 
 ## Current ONIE workflow
 
-The full VS job uses the existing `sonic-vs-bin` pool with GitHub's
-`self-hosted`, `linux` and `x64` labels. Same-repository PR builds and enabled
-manual builds use that route; the workflow event selects the source revision.
-The legacy bootstrap, manager and rearm defaults described below do not
-provision or replenish this ONIE pool.
+The [native VS installer job](container-vs.md#dedicated-host-agent-route) uses
+`[self-hosted, linux, bazel-x64, vs]` host agents. The Actions runner stays on
+the host, and `make target/sonic-vs.bin` launches the SONiC build containers.
+Same-repository PRs, pushes to master, and manual runs with the installer enabled
+use this pool. The job explicitly selects `grpc://172.16.0.4:9092` for Bazel's
+remote cache and downloader, with persistent Bazel and Make package caches under
+the runner workspace. Remote uploads are enabled only for master pushes.
+It does not require the K3s worker's managed cache configuration or `/actions`
+layout. The job validates the installer and the SWSS and Syncd runtime/debug
+image pairs before publishing them. Building this ONIE installer does not require
+KVM.
 
-The job builds `target/sonic-vs.bin`, the ONIE installer, and runs preflight with
-`--build-target sonic-vs.bin`. This target does not create BIOS/UEFI VM disks or
-run guest boot checks, so preflight skips the KVM ioctl. The existing 10 GiB
-available-memory minimum, Docker, mount restrictions and disk budgets still
-apply. If `/data` is not a separate mount, this target accepts a real directory
-backed by a local ext4 block device; symlinks and unsupported storage are rejected.
-
-The job explicitly supplies the host's `/etc/ssl/certs/ca-certificates.crt` as
-`SONIC_BUILD_SLAVE_CA_BUNDLE` for compiler-container downloads. The builder
-trust helper validates this certificate-only input and includes its digest in
-the generated builder identity. This is execution trust; runtime image contexts
-do not receive the bundle.
-
-GitHub-hosted `ubuntu-24.04` runs lightweight OCI regressions, checks clean
-Bazel dependency resolution, and retains verified source downloads plus the
-Redis test helper. It does not compile SWSS or Syncd packages.
-
-The full VS job builds the installer and container archives on its selected
-ONIE runner, then runs both owners' source-package validation in the same
-checkout through the Trixie Make builder. The validation
-uses the same platform/feature options and persistent Bazel action cache as
-Make. Each disposable builder still has its own output base; cached action
-outputs are restored rather than recompiling the source packages. Test-only
-inputs and uncached tests may execute. SWSS TARs and Syncd package evidence
-retain their existing artifact names and validation requirements.
-
-Fork PRs and manual runs with `skip_vs=true` run only hosted checks, including
-the separate native AMD64/ARM64 archive jobs. They do not publish successful
-SWSS/Syncd source-package or full-image validation evidence.
+GitHub-hosted Ubuntu runs the OCI regression checks and supplies verified
+source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
+run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Fork PRs and manual
+runs with `skip_vs=true` skip the native installer.
 
 ## Legacy one-job runner helpers
 
@@ -56,7 +37,7 @@ The optional manager below registers replacements automatically after each job.
 Bootstrap, rearm and the manager omit `--build-target` and retain KVM
 preflight for their legacy routes, which can receive `.img.gz` jobs. Those
 helpers therefore still require a KVM-capable host. The host setup below
-prepares that legacy pool; it does not register a `sonic-vs-bin` runner.
+prepares that legacy pool; it does not register a host agent with the `vs` label.
 
 Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
 host uses Ubuntu 26.04; passing preflight does not establish full compatibility.
@@ -186,7 +167,7 @@ For P330, the operator is `lgh`. `--master` selects the
 a runner for one reviewed PR route instead, select `--pr NUMBER`. The manager maintains
 only the configured route; it does not dispatch workflows, cancel queued runs,
 change the source revision of an existing job, or register the current
-`sonic-vs-bin` route.
+`sonic-slave-container-k3s` route.
 
 The systemd timer checks 30 seconds after boot and one minute after each check
 finishes. It waits while a runner service, Listener/Worker process or Docker
@@ -253,7 +234,7 @@ python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
 Use `--master` only for workflows requesting the legacy shared pool. It does
-not arm a runner for the current `sonic-vs-bin` workflow. Arm only after reviewing
+not arm a runner for the current host-agent installer workflow. Arm only after reviewing
 the PR code and workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
@@ -364,8 +345,8 @@ a disposable VM or host and destroy it afterward. Repository labels are routing,
 not a security boundary. No full host image/package lock, automatic cleanup,
 network mirror, remote execution, or unattended runner autoscaler is provided.
 Downloads still depend on GitHub, package registries and upstream repositories.
-Fresh attempts use separate checkouts and Bazel working directories. The VS
-workflow shares Bazel's download/result cache and Make's package cache under
+Fresh attempts use separate checkouts and Bazel working directories. The legacy
+VS job shares Bazel's download/result cache and Make's package cache under
 `/data/sonic-runner/cache/sonic-buildimage`, outside the attempt directories.
 Those caches survive builder removal and runner rearming. Make's package cache
 runs in `rwcache` mode; Bazel still checks the SWSS source inputs on every request.
