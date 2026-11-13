@@ -165,11 +165,11 @@ jobs:
       - name: Checkout the published native cache smoke
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 28a95c10132507a21016c45a9fe1011e6d1a1303
+          ref: b81e69ba4244cd777fa36703370df2bcb3ac2817
           path: ${{ steps.paths.outputs.native }}
           clean: false
           persist-credentials: false
-      - name: Check both source identities and 25 pure cache fixtures
+      - name: Check both source identities and 32 pure cache fixtures
         env:
           CONTROL: ${{ steps.paths.outputs.control }}
           NATIVE: ${{ steps.paths.outputs.native }}
@@ -181,11 +181,11 @@ jobs:
           set -euo pipefail
           test "$(git -C "$GITHUB_WORKSPACE/$CONTROL" -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
           cd "$GITHUB_WORKSPACE/$NATIVE"
-          test "$(git -c protocol.allow=never rev-parse HEAD)" = "28a95c10132507a21016c45a9fe1011e6d1a1303"
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "b81e69ba4244cd777fa36703370df2bcb3ac2817"
           test -z "$(git -c protocol.allow=never status --porcelain --untracked-files=no)"
           printf '%s  %s\n' \
-            9872045f13eb4ef741a366ac8700cd09de130802da2d0d7848a6f3562eee6900 tools/bazel/ci/remote_cache_smoke.py \
-            0bcc9b96a6adb60c8a326693808d8ffc487f996a7bfdfa5a761d4d1e48ee90ab tools/bazel/tests/remote_cache_smoke_test.py \
+            66fc8a78f6a0efa3a60f4a3602e90d8d2faa6d11e1280f15058b989c2a7378d8 tools/bazel/ci/remote_cache_smoke.py \
+            40c82702c33732a31bb42619e078ee75d0dfd4bfbdf8f06dc0ab5eea5606ad26 tools/bazel/tests/remote_cache_smoke_test.py \
             3d99a606731ed4078428bacece907d2d79f1ecbc0244cf6340187601a3ed32e6 tools/bazel/ci/source_image_worker.py \
             eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db tools/bazel/ci/image_worker_receipt.py | sha256sum --check --status
           python3 -B -m unittest -v tools.bazel.tests.remote_cache_smoke_test
@@ -198,7 +198,7 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/$NATIVE"
           python3 -B -m tools.bazel.ci.remote_cache_smoke \
-            --native-revision 28a95c10132507a21016c45a9fe1011e6d1a1303 \
+            --native-revision b81e69ba4244cd777fa36703370df2bcb3ac2817 \
             --worker-sha256 3d99a606731ed4078428bacece907d2d79f1ecbc0244cf6340187601a3ed32e6 \
             --expected-managed-origin 'https://lgh115-oai-lgh-bazel-cache.devbox-4.gateway.internal.api.openai.org/' \
             --output "$RUNNER_TEMP/$RECEIPT"
