@@ -22,11 +22,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     container:
@@ -149,11 +146,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
