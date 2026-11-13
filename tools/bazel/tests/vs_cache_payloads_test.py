@@ -290,5 +290,28 @@ class BootstrapBuildHooksTests(unittest.TestCase):
                     payloads._inspect_declared_deb('/workspace', path, [], payloads.Budget())
 
 
+class DockerObjectSelectionTests(unittest.TestCase):
+    def test_real_original_size_preserves_object_and_batch_bounds(self):
+        name = "docker-platform-monitor.gz-b75d1522d43834e57856897-426de01443dfc8081f8ec70.tgz"
+        row = {"name": name, "prior_metadata": {"bytes": 191626678},
+               "expected_paths": ["target/docker-platform-monitor.gz"]}
+        value = {"schema": 1, "root": "/dpkg_cache", "objects": [row]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "selection.json"
+            def load():
+                raw = json.dumps(value).encode()
+                path.write_bytes(raw)
+                return payloads.manifest(path, hashlib.sha256(raw).hexdigest())
+            self.assertEqual(load()["objects"][0]["prior_metadata"]["bytes"], 191626678)
+            row["prior_metadata"]["bytes"] = 256 * 1024**2 + 1
+            with self.assertRaisesRegex(ValueError, "Invalid expected cache size"):
+                load()
+            row["prior_metadata"]["bytes"] = 191626678
+            value["objects"] = [{**row, "name": name.replace("docker-platform-monitor", "docker-platform-monitor" + str(i))}
+                                for i in range(3)]
+            with self.assertRaisesRegex(ValueError, "Compressed archive selection limit"):
+                load()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -17,7 +17,8 @@ from tools.bazel.ci import vs_cache_inspection as observation
 
 ROOT = '/dpkg_cache'
 CHUNK = 1024 * 1024
-MAX_ARCHIVE = 128 * CHUNK
+# The largest selected original Docker object is 191,626,678 bytes.
+MAX_ARCHIVE = 256 * CHUNK
 MAX_EXPANDED = 512 * CHUNK
 MAX_TOTAL_EXPANDED = 2 * 1024 * CHUNK
 MAX_MEMBERS = 512
