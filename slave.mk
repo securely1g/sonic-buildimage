@@ -118,9 +118,39 @@ export PTF_ENV_PY_VER
 ## Define configuration, help etc.
 ###############################################################################
 
+# Inventory evaluates the configured Make definitions without preparing the host.
+# It is never a build, installer, cache-reuse or kernel-acceptance mode.
+SONIC_VS_INPUT_INVENTORY ?= n
+ifneq ($(SONIC_VS_INPUT_INVENTORY),n)
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
+$(error SONIC_VS_INPUT_INVENTORY must be n or y)
+endif
+endif
+ifneq ($(filter vs-input-inventory,$(MAKECMDGOALS)),)
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
+$(error vs-input-inventory requires SONIC_VS_INPUT_INVENTORY=y)
+endif
+endif
+ifeq ($(SONIC_VS_INPUT_INVENTORY),y)
+ifneq ($(strip $(MAKECMDGOALS)),vs-input-inventory)
+$(error Inventory mode permits only the vs-input-inventory metadata goal)
+endif
+ifneq ($(SONIC_DEB_BUILD_POLICY),reuse-only)
+$(error Inventory requires SONIC_DEB_BUILD_POLICY=reuse-only)
+endif
+ifneq ($(SONIC_BAZEL_KERNEL_PREPARE),verify)
+$(error Inventory requires SONIC_BAZEL_KERNEL_PREPARE=verify)
+endif
+ifneq ($(SONIC_BAZEL_VS_ARCHIVE_PROFILE),final23)
+$(error Inventory requires the final23 profile)
+endif
+endif
+
 # Install the updated build hooks if INSHOOKS flag is set
 export INSHOOKS=y
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
 $(if $(INSHOOKS),$(shell sudo dpkg -i /usr/local/share/buildinfo/sonic-build-hooks_1.0_all.deb &>/dev/null))
+endif
 
 .platform :
 ifneq ($(CONFIGURED_PLATFORM),generic)
@@ -355,7 +385,9 @@ $(error SONIC_CONFIG_USE_CCACHE=y but 'ccache' is not installed in the build env
 endif
 CCACHE_DIR := $(abspath $(TARGET_PATH)/ccache/$(BLDENV))
 CCACHE_ENV = PATH=/usr/lib/ccache:$$PATH CCACHE_DIR=$(CCACHE_DIR) CCACHE_BASEDIR=$(BUILD_WORKDIR) CCACHE_COMPILERCHECK=content CCACHE_UMASK=022
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
 $(shell mkdir -p $(CCACHE_DIR))
+endif
 endif
 
 ifeq ($(SONIC_BUILD_JOBS),)
@@ -596,8 +628,10 @@ $(foreach installer, $(SONIC_INSTALLERS), $(eval $(installer)_RFS_DEPENDS=$(call
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS))
 
 # Overwrite the buildinfo in slave container
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 $(shell DBGOPT='$(DBGOPT)' scripts/prepare_slave_container_buildinfo.sh $(SLAVE_DIR) $(CONFIGURED_ARCH) $(BLDENV))
+endif
 endif
 include Makefile.cache
 
@@ -1717,6 +1751,7 @@ endif
 
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
+$(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export SONIC_ROOTFS_DOCKER_NETWORK := $(SONIC_ROOTFS_DOCKER_NETWORK)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         .platform \
@@ -2254,3 +2289,8 @@ ccache-clear :
 ## It is used in component pipelines. For example: swss needs libnl, libyang
 
 lib-packages: $(addprefix $(DEBS_PATH)/,$(LIBNL3) $(LIBYANG3) $(LIBYANG3_PY3) $(PROTOBUF) $(LIB_SONIC_DASH_API) $(LIBFIB))
+
+# Reuse the existing inventory-only mode for the current configured-input capture.
+ifeq ($(SONIC_VS_INPUT_INVENTORY),y)
+include tools/bazel/ci/vs_configured_inputs.mk
+endif

@@ -47,13 +47,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: amd64
-            runner: ubuntu-24.04
-            machine: x86_64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            machine: aarch64
+        # PR206 is AMD64-only; other PRs and events retain the existing matrix.
+        include: >-
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' && github.event.pull_request.number == 206 &&
+            '[{"arch":"amd64","runner":"ubuntu-24.04","machine":"x86_64"}]' ||
+            '[{"arch":"amd64","runner":"ubuntu-24.04","machine":"x86_64"},{"arch":"arm64","runner":"ubuntu-24.04-arm","machine":"aarch64"}]'
+          ) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:

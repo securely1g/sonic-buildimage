@@ -22,11 +22,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
+        # PR206 is AMD64-only; other PRs and events retain the existing matrix.
+        include: >-
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' && github.event.pull_request.number == 206 &&
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' ||
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]'
+          ) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     container:
@@ -149,11 +152,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - architecture: amd64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
+        # PR206 is AMD64-only; other PRs and events retain the existing matrix.
+        include: >-
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' && github.event.pull_request.number == 206 &&
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' ||
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]'
+          ) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:

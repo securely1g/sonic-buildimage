@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/bazel-oci.yml"
 
 
-def jobs():
+def jobs(path=WORKFLOW):
     """Read top-level job blocks; the shell itself is executed without rewriting."""
-    contents = WORKFLOW.read_text().split("\njobs:\n", 1)[1]
+    contents = path.read_text().split("\njobs:\n", 1)[1]
     return dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                            contents, re.MULTILINE | re.DOTALL))
 
@@ -87,15 +87,21 @@ class NativeFamilyJobsTest(unittest.TestCase):
     def test_native_families_keep_separate_hosted_caches_and_manual_selection(self):
         workflow = jobs()
         archive = workflow["archive"].split("    steps:\n", 1)[0]
-        self.assertIn("architecture: amd64", archive)
-        self.assertIn("architecture: arm64", archive)
-        self.assertIn("runner: ubuntu-24.04-arm", archive)
+        row_sets = [json.loads(value) for value in re.findall(r"'(\[\{.*?\}\])'", archive)]
+        self.assertEqual(len(row_sets), 2)
+        self.assertEqual(row_sets[0], [row for row in row_sets[1] if row["architecture"] == "amd64"])
+        self.assertEqual({row["architecture"] for row in row_sets[1]}, {"amd64", "arm64"})
+        self.assertEqual(next(row["runner"] for row in row_sets[1] if row["architecture"] == "arm64"),
+                         "ubuntu-24.04-arm")
         caches = set()
         for family in self.families:
             with self.subTest(family=family):
                 job = workflow[family + "_native"]
                 header = job.split("    steps:\n", 1)[0]
-                self.assertIn("runs-on: ubuntu-24.04\n", header)
+                if family in self.receipt_families:
+                    self.assertRegex(header, r"runs-on: (?:\*receipt_metadata_runner|&receipt_metadata_runner \$\{\{)")
+                else:
+                    self.assertIn("runs-on: ubuntu-24.04\n", header)
                 self.assertNotIn("    needs:", header)
                 self.assertNotIn("matrix.", job)
                 if family == "swss_layer":
@@ -293,17 +299,87 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     evidence_names.add(name)
 
 
+
+class ScopedWorkflowRoutingTest(unittest.TestCase):
+    @staticmethod
+    def evaluate(expression, values):
+        expression = re.sub(r"(?:github|inputs)\.[A-Za-z0-9_.]+",
+                            lambda item: repr(values[item[0]]), expression)
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        expression = re.sub(r"!(?!=)", " not ", expression)
+        return eval(" ".join(expression.split()), {"__builtins__": {}, "fromJSON": json.loads})
+
+    def test_only_pr206_narrows_existing_architecture_matrices(self):
+        seen = 0
+        for filename in ("bazel-oci.yml", "bazel-base-images.yml", "runtime-image-validation.yml"):
+            for job in jobs(ROOT / ".github/workflows" / filename).values():
+                header = job.split("    steps:\n", 1)[0]
+                if "include: >-" not in header or "github.event.pull_request.number == 206" not in header:
+                    continue
+                expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
+                both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
+                amd64 = [row for row in both if row.get("architecture", row.get("arch")) == "amd64"]
+                self.assertEqual(len(both), 2)
+                self.assertEqual(len(amd64), 1)
+                for event, repo, number, expected in (
+                    ("pull_request", "securely1g/sonic-buildimage", 206, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 196, both),
+                    ("pull_request", "example/sonic-buildimage", 206, both),
+                    ("workflow_dispatch", "securely1g/sonic-buildimage", 206, both),
+                    ("push", "securely1g/sonic-buildimage", 206, both),
+                ):
+                    with self.subTest(workflow=filename, event=event, repository=repo, number=number):
+                        self.assertEqual(self.evaluate(expression, {
+                            "github.event_name": event, "github.repository": repo,
+                            "github.event.pull_request.number": number,
+                        }), expected)
+                seen += 1
+        self.assertEqual(seen, 4)
+
+    def test_only_trusted_hub_requests_use_k3s_without_a_job_container(self):
+        workflow = WORKFLOW.read_text()
+        expressions = {key: re.search(r"^    " + key + r": &receipt_metadata_\w+ \$\{\{ (.*?) \}\}",
+                                     workflow, re.MULTILINE)[1]
+                       for key in ("runs-on", "container")}
+        for family in NativeFamilyJobsTest.receipt_families:
+            header = jobs()[family + "_native"].split("    steps:\n", 1)[0]
+            for key in expressions:
+                self.assertRegex(header, re.escape(key) + r": (?:\*receipt_metadata_|&receipt_metadata_)")
+        original_container = json.loads(re.search(r"fromJSON\('([^']+)'\)", expressions["container"])[1])
+        for number, branch in ((196, "codex/dash-engine-review-catalog"),
+                               (206, "codex/final23-integration-staging")):
+            original = {
+                "github.event_name": "pull_request", "github.repository": "securely1g/sonic-buildimage",
+                "github.event.pull_request.head.repo.full_name": "securely1g/sonic-buildimage",
+                "github.actor": "securely1g", "github.triggering_actor": "securely1g",
+                "github.event.pull_request.number": number, "github.head_ref": branch,
+            }
+            variations = ({}, {"github.event_name": "workflow_dispatch"},
+                          {"github.event.pull_request.head.repo.full_name": "example/sonic-buildimage"},
+                          {"github.actor": "example"}, {"github.triggering_actor": "example"},
+                          {"github.event.pull_request.number": 999}, {"github.head_ref": branch + "-extra"})
+            for variation in variations:
+                values = dict(original, **variation)
+                with self.subTest(number=number, variation=variation):
+                    self.assertEqual(self.evaluate(expressions["runs-on"], values),
+                                     ["ubuntu-24.04"] if variation else ["sonic-slave-container-k3s"])
+                    self.assertEqual(self.evaluate(expressions["container"], values),
+                                     original_container if variation else "")
+
+
 class BazeliskBootstrapTest(unittest.TestCase):
     def test_archive_keeps_amd64_and_arm64_launcher_selection_separate(self):
         job = jobs()['archive']
         selected = steps(job)
         setup = selected['Set up Bazel']
         self.assertEqual(step_value(setup, 'bazelisk-version', 10), '${{ matrix.bazelisk_version }}')
-        rows = dict(re.findall(r'^          - name: (\w+)\n(.*?)(?=^          - name:|^    [\w-]+:|\Z)',
-                               job, re.MULTILINE | re.DOTALL))
+        header = job.split("    steps:\n", 1)[0]
+        row_sets = [json.loads(value) for value in re.findall(r"'(\[\{.*?\}\])'", header)]
+        self.assertEqual(len(row_sets), 2)
+        rows = {row["name"]: row for row in row_sets[1]}
         self.assertEqual(set(rows), {'AMD64', 'ARM64'})
-        self.assertEqual(step_value(rows['AMD64'], 'bazelisk_version', 12), '')
-        self.assertEqual(step_value(rows['ARM64'], 'bazelisk_version', 12), '1.29.0')
+        self.assertEqual(rows['AMD64']['bazelisk_version'], '')
+        self.assertEqual(rows['ARM64']['bazelisk_version'], '1.29.0')
         prepare = selected['Prepare checksum-pinned Bazelisk']
         self.assertEqual(re.search(r"^        if: ([^\n]+)$", prepare, re.MULTILINE)[1],
                          "matrix.architecture == 'amd64'")

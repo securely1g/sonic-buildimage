@@ -9,10 +9,22 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout]
+        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, vs-reuse]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
+        type: string
+        default: ''
+      source_merge:
+        description: Tested merge commit from the current VS native requests
+        type: string
+        default: ''
+      reuse_inventory_revision:
+        description: Immutable commit containing tools/bazel/ci/vs_reuse_inputs.json
+        type: string
+        default: ''
+      reuse_inventory_sha256:
+        description: Reviewed SHA256 of the original-input inventory
         type: string
         default: ''
       source_worker:
@@ -35,7 +47,7 @@ permissions:
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
   group: bazel-oci-${{ github.event.pull_request.number || github.ref }}-${{ github.sha }}-${{ inputs.source_image || 'none' }}-${{ inputs.source_revision }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ inputs.source_image != 'vs-reuse' }}
 
 env:
   BAZEL: ${{ github.workspace }}/tools/bazel/ci/lldp_draft_bazel.sh
@@ -223,24 +235,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: AMD64
-            architecture: amd64
-            bazelisk_version: ""
-            machine: x86_64
-            runner: ubuntu-24.04
-            platform: x86_64_trixie
-            # Reuse the shared image cache and allow time for archive + image checks.
-            disk_cache: swss-layer-amd64
-            timeout: 300
-          - name: ARM64
-            architecture: arm64
-            bazelisk_version: "1.29.0"
-            machine: aarch64
-            runner: ubuntu-24.04-arm
-            platform: aarch64_trixie
-            disk_cache: buildimage-gzip-arm64
-            timeout: 60
+        # PR206 is AMD64-only; other PRs and events retain the existing matrix.
+        include: >-
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' && github.event.pull_request.number == 206 &&
+            '[{"name":"AMD64","architecture":"amd64","bazelisk_version":"","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":300}]' ||
+            '[{"name":"AMD64","architecture":"amd64","bazelisk_version":"","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":300},{"name":"ARM64","architecture":"arm64","bazelisk_version":"1.29.0","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie","disk_cache":"buildimage-gzip-arm64","timeout":60}]'
+          ) }}
     container: &native_container
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
       volumes:
@@ -1649,14 +1651,9 @@ jobs:
   gearbox_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect gearbox images (AMD64)
-    runs-on: ubuntu-24.04
+    runs-on: &receipt_metadata_runner ${{ (github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'securely1g' && github.triggering_actor == 'securely1g' && ((github.event.pull_request.number == 196 && github.head_ref == 'codex/dash-engine-review-catalog') || (github.event.pull_request.number == 206 && github.head_ref == 'codex/final23-integration-staging'))) && fromJSON('["sonic-slave-container-k3s"]') || fromJSON('["ubuntu-24.04"]') }}
     timeout-minutes: 300
-    container:
-      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-      volumes:
-      - /usr/local/lib/android:/runner-unused/android
-      - /usr/share/dotnet:/runner-unused/dotnet
-      - /opt/ghc:/runner-unused/ghc
+    container: &receipt_metadata_container ${{ !(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.head.repo.full_name == github.repository && github.actor == 'securely1g' && github.triggering_actor == 'securely1g' && ((github.event.pull_request.number == 196 && github.head_ref == 'codex/dash-engine-review-catalog') || (github.event.pull_request.number == 206 && github.head_ref == 'codex/final23-integration-staging'))) && fromJSON('{"image":"debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c","volumes":["/usr/local/lib/android:/runner-unused/android","/usr/share/dotnet:/runner-unused/dotnet","/opt/ghc:/runner-unused/ghc"]}') || '' }}
     env:
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
       GEARBOX_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -1666,35 +1663,68 @@ jobs:
     steps:
     - name: Install only receipt verification tools
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
-      run: 'apt-get update
-
-        apt-get install -y --no-install-recommends python3 git ca-certificates
-
-        '
+      run: &receipt_metadata_tools |
+        if [[ "$RUNNER_ENVIRONMENT" == self-hosted ]]; then
+          command -v python3 git
+        elif [[ "$RUNNER_ENVIRONMENT" == github-hosted ]]; then
+          apt-get update
+          apt-get install -y --no-install-recommends python3 git ca-certificates
+        else
+          exit 1
+        fi
+        python3 - <<'PYRECEIPT'
+        import os
+        from pathlib import Path
+        import re
+        workspace = Path(os.environ['GITHUB_WORKSPACE'])
+        values = {'SONIC_RECEIPT_CHECKOUT': '.',
+                  'SONIC_RECEIPT_WORKSPACE': str(workspace),
+                  'SONIC_RECEIPT_SCRATCH': os.environ['RUNNER_TEMP']}
+        if os.environ['RUNNER_ENVIRONMENT'] == 'self-hosted':
+            run, attempt, job = (os.environ[name] for name in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB'))
+            if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run, attempt)) or job not in ('gearbox_native', 'syncd_native', 'p4rt_native'):
+                raise SystemExit('Unexpected metadata job identity')
+            root = workspace / ('ci-receipt-' + run + '-' + attempt + '-' + job)
+            if (workspace.resolve() != workspace or not workspace.is_dir() or
+                    os.getuid() != 1000 or os.getgid() != 1000 or
+                    root.exists() or root.is_symlink()):
+                raise SystemExit('Metadata source and scratch paths must be fresh and job-bound')
+            root.mkdir(mode=0o700)
+            (root / 'scratch').mkdir(mode=0o700)
+            values = {'SONIC_RECEIPT_CHECKOUT': root.name + '/source',
+                      'SONIC_RECEIPT_WORKSPACE': str(root / 'source'),
+                      'SONIC_RECEIPT_SCRATCH': str(root / 'scratch')}
+        with Path(os.environ['GITHUB_ENV']).open('a') as output:
+            for name, value in values.items():
+                output.write(name + '=' + value + '\n')
+        PYRECEIPT
     - name: Checkout the normal CI merge for receipt verification
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: 'false'
         fetch-depth: 64
+        path: ${{ env.SONIC_RECEIPT_CHECKOUT }}
     - name: Verify the tested PR source context
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       id: source_context
       if: github.event_name == 'pull_request' && (env.GEARBOX_WORKER_RECEIPT == 'true')
       run: |
         git config --global --add safe.directory "$PWD"
         python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Preserve the original normal CI request
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       id: gearbox_request
       env:
         GH_TOKEN: ${{ github.token }}
-      run: "git config --global --add safe.directory \"$GITHUB_WORKSPACE\"\npython3 -B -m tools.bazel.ci.image_worker_receipt origin \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\"\n"
+      run: "git config --global --add safe.directory \"$PWD\"\npython3 -B -m tools.bazel.ci.image_worker_receipt origin \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$SONIC_RECEIPT_SCRATCH/gearbox-ci-request\"\n"
     - name: Upload the original Gearbox worker request
       if: env.GEARBOX_WORKER_RECEIPT == 'true' && steps.gearbox_request.outputs.new_request == 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: ${{ steps.gearbox_request.outputs.request_name }}
-        path: ${{ runner.temp }}/gearbox-ci-request/request.json
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/gearbox-ci-request/request.json
         if-no-files-found: error
         retention-days: '14'
     - name: Download the immutable original Gearbox request
@@ -1706,13 +1736,14 @@ jobs:
         run-id: ${{ steps.gearbox_request.outputs.request_run }}
         github-token: ${{ github.token }}
         repository: securely1g/sonic-buildimage
-        path: ${{ runner.temp }}/gearbox-ci-request
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/gearbox-ci-request
     - name: Require exact successful worker evidence for this CI merge
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       id: gearbox_acceptance
       env:
         GH_TOKEN: ${{ github.token }}
-      run: "python3 -B -m tools.bazel.ci.image_worker_receipt discover \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\"\n"
+      run: "python3 -B -m tools.bazel.ci.image_worker_receipt discover \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$SONIC_RECEIPT_SCRATCH/gearbox-ci-request\"\n"
     - name: Download only the small public Gearbox JSON receipts
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -1722,16 +1753,17 @@ jobs:
         run-id: ${{ steps.gearbox_acceptance.outputs.worker_run }}
         github-token: ${{ github.token }}
         repository: securely1g/sonic-buildimage
-        path: ${{ runner.temp }}/gearbox-ci-evidence
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/gearbox-ci-evidence
     - name: Verify all original Gearbox acceptance checks
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
-      run: "python3 -B -m tools.bazel.ci.image_worker_receipt verify \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$RUNNER_TEMP/gearbox-ci-request\" \\\n  --public \"$RUNNER_TEMP/gearbox-ci-evidence\" \\\n  --output \"$RUNNER_TEMP/gearbox-ci-verified.json\"\n"
+      run: "python3 -B -m tools.bazel.ci.image_worker_receipt verify \\\n  --contract tools/bazel/ci/gearbox_worker_contract.json \\\n  --directory \"$SONIC_RECEIPT_SCRATCH/gearbox-ci-request\" \\\n  --public \"$SONIC_RECEIPT_SCRATCH/gearbox-ci-evidence\" \\\n  --output \"$SONIC_RECEIPT_SCRATCH/gearbox-ci-verified.json\"\n"
     - name: Retain the verified CI handoff summary
       if: env.GEARBOX_WORKER_RECEIPT == 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: gearbox-ci-gearbox_native-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ runner.temp }}/gearbox-ci-verified.json
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/gearbox-ci-verified.json
         if-no-files-found: error
         retention-days: '14'
     - name: Allocate source-build space on this disposable runner
@@ -1984,9 +2016,9 @@ jobs:
   p4rt_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect P4RT images (AMD64)
-    runs-on: ubuntu-24.04
+    runs-on: *receipt_metadata_runner
     timeout-minutes: 300
-    container: *native_container
+    container: *receipt_metadata_container
     env:
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
       P4RT_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -1997,37 +2029,38 @@ jobs:
     steps:
       - name: Install only receipt verification tools
         if: env.P4RT_WORKER_RECEIPT == 'true'
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends python3 git ca-certificates
+        run: *receipt_metadata_tools
       - name: Checkout the normal CI merge for receipt verification
         if: env.P4RT_WORKER_RECEIPT == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: 'false'
           fetch-depth: 64
+          path: ${{ env.SONIC_RECEIPT_CHECKOUT }}
       - name: Verify the tested PR source context
+        working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
         id: source_context
         if: github.event_name == 'pull_request' && (env.P4RT_WORKER_RECEIPT == 'true')
         run: |
           git config --global --add safe.directory "$PWD"
           python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
       - name: Preserve the original normal CI request
+        working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
         if: env.P4RT_WORKER_RECEIPT == 'true'
         id: p4rt_request
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$PWD"
           python3 -B -m tools.bazel.ci.image_worker_receipt origin \
             --contract tools/bazel/ci/p4rt_worker_contract.json \
-            --directory "$RUNNER_TEMP/p4rt-ci-request"
+            --directory "$SONIC_RECEIPT_SCRATCH/p4rt-ci-request"
       - name: Upload the original P4RT worker request
         if: env.P4RT_WORKER_RECEIPT == 'true' && steps.p4rt_request.outputs.new_request == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ steps.p4rt_request.outputs.request_name }}
-          path: ${{ runner.temp }}/p4rt-ci-request/request.json
+          path: ${{ env.SONIC_RECEIPT_SCRATCH }}/p4rt-ci-request/request.json
           if-no-files-found: error
           retention-days: '14'
       - name: Download the immutable original P4RT request
@@ -2039,8 +2072,9 @@ jobs:
           run-id: ${{ steps.p4rt_request.outputs.request_run }}
           github-token: ${{ github.token }}
           repository: securely1g/sonic-buildimage
-          path: ${{ runner.temp }}/p4rt-ci-request
+          path: ${{ env.SONIC_RECEIPT_SCRATCH }}/p4rt-ci-request
       - name: Require exact successful worker evidence for this CI merge
+        working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
         if: env.P4RT_WORKER_RECEIPT == 'true'
         id: p4rt_acceptance
         env:
@@ -2048,7 +2082,7 @@ jobs:
         run: |
           python3 -B -m tools.bazel.ci.image_worker_receipt discover \
             --contract tools/bazel/ci/p4rt_worker_contract.json \
-            --directory "$RUNNER_TEMP/p4rt-ci-request"
+            --directory "$SONIC_RECEIPT_SCRATCH/p4rt-ci-request"
       - name: Download only the small public P4RT JSON receipts
         if: env.P4RT_WORKER_RECEIPT == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -2058,21 +2092,22 @@ jobs:
           run-id: ${{ steps.p4rt_acceptance.outputs.worker_run }}
           github-token: ${{ github.token }}
           repository: securely1g/sonic-buildimage
-          path: ${{ runner.temp }}/p4rt-ci-evidence
+          path: ${{ env.SONIC_RECEIPT_SCRATCH }}/p4rt-ci-evidence
       - name: Verify all original P4RT acceptance checks
+        working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
         if: env.P4RT_WORKER_RECEIPT == 'true'
         run: |
           python3 -B -m tools.bazel.ci.image_worker_receipt verify \
             --contract tools/bazel/ci/p4rt_worker_contract.json \
-            --directory "$RUNNER_TEMP/p4rt-ci-request" \
-            --public "$RUNNER_TEMP/p4rt-ci-evidence" \
-            --output "$RUNNER_TEMP/p4rt-ci-verified.json"
+            --directory "$SONIC_RECEIPT_SCRATCH/p4rt-ci-request" \
+            --public "$SONIC_RECEIPT_SCRATCH/p4rt-ci-evidence" \
+            --output "$SONIC_RECEIPT_SCRATCH/p4rt-ci-verified.json"
       - name: Retain the verified CI handoff summary
         if: env.P4RT_WORKER_RECEIPT == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: p4rt-ci-p4rt_native-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/p4rt-ci-verified.json
+          path: ${{ env.SONIC_RECEIPT_SCRATCH }}/p4rt-ci-verified.json
           if-no-files-found: error
           retention-days: '14'
       - name: Allocate source-build space on this disposable runner
@@ -2256,14 +2291,9 @@ jobs:
   syncd_native:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Build and inspect syncd images (AMD64)
-    runs-on: ubuntu-24.04
+    runs-on: *receipt_metadata_runner
     timeout-minutes: 300
-    container:
-      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
-      volumes:
-      - /usr/local/lib/android:/runner-unused/android
-      - /usr/share/dotnet:/runner-unused/dotnet
-      - /opt/ghc:/runner-unused/ghc
+    container: *receipt_metadata_container
     env:
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
       SYNCD_WORKER_RECEIPT: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
@@ -2276,37 +2306,38 @@ jobs:
     steps:
     - name: Install only receipt verification tools
       if: env.SYNCD_WORKER_RECEIPT == 'true'
-      run: |
-        apt-get update
-        apt-get install -y --no-install-recommends python3 git ca-certificates
+      run: *receipt_metadata_tools
     - name: Checkout the normal CI merge for receipt verification
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: 'false'
         fetch-depth: 64
+        path: ${{ env.SONIC_RECEIPT_CHECKOUT }}
     - name: Verify the tested PR source context
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       id: source_context
       if: github.event_name == 'pull_request' && (env.SYNCD_WORKER_RECEIPT == 'true')
       run: |
         git config --global --add safe.directory "$PWD"
         python3 -B -m tools.bazel.ci.image_worker_receipt source-context --directory artifacts/source-context
     - name: Preserve the original normal CI request
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       id: syncd_request
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        git config --global --add safe.directory "$PWD"
         python3 -B -m tools.bazel.ci.image_worker_receipt origin \
           --contract tools/bazel/ci/syncd_worker_contract.json \
-          --directory "$RUNNER_TEMP/syncd-ci-request"
+          --directory "$SONIC_RECEIPT_SCRATCH/syncd-ci-request"
     - name: Upload the original Syncd worker request
       if: env.SYNCD_WORKER_RECEIPT == 'true' && steps.syncd_request.outputs.new_request == 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: ${{ steps.syncd_request.outputs.request_name }}
-        path: ${{ runner.temp }}/syncd-ci-request/request.json
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/syncd-ci-request/request.json
         if-no-files-found: error
         retention-days: '14'
     - name: Download the immutable original Syncd request
@@ -2318,8 +2349,9 @@ jobs:
         run-id: ${{ steps.syncd_request.outputs.request_run }}
         github-token: ${{ github.token }}
         repository: securely1g/sonic-buildimage
-        path: ${{ runner.temp }}/syncd-ci-request
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/syncd-ci-request
     - name: Require exact successful worker evidence for this CI merge
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       id: syncd_acceptance
       env:
@@ -2327,7 +2359,7 @@ jobs:
       run: |
         python3 -B -m tools.bazel.ci.image_worker_receipt discover \
           --contract tools/bazel/ci/syncd_worker_contract.json \
-          --directory "$RUNNER_TEMP/syncd-ci-request"
+          --directory "$SONIC_RECEIPT_SCRATCH/syncd-ci-request"
     - name: Download only the small public Syncd JSON receipts
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -2337,21 +2369,22 @@ jobs:
         run-id: ${{ steps.syncd_acceptance.outputs.worker_run }}
         github-token: ${{ github.token }}
         repository: securely1g/sonic-buildimage
-        path: ${{ runner.temp }}/syncd-ci-evidence
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/syncd-ci-evidence
     - name: Verify all original Syncd acceptance checks
+      working-directory: ${{ env.SONIC_RECEIPT_WORKSPACE }}
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       run: |
         python3 -B -m tools.bazel.ci.image_worker_receipt verify \
           --contract tools/bazel/ci/syncd_worker_contract.json \
-          --directory "$RUNNER_TEMP/syncd-ci-request" \
-          --public "$RUNNER_TEMP/syncd-ci-evidence" \
-          --output "$RUNNER_TEMP/syncd-ci-verified.json"
+          --directory "$SONIC_RECEIPT_SCRATCH/syncd-ci-request" \
+          --public "$SONIC_RECEIPT_SCRATCH/syncd-ci-evidence" \
+          --output "$SONIC_RECEIPT_SCRATCH/syncd-ci-verified.json"
     - name: Retain the verified CI handoff summary
       if: env.SYNCD_WORKER_RECEIPT == 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
       with:
         name: syncd-ci-syncd_native-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ runner.temp }}/syncd-ci-verified.json
+        path: ${{ env.SONIC_RECEIPT_SCRATCH }}/syncd-ci-verified.json
         if-no-files-found: error
         retention-days: '14'
     - name: Allocate source-build space on this disposable runner
@@ -4377,3 +4410,286 @@ jobs:
         run: |
           test "$BUILD_RESULT" = success
           test "$RUNTIME_RESULT" = success
+
+  vs_reuse:
+    name: Assemble VS from verified original inputs
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'securely1g/sonic-buildimage' &&
+      github.actor == 'securely1g' &&
+      inputs.source_image == 'vs-reuse' && !inputs.skip_vs
+    runs-on: [sonic-slave-container-k3s]
+    timeout-minutes: 180
+    permissions:
+      actions: read
+      contents: read
+    env:
+      WORKER_POOL: sonic-slave-container-k3s
+      VS_SOURCE_HEAD: ${{ inputs.source_revision }}
+      VS_TESTED_MERGE: ${{ inputs.source_merge }}
+      VS_INVENTORY_REVISION: ${{ inputs.reuse_inventory_revision }}
+      VS_INVENTORY_SHA256: ${{ inputs.reuse_inventory_sha256 }}
+      VS_NATIVE_REVISION: 6ba39f0b058e41eb2db7cc7cf01d62a2d7088bba
+      VS_CLEANUP_REVISION: 4bf648e812f28b05a2683c6cf7559470b0883d2a
+      VS_KERNEL_REVISION: 1ea1efba4f9c4c1db52d557f476c79aafaa42991
+      VS_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
+      VS_MANAGER_REVISION: c650551885f8ad22cbc104082d1f1b6171e67eef
+      VS_DOWNLOAD_REVISION: 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+    steps:
+      - name: Allocate fresh source and temporary directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3
+          command -v git
+          python3 -I -S -B - <<'PYTHON'
+          import os, pathlib, re
+          assert os.getuid() == os.geteuid() == os.getgid() == os.getegid() == 1000
+          for name in ("VS_SOURCE_HEAD", "VS_TESTED_MERGE", "VS_INVENTORY_REVISION"):
+              assert re.fullmatch("[0-9a-f]{40}", os.environ[name]), "Missing immutable source input"
+          assert re.fullmatch("[0-9a-f]{64}", os.environ["VS_INVENTORY_SHA256"])
+          assert os.environ["VS_SOURCE_HEAD"] == os.environ["GITHUB_SHA"], "Dispatch the maintained source head"
+          for name in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+              assert re.fullmatch("[1-9][0-9]*", os.environ[name])
+          workspace = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          assert workspace.is_absolute() and workspace.resolve() == workspace
+          relative = "vs-reuse-" + os.environ["GITHUB_RUN_ID"] + "-" + os.environ["GITHUB_RUN_ATTEMPT"]
+          root = workspace / relative
+          root.mkdir(mode=0o700)
+          for child in ("temporary", "downloads", "receipts"):
+              (root / child).mkdir(mode=0o700)
+          values = {"VS_REL": relative, "VS_ROOT": root, "VS_TMP": root / "temporary",
+                    "VS_ASSEMBLY": root / "assembly", "VS_CONTROLLER": root / "controller",
+                    "VS_INBOX": root / "downloads",
+                    "VS_MANIFEST": root / "inventory/tools/bazel/ci/vs_reuse_inputs.json"}
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              for key, value in values.items():
+                  assert "\n" not in str(value)
+                  stream.write(key + "=" + str(value) + "\n")
+          PYTHON
+      - name: Reserve the complete assembly and cleanup window
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const jobs = await github.paginate(
+              'GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs',
+              {...context.repo, run_id: context.runId,
+                attempt_number: Number(process.env.GITHUB_RUN_ATTEMPT), per_page: 100});
+            const current = jobs.filter(job =>
+              job.name === 'Assemble VS from verified original inputs' &&
+              job.runner_name === process.env.RUNNER_NAME && job.status === 'in_progress');
+            if (current.length !== 1) throw new Error('Current job start was not identified');
+            const started = Date.parse(current[0].started_at);
+            if (!Number.isFinite(started) || started > Date.now() + 60 * 1000)
+              throw new Error('Current job start time is invalid');
+            // The job has 180 minutes. Keep 15 minutes after owned cleanup
+            // for publishing the image and structured receipts.
+            const deadline = Math.floor(started / 1000) + (180 - 15) * 60;
+            if (deadline * 1000 - Date.now() < 128 * 60 * 1000)
+              throw new Error('Insufficient time for assembly and cleanup');
+            core.exportVariable('VS_JOB_DEADLINE', String(deadline));
+      - name: Check out the maintained caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: ${{ env.VS_REL }}/controller
+          persist-credentials: false
+      - name: Check out the tested merge for image assembly
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_merge }}
+          path: ${{ env.VS_REL }}/assembly
+          fetch-depth: 64
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out the native admission owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.VS_NATIVE_REVISION }}
+          path: ${{ env.VS_REL }}/native
+          persist-credentials: false
+      - name: Check out the qualified cleanup controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.VS_CLEANUP_REVISION }}
+          path: ${{ env.VS_REL }}/controller-native-cleanup
+          persist-credentials: false
+      - name: Check out the original kernel producer context
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.VS_KERNEL_REVISION }}
+          path: ${{ env.VS_REL }}/kernel-producer
+          persist-credentials: false
+      - name: Check out the selected registry context
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: ${{ env.VS_REGISTRY_REVISION }}
+          path: ${{ env.VS_REL }}/registry
+          persist-credentials: false
+      - name: Check out the independently frozen input inventory
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.reuse_inventory_revision }}
+          path: ${{ env.VS_REL }}/inventory
+          sparse-checkout: tools/bazel/ci/vs_reuse_inputs.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Check out the pinned upstream artifact transport
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: actions/download-artifact
+          ref: ${{ env.VS_DOWNLOAD_REVISION }}
+          path: ${{ env.VS_REL }}/download-action
+          sparse-checkout: |
+            dist
+            action.yml
+            package.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Verify checkout identities and derive the tested image version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -S -B - <<'PYTHON'
+          import hashlib, os, pathlib, subprocess
+          root = pathlib.Path(os.environ["VS_ROOT"])
+          def git(directory, *args):
+              return subprocess.check_output(["git", "-C", str(directory), *args], text=True).rstrip("\n")
+          expected = {"controller": "VS_SOURCE_HEAD", "assembly": "VS_TESTED_MERGE",
+                      "native": "VS_NATIVE_REVISION", "controller-native-cleanup": "VS_CLEANUP_REVISION",
+                      "kernel-producer": "VS_KERNEL_REVISION", "registry": "VS_REGISTRY_REVISION",
+                      "inventory": "VS_INVENTORY_REVISION", "download-action": "VS_DOWNLOAD_REVISION"}
+          for directory, variable in expected.items():
+              assert git(root / directory, "rev-parse", "HEAD") == os.environ[variable]
+              assert not git(root / directory, "status", "--porcelain", "--untracked-files=all")
+          assembly = root / "assembly"
+          parents = git(assembly, "rev-list", "--parents", "-n", "1", "HEAD").split()
+          assert len(parents) == 3 and parents[2] == os.environ["VS_SOURCE_HEAD"], "Not the tested PR merge"
+          assert all(row.startswith(" ") for row in git(assembly, "submodule", "status", "--recursive").splitlines())
+          # build_debian.sh uses this same Git operation for sonic_version.yml.
+          short = git(assembly, "rev-parse", "--short", "HEAD")
+          assert os.environ["VS_TESTED_MERGE"].startswith(short)
+          transport = root / "download-action/dist/index.js"
+          assert hashlib.sha256(transport.read_bytes()).hexdigest() == "f2b9b31a73b1952584858e152e912c3825ad8ae061f280edab14b842f40893c7"
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write("VS_SOURCE_TREE=" + git(assembly, "rev-parse", "HEAD^{tree}") + "\n")
+              stream.write("VS_SHORT_COMMIT=" + short + "\n")
+          PYTHON
+      - name: Admit original artifact metadata and check temporary storage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNNER_TEMP="$VS_TMP" python3 -I -S -B "$VS_CONTROLLER/tools/bazel/ci/vs_reuse_stage.py" admit \
+            --workspace "$VS_ASSEMBLY" --manifest "$VS_MANIFEST" \
+            --manifest-sha256 "$VS_INVENTORY_SHA256" --merge "$VS_TESTED_MERGE" \
+            --source-head "$VS_SOURCE_HEAD" --source-tree "$VS_SOURCE_TREE" \
+            --inbox "$VS_INBOX" --output "$VS_ROOT/receipts/original-artifact-admission.json"
+      - name: Download original artifacts with the pinned upstream action
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const {spawnSync} = require('node:child_process');
+            const admitted = JSON.parse(fs.readFileSync(path.join(process.env.VS_ROOT,
+              'receipts/original-artifact-admission.json'), 'utf8'));
+            if (admitted.status !== 'ORIGINAL_ARTIFACT_METADATA_ADMITTED_ONLY')
+              throw new Error('Original artifact metadata was not admitted');
+            // Node24 is supplied by this pinned action. All transport, SHA256
+            // verification and ZIP extraction stay in actions/download-artifact.
+            for (const group of admitted.download_groups) {
+              // Every run shares the job budget. Reserve two hours for the
+              // body and eight minutes for the existing owned cleanup.
+              const available = Number(process.env.VS_JOB_DEADLINE) * 1000 -
+                Date.now() - 128 * 60 * 1000;
+              if (!Number.isFinite(available) || available < 1)
+                throw new Error('Artifact transfer exhausted the assembly reserve');
+              const destination = path.join(process.env.VS_INBOX, group.directory);
+              const child = spawnSync(process.execPath,
+                [path.join(process.env.VS_ROOT, 'download-action/dist/index.js')], {
+                  stdio: 'inherit', timeout: Math.min(60 * 60 * 1000, Math.floor(available)),
+                  env: {...process.env,
+                    'INPUT_GITHUB-TOKEN': core.getInput('github-token', {required: true}),
+                    'INPUT_REPOSITORY': 'securely1g/sonic-buildimage',
+                    'INPUT_RUN-ID': String(group.run_id),
+                    'INPUT_ARTIFACT-IDS': group.artifact_ids.join(','),
+                    'INPUT_NAME': '', 'INPUT_PATTERN': '', 'INPUT_PATH': destination,
+                    'INPUT_MERGE-MULTIPLE': 'false', 'INPUT_SKIP-DECOMPRESS': 'false',
+                    'INPUT_DIGEST-MISMATCH': 'error'}
+                });
+              if (child.error || child.status !== 0)
+                throw new Error('Pinned upstream artifact download failed');
+            }
+      - name: Materialize hash-verified original files
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNNER_TEMP="$VS_TMP" python3 -I -S -B "$VS_CONTROLLER/tools/bazel/ci/vs_reuse_stage.py" stage \
+            --workspace "$VS_ASSEMBLY" --manifest "$VS_MANIFEST" \
+            --manifest-sha256 "$VS_INVENTORY_SHA256" --merge "$VS_TESTED_MERGE" \
+            --source-head "$VS_SOURCE_HEAD" --source-tree "$VS_SOURCE_TREE" \
+            --inbox "$VS_INBOX" --output "$VS_ROOT/receipts/original-file-staging.json"
+      - name: Bind the maintained caller to the tested merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I -S -B - <<'PYTHON'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path(os.environ["VS_ROOT"])
+          manifest = pathlib.Path(os.environ["VS_MANIFEST"])
+          raw = manifest.read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == os.environ["VS_INVENTORY_SHA256"]
+          inventory = json.loads(raw)
+          value = {
+              "workspace": str(root / "assembly"), "manifest": str(manifest),
+              "manifest_sha256": os.environ["VS_INVENTORY_SHA256"],
+              "merge": os.environ["VS_TESTED_MERGE"], "source_head": os.environ["VS_SOURCE_HEAD"],
+              "source_tree": os.environ["VS_SOURCE_TREE"],
+              "producer": str(root / "kernel-producer"), "registry": str(root / "registry"),
+              "native_controller": str(root / "native"),
+              "expected_short_commit": os.environ["VS_SHORT_COMMIT"],
+              "profile_paths": inventory["groups"]["profile"],
+              "manager_revision": os.environ["VS_MANAGER_REVISION"],
+          }
+          body = (json.dumps(value, sort_keys=True, indent=2) + "\n").encode()
+          output = root / "receipts/full-vs-context.json"
+          with os.fdopen(os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as stream:
+              stream.write(body)
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write("VS_CONTEXT_SHA256=" + hashlib.sha256(body).hexdigest() + "\n")
+          PYTHON
+      - name: Assemble the image and run separate post-build checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUNNER_TEMP="$VS_TMP" python3 -I -S -B "$VS_CONTROLLER/tools/bazel/ci/vs_runtime_check.py" \
+            --full-vs --worker "$RUNNER_NAME" \
+            --full-vs-context "$VS_ROOT/receipts/full-vs-context.json" \
+            --full-vs-context-sha256 "$VS_CONTEXT_SHA256" \
+            --full-vs-job-deadline "$VS_JOB_DEADLINE" \
+            --output "$VS_ROOT/receipts/full-vs-result.json"
+      - name: Upload the completed image
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sonic-vs-reused-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.VS_ASSEMBLY }}/target/sonic-vs.bin
+          compression-level: 0
+          if-no-files-found: error
+      - name: Upload structured assembly and validation receipts
+        if: always() && env.VS_ROOT != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sonic-vs-reuse-receipts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.VS_ROOT }}/receipts/original-artifact-admission.json
+            ${{ env.VS_ROOT }}/receipts/original-file-staging.json
+            ${{ env.VS_ROOT }}/receipts/full-vs-result.json
+            ${{ env.VS_ASSEMBLY }}/artifacts/vs/sonic-version.json
+            ${{ env.VS_ASSEMBLY }}/artifacts/vs/installed-images.json
+          if-no-files-found: warn
