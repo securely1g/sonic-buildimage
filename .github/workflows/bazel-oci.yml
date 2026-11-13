@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-original-inputs, vs-original-objects, vs-apt-policy, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-original-inputs, vs-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -59,6 +59,112 @@ env:
   BAZEL: bazel
 
 jobs:
+  vs_apt_hook_source_observation:
+    name: Encrypt the fixed native APT hook for source review (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-apt-hook-source' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    concurrency:
+      group: vs-apt-hook-source-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require the fixed source review and fresh private paths
+        id: paths
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_HOOK_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Hook observation accepts no build, replacement source or package inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current private K3s worker workspace')
+          if shutil.disk_usage(workspace).free < 64 * 1024**2:
+              raise SystemExit('Hook observation requires 64 MiB temporary storage')
+          name = f'vs-apt-hook-source-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing hook observation work')
+          root.mkdir(mode=0o700)
+          for child in ('outputs', 'temporary'):
+              (root / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'root={root}\ncontrol={name}/control\n')
+          PY_HOOK_PATHS
+      - name: Checkout the reviewed source observation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/native_apt_cache_policy.py
+            tools/bazel/ci/observe_native_apt_hook.py
+            tools/bazel/tests/observe_native_apt_hook_test.py
+            tools/bazel/ci/native_apt_hook_review_recipient.pem
+      - name: Verify observation sources and ten confidentiality fixtures
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          OBSERVATION_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          test "$(git -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          git -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          printf '%s\n' \
+            'f47824530a763abc39fd33d65fa4ca5925adb667368f7697c4968bd20f28fe9e  tools/bazel/ci/native_apt_cache_policy.py' \
+            '5d793e7e4d2843db738b548b5338beba7ed79c2e0e3b2c5465f60fbaa4f9f798  tools/bazel/ci/observe_native_apt_hook.py' \
+            '8f2712e8eef04d221aaa047de5ede98a521f862b0187c6ef4b0fd004501d950a  tools/bazel/tests/observe_native_apt_hook_test.py' \
+            'f10ae6635ebd8db99ad573a0f67cfd29507e64f03082220145643ea4ba62cf50  tools/bazel/ci/native_apt_hook_review_recipient.pem' | sha256sum --check --status
+          test -x /usr/bin/openssl
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBSERVATION_ROOT/temporary" TMPDIR="$OBSERVATION_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B tools/bazel/tests/observe_native_apt_hook_test.py
+      - name: Encrypt only the previously observed job-start script
+        timeout-minutes: 1
+        working-directory: ${{ github.workspace }}/${{ steps.paths.outputs.control }}
+        env:
+          OBSERVATION_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          ulimit -f 256
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBSERVATION_ROOT/temporary" TMPDIR="$OBSERVATION_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B -c 'import runpy,sys; sys.path.insert(0,"."); runpy.run_module("tools.bazel.ci.observe_native_apt_hook",run_name="__main__")' \
+              --recipient "$PWD/tools/bazel/ci/native_apt_hook_review_recipient.pem" \
+              --output-parent "$OBSERVATION_ROOT/outputs"
+          python3 -I -S -B - <<'PY_HOOK_LINEAGE'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['OBSERVATION_ROOT']) / 'outputs/execution'
+          value = {key: os.environ[key] for key in ('GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'RUNNER_NAME')}
+          value.update(scope='fixed_public_hook_encrypted_for_private_source_review', source_executed=False, policy_admitted=False)
+          with (root / 'observation.json').open('x') as output:
+              json.dump(value, output, sort_keys=True, indent=2)
+              output.write('\n')
+          PY_HOOK_LINEAGE
+      - name: Retain only encrypted source and public lineage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-apt-hook-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/execution
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+
   vs_original_object_capture:
     name: Capture fixed original VS object bytes (K3s)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-original-objects' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
