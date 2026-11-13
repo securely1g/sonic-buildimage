@@ -239,10 +239,10 @@ the PR code and workflow that will run. For a failed attempt, retry the workflow
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
 run's workflow. A new registration is required after each consumed job.
-The workflow's concurrency group includes the tested revision, so pushing a
-new commit preserves a full build of an earlier revision. Runs of the same
-revision supersede one another. A cancelled job also consumes its one-job
-runner; arm a new runner for the replacement run.
+Only automatic runs for the same PR and revision supersede one another.
+Each push, manual dispatch and explicit retry has its own workflow group.
+A cancelled job also consumes its one-job runner. Arm a new runner for the
+replacement run.
 The workflow labels Make builder containers with its repository, run and attempt.
 An `always()` cleanup step saves their container logs and removes only those
 containers. Stopping the runner alone does not stop Docker containers. After a
