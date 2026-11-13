@@ -1,0 +1,365 @@
+load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@orchagent_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
+load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("//dockers/docker-config-engine-trixie:validation.bzl", "service_images_policy")
+load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+load("//tools/bazel/oci:source_contract.bzl", "source_contract")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob([
+    "*.j2",
+    "*.conf",
+    "*.sh",
+    "*.py",
+]))
+
+# Keep direct Bazel calls within the same boundary as the Make selector.
+_COMPATIBLE_WITH = [
+    "@platforms//cpu:x86_64",
+    "@platforms//os:linux",
+] + select({
+    "@sonic_swss//tools/bazel:asan_enabled": ["@platforms//:incompatible"],
+    "//conditions:default": [],
+})
+
+# Native SWSS payloads follow the APT layer; no Make package handoff is retained.
+_APT_POLICY = {
+    "schema": 1,
+    "image": "docker-orchagent",
+    "architecture": "amd64",
+    "distribution": "trixie",
+    "retained_source": "source",
+    "features": {},
+}
+
+# Expectations for the common OCI validators. Program and Lua inventories stay
+# in the source owner's BUILD/install files; this describes how to read them.
+_PACKAGE_POLICY = dict(
+    _APT_POLICY,
+    config_paths = {"usr/bin/docker-init.sh": {
+        "kind": "file",
+        "mode": 0o755,
+    }},
+    debug_tools = [
+        "gdb",
+        "gdbserver",
+        "sshpass",
+        "strace",
+        "vim",
+    ],
+    image_validation = {
+        "entrypoint": ["/usr/bin/docker-init.sh"],
+        "command": None,
+        "environment": {"DEBIAN_FRONTEND": "noninteractive"},
+        "startup_files": {},
+        "required_elf_paths": ["usr/bin/orchagent"],
+        "debug_alternatives": [],
+        "runtime_tag": "docker-orchagent:latest",
+        "debug_tag": "docker-orchagent-dbg:latest",
+        "package_state": False,
+    },
+    install_inventory = {
+        "architecture": _APT_POLICY["architecture"],
+        "declaration_file": "dist/BUILD.bazel",
+        "groups": [
+            {
+                "variable": "CPP_BINARIES",
+                "destination": "usr/bin",
+                "kind": "elf",
+                "mode": 0o755,
+            },
+            {
+                "variable": "LUA_FILES",
+                "aliases_variable": "LUA_INSTALL_ALIASES",
+                "destination": "usr/share/swss",
+                "kind": "file",
+                "mode": 0o644,
+            },
+        ],
+        "install_file": "debian/swss.install",
+        "generated_programs": ["target/release/countersyncd"],
+        "executable_directories": ["usr/bin"],
+        "expected_program_count": 30,
+    },
+    libraries = {
+        "libteam.tar": {
+            "architecture": _APT_POLICY["architecture"],
+            "runtime_path": "usr/lib/x86_64-linux-gnu/libteam.so.5.6.1",
+            "soname_links": {"usr/lib/x86_64-linux-gnu/libteam.so.5": "libteam.so.5.6.1"},
+            "exclusive_pattern": "*/libteam.so*",
+        },
+        "libteamdctl.tar": {
+            "architecture": _APT_POLICY["architecture"],
+            "runtime_path": "usr/lib/x86_64-linux-gnu/libteamdctl.so.0.1.5",
+            "soname_links": {"usr/lib/x86_64-linux-gnu/libteamdctl.so.0": "libteamdctl.so.0.1.5"},
+            "exclusive_pattern": "*/libteamdctl.so*",
+        },
+        "protobuf.tar": {
+            "architecture": _APT_POLICY["architecture"],
+            "runtime_path": "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12",
+            "soname_links": {"usr/lib/x86_64-linux-gnu/libprotobuf.so.32": "libprotobuf.so.32.0.12"},
+            "exclusive_pattern": "*/libprotobuf.so*",
+        },
+    },
+    native = {
+        "required_packages": [],
+        "required_sonames": {},
+        "gap_packages": [],
+        "local_dependency_pattern": "lib(?:sai|swsscommon|MdioIpcClient|pi)",
+        "imported_symbol_packages": [],
+        "required_imported_symbol_paths": [],
+        "require_source": False,
+        "require_imported_symbols": False,
+    },
+    required_debug_paths = [
+        "usr/lib/libdashapi.so",
+        "usr/lib/python3/dist-packages/dash_api/_utils.so",
+        "usr/lib/x86_64-linux-gnu/libprotobuf.so.32.0.12",
+        "usr/lib/x86_64-linux-gnu/libteam.so.5.6.1",
+        "usr/lib/x86_64-linux-gnu/libteamdctl.so.0.1.5",
+    ],
+    retained_requirements = [],
+)
+
+write_file(
+    name = "package_policy",
+    out = "package_policy.json",
+    content = [json.encode(_PACKAGE_POLICY)],
+)
+
+# Compose the source-built OCI image directly. The Docker archive is an
+# installer output, not an OCI input to another Bazel image.
+alias(
+    name = "config_engine_base_layout",
+    actual = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
+)
+
+# Match SWSS's link providers with the installed library TARs and generated
+# Debian controls. The source receipt lets APT retain these exact packages.
+_LIBTEAM_PACKAGES = {
+    "libteam5": "@libteam//:libteam_runtime",
+    "libteamdctl0": "@libteam//:libteamdctl_runtime",
+}
+
+source_contract(
+    name = "libteam_source_contract",
+    architecture = "amd64",
+    distribution = "trixie",
+    image = "docker-orchagent",
+    out = "libteam_source_contract.json",
+    owner_metadata = ["@libteam//:library_runtime_packages.json"],
+    source_modules = {"libteam": "@image_source_modules//:libteam.MODULE.bazel"},
+    sources = _LIBTEAM_PACKAGES,
+)
+
+run_binary(
+    name = "checked_libteam_runtime",
+    srcs = [
+        ":config_engine_base_layout",
+        ":libteam_source_contract",
+        "@image_source_modules//:libteam.MODULE.bazel",
+    ] + _LIBTEAM_PACKAGES.values(),
+    outs = ["libteam_source_runtime.tar", "libteam_source_packages.receipt.json"],
+    args = [
+        "--contract=$(execpath :libteam_source_contract)",
+        "--base=$(execpath :config_engine_base_layout)",
+        "--module=libteam=$(execpath @image_source_modules//:libteam.MODULE.bazel)",
+        "--out-tar=$(execpath libteam_source_runtime.tar)",
+        "--receipt=$(execpath libteam_source_packages.receipt.json)",
+    ] + ["--package=" + name + "=$(execpath " + target + ")" for name, target in _LIBTEAM_PACKAGES.items()] +
+           ["--package-target=" + name + "=" + target for name, target in _LIBTEAM_PACKAGES.items()],
+    mnemonic = "ValidateOrchagentLibteamRuntime",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tool = "//tools/bazel/oci:package_contract",
+)
+
+filegroup(
+    name = "libteam_source_receipt",
+    srcs = ["libteam_source_packages.receipt.json"],
+)
+
+# Select checked Debian contents before filtering the final layer. Packages
+# already supplied by the config-engine base retain their existing versions.
+apt_layer(
+    name = "runtime_layer",
+    base = ":config_engine_base_layout",
+    dependency_set = "orchagent_debian",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    packages = APT_INPUTS["orchagent_debian"]["amd64"],
+    policy = _APT_POLICY,
+    source_receipt = ":libteam_source_receipt",
+    variant = "runtime",
+)
+
+filegroup(
+    name = "runtime_apt_selection",
+    srcs = [":runtime_layer"],
+    output_group = "selection",
+)
+
+sonic_layer(
+    name = "apt_deps",
+    tars = [":runtime_layer"],
+)
+
+# Share the same complete source payload with the SWSS parent and its consumers.
+# This alias remains source-only: package tests do not need an OCI base.
+alias(
+    name = "rdeps",
+    actual = "//dockers/docker-swss-layer-trixie:source_runtime",
+)
+
+# Check the runtime dependencies' transitive symbols without requiring the
+# config-engine base container used for complete image assembly.
+debug_symbols_layer(
+    name = "rdeps_debug_symbols",
+    image = ":rdeps",
+)
+
+oci_image(
+    name = "docker-orchagent",
+    base = ":config_engine_base_layout",
+    entrypoint = ["/usr/bin/docker-init.sh"],
+    env = {"DEBIAN_FRONTEND": "noninteractive"},
+    labels = "//dockers/docker-orchagent/config:labels",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tars = [
+        ":apt_deps",
+        ":rdeps",
+        "//dockers/docker-orchagent/config:python_runtime",
+        "//dockers/docker-orchagent/config:files",
+    ],
+)
+
+sonic_docker_archive(
+    name = "docker-orchagent.gz",
+    image = ":docker-orchagent",
+    visibility = ["//visibility:public"],
+)
+
+debug_symbols_layer(
+    name = "docker-orchagent.debug_symbols",
+    image = ":docker-orchagent",
+)
+
+# Inspect the completed runtime image when adding debugger tools, including
+# its source-built SWSS libraries. Debug additions cannot replace runtime ELF.
+apt_layer(
+    name = "debug_layer",
+    base = ":docker-orchagent",
+    base_package_metadata = ":runtime_apt_selection",
+    dependency_set = "orchagent_debug_debian",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    packages = APT_INPUTS["orchagent_debug_debian"]["amd64"],
+    policy = _APT_POLICY,
+    source_receipt = ":libteam_source_receipt",
+    variant = "debug",
+)
+
+filegroup(
+    name = "debug_apt_selection",
+    srcs = [":debug_layer"],
+    output_group = "selection",
+)
+
+sonic_layer(
+    name = "debug_tools",
+    tars = [":debug_layer"],
+)
+
+oci_image(
+    name = "docker-orchagent-dbg",
+    base = ":docker-orchagent",
+    labels = "//dockers/docker-orchagent/config:debug_labels",
+    target_compatible_with = _COMPATIBLE_WITH,
+    tars = [
+        ":debug_tools",
+        ":docker-orchagent.debug_symbols",
+    ],
+)
+
+sonic_docker_archive(
+    name = "docker-orchagent-dbg.gz",
+    image = ":docker-orchagent-dbg",
+    visibility = ["//visibility:public"],
+)
+
+# CI owns an explicit selection of source and image-contract tests. The package
+# check consumes the actual runtime/debug archives as declared Bazel inputs.
+test_suite(
+    name = "ci_tests",
+    tests = [
+        "//src/sonic-config-engine:sonic_cfggen_cli_test",
+        "//tools/bazel/tests:apt_selection_test",
+        "//tools/bazel/tests:containercfgd_full_test",
+        "//tools/bazel/tests:containercfgd_wheel_test",
+        "//tools/bazel/tests:manifest_labels_action_test",
+        "//tools/bazel/tests:manifest_labels_test",
+        "//tools/bazel/tests:oci_apt_overlay_test",
+        "//tools/bazel/tests:oci_image_test",
+        "//tools/bazel/tests:oci_inventory_test",
+        "//tools/bazel/tests:oci_native_packages_test",
+        "//tools/bazel/tests:oci_package_contract_test",
+        "//tools/bazel/tests:oci_package_payloads_test",
+        "//tools/bazel/tests:oci_package_receipts_test",
+        "//tools/bazel/tests:oci_package_state_layer_test",
+        "//tools/bazel/tests:select_apt_payloads_test",
+        "//tools/bazel/tests:sonic_config_engine_full_test",
+        "//tools/bazel/tests:sonic_py_common_full_test",
+        "//tools/bazel/tests:sonic_py_common_test",
+        "//tools/bazel/tests:sonic_python_wheels_test",
+        "//tools/bazel/tests:sonic_yang_mgmt_full_test",
+        "//tools/bazel/tests:sonic_yang_mgmt_wheel_test",
+        "//tools/bazel/tests:supervisor_python_full_test",
+        "//tools/bazel/tests:supervisor_python_wheel_test",
+        "//tools/bazel/tests:swss_manifest_labels_test",
+        "//tools/bazel/tests:swss_package_contract_test",
+        "//tools/bazel/tests:swss_render_test",
+        "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
+        "@sonic_swss//crates/countersyncd:common_rust_test",
+    ],
+)
+
+# Keep published artifact names stable while allowing the shared CI runner to
+# discover this owner's outputs through an ordinary filegroup.
+[
+    copy_file(
+        name = "ci_" + name.replace("-", "_"),
+        src = source,
+        out = "ci/" + name + ".tar",
+    )
+    for name, source in {
+        "swss": "@sonic_swss//dist:swss_pkg",
+        "protobuf": "@sonic_dash_api//:protobuf_runtime_pkg",
+        "libteam": "@libteam//:libteam_runtime",
+        "libteamdctl": "@libteam//:libteamdctl_runtime",
+        "rdeps": ":rdeps",
+        "config": "//dockers/docker-orchagent/config:files",
+        "debug-symbols": ":rdeps_debug_symbols",
+    }.items()
+]
+
+filegroup(
+    name = "ci_artifacts",
+    srcs = [
+        ":ci_config",
+        ":ci_debug_symbols",
+        ":ci_libteam",
+        ":ci_libteamdctl",
+        ":ci_protobuf",
+        ":ci_rdeps",
+        ":ci_swss",
+    ],
+)
+
+write_file(
+    name = "installed_checks",
+    out = "installed_checks.json",
+    content = [json.encode(service_images_policy("docker-orchagent", "amd64"))],
+)

@@ -1,0 +1,159 @@
+load("@config_engine_pip//:requirements.bzl", "requirement")
+load("@rules_python//python:packaging.bzl", "py_wheel")
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_python//python:py_library.bzl", "py_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "requirements.in",
+    "setup.py",
+])
+
+exports_files(
+    [
+        "tests/interface_test.py",
+        "tests/test_bgp.py",
+        "tests/test_eeprom_utils.py",
+    ],
+    visibility = ["//tools/bazel/tests:__pkg__"],
+)
+
+_PROTO_NAMES = [
+    "types",
+    "common",
+    "system",
+    "file",
+]
+
+_GENERATED_PROTOS = [
+    "sonic_grpc/gnoi/" + name + suffix
+    for name in _PROTO_NAMES
+    for suffix in [
+        "_pb2.py",
+        "_pb2_grpc.py",
+    ]
+]
+
+py_library(
+    name = "proto_generator_lib",
+    srcs = ["generate_protos.py"],
+    data = glob(["proto/**/*.proto"]),
+    imports = ["."],
+    deps = [
+        requirement("grpcio-tools"),
+        requirement("packaging"),
+    ],
+)
+
+py_binary(
+    name = "generate_grpc_protos",
+    srcs = ["bazel_generate_protos.py"],
+    main = "bazel_generate_protos.py",
+    python_version = "3.13",
+    deps = [":proto_generator_lib"],
+)
+
+# Reuse setup.py's generator, with output files declared before execution.
+genrule(
+    name = "grpc_proto_sources",
+    outs = _GENERATED_PROTOS,
+    cmd = "$(execpath :generate_grpc_protos) --output-dir $(RULEDIR)/sonic_grpc/gnoi",
+    tools = [":generate_grpc_protos"],
+)
+
+_PACKAGE_SOURCES = glob(
+    [
+        "sonic_py_common/*.py",
+        "sonic_grpc/*.py",
+        "sonic_grpc/gnoi/*.py",
+    ],
+    exclude = ["sonic_grpc/gnoi/*_pb2*.py"],
+) + [":grpc_proto_sources"]
+
+# Match the complete Python 3 AMD64/ARM64 package installed by setup.py,
+# including DB dump/load and the generated gNOI client modules.
+py_library(
+    name = "sonic_py_common",
+    srcs = _PACKAGE_SOURCES,
+    imports = ["."],
+    deps = [
+        requirement("grpcio"),
+        requirement("natsort"),
+        requirement("protobuf"),
+        requirement("pyyaml"),
+        requirement("redis-dump-load"),
+        "@sonic_swss_common//pyext:swsscommon",
+    ],
+)
+
+filegroup(
+    name = "wheel_payload",
+    srcs = _PACKAGE_SOURCES,
+)
+
+py_wheel(
+    name = "sonic_py_common_wheel",
+    distribution = "sonic-py-common",
+    entry_points = {
+        "console_scripts": [
+            "sonic-db-load = sonic_py_common.sonic_db_dump_load:sonic_db_dump_load",
+            "sonic-db-dump = sonic_py_common.sonic_db_dump_load:sonic_db_dump_load",
+        ],
+    },
+    extra_distinfo_files = {"proto/LICENSE": "licenses/proto/LICENSE"},
+    extra_requires = {"testing": ["pytest"]},
+    license = "Apache 2.0",
+    python_tag = "py3",
+    requires = [
+        "natsort",
+        "pyyaml",
+        "redis-dump-load",
+        "grpcio>=1.71.0",
+        "protobuf>=5.29.6,<8",
+    ],
+    strip_path_prefixes = ["src/sonic-py-common/"],
+    summary = "Common Python libraries for SONiC",
+    version = "1.0",
+    deps = [":wheel_payload"],
+)
+
+# The installation check compares package bytes and setup.py's public contract.
+filegroup(
+    name = "wheel_sources",
+    srcs = _PACKAGE_SOURCES + [
+        "generate_protos.py",
+        "proto/LICENSE",
+        "setup.py",
+    ],
+)
+
+filegroup(
+    name = "test_sources",
+    srcs = glob(
+        [
+            "tests/**",
+            "sonic_py_common/**",
+            "sonic_grpc/**",
+            "proto/**",
+        ],
+        exclude = [
+            "**/__pycache__/**",
+            "**/*.pyc",
+            "sonic_grpc/gnoi/*_pb2*.py",
+        ],
+    ) + [
+        "MANIFEST.in",
+        "generate_protos.py",
+        "pytest.ini",
+        "setup.cfg",
+        "setup.py",
+        ":grpc_proto_sources",
+    ],
+)
+
+# Preserve the original test command while the central package owns the runner.
+test_suite(
+    name = "sonic_py_common_test",
+    tests = ["//tools/bazel/tests:sonic_py_common_test"],
+)

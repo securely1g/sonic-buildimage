@@ -233,9 +233,14 @@ define GET_MOD_DEP_SHA
 
 	$(if $(MDEBUG), $(info $(1)_MOD_DEP_PKGS: $($(1)_MOD_DEP_PKGS)))
 
-	# Warn if there is any missing dependency files
+	# Bazel archives have no Make dependency sidecars. Hash the published bytes
+	# instead: a source or module change can alter the base image without changing
+	# its legacy .flags/.dep.sha files (which may also be left from a Make build).
 	$(eval $(1)_DEP_MOD_SHA_FILES := $(foreach dfile,$($(1)_MOD_DEP_PKGS), \
-	                        $($(dfile)_DEP_FLAGS_FILE) $($(dfile)_MOD_HASH_FILE) $($(dfile)_SMOD_HASH_FILE)) )
+	                        $(if $(filter $(dfile),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)), \
+	                            $(TARGET_PATH)/$(dfile), \
+	                            $($(dfile)_DEP_FLAGS_FILE) $($(dfile)_MOD_HASH_FILE) $($(dfile)_SMOD_HASH_FILE))) )
+	# Warn if there is any missing dependency files
 	$(eval $(1)_DEP_FILES_MISSING := $(filter-out $(wildcard $($(1)_DEP_MOD_SHA_FILES)),$($(1)_DEP_MOD_SHA_FILES)) )
 	$(if $($(1)_DEP_FILES_MISSING), $(warning "[ DPKG ] Dependency file(s) are not found for $(1) : $($(1)_DEP_FILES_MISSING)))
 
@@ -308,7 +313,18 @@ define LOAD_FROM_CACHE
 	# Load the cache if cache is enabled and cache file is present in the cache
 	# Update the cache_loaded variable
 	$(if $(and $(CACHE_FILE_SELECT),$(call CHECK_RCACHE_ENABLED,$(1))),
-		$(if $(LOAD_DRV_DEB), $($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mxzvf $(CACHE_FILE_SELECT) 1>> $($(1)_DST_PATH)/$(1).log ,echo );
+		$(if $($(1)_CACHE_FORCE_RESTORE),
+			# Switchable container archives must replace the other builder's output.
+			# Stage this single-output restore so an invalid cache preserves the old
+			# archive and leaves its newer method stamp to trigger another attempt.
+			(
+				cache_restore_dir=$$(mktemp -d "$($(1)_DST_PATH)/.cache-restore.XXXXXX")
+				trap '$($(1)_CACHE_USER) rm -rf "$$cache_restore_dir"' EXIT
+				$($(1)_CACHE_USER) tar -C "$$cache_restore_dir" -mxzvf $(CACHE_FILE_SELECT) $(2) $($(1)_DST_PATH)/$(1).cached.log 1>> $($(1)_DST_PATH)/$(1).log
+				$($(1)_CACHE_USER) mv -f "$$cache_restore_dir/$($(1)_DST_PATH)/$(1).cached.log" "$($(1)_DST_PATH)/$(1).cached.log"
+				$($(1)_CACHE_USER) mv -f "$$cache_restore_dir/$(2)" "$(2)"
+			),
+			$(if $(LOAD_DRV_DEB), $($(1)_CACHE_USER) tar -C $($(1)_BASE_PATH) -mxzvf $(CACHE_FILE_SELECT) 1>> $($(1)_DST_PATH)/$(1).log ,echo ));
 		echo "File $(CACHE_FILE_SELECT) is loaded from cache into $($(1)_BASE_PATH)" >> $($(1)_DST_PATH)/$(1).log
 		$(eval $(1)_CACHE_LOADED := Yes)
 		$(if $(call CHECK_WCACHE_ENABLED,$(1)), $(shell touch $(CACHE_FILE_SELECT)))

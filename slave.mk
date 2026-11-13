@@ -601,6 +601,12 @@ $(shell DBGOPT='$(DBGOPT)' scripts/prepare_slave_container_buildinfo.sh $(SLAVE_
 endif
 include Makefile.cache
 
+# Track Bazel kernel inputs for downstream Make consumers.
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+$(foreach pkg,$(SONIC_RFS_TARGETS) $(IXGBE_DRIVER) $(GENL_PACKET_MODULE), \
+        $(eval $(pkg)_DEP_FILES += $(SONIC_BAZEL_KERNEL_INPUTS) tools/bazel/kernel/prepare.py))
+endif
+
 
 ###############################################################################
 ## Generic rules section
@@ -1080,7 +1086,7 @@ SONIC_INSTALL_DEBS = $(addsuffix -install,$(addprefix $(DEBS_PATH)/, \
 			$(SONIC_DPKG_DEBS) \
 			$(SONIC_PYTHON_STDEB_DEBS) \
 			$(SONIC_DERIVED_DEBS) \
-			$(SONIC_EXTRA_DEBS)))
+			$(SONIC_EXTRA_DEBS) $(SONIC_BAZEL_KERNEL_DEBS)))
 $(SONIC_INSTALL_DEBS) : $(DEBS_PATH)/%-install : .platform $$(addsuffix -install,$$(addprefix $(DEBS_PATH)/,$$($$*_DEPENDS))) $$(addsuffix -install,$$(addprefix $(PYTHON_WHEELS_PATH)/,$$($$*_WHEEL_DEPENDS))) $$(addprefix $(PHONY_PATH)/,$$($$*_PHONIES)) $(DEBS_PATH)/$$*
 	$(HEADER)
 	[ -f $(DEBS_PATH)/$* ] || { echo $(DEBS_PATH)/$* does not exist $(LOG) && false $(LOG) }
@@ -1367,6 +1373,10 @@ endif
 endif
 endif
 
+# Each owning recipe selects its Bazel archives; all others stay on Make.
+DOCKER_IMAGES := $(filter-out $(SONIC_BAZEL_DOCKER_IMAGES),$(DOCKER_IMAGES))
+DOCKER_DBG_IMAGES := $(filter-out $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(DOCKER_DBG_IMAGES))
+
 $(foreach IMAGE,$(DOCKER_IMAGES), $(eval $(IMAGE)_DEBS_PATH := $(DEBS_PATH)))
 $(foreach IMAGE,$(DOCKER_IMAGES), $(eval $(IMAGE)_FILES_PATH := $(FILES_PATH)))
 $(foreach IMAGE,$(DOCKER_DBG_IMAGES), $(eval $(IMAGE)_DEBS_PATH := $(DEBS_PATH)))
@@ -1495,6 +1505,9 @@ $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES)) : $(TARGET_PATH)/%.gz : .platform
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(DOCKER_IMAGES))
 
+# Load the shared container rules after all owners declare their metadata.
+include tools/bazel/docker.mk
+
 # Targets for building docker debug images
 $(addprefix $(TARGET_PATH)/, $(DOCKER_DBG_IMAGES)) : $(TARGET_PATH)/%-$(DBG_IMAGE_MARK).gz : .platform docker-start \
 		$$(addprefix $(TARGET_PATH)/,$$($$*.gz_AFTER)) \
@@ -1569,6 +1582,8 @@ DOCKER_LOAD_TARGETS = $(addsuffix -load,$(addprefix $(TARGET_PATH)/, \
 		      $(DOWNLOADED_DOCKER_IMAGES) \
 		      $(COPY_DOCKER_IMAGES) \
 		      $(DOCKER_IMAGES) \
+		      $(SONIC_BAZEL_DOCKER_IMAGES) \
+		      $(SONIC_BAZEL_DBG_DOCKER_IMAGES) \
 		      $(DOCKER_DBG_IMAGES)))
 
 ifeq ($(BLDENV),trixie)
@@ -1590,13 +1605,19 @@ $(DOCKER_LOAD_TARGETS) : $(TARGET_PATH)/%.gz-load : .platform docker-start $$(TA
 ## Installers
 ###############################################################################
 
+# Revalidate retained source packages without making unchanged images stale.
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+$(addprefix $(TARGET_PATH)/,$(SONIC_RFS_TARGETS) $(SONIC_INSTALLERS)): | bazel-kernel-ensure
+endif
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
         .platform \
         build_debian.sh \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
-        $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL)) \
+        $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL) $(if $(filter y,$(INSTALL_DEBUG_TOOLS)),$(LINUX_KERNEL_DBG))) \
+        $(SONIC_BAZEL_KERNEL_INPUTS) \
         $$(addprefix $(TARGET_PATH)/,$$($$*_DEPENDENT_RFS)) \
         $(call dpkg_depend,$(TARGET_PATH)/%.dep)
 	$(HEADER)
@@ -1655,12 +1676,15 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         .platform \
         onie-image.conf \
         build_debian.sh \
+        scripts/validate_sonic_version.py \
+        files/build_templates/sonic_version.yml.j2 \
         files/build_templates/sonic_debian_extension.j2 \
         files/build_templates/docker_image_ctl.j2 \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
         scripts/dbg_files.sh \
         scripts/build_sbom.sh \
         scripts/build_sbom.py \
+        scripts/sbom_kernel_deb.py \
         scripts/install_sbom_tool.sh \
         scripts/sbom_fragment.py \
         scripts/sbom_cve_refs.py \
@@ -1668,6 +1692,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         scripts/sbom_parse_lockfiles.py \
         scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
+        $$(if $$(filter sonic-vs.img.gz,$$*),scripts/image_timing.py scripts/build_kvm_image.sh) \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_INSTALLS)) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_INSTALLS)) \
@@ -1728,6 +1753,13 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(LINUX_KBUILD)-install)
 
 	$(HEADER)
+	# The receipt is private; only the completed summary bypasses the target log.
+	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
+	if [ "$@" = "target/sonic-vs.img.gz" ]; then
+		SONIC_IMAGE_TIMING_FILE=$$(python3 ./scripts/image_timing.py begin 2>/dev/null) || SONIC_IMAGE_TIMING_FILE=
+		export SONIC_IMAGE_TIMING_FILE
+		trap 'python3 ./scripts/image_timing.py discard 2>/dev/null || true' EXIT
+	fi
 	# Pass initramfs and linux kernel explicitly. They are used for all platforms
 	export debs_path="$(IMAGE_DISTRO_DEBS_PATH)"
 	export files_path="$(FILES_PATH)"
@@ -1749,6 +1781,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	export sonic_su_signing_cert="$(SECURE_UPGRADE_SIGNING_CERT)"
 	export sonic_su_kernel_cafile="$(SECURE_UPGRADE_KERNEL_CAFILE)"
 	export sonic_su_mode="$(SECURE_UPGRADE_MODE)"
+	export SECURE_UPGRADE_MODE="$${sonic_su_mode}"
 	export sonic_su_prod_signing_tool="/sonic/scripts/$(shell basename -- $(SECURE_UPGRADE_PROD_SIGNING_TOOL))"
 	export include_system_telemetry="$(INCLUDE_SYSTEM_TELEMETRY)"
 	export include_system_otel="$(INCLUDE_SYSTEM_OTEL)"
@@ -1822,6 +1855,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	export include_bootchart="$(INCLUDE_BOOTCHART)"
 	export enable_bootchart="$(ENABLE_BOOTCHART)"
 	export enable_multidb="$(ENABLE_MULTIDB)"
+	export ENABLE_MULTIDB="$(ENABLE_MULTIDB)"
+	export ENABLE_VRF_STRICT="$(ENABLE_VRF_STRICT)"
 	export ENABLE_FRR_SNMP_AGENT="$(ENABLE_FRR_SNMP_AGENT)"
 	$(foreach docker, $($*_DOCKERS),\
 		export docker_image="$(docker)"
@@ -1994,6 +2029,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		SBOM_INSTALLER_DOCKERS="$($*_DOCKERS)" \
 		SBOM_INSTALLER_DEBS="$($*_INSTALLS) $($*_LAZY_INSTALLS) $($*_LAZY_BUILD_INSTALLS)" \
 		SBOM_INSTALLER_WHEELS="$($*_PYTHON_WHEELS)" \
+		BUILD_WITH_BAZEL_WHEN_AVAILABLE="$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)" \
 			./scripts/build_sbom.sh $(LOG)
 	)
 
@@ -2013,6 +2049,10 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	)
 
 	chmod a+x $@
+	# Reached only on success, after cleanup; relay outside the target log.
+	if [ -n "$${SONIC_IMAGE_TIMING_FILE:-}" ]; then
+		python3 ./scripts/image_timing.py end 2>/dev/null || true
+	fi
 	$(FOOTER)
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS))
@@ -2027,7 +2067,7 @@ SONIC_CLEAN_DEBS = $(addsuffix -clean,$(addprefix $(DEBS_PATH)/, \
 		   $(SONIC_MAKE_DEBS) \
 		   $(SONIC_DPKG_DEBS) \
 		   $(SONIC_DERIVED_DEBS) \
-		   $(SONIC_EXTRA_DEBS)))
+		   $(SONIC_EXTRA_DEBS) $(SONIC_BAZEL_KERNEL_DEBS)))
 
 SONIC_CLEAN_FILES = $(addsuffix -clean,$(addprefix $(FILES_PATH)/, \
 		   $(SONIC_ONLINE_FILES) \
