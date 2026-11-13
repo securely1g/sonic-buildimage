@@ -15,6 +15,8 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
+exports_files(["integration/frr_python_wheel_probe.py"])
+
 # Preserve the old build label; CI executes the source owner's real test rule.
 alias(
     name = "swss_common_rust_test",
