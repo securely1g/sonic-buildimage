@@ -8,6 +8,7 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/go/**
+      - tools/bazel/debian_mirrors.cfg
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
@@ -21,6 +22,7 @@ on:
       - MODULE.bazel
       - tools/bazel/common.bazelrc
       - tools/bazel/go/**
+      - tools/bazel/debian_mirrors.cfg
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
@@ -110,6 +112,7 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          python3 -B src/sonic-eventd/bazel/run_tests_test.py
           python3 -B src/sonic-eventd/bazel/ci.py --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --architecture '${{ matrix.architecture }}' --artifacts artifacts/eventd
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload native packages and test evidence

@@ -280,7 +280,7 @@ apt_inputs(
 )
 
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.6")
-bazel_dep(name = "iproute2", version = "6.15.0.sonic.5")
+bazel_dep(name = "iproute2", version = "6.15.0.sonic.6")
 bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
 bazel_dep(name = "libteam", version = "1.31.0.sonic.1")
 bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
@@ -482,3 +482,6 @@ go_patches.module_override(
     patches = ["@sonic_gnmi//patches/bazel:0008-pam-build.patch"],
     path = "github.com/msteinert/pam",
 )
+
+# Pinned comparison tool; no image or package build is scheduled by this include.
+include("//tools/bazel/equivalence_checker:equivalence.MODULE.bazel")

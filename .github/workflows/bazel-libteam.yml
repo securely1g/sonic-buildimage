@@ -7,10 +7,12 @@ on:
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
+      - tools/bazel/debian_mirrors.cfg
       - tools/bazel/BUILD.bazel
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
+      - tools/bazel/ci/resolution.py
       - tools/bazel/ci/source_mirrors.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-libteam.yml
@@ -123,7 +125,6 @@ jobs:
             cp --parents "$output" artifacts/
             sha256sum "$output" >> artifacts/SHA256SUMS
           done < artifacts/outputs.txt
-          cp MODULE.bazel.lock artifacts/
           # Selecting the compatibility alias builds the executable but does not
           # run its test; select the source owner's test rule directly.
           run_bazel test --nocache_test_results --build_event_json_file="$PWD/artifacts/test-events.json" \
@@ -174,6 +175,33 @@ jobs:
             --bazel-arg="--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}" \
             --bazel-arg="--experimental_downloader_config=$RUNNER_TEMP/libteam-source-mirrors.cfg" \
             --output artifacts/rebuild
+          # Capture the graph in this tested workspace; platform and jobs flags
+          # configure build actions and are recorded rather than passed to mod.
+          python3 -B - "${options[@]}" <<'PYRESOLUTION'
+          import json
+          import sys
+          from pathlib import Path
+          from tools.bazel.ci import resolution
+
+          workspace = Path.cwd()
+          directory = (workspace / "artifacts").resolve()
+          build_options = sys.argv[1:]
+          build_only = ("--host_platform=", "--platforms=", "--jobs=")
+          graph_options = [option for option in build_options
+                           if not option.startswith(build_only)]
+          evidence = resolution.collect(
+              workspace, directory,
+              bazel=["bazel", "--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
+                     "--bazelrc=" + str(workspace / "tools/bazel/common.bazelrc")],
+              options=graph_options,
+          )
+          evidence["build_options"] = build_options
+          evidence["omitted_build_only_options"] = [
+              option for option in build_options if option.startswith(build_only)
+          ]
+          evidence["scope"] = "Same-job module resolution; target configuration is recorded separately"
+          (directory / "resolution.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          PYRESOLUTION
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
       - name: Upload source outputs and validation evidence
         if: always()

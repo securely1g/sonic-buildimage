@@ -11,6 +11,7 @@ on:
       - tools/bazel/go-lock
       - tools/bazel/go/**
       - tools/bazel/tests/**
+      - tools/bazel/debian_mirrors.cfg
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
@@ -27,6 +28,7 @@ on:
       - tools/bazel/go-lock
       - tools/bazel/go/**
       - tools/bazel/tests/**
+      - tools/bazel/debian_mirrors.cfg
       - tools/bazel/ci/libteam_draft_bazel.sh
       - tools/bazel/ci/preserve_setup_bazel_cache.py
       - tools/bazel/ci/repair_bazel_startup.py
@@ -38,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bazel-supervisor-rust-${{ github.event.pull_request.number || github.ref }}-${{ github.event.pull_request.head.sha || github.sha }}
+  group: bazel-supervisor-rust-${{ github.run_attempt == '1' && github.event.pull_request.number || format('run-{0}', github.run_id) }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
 jobs:

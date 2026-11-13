@@ -195,14 +195,28 @@ for each pair. The normal installer still selects runtime containers;
 `INSTALL_DEBUG_TOOLS=y` selects debug containers. Producing a debug archive does
 not add it to the installer.
 
-The active **VS installer in SONiC slave (AMD64)** job prepares the private
-worker, builds `target/sonic-vs.bin` directly through `slave.mk`, and runs
-`verify_vs_oci.sh` before loading the resulting images with the shared
-`validate_runtime.py` validator. It checks the installer version and retains
-the runtime/debug archive identities across validation. The private Docker
-daemon belongs to this worker and is stopped after evidence publication.
+The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
+the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
+registry login, Make reuses a local computed-tag slave image, pulls the matching
+tag if absent, or builds locally if the pull fails. The separate
+[slave publication workflow](../../../.github/workflows/sonic-slave-images.yml)
+publishes generic AMD64 Bookworm and Trixie images on master pushes using the
+Azure slave pipeline's generic build profile, with snapshot mode explicitly enabled.
+Both workflows set `MIRROR_SNAPSHOT=y` to use Debian snapshots under
+`packages.trafficmanager.net/snapshot`. They retain the repository's base-image
+registry and Docker/APT retry defaults, without separate slave-only overrides.
+Registry authentication selects the subscription configured in the repository
+Actions variable `ACR_SUBSCRIPTION_ID` after managed-identity login.
+Both jobs export a private `DOCKER_CONFIG` before Docker operations and always
+attempt registry logout and credential-file removal at job completion. They also
+prune unused Docker images and build cache before checking free space, so their
+agents must not share a Docker daemon with concurrent jobs.
+It does not update image pins or create commits. See the
+[host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
+The installer job checks the installer version and retains runtime/debug archive
+identities across validation, using the shared `validate_runtime.py` validator.
 
-The retained legacy wrapper [`build_vs.sh`](build_vs.sh) runs one
+The host wrapper [`build_vs.sh`](build_vs.sh) runs one
 `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
 The **Build the VS installer (.bin)** workflow step ends
@@ -349,6 +363,21 @@ validate the resulting image and measure end-to-end time.
   `debug_archives` combines a runtime tar and its symbols tar, rejects payload
   collisions and foreign debug paths, checks the caller's ELF architecture,
   safely extracts the pair and verifies matching build IDs, DWARF and debug links.
+- `validation_inputs.py` shares SHA256 digests and successful archive inventories
+  during one `syncd_p4_images_test` process. Image, native-package and inherited
+  source checks can read the same runtime/debug layers without repeatedly
+  decompressing and hashing their contents. Each retained input path is hashed
+  before reuse by content, and its device, inode, size, mode, mtime and ctime are
+  checked around reads and at reuse. A final identity and SHA256 check runs before
+  publishing the validation report. Changed retained inputs fail validation.
+  Only the test's declared files and OCI directories qualify; extracted inspection
+  files remain ordinary uncached reads. The cache retains at most 64 MiB of
+  inventory metadata and 512 file identities; larger inputs fall back to ordinary
+  reads. It retains no extracted payload bytes and nothing persists between test processes.
+  Inventories are copied before use. For identical archive contents and the
+  same parsing rules, reuse includes normalization and checks made during the
+  scan, such as member type and ownership checks. Checks against each caller's
+  current overlay and receipts, plus ELF/debug inspection, still run each time.
 - `build.py` builds a caller's filename-to-label mapping and collects one nonempty
   archive per label, with atomic publication, command logs, sizes and hashes.
   `collect_artifacts` exports all files from a declared CI filegroup. It checks
