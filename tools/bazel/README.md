@@ -251,6 +251,44 @@ recipe.
 
 ## Shared Bazel options and caches
 
+The shared `common.bazelrc` selects [debian_mirrors.cfg](debian_mirrors.cfg)
+as the workspace downloader configuration. For pinned `.deb` URLs at the
+configured Debian snapshot timestamps, the URL list contains the SONiC mirror,
+the same path in Debian's official pool, and the original dated snapshot, in
+that order. Other dated `.deb` URLs in the Debian and Debian security snapshot
+archives list the pool before the original snapshot. Bazel's local HTTP downloader
+tries the listed order. A configured remote downloader receives the complete URL
+list and checksum and may select any listed URL or cached content. If the remote
+request fails and local fallback is enabled, the local HTTP downloader uses the
+listed order. Inputs from `packages.trafficmanager.net` retain their normalization
+rules. Bazel still verifies downloaded bytes against the package rule's pinned
+SHA-256; package versions, snapshots, lockfiles and cache locations stay unchanged.
+For example, local HTTP downloading of `arping_2.25-1_amd64.deb` can use the pool
+when a mirror is unavailable and falls back to its snapshot if the pool no longer has it.
+The pool rules do not change package indexes, source archives or other hosts.
+
+The standalone [debian-pool.cfg](debian-pool.cfg) remains available to callers
+that explicitly need the pool and then the snapshot without the SONiC mirrors.
+The base image, eventd, supervisor, YANG, OCI and libteam workflows used for pull
+requests use the checksum-verified source mirror helper. By default, it appends the
+shared registry policy after `debian_mirrors.cfg`. This preserves the maintained local
+priority: the SONiC mirror, pool and dated snapshot appear before any additional
+shared mirror choices at the configured timestamps. Other dated package URLs list
+the pool and snapshot before the shared choices. Existing non-package fallbacks
+retain their order.
+
+The native VS installer passes `--prefer-debian-snapshot`, which puts the original
+dated Debian and Debian security URLs first in the URL list, including package
+indexes and source archives. The local and shared fallback candidates remain listed
+afterward. Libteam retains the effective configuration, its checksum and the shared
+source URL.
+
+The shared default path is relative to the Bazel workspace root, including commands
+run from subdirectories. It precedes `.bazelrc.user`, so a user downloader option
+there, or a command-line option, replaces the complete default.
+Bazel does not merge downloader files; a custom configuration must include any
+fallback rules it needs. Existing repository and action cache settings are kept.
+
 Make uses `SONIC_BAZEL_CACHE_SOURCE` as the host directory for shared Bazel
 caches. Its default is `$(SONIC_DPKG_CACHE_SOURCE)/bazel`, independent of
 `BUILD_WITH_BAZEL_WHEN_AVAILABLE`. Set it to a persistent directory writable by
