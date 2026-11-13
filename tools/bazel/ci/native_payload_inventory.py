@@ -323,7 +323,7 @@ def public_review(root, request_bytes, contract, run, job, artifact, observed, p
                                                  observed, selected, logical_paths)
         public_artifacts.safe_json(reviewed)
         result.update(status="PUBLIC_INVENTORY_CONSISTENT_NOT_ACCEPTED", review=reviewed)
-    except (ValueError, KeyError, TypeError, IndexError) as error:
+    except (ValueError, KeyError, TypeError, IndexError, AssertionError) as error:
         result.update(status="PUBLIC_SEMANTICS_REJECTED_INSPECTION_ONLY", error_type=type(error).__name__)
     write_json(root, "public-semantic-review.json", result)
     return result

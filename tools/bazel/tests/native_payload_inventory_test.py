@@ -408,5 +408,23 @@ class RetainedPublicSemanticReviewTest(unittest.TestCase):
             self.assertFalse(result["fresh_build_or_runtime"])
             self.assertNotIn("private free-form", (Path(temporary) / "public-semantic-review.json").read_text())
 
+
+    def test_canonical_assertion_is_retained_as_rejection_without_private_detail(self):
+        public, retained = self.fixture()
+        with tempfile.TemporaryDirectory() as temporary, contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(inventory.recovery.worker, "public_json_names", return_value=frozenset(("worker.json",))))
+            stack.enter_context(mock.patch.object(inventory.recovery, "review_public_upload", side_effect=AssertionError("private free-form detail")))
+            fd = os.open(temporary, inventory.DIRECTORY_FLAGS)
+            try:
+                result = inventory.public_review(fd, b"original", {"outputs": {}}, {}, {},
+                    {"id": 13803477455, "digest": "sha256:" + "a" * 64}, {}, public, retained, {"original_request": {}})
+            finally:
+                os.close(fd)
+            self.assertEqual(result["status"], "PUBLIC_SEMANTICS_REJECTED_INSPECTION_ONLY")
+            self.assertEqual(result["error_type"], "AssertionError")
+            self.assertFalse(result["canonical_native_acceptance"])
+            self.assertFalse(result["fresh_build_or_runtime"])
+            self.assertNotIn("private free-form", (Path(temporary) / "public-semantic-review.json").read_text())
+
 if __name__ == "__main__":
     unittest.main()
