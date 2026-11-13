@@ -98,9 +98,9 @@ def prepare(plan, source, native, registry, scratch, archives, mirrors, support)
     require((scratch / 'native-bazel').read_text() == worker.launcher_text(
         binary, scratch / 'output-base', profile, configuration), 'Prepared launcher configuration changed')
     launchers = {}
-    bases = {'pass-' + str(number): scratch / ('pass-' + str(number)) / 'work/output-base'
+    bases = {'pass-' + str(number): scratch / ('pass-' + str(number)) / 'work/bazel/output-base'
              for number in (1, 2)}
-    bases.update({phase: scratch / 'pass-2/work' / (phase + '-output-base')
+    bases.update({phase: scratch / 'pass-2/work/bazel' / (phase + '-output-base')
                   for phase in ('copy-baseline', 'header-edited', 'restored')})
     for name, output_base in bases.items():
         path = scratch / (name + '-bazel')
@@ -246,7 +246,7 @@ def run(plan, source, registry, scratch, support):
         retain_phase(scratch, 'pass' + str(number), artifacts, outputs['pass' + str(number)])
         if number == 2:
             prefix, _, options, _ = command_parts(captured['build'], launcher, work)
-            fetched = runner.fetched_modules(work / 'output-base', MODULE)
+            fetched = runner.fetched_modules(work / 'bazel/output-base', MODULE)
             require(len(fetched) == 1 and fetched[0].resolve().is_relative_to(work), 'Fetched module escapes fresh work')
             copied = work / 'qualification-source'
             source_copy(fetched[0].parent, copied, plan['upstream_inputs'])
