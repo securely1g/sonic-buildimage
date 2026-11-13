@@ -110,7 +110,7 @@ class ReusePlanTests(unittest.TestCase):
             self.assertEqual(json.dumps(provenance, sort_keys=True).encode(), original_bytes)
 
     def test_current_domain_and_native_flags(self):
-        self.assertEqual(plan.WORKER, "6ba39f0b058e41eb2db7cc7cf01d62a2d7088bba")
+        self.assertEqual(plan.WORKER, "df17080469e74093c373e55522bf5c029d3451fc")
         for value in ("SONIC_IMAGE_VERSION=bazel-ci", "CROSS_BUILD_ENVIRON=n",
                       "MULTIARCH_QEMU_ENVIRON=n", "SONIC_BAZEL_KERNEL_PREPARE=verify",
                       "SONIC_DEB_BUILD_POLICY=reuse-only", "SONIC_DPKG_CACHE_METHOD=none",
@@ -661,7 +661,7 @@ class ActualAssemblyDomainTests(unittest.TestCase):
         self.assertEqual(json.dumps(value, sort_keys=True), original)
         self.assertFalse(hasattr(plan, "HEAD"))
         self.assertFalse(hasattr(plan, "ASSEMBLY"))
-        self.assertEqual(plan.WORKER, "6ba39f0b058e41eb2db7cc7cf01d62a2d7088bba")
+        self.assertEqual(plan.WORKER, "df17080469e74093c373e55522bf5c029d3451fc")
 
     def test_old_or_extra_assembly_identity_never_relabels_the_source(self):
         for domain in (None, {}, {**ASSEMBLY, "commit": "f" * 40},

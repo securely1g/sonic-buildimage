@@ -11,7 +11,7 @@ canonical P4RT, Syncd and Gearbox evidence for the current PR head, tested base
 and tested merge. Missing inputs or mismatched provenance stop the task; it
 does not fall back to package compilation. The current native admission
 companion is [PR #201](https://github.com/securely1g/sonic-buildimage/pull/201),
-at `6ba39f0b058e41eb2db7cc7cf01d62a2d7088bba`.
+at `df17080469e74093c373e55522bf5c029d3451fc`.
 
 ## Dispatch inputs
 
