@@ -5359,7 +5359,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: d4318a44377ac8bfa10c0f2db40c8bb29f2761e2
+          ref: 9694e1420031b66fc673810aca074be4a0c4b17d
           path: ${{ steps.paths.outputs.registry }}
           persist-credentials: false
           clean: false
@@ -5386,7 +5386,7 @@ jobs:
           import hashlib, json, os, sys, unittest
           from pathlib import Path
           root = Path(os.environ['QUAL_ROOT'])
-          controls = json.loads('{"tools/bazel/ci/bitarray_registry_qualification_test.py":{"bytes":8904,"sha256":"61ccb58631b275d37f3f0caccdeda27864df0eb7519c867afe9e772f1733e437"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/qualify_bitarray_registry_module.py":{"bytes":22350,"sha256":"b8d3b7c8f8685217f247803c6d16b06fa36611336f219b81560eb43825747434"},"tools/bazel/ci/vs_bitarray_registry_qualification.json":{"bytes":7965,"sha256":"65cb38dc74081e2f69528471b0f2819e000a5f569060a08e856c0630f553be32"}}')
+          controls = json.loads('{"tools/bazel/ci/bitarray_registry_qualification_test.py":{"bytes":8904,"sha256":"61ccb58631b275d37f3f0caccdeda27864df0eb7519c867afe9e772f1733e437"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/qualify_bitarray_registry_module.py":{"bytes":22350,"sha256":"b8d3b7c8f8685217f247803c6d16b06fa36611336f219b81560eb43825747434"},"tools/bazel/ci/vs_bitarray_registry_qualification.json":{"bytes":7965,"sha256":"c1faf7debe713d90cda657fc7c2a2e8288656ae234f006d8dc9c5010600aebc7"}}')
           native = json.loads('{"tools/bazel/ci/image_worker_receipt.py":{"bytes":43504,"sha256":"eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db"},"tools/bazel/ci/native_apt_cache_policy.py":{"bytes":12232,"sha256":"c5393e4ba76c78d6aef3742ae84c69689b28e6064ae91e36ee3a4eb4d6ac0401"},"tools/bazel/ci/p4rt_receipt_semantics.py":{"bytes":10420,"sha256":"0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661"},"tools/bazel/ci/p4rt_sdk_receipt_semantics.py":{"bytes":6744,"sha256":"d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9"},"tools/bazel/ci/public_artifacts.py":{"bytes":33105,"sha256":"74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9"},"tools/bazel/ci/remote_cache_smoke.py":{"bytes":30684,"sha256":"5a81d8adfeae943497dfaf5d93c78cd5984713a8f37b1006cb1bb318572adbc1"},"tools/bazel/ci/source_image_worker.py":{"bytes":113520,"sha256":"6209cdc35435169a6a5c3e6d606008523bdc61a7afedd9bf5a4614c79234bdad"},"tools/bazel/ci/source_worker_preflight.py":{"bytes":11944,"sha256":"9ffde2a7a08e5cb86bf9d91a05c6b462537fe9586c0576ca912f6983e49d9e9f"},"tools/bazel/gzip/source_archive.py":{"bytes":3773,"sha256":"82aee637250567edf198e9355a5bf6d592ac33460456f7e042c01c3bcb757aa6"}}')
           for directory, files in ((root / 'control', controls), (root / 'native', native)):
               for name, expected in files.items():
@@ -5460,7 +5460,7 @@ jobs:
         run: |
           python3 -I -S -B "$QUAL_ROOT/control/tools/bazel/ci/qualify_bitarray_registry_module.py" prepare \
             --plan "$QUAL_ROOT/control/tools/bazel/ci/vs_bitarray_registry_qualification.json" \
-            --plan-sha256 65cb38dc74081e2f69528471b0f2819e000a5f569060a08e856c0630f553be32 \
+            --plan-sha256 c1faf7debe713d90cda657fc7c2a2e8288656ae234f006d8dc9c5010600aebc7 \
             --source "$QUAL_ROOT/source" --native "$QUAL_ROOT/native" --registry "$QUAL_ROOT/registry" \
             --scratch "$QUAL_ROOT/scratch" \
             --archives "$QUAL_ROOT/inputs" --mirrors "$QUAL_ROOT/catalog/ci/source_mirrors.cfg"
@@ -5477,7 +5477,7 @@ jobs:
         run: |
           python3 -I -S -B "$QUAL_ROOT/control/tools/bazel/ci/qualify_bitarray_registry_module.py" run \
             --plan "$QUAL_ROOT/control/tools/bazel/ci/vs_bitarray_registry_qualification.json" \
-            --plan-sha256 65cb38dc74081e2f69528471b0f2819e000a5f569060a08e856c0630f553be32 \
+            --plan-sha256 c1faf7debe713d90cda657fc7c2a2e8288656ae234f006d8dc9c5010600aebc7 \
             --source "$QUAL_ROOT/source" --native "$QUAL_ROOT/native" --registry "$QUAL_ROOT/registry" \
             --scratch "$QUAL_ROOT/scratch"
       - name: Verify actual C compile cache reuse and original source restoration
@@ -5493,7 +5493,7 @@ jobs:
         run: |
           python3 -I -S -B "$QUAL_ROOT/control/tools/bazel/ci/qualify_bitarray_registry_module.py" verify \
             --plan "$QUAL_ROOT/control/tools/bazel/ci/vs_bitarray_registry_qualification.json" \
-            --plan-sha256 65cb38dc74081e2f69528471b0f2819e000a5f569060a08e856c0630f553be32 \
+            --plan-sha256 c1faf7debe713d90cda657fc7c2a2e8288656ae234f006d8dc9c5010600aebc7 \
             --source "$QUAL_ROOT/source" --native "$QUAL_ROOT/native" --registry "$QUAL_ROOT/registry" \
             --scratch "$QUAL_ROOT/scratch"
       - name: Retain original qualification reports and completed test results
