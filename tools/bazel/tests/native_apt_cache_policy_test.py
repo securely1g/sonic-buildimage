@@ -460,7 +460,7 @@ class PreparationContractTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError) as caught:
                 namespace["select_tools_cache_transport"](["libarchive-tools"], Path(directory))
             self.assertEqual(caught.exception.returncode, 100)
-            self.assertEqual(json.loads((Path(directory) / "worker-apt-transport-selection.json").read_text()), value)
+            self.assertEqual(json.loads((Path(directory) / "private-worker-apt-transport-selection.json").read_text()), value)
 
     def test_malformed_child_report_does_not_fall_back_to_old_route(self):
         namespace = self.functions({"require", "select_tools_cache_transport"},

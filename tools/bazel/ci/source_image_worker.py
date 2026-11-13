@@ -424,7 +424,7 @@ def prepare_apt_transport(artifacts):
     except Exception as error:
         value = {"status": "error", "error_class": type(error).__name__}
     try:
-        (artifacts / "worker-apt-transport.json").write_text(json.dumps(value, indent=2) + "\n")
+        (artifacts / "private-worker-apt-transport.json").write_text(json.dumps(value, indent=2) + "\n")
     except OSError:
         print("Worker APT transport diagnostic could not be retained", file=sys.stderr)
 
@@ -460,7 +460,7 @@ def prepare_execution_network(artifacts):
         except Exception as error:
             result[context] = {"error_class": type(error).__name__}
     try:
-        (artifacts / "worker-execution-network.json").write_text(json.dumps(result, indent=2) + "\n")
+        (artifacts / "private-worker-execution-network.json").write_text(json.dumps(result, indent=2) + "\n")
     except OSError:
         # The existing APT command remains authoritative even if diagnostics cannot be retained.
         print("Worker execution network diagnostic could not be retained", file=sys.stderr)
@@ -572,7 +572,7 @@ def select_tools_cache_transport(missing, artifacts):
         require(type(value["exit_code"]) is int and -128 <= value["exit_code"] <= 255 and value["exit_code"] != 0,
                 "Invalid optional APT transport exit")
     safe_json(value)
-    (artifacts / "worker-apt-transport-selection.json").write_text(json.dumps(value, indent=2) + "\n")
+    (artifacts / "private-worker-apt-transport-selection.json").write_text(json.dumps(value, indent=2) + "\n")
     if value["status"] == "direct_failed":
         if "exit_code" in value:
             action = "install" if value["completed_actions"] else "update"

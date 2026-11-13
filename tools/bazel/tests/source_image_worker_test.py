@@ -142,7 +142,7 @@ class ImageWorkerTest(unittest.TestCase):
             opened.assert_called_once_with('https://deb.debian.org/debian/dists/trixie/InRelease', timeout=10)
             worker.safe_json(value)
 
-    def test_execution_network_uses_actual_worker_and_sudo_contexts_and_publishes(self):
+    def test_execution_network_uses_actual_worker_and_sudo_contexts_and_stays_private(self):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
             with patch.object(worker, 'output', side_effect=[json.dumps(self.network_result(1000)),
@@ -155,10 +155,10 @@ class ImageWorkerTest(unittest.TestCase):
                 ['sudo', '-n', sys.executable, '-I', '-c', worker.EXECUTION_NETWORK_PROBE]])
             for call in output.call_args_list:
                 self.assertEqual(call.kwargs, {'timeout': 20, 'stderr': subprocess.DEVNULL})
-            path = artifacts / 'worker-execution-network.json'
+            path = artifacts / 'private-worker-execution-network.json'
             self.assertEqual(json.loads(path.read_text()), {'worker': self.network_result(1000), 'sudo': self.network_result(0)})
             worker.publish(SimpleNamespace(artifacts=artifacts))
-            self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+            self.assertFalse((artifacts / 'public' / path.name).exists())
 
     def apt_probe(self):
         namespace = {'__name__': 'fixed_apt_diagnostic_test'}
@@ -292,7 +292,7 @@ class ImageWorkerTest(unittest.TestCase):
                 probe['download'](directory, False)
         kill.assert_not_called()
 
-    def test_apt_transport_receipt_rejects_secrets_and_remains_publishable(self):
+    def test_apt_transport_receipt_rejects_secrets_and_stays_private(self):
         result = {'scope': 'transport_only_no_signature_verification', 'status': 'completed',
                   'config': dict(proxy_entries_present=[False] * 8, srv_enabled=True, srv_default=True,
                                  sandbox_kind='_apt', no_drop_privs=False, method_overrides_present=False,
@@ -305,10 +305,10 @@ class ImageWorkerTest(unittest.TestCase):
                 worker.prepare_apt_transport(artifacts)
             output.assert_called_once_with(['sudo', '-n', sys.executable, '-I', '-c', worker.APT_TRANSPORT_PROBE],
                                            timeout=50, stderr=subprocess.DEVNULL)
-            path = artifacts / 'worker-apt-transport.json'
+            path = artifacts / 'private-worker-apt-transport.json'
             self.assertEqual(json.loads(path.read_text()), result)
             worker.publish(SimpleNamespace(artifacts=artifacts))
-            self.assertEqual(path.read_bytes(), (artifacts / 'public' / path.name).read_bytes())
+            self.assertFalse((artifacts / 'public' / path.name).exists())
             invalid = [dict(result, extra='private-password'), dict(result, error_class='private-password://host'),
                        {'scope': result['scope'], 'status': 'completed'},
                        {**result, 'config': {**result['config'], 'sandbox_kind': 'private-account'}},
@@ -327,7 +327,7 @@ class ImageWorkerTest(unittest.TestCase):
                         subprocess.TimeoutExpired(['private-command'], 20, output='private-token')]
             with patch.object(worker, 'output', side_effect=failures):
                 worker.prepare_execution_network(artifacts)
-            path = artifacts / 'worker-execution-network.json'
+            path = artifacts / 'private-worker-execution-network.json'
             self.assertEqual(json.loads(path.read_text()), {'worker': {'error_class': 'CalledProcessError'},
                                                           'sudo': {'error_class': 'TimeoutExpired'}})
             self.assertNotIn('private-', path.read_text())
@@ -1030,6 +1030,38 @@ class ImageWorkerTest(unittest.TestCase):
             (owner / ".bazelversion").write_text("8.5.1\n")
             with patch.object(worker, "output", side_effect=output), patch.object(worker, "run"), self.assertRaises(ValueError):
                 worker.p4rt_owner_identity(workspace)
+
+    def test_private_transport_diagnostics_stay_out_of_all_public_publishers(self):
+        diagnostics = (
+            "private-worker-execution-network.json",
+            "private-worker-apt-transport.json",
+            "private-worker-apt-transport-selection.json",
+        )
+        for image in ("syncd", "gearbox", "p4rt"):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as directory:
+                artifacts = Path(directory)
+                private = json.dumps({"environment": {"FIXTURE": "private-diagnostic"}}) + "\n"
+                for name in diagnostics:
+                    (artifacts / name).write_text(private)
+                approved = {"status": "passed"}
+                (artifacts / "worker-execution-tools.json").write_text(json.dumps(approved) + "\n")
+                worker.publish(SimpleNamespace(image=image, artifacts=artifacts))
+                public = artifacts / "public"
+                self.assertEqual({path.name for path in public.iterdir()},
+                                 {"worker-execution-tools.json", "build-summary.json"})
+                self.assertEqual(json.loads((public / "worker-execution-tools.json").read_text()), approved)
+                for name in diagnostics:
+                    self.assertEqual((artifacts / name).read_text(), private)
+                    self.assertFalse((public / name).exists())
+
+    def test_public_publishers_still_reject_unredacted_selected_worker_evidence(self):
+        for image in ("syncd", "gearbox", "p4rt"):
+            with self.subTest(image=image), tempfile.TemporaryDirectory() as directory:
+                artifacts = Path(directory)
+                (artifacts / "worker-execution-tools.json").write_text(
+                    json.dumps({"environment": {"FIXTURE": "private-diagnostic"}}) + "\n")
+                with self.assertRaises(ValueError):
+                    worker.publish(SimpleNamespace(image=image, artifacts=artifacts))
 
     def test_p4rt_publication_delegates_before_generic_directory_creation(self):
         from tools.bazel.ci import p4rt_public
