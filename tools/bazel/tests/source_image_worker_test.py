@@ -339,7 +339,8 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(json.loads(path.read_text())['worker'], {'error_class': 'ValueError'})
                 self.assertNotIn('private-', path.read_text())
 
-    def test_execution_network_only_after_apt_failure_and_preserves_original(self):
+    @patch.object(worker, 'select_tools_cache_transport', return_value=False)
+    def test_execution_network_only_after_apt_failure_and_preserves_original(self, _transport):
         update = ['sudo', '-n', 'apt-get', '-o', 'Acquire::EnableSrvRecords=false', 'update']
         install = ['sudo', '-n', 'env', 'DEBIAN_FRONTEND=noninteractive', 'apt-get',
                    '-o', 'Acquire::EnableSrvRecords=false', 'install', '-y', '--no-install-recommends', 'libarchive-tools']
@@ -370,7 +371,8 @@ class ImageWorkerTest(unittest.TestCase):
                     self.assertNotIn('private-', stderr.getvalue())
                     self.assertFalse((artifacts / 'worker-execution-tools.json').exists())
 
-    def test_execution_network_is_skipped_when_apt_succeeds_or_tools_exist(self):
+    @patch.object(worker, 'select_tools_cache_transport', return_value=False)
+    def test_execution_network_is_skipped_when_apt_succeeds_or_tools_exist(self, _transport):
         for missing in (False, True):
             with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
                 commands = []
@@ -735,7 +737,8 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertLess(source.index('prepare_tap_fixture(artifacts)'), source.index('prepare_source_downloads('))
         self.assertLess(source.index('prepare_tap_fixture(artifacts)'), source.index('launcher_text('))
 
-    def test_validation_bootstrap_installs_only_missing_execution_tools(self):
+    @patch.object(worker, 'select_tools_cache_transport', return_value=False)
+    def test_validation_bootstrap_installs_only_missing_execution_tools(self, _transport):
         with tempfile.TemporaryDirectory() as directory:
             artifacts = Path(directory)
             def available(tool):

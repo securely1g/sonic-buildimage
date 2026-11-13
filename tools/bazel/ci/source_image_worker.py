@@ -24,6 +24,7 @@ from tools.bazel.ci.source_worker_preflight import (
     POOLS, cpu_limit, measure, select_build_profile, worker_cache_root, worker_matches_pool)
 from tools.bazel.gzip.source_archive import SOURCES
 from tools.bazel.ci.image_worker_receipt import K3S_REMOTE_CACHE_POLICY, K3S_MANAGED_REMOTE_CACHE_POLICY
+from tools.bazel.ci import native_apt_cache_policy
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
@@ -466,16 +467,130 @@ def prepare_execution_network(artifacts):
     prepare_apt_transport(artifacts)
 
 
+APT_OWNED_CACHE_TRANSPORT = '''import errno, json, os, socket, subprocess, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from tools.bazel.ci import native_apt_cache_policy as policy
+
+
+def select_transport():
+    packages = json.loads(sys.argv[2])
+    policy.require(type(packages) is list and packages and packages == sorted(set(packages))
+                   and set(packages) <= {"libarchive-tools", "gdb", "binutils"})
+    proof = policy.validate_report(policy.inspect())
+    result = {"schema": 1, "status": "not_selected", "policy": proof, "completed_actions": []}
+    if proof["status"] != "eligible":
+        return result
+    # The installed endpoint must match the exact reviewed owner before this
+    # bounded numeric-IP connection. There is no HTTP request or alternate URL.
+    address = policy.verified_cache_address()
+    connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    connection.settimeout(3)
+    try:
+        connection.connect(address)
+    except OSError as error:
+        if isinstance(error, TimeoutError) or error.errno == errno.ETIMEDOUT:
+            result["cache_connection"] = "timeout"
+        else:
+            result["cache_connection"] = {errno.ECONNREFUSED: "refused", errno.ENETUNREACH: "network_unreachable",
+                                           errno.EHOSTUNREACH: "host_unreachable"}.get(error.errno, "other_error")
+    else:
+        result["cache_connection"] = "reachable"
+    finally:
+        connection.close()
+    if result["cache_connection"] in {"reachable", "other_error"}:
+        return result
+    commands = [("update", ["-o", "APT::Update::Error-Mode=any", "update"]),
+                ("install", ["install", "-y", "--no-install-recommends", *packages])]
+    try:
+        # Only this invocation uses fresh Debian indexes and package downloads.
+        # Keep the system's installed-package database and signing trust intact.
+        with tempfile.TemporaryDirectory(prefix="sonic-native-tools-", dir="/tmp") as directory:
+            os.chmod(directory, 0o755)
+            for name in ("sources", "lists", "archives"):
+                os.mkdir(os.path.join(directory, name), 0o755)
+                os.chmod(os.path.join(directory, name), 0o755)
+            options = ["-o", "Acquire::EnableSrvRecords=false", "-o", "Acquire::Retries=0",
+                       "-o", "Acquire::http::Timeout=10", "-o", "Acquire::https::Timeout=10",
+                       *policy.DIRECT_OPTIONS,
+                       "-o", "Dir::Etc::sourcelist=" + str(policy.SOURCE),
+                       "-o", "Dir::Etc::sourceparts=" + os.path.join(directory, "sources"),
+                       "-o", "Dir::State::lists=" + os.path.join(directory, "lists"),
+                       "-o", "Dir::Cache::archives=" + os.path.join(directory, "archives"),
+                       "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache="]
+            for action, arguments in commands:
+                policy.require(policy.validate_report(policy.inspect()) == proof)
+                policy.require(not os.listdir(os.path.join(directory, "sources")))
+                # Bound the ordinary APT process group without changing host policy.
+                subprocess.run(["/usr/bin/timeout", "--signal=TERM", "--kill-after=10s", "300s",
+                                "/usr/bin/apt-get", *options, *arguments], check=True, stdin=subprocess.DEVNULL,
+                               stdout=sys.stderr, env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+                result["completed_actions"].append(action)
+            result["status"] = "direct_success"
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        result["status"] = "direct_failed"
+        result["error_class"] = type(error).__name__
+        if isinstance(error, subprocess.CalledProcessError):
+            result["exit_code"] = error.returncode
+    return result
+
+
+if __name__ == "__main__":
+    print(json.dumps(select_transport(), sort_keys=True))
+'''
+
+
+def select_tools_cache_transport(missing, artifacts):
+    if selected_worker_pool() != "sonic-slave-container-k3s" or not native_apt_cache_policy.proxy_environment_absent(os.environ):
+        return False
+    raw = output(["sudo", "-n", sys.executable, "-I", "-S", "-B", "-c", APT_OWNED_CACHE_TRANSPORT,
+                  str(ROOT), json.dumps(missing)], timeout=660)
+    require(len(raw) <= 16384, "Oversized optional APT transport report")
+    value = json.loads(raw)
+    require(type(value) is dict and set(value) <= {"schema", "status", "policy", "completed_actions",
+            "cache_connection", "error_class", "exit_code"} and value["schema"] == 1 and
+            value["status"] in {"not_selected", "direct_success", "direct_failed"}, "Invalid optional APT transport report")
+    native_apt_cache_policy.validate_report(value["policy"])
+    require(value["completed_actions"] in ([], ["update"], ["update", "install"]), "Invalid optional APT transport actions")
+    if "cache_connection" in value:
+        require(value["cache_connection"] in {"timeout", "refused", "network_unreachable", "host_unreachable",
+                                              "reachable", "other_error"}, "Invalid optional APT connection result")
+    if value["status"] == "not_selected":
+        require(value["completed_actions"] == [] and (
+                (value["policy"]["status"] == "not_eligible" and "cache_connection" not in value) or
+                (value["policy"]["status"] == "eligible" and value.get("cache_connection") in {"reachable", "other_error"})),
+                "Ambiguous optional APT transport selection")
+    if value["status"] in {"direct_success", "direct_failed"}:
+        require(value["policy"]["status"] == "eligible" and value.get("cache_connection") in
+                {"timeout", "refused", "network_unreachable", "host_unreachable"}, "Invalid optional APT transport admission")
+    if value["status"] == "direct_success":
+        require(value["completed_actions"] == ["update", "install"] and "error_class" not in value and
+                "exit_code" not in value, "Incomplete optional APT transport")
+    if "error_class" in value:
+        require(type(value["error_class"]) is str and re.fullmatch("[A-Za-z][A-Za-z0-9_]{0,63}", value["error_class"]),
+                "Invalid optional APT transport error")
+    if "exit_code" in value:
+        require(type(value["exit_code"]) is int and -128 <= value["exit_code"] <= 255 and value["exit_code"] != 0,
+                "Invalid optional APT transport exit")
+    safe_json(value)
+    (artifacts / "worker-apt-transport-selection.json").write_text(json.dumps(value, indent=2) + "\n")
+    if value["status"] == "direct_failed":
+        if "exit_code" in value:
+            action = "install" if value["completed_actions"] else "update"
+            raise subprocess.CalledProcessError(value["exit_code"], ["apt-get", *native_apt_cache_policy.DIRECT_OPTIONS, action])
+        raise RuntimeError("Owned optional APT transport failed before completion")
+    return value["status"] == "direct_success"
+
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
     packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
         try:
-            run(["sudo", "-n", "apt-get", "-o", "Acquire::EnableSrvRecords=false", "update"])
-            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get",
-                 "-o", "Acquire::EnableSrvRecords=false", "install", "-y",
-                 "--no-install-recommends", *missing])
+            if not select_tools_cache_transport(missing, artifacts):
+                run(["sudo", "-n", "apt-get", "-o", "Acquire::EnableSrvRecords=false", "update"])
+                run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get",
+                     "-o", "Acquire::EnableSrvRecords=false", "install", "-y",
+                     "--no-install-recommends", *missing])
         except subprocess.CalledProcessError:
             try:
                 prepare_execution_network(artifacts)
