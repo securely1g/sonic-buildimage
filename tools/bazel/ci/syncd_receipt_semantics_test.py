@@ -25,13 +25,16 @@ def fixture():
     public = {'status': 'built', 'architecture': 'amd64', 'revision': SOURCE,
               'tested_revision_parents': ['b' * 40], 'artifacts': artifacts}
     profile = dict(semantics.BUILD_PROFILE)
+    profile.update(name='two_actions', status='pilot',
+                   minimum_memory_bytes=20 * 1024**3, minimum_cpu=4,
+                   measured_memory_limit_bytes=20 * 1024**3, measured_cpu_limit=4.0)
     memory = {'limit': str(20 * 1024**3), 'events': dict.fromkeys(('oom', 'oom_kill', 'oom_group_kill'), 0)}
     docs = {'public-receipt.json': public,
             'worker.json': {'status': 'prepared', 'image': 'syncd', 'source_revision': SOURCE,
                             'architecture': 'amd64', 'distribution': 'trixie', 'docker_network': 'none',
                             'cache_mode': 'persistent_worker_local', 'build_profile': profile},
             'worker-preflight.json': {'status': 'passed', 'checks': {'bounded_resources': True},
-                'build_profile': profile, 'facts': {'memory_limit_bytes': 20 * 1024**3, 'cpu_limit': 4},
+                'build_profile': profile, 'facts': {'memory_limit_bytes': 20 * 1024**3, 'cpu_limit': 4, 'cpu_max': '400000 100000'},
                 'image_build_executed': False, 'deb_generation_executed': False},
             'worker-tap.json': {'status': 'passed', 'private_network_namespace': True,
                                'tap_created_and_closed': True, 'device_major': 10, 'device_minor': 200},

@@ -343,7 +343,7 @@ class ScopedWorkflowRoutingTest(unittest.TestCase):
                         self.assertEqual(retained, produced)
                         self.assertEqual(retained.read_text(), '{"retained":"original-context"}\n')
 
-    def test_only_pr206_narrows_existing_architecture_matrices(self):
+    def test_pr206_and_parent_pr196_narrow_the_four_shared_matrices(self):
         seen = 0
         for filename in ("bazel-oci.yml", "bazel-base-images.yml", "runtime-image-validation.yml"):
             for job in jobs(ROOT / ".github/workflows" / filename).values():
@@ -357,7 +357,8 @@ class ScopedWorkflowRoutingTest(unittest.TestCase):
                 self.assertEqual(len(amd64), 1)
                 for event, repo, number, expected in (
                     ("pull_request", "securely1g/sonic-buildimage", 206, amd64),
-                    ("pull_request", "securely1g/sonic-buildimage", 196, both),
+                    ("pull_request", "securely1g/sonic-buildimage", 196, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 201, both),
                     ("pull_request", "example/sonic-buildimage", 206, both),
                     ("workflow_dispatch", "securely1g/sonic-buildimage", 206, both),
                     ("push", "securely1g/sonic-buildimage", 206, both),
@@ -399,6 +400,91 @@ class ScopedWorkflowRoutingTest(unittest.TestCase):
                                      ["ubuntu-24.04"] if variation else ["sonic-slave-container-k3s"])
                     self.assertEqual(self.evaluate(expressions["container"], values),
                                      original_container if variation else "")
+
+    def test_only_pr196_narrows_existing_architecture_matrices(self):
+        seen = 0
+        for filename in ('bazel-oci.yml', 'bazel-base-images.yml', 'runtime-image-validation.yml', 'bazel-eventd.yml', 'bazel-supervisor-rust.yml', 'bazel-yang-models.yml', 'bazel-libteam.yml'):
+            for job in jobs(ROOT / ".github/workflows" / filename).values():
+                header = job.split("    steps:\n", 1)[0]
+                if "include: >-" not in header or "github.event.pull_request.number == 196" not in header:
+                    continue
+                expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
+                both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
+                amd64 = [row for row in both if row.get("architecture", row.get("debian_arch", row.get("arch"))).lower() == "amd64"]
+                self.assertEqual(len(both), 2)
+                self.assertEqual(len(amd64), 1)
+                for event, repo, number, expected in (
+                    ("pull_request", "securely1g/sonic-buildimage", 196, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 201, both),
+                    ("pull_request", "example/sonic-buildimage", 196, both),
+                    ("workflow_dispatch", "securely1g/sonic-buildimage", 196, both),
+                    ("push", "securely1g/sonic-buildimage", 196, both),
+                ):
+                    with self.subTest(workflow=filename, event=event, repository=repo, number=number):
+                        self.assertEqual(self.evaluate(expression, {
+                            "github.event_name": event, "github.repository": repo,
+                            "github.event.pull_request.number": number,
+                        }), expected)
+                seen += 1
+        self.assertEqual(seen, 8)
+
+    def test_receipt_metadata_writer_and_uploader_share_the_selected_paths(self):
+        with tempfile.TemporaryDirectory(prefix="receipt request workspace ") as temporary:
+            root = Path(temporary)
+            for layout in ("fresh-child", "hosted"):
+                workspace = root / layout / "source"
+                scratch = root / layout / "scratch"
+                values = {"env.SONIC_RECEIPT_WORKSPACE": str(workspace),
+                          "env.SONIC_RECEIPT_SCRATCH": str(scratch)}
+
+                def scalar(block, key, indent=8):
+                    match = re.search(r"^" + " " * indent + re.escape(key) +
+                                      r": ([^\n]*)$", block, re.MULTILINE)
+                    self.assertIsNotNone(match, (key, block.splitlines()[0]))
+                    return match[1]
+
+                def expand(value):
+                    return re.sub(r"\$\{\{ (.*?) \}\}",
+                                  lambda match: values[match[1]], value)
+
+                def argument(block, option):
+                    command = shell(block)
+                    if command.startswith('"'):
+                        command = json.loads(command)
+                    value = re.search(r"--" + option + r' "([^"\n]+)"', command)[1]
+                    return Path(value.replace("$SONIC_RECEIPT_SCRATCH", str(scratch)))
+
+                for family in NativeFamilyJobsTest.receipt_families:
+                    blocks = step_blocks(jobs()[family + "_native"])
+                    boundary = next(i for i, block in enumerate(blocks) if block.startswith(
+                        "      - name: Allocate source-build space on this disposable runner"))
+                    self.assertGreaterEqual(boundary, 9)
+                    blocks = blocks[:boundary]
+                    request = next(x for x in blocks if re.search(r"(?m)^        id: " + family + "_request$", x))
+                    discover = next(x for x in blocks if re.search(r"(?m)^        id: " + family + "_acceptance$", x))
+                    verify = next(x for x in blocks if x.startswith("      - name: Verify all original "))
+                    uploads = [x for x in blocks if "uses: actions/upload-artifact@" in x and
+                               scalar(x, "if").startswith("env." + family.upper() + "_WORKER_RECEIPT == 'true'")]
+                    downloads = [x for x in blocks if "uses: actions/download-artifact@" in x and
+                                 scalar(x, "if").startswith("env." + family.upper() + "_WORKER_RECEIPT == 'true'")]
+                    with self.subTest(family=family, layout=layout):
+                        for step in (request, discover, verify):
+                            self.assertEqual(Path(expand(scalar(step, "working-directory"))), workspace)
+                        request_dir = argument(request, "directory")
+                        self.assertEqual(request_dir, argument(discover, "directory"))
+                        self.assertEqual(request_dir, argument(verify, "directory"))
+                        output = argument(verify, "output")
+                        produced = (request_dir / "request.json", output)
+                        for target in produced:
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_text('{"fixture":"original-metadata"}\n')
+                        retained = {Path(expand(scalar(x, "path", 10))) for x in uploads}
+                        self.assertEqual(retained, set(produced))
+                        for target in retained:
+                            self.assertEqual(target.read_text(), '{"fixture":"original-metadata"}\n')
+                        self.assertEqual({Path(expand(scalar(x, "path", 10))) for x in downloads},
+                                         {request_dir, argument(verify, "public")})
+
 
 
 class BazeliskBootstrapTest(unittest.TestCase):
@@ -1170,6 +1256,10 @@ class RootLockFailureEvidenceTest(unittest.TestCase):
 
                 with mock.patch.object(public_artifacts, 'dependency_json', side_effect=change_after_validation):
                     self.rejected(code, workspace, destination)
+
+
+
+
 
 
 if __name__ == "__main__":

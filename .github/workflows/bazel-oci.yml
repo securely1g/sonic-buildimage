@@ -235,11 +235,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PR206 is AMD64-only; other PRs and events retain the existing matrix.
+        # PR196 and PR206 are AMD64-only; other PRs/events retain this matrix.
         include: >-
           ${{ fromJSON(
             github.repository == 'securely1g/sonic-buildimage' &&
-            github.event_name == 'pull_request' && github.event.pull_request.number == 206 &&
+            github.event_name == 'pull_request' &&
+            (github.event.pull_request.number == 196 || github.event.pull_request.number == 206) &&
             '[{"name":"AMD64","architecture":"amd64","bazelisk_version":"","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":300}]' ||
             '[{"name":"AMD64","architecture":"amd64","bazelisk_version":"","machine":"x86_64","runner":"ubuntu-24.04","platform":"x86_64_trixie","disk_cache":"swss-layer-amd64","timeout":300},{"name":"ARM64","architecture":"arm64","bazelisk_version":"1.29.0","machine":"aarch64","runner":"ubuntu-24.04-arm","platform":"aarch64_trixie","disk_cache":"buildimage-gzip-arm64","timeout":60}]'
           ) }}

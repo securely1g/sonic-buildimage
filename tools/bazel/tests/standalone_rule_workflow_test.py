@@ -99,7 +99,12 @@ class StandaloneRuleWorkflowTest(unittest.TestCase):
         self.assertIn("persist-credentials: false", checkout)
         self.assertIn("sparse-checkout: ci/github_sources.py", checkout)
         self.assertNotIn("github_sources/", checkout)
-        self.assertIn("architecture: [amd64, arm64]", job)
+        header = job.split("    steps:\n", 1)[0]
+        row_sets = [json.loads(value) for value in re.findall(r"'(\[\{.*?\}\])'", header)]
+        self.assertEqual(len(row_sets), 2)
+        self.assertEqual(row_sets[0], [row for row in row_sets[1] if row["architecture"] == "amd64"])
+        self.assertEqual({row["architecture"] for row in row_sets[1]}, {"amd64", "arm64"})
+        self.assertTrue(all(row["distribution"] == "trixie" for row in row_sets[1]))
         self.assertIn("bazelisk-version: 1.29.0", job)
         self.assertIn("disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}", job)
         self.assertIn('cache-version: "8.5.1"', job)
