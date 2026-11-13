@@ -139,5 +139,95 @@ class GearboxReceiptTest(ImageReceiptTest):
     selected = 'gearbox'
 
 
+class RemoteOnlyReceiptTest(unittest.TestCase):
+    def remote_worker(self):
+        return {"schema": 2, "cache_mode": "remote_only_run_attempt",
+                "remote_cache": copy.deepcopy(receipt.K3S_REMOTE_CACHE_POLICY)}
+
+    def test_remote_variant_is_explicit_and_k3s_only(self):
+        value = self.remote_worker()
+        self.assertEqual(receipt.verify_worker_cache(value, "sonic-slave-container-k3s"),
+                         "separate_remote_only_run_attempt")
+        with self.assertRaisesRegex(ValueError, "Remote-only"):
+            receipt.verify_worker_cache(value, "sonic-slave-container-dpool")
+
+    def test_legacy_worker_and_owner_modes_are_preserved(self):
+        for pool in ("sonic-slave-container-dpool", "sonic-slave-container-k3s"):
+            for value in ({"schema": 1, "cache_mode": "persistent_worker_local"},
+                          {"cache_mode": "persistent_worker_local"}):
+                original = copy.deepcopy(value)
+                self.assertEqual(receipt.verify_worker_cache(value, pool), "separate_persistent_worker_local")
+                self.assertEqual(value, original)
+
+    def test_new_remote_policy_rejects_changed_origin_helper_probe_or_local_state(self):
+        for key, changed in (("endpoint", "https://different.invalid"), ("credential_helper_sha256", "0" * 64),
+                             ("authenticated_probe", "failed"), ("action_disk_cache", "enabled"),
+                             ("working_state", "persistent"), ("extra", "value")):
+            value = self.remote_worker(); value["remote_cache"][key] = changed
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "Remote-only"):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+        for changes in ({"schema": 3}, {"schema": True}, {"cache_mode": "persistent_worker_local"},
+                        {"remote_cache": None}):
+            value = {**self.remote_worker(), **changes}
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+
+    def test_old_schema_cannot_claim_the_new_policy_or_mode(self):
+        for value in ({"schema": 1, "cache_mode": "remote_only_run_attempt"},
+                      {**self.remote_worker(), "schema": 1, "cache_mode": "persistent_worker_local"}):
+            with self.assertRaisesRegex(ValueError, "Historical"):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+
+
+class ManagedCacheReceiptTest(unittest.TestCase):
+    def worker(self, endpoint="https://cache.example.invalid/", host="cache.example.invalid"):
+        return {"schema": 3, "cache_mode": "remote_only_run_attempt", "remote_cache": {
+            **receipt.K3S_MANAGED_REMOTE_CACHE_POLICY, "endpoint": endpoint, "host": host}}
+
+    def test_managed_origin_is_recorded_without_a_hostname_constant(self):
+        for endpoint, host in (("https://cache.example.invalid/", "cache.example.invalid"),
+                               ("https://replacement.example.invalid:8443/", "replacement.example.invalid")):
+            value = self.worker(endpoint, host); original = copy.deepcopy(value)
+            self.assertEqual(receipt.verify_worker_cache(value, "sonic-slave-container-k3s"),
+                             "separate_remote_only_run_attempt")
+            self.assertEqual(value, original)
+            self.assertNotIn("authenticated_probe", value["remote_cache"])
+
+    def test_managed_variant_requires_k3s_and_cannot_claim_authentication(self):
+        with self.assertRaisesRegex(ValueError, "Managed"):
+            receipt.verify_worker_cache(self.worker(), "sonic-slave-container-dpool")
+        value = self.worker(); value["remote_cache"]["authenticated_probe"] = "passed"
+        with self.assertRaisesRegex(ValueError, "Managed"):
+            receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+
+    def test_managed_policy_refuses_changed_owner_local_cache_or_probe(self):
+        for key, changed in (("provider", "legacy_environment"), ("credential_helper_path", "/different/helper.py"),
+                             ("credential_helper_sha256", "0" * 64), ("access_probe", "failed"),
+                             ("action_disk_cache", "enabled"), ("repository_cache", "enabled"),
+                             ("working_state", "persistent")):
+            value = self.worker(); value["remote_cache"][key] = changed
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "Managed"):
+                receipt.verify_worker_cache(value, "sonic-slave-container-k3s")
+
+    def test_managed_origin_refuses_credentials_paths_queries_and_wrong_scope(self):
+        for endpoint, host in (("http://cache.example.invalid/", "cache.example.invalid"),
+                ("https://user:private@cache.example.invalid/", "cache.example.invalid"),
+                ("https://cache.example.invalid/data", "cache.example.invalid"),
+                ("https://cache.example.invalid/?key=private", "cache.example.invalid"),
+                ("https://cache.example.invalid/#private", "cache.example.invalid"),
+                ("https://cache.example.invalid/", "different.invalid"),
+                ("https://cache.example.invalid:70000/", "cache.example.invalid"), (True, "cache.example.invalid"),
+                ("https://cache.invalid/\n", "cache.invalid"), ("\thttps://cache.invalid/", "cache.invalid"),
+                ("https://cache.invalid/\x7f", "cache.invalid"), ("https://cache.invalid/\\", "cache.invalid"),
+                ("https://cache.invalid/?", "cache.invalid"), ("https://cache.invalid/#", "cache.invalid"),
+                ("https://cache.invalid:/", "cache.invalid"), ("https://bad host/", "bad host"),
+                ("https://bad_host/", "bad_host"), ("https://-cache.invalid/", "-cache.invalid"),
+                ("https://cache-.invalid/", "cache-.invalid"), ("https://cache..invalid/", "cache..invalid"),
+                ("https://cache.invalid./", "cache.invalid."), ("https://caf\u00e9.invalid/", "caf\u00e9.invalid"),
+                ("https://[::1]/", "::1"), ("https://" + "x" * 64 + ".invalid/", "x" * 64 + ".invalid")):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                receipt.verify_worker_cache(self.worker(endpoint, host), "sonic-slave-container-k3s")
+
+
 if __name__ == '__main__':
     unittest.main()

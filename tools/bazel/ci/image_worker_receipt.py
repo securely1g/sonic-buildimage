@@ -37,6 +37,25 @@ worker-build.json worker-execution-tools.json worker-incremental.json worker-loa
 worker-input-run.json worker-owner-tests.json worker-preflight.json
 worker-prepare-owner-runtime.json worker-prepare-owner.json worker-source-downloads.json
 worker-validate.json worker.json'''.split())
+# A distinct worker-record schema; original schema-1 receipts remain unchanged.
+K3S_REMOTE_CACHE_POLICY = {
+    'endpoint': 'https://lgh-bazel-87263989.eastus.cloudapp.azure.com',
+    'credential_helper_sha256': '9e44e83bccea514eaeea0a162d67295bb00d9be1cca764681b967380c7e0f5b0',
+    'authenticated_probe': 'passed',
+    'action_disk_cache': 'disabled',
+    'working_state': 'run_attempt',
+}
+
+
+K3S_MANAGED_REMOTE_CACHE_POLICY = {
+    'credential_helper_path': '/opt/sonic-native-runtime/cache_credentials.py',
+    'credential_helper_sha256': '32ea5af5245984f9fac59f5507bc1a1b6d3272968d3b2edd52b0a03f82b1dc49',
+    'provider': 'host_managed_native_runtime',
+    'repository_cache': 'disabled',
+    'access_probe': 'passed',
+    'action_disk_cache': 'disabled',
+    'working_state': 'run_attempt',
+}
 STEPS = (
     'Prepare private Docker and persistent worker caches',
     'Prepare the P4RT Common SDK and sealed owner TARs',
@@ -479,6 +498,51 @@ def bundle(args):
     output(acceptance_name=acceptance_name(request))
 
 
+def verify_managed_cache_policy(value):
+    """Validate a recorded public origin; selection belongs to the installed owner."""
+    require(type(value) is dict and set(value) == set(K3S_MANAGED_REMOTE_CACHE_POLICY) | {"endpoint", "host"} and
+            all(value.get(key) == expected for key, expected in K3S_MANAGED_REMOTE_CACHE_POLICY.items()),
+            "Managed remote-only worker cache policy differs")
+    endpoint, host = value["endpoint"], value["host"]
+    require(isinstance(endpoint, str) and 0 < len(endpoint) <= 2048 and isinstance(host, str) and 0 < len(host) <= 253,
+            "Invalid managed cache public origin")
+    # Public receipt syntax matches the pinned owner's origin(configuration=True).
+    # Selection and all private configuration parsing still belong to that owner.
+    require("\\" not in endpoint and not any(character.isspace() or ord(character) < 32 or
+            ord(character) == 127 for character in endpoint), "Invalid managed cache public origin")
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        valid = (parsed.scheme == "https" and parsed.hostname == host and parsed.username is None and
+                 parsed.password is None and parsed.path == "/" and "?" not in endpoint and "#" not in endpoint and
+                 not parsed.netloc.endswith(":") and parsed.netloc.isascii() and
+                 all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                     for label in host.split(".")) and (parsed.port is None or 1 <= parsed.port <= 65535))
+    except ValueError:
+        valid = False
+    require(valid, "Invalid managed cache public origin")
+    safe_json(value)
+
+def verify_worker_cache(worker, pool):
+    """Return the exact owner-cache profile for a supported worker-record schema."""
+    schema = worker.get('schema', 1)  # Historical readers did not require this field.
+    require(type(schema) is int and schema in (1, 2, 3), 'Unknown worker-record schema')
+    if schema == 3:
+        require(pool == 'sonic-slave-container-k3s' and
+                worker.get('cache_mode') == 'remote_only_run_attempt',
+                'Managed remote-only worker cache policy differs')
+        verify_managed_cache_policy(worker.get('remote_cache'))
+        return 'separate_remote_only_run_attempt'
+    if schema == 2:
+        require(pool == 'sonic-slave-container-k3s' and
+                worker.get('cache_mode') == 'remote_only_run_attempt' and
+                worker.get('remote_cache') == K3S_REMOTE_CACHE_POLICY,
+                'Remote-only worker cache policy differs')
+        return 'separate_remote_only_run_attempt'
+    require(worker.get('cache_mode') == 'persistent_worker_local' and
+            'remote_cache' not in worker, 'Historical worker cache policy differs')
+    return 'separate_persistent_worker_local'
+
+
 def verify_evidence(directory, request, provenance, contract):
     """Pure JSON verification; callers separately establish the normal checkout."""
     require(__debug__, 'Receipt verification requires Python assertions enabled')
@@ -513,10 +577,11 @@ def verify_evidence(directory, request, provenance, contract):
     load = lambda name: read_evidence(directory / name, request)
     raw = lambda name: (directory / name).read_bytes()
     worker, preflight = load('worker.json'), load('worker-preflight.json')
+    owner_cache_mode = verify_worker_cache(worker, pool)
     require(worker['source_revision'] == request['merge'] and worker['dispatcher_revision'] == request['controller']
             and worker['review_catalog'] == request['catalog'] and worker['image'] == image(request)
             and worker['worker'] == job['runner_name'] and worker['architecture'] == 'amd64'
-            and worker['distribution'] == 'trixie' and worker['cache_mode'] == 'persistent_worker_local'
+            and worker['distribution'] == 'trixie'
             and worker['docker_network'] == 'none', 'Worker receipt identity differs')
     require(preflight['status'] == 'passed' and preflight['checks'] and
             all(v is True for v in preflight['checks'].values()) and
@@ -524,7 +589,7 @@ def verify_evidence(directory, request, provenance, contract):
             'Worker preflight did not pass')
     profile = verify_worker_profile(worker, preflight, job, pool)
     owner_profile = {'revision': request.get('owner'), 'bazel': '6.4.0', 'jobs': 1, 'jvm_heap_gib': 2,
-                     'scheduler_memory_mb': 4096, 'cache_mode': 'separate_persistent_worker_local'}
+                     'scheduler_memory_mb': 4096, 'cache_mode': owner_cache_mode}
     if image(request) == 'p4rt':
         require(worker['owner_profile'] == owner_profile, 'Owner resource profile differs')
     for phase in phases(request):
