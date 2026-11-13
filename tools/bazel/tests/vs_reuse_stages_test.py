@@ -211,6 +211,17 @@ class AssemblyCheckoutTest(unittest.TestCase):
         self.revision, self.tree = "a" * 40, "b" * 40
         self.native = SimpleNamespace(source_check=mock.Mock(), run=mock.Mock())
         self.observe()
+        # Reuse the existing held-file reader with portable worker metadata.
+        fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_gid", "st_nlink",
+                  "st_size", "st_mtime_ns", "st_ctime_ns")
+        original_fstat, original_lstat = os.fstat, Path.lstat
+        def worker(row):
+            return SimpleNamespace(**{name: (1000 if name == "st_uid" else getattr(row, name))
+                                      for name in fields})
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(mock.patch.object(stages.os, "fstat", side_effect=lambda fd: worker(original_fstat(fd))))
+        stack.enter_context(mock.patch.object(Path, "lstat", new=lambda path: worker(original_lstat(path))))
 
     def observe(self, *, tree=None, submodules=b"", untracked=b""):
         self.native.run.side_effect = [
@@ -231,6 +242,47 @@ class AssemblyCheckoutTest(unittest.TestCase):
         self.assertEqual(result["untracked_inputs"], 2)
         self.assertEqual(self.native.source_check.call_args_list,
                          [mock.call(self.root, self.revision), mock.call(self.root, self.revision)])
+
+    def test_exact_bootstrap_data_requires_its_frozen_bytes(self):
+        name = stages.BOOTSTRAP_INPUT
+        original = b"retained bootstrap input fixture, not a Debian package\n"
+        target = self.root / name
+        target.parent.mkdir(parents=True)
+        target.write_bytes(original)
+        record = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
+        self.observe(untracked=name.encode() + b"\0")
+        result = self.verify(allowed_untracked=[name], bootstrap_input=record)
+        self.assertEqual(result["untracked_inputs"], 1)
+        self.assertFalse(result["native_acceptance_or_assembly"])
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self.native.source_check.call_count, 2)
+        for wrong in (None, {**record, "sha256": "0" * 64}, {**record, "bytes": len(original) + 1}):
+            with self.subTest(wrong=wrong), self.assertRaisesRegex(ValueError, "bootstrap"):
+                self.verify(allowed_untracked=[name], bootstrap_input=wrong)
+
+    def test_bootstrap_exception_cannot_allow_adjacent_ignored_inputs(self):
+        prefix = "src/sonic-build-hooks/buildinfo/"
+        for name in (prefix + "source.py", prefix + "other.deb", prefix + "config/buildinfo.config",
+                     stages.BOOTSTRAP_INPUT + ".extra"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "artifact data"):
+                self.verify(allowed_untracked=[name])
+        self.native.source_check.assert_not_called()
+
+    def test_bootstrap_original_must_be_regular_and_not_a_symlink(self):
+        name = stages.BOOTSTRAP_INPUT
+        target = self.root / name
+        target.parent.mkdir(parents=True)
+        original = self.root / "original-input"
+        original.write_bytes(b"original")
+        record = {"bytes": 8, "sha256": hashlib.sha256(b"original").hexdigest()}
+        target.symlink_to(original)
+        with self.assertRaisesRegex(ValueError, "Symlink"):
+            self.verify(allowed_untracked=[name], bootstrap_input=record)
+        target.unlink()
+        os.mkfifo(target)
+        with self.assertRaisesRegex(ValueError, "type or bound"):
+            self.verify(allowed_untracked=[name], bootstrap_input=record)
+        self.native.source_check.assert_not_called()
 
     def test_core_dirty_or_wrong_head_failure_stops_before_other_observations(self):
         self.native.source_check.side_effect = RuntimeError("dirty or wrong HEAD")

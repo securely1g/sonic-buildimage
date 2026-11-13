@@ -26,6 +26,7 @@ SETTINGS = frozenset((
 REVIEWABLE_DIFFERENCES = {
     ".gitmodules": "non-kernel-source-url",
     "Makefile.work": "reuse-only-consumer",
+    "Makefile.cache": "metadata-only-consumer",
     "build_debian.sh": "reuse-only-consumer",
     "slave.mk": "reuse-only-consumer",
     "rules/linux-kernel.mk": "verify-only-integration",
@@ -35,6 +36,11 @@ REVIEWABLE_DIFFERENCES = {
     "tools/bazel/kernel/.bazelrc": "download-transport",
     "tools/bazel/debian_mirrors.cfg": "download-transport",
 }
+# Only the reviewed guard suppressing cache-directory setup during metadata capture.
+MAKE_CACHE_INVENTORY_GUARD = (
+    "f3af1906f7f236cb4e2ae73873b5db697704c561",
+    "53a2f60d88024e9404a436f67b4676fc1cd24da1",
+)
 PRODUCTION_FIELDS = (
     "kernel_gitlink", "source_tree_sha256", "source_archives", "modules", "launcher",
     "kernel_config",
@@ -126,6 +132,11 @@ def compare_inventories(producer, consumer, reviewed):
     for path in sorted(producer.keys() | consumer.keys()):
         if producer.get(path) != consumer.get(path):
             require(path in REVIEWABLE_DIFFERENCES, "unapproved production input difference: " + path)
+            if path == "Makefile.cache":
+                expected = tuple({"mode": "100644", "type": "blob", "sha": oid}
+                                 for oid in MAKE_CACHE_INVENTORY_GUARD)
+                require((producer.get(path), consumer.get(path)) == expected,
+                        "cache change is not the reviewed metadata-only guard")
             actual.append({"path": path, "producer": producer.get(path), "consumer": consumer.get(path),
                            "reason": REVIEWABLE_DIFFERENCES[path]})
     require(actual == reviewed, "actual input differences do not match the separately pinned review")

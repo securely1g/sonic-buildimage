@@ -13,7 +13,7 @@ import sys
 # Native source ownership is pinned independently of the consumer checkout.
 # The workflow supplies the immutable consumer head/tree; producer receipts
 # and the actual checkout must agree with that same source context.
-WORKER = "df17080469e74093c373e55522bf5c029d3451fc"
+WORKER = "1e423956afe2cb706c239c8be93c1000bbc7a479"
 CATALOG = "e6ef022c94dd2fdeeac364dfd591f9701cd37c29"
 KERNEL_PRODUCER = "1ea1efba4f9c4c1db52d557f476c79aafaa42991"
 KERNEL_ORIGINALS = {

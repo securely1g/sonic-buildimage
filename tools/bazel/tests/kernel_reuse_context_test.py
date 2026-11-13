@@ -165,6 +165,27 @@ class KernelReuseContextTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "production input"):
             context.compare_inventories({}, {"tools/bazel/kernel/MODULE.bazel": {"sha": "changed"}}, [])
 
+    def test_cache_metadata_guard_requires_exact_bytes_and_a_pinned_review(self):
+        old, new = ({"Makefile.cache": {"mode": "100644", "type": "blob", "sha": oid}}
+                    for oid in context.MAKE_CACHE_INVENTORY_GUARD)
+        review = [{"path": "Makefile.cache", "producer": old["Makefile.cache"],
+                   "consumer": new["Makefile.cache"], "reason": "metadata-only-consumer"}]
+        context.compare_inventories(old, new, review)
+        with self.assertRaisesRegex(ValueError, "pinned review"):
+            context.compare_inventories(old, new, [])
+        for field, value in (("sha", "0" * 40), ("mode", "100755")):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(new)
+                changed["Makefile.cache"][field] = value
+                changed_review = copy.deepcopy(review)
+                changed_review[0]["consumer"] = changed["Makefile.cache"]
+                with self.assertRaisesRegex(ValueError, "reviewed metadata-only guard"):
+                    context.compare_inventories(old, changed, changed_review)
+        with self.assertRaisesRegex(ValueError, "reviewed metadata-only guard"):
+            context.compare_inventories(new, old, [{"path": "Makefile.cache",
+                "producer": new["Makefile.cache"], "consumer": old["Makefile.cache"],
+                "reason": "metadata-only-consumer"}])
+
     def test_original_code_is_not_loaded_before_hash_validation(self):
         path = self.producer / "tools/bazel/kernel/prepare.py"
         path.parent.mkdir(parents=True)

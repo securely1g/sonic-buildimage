@@ -239,15 +239,18 @@ class ConnectedSourceAdmissionTest(unittest.TestCase):
         program = compile(ast.parse(fragment), "<actual-frontend-source-admission>", "exec")
         events = []
         assembly = {"commit": "d" * 40, "tree": "b" * 40}
+        bootstrap = "src/sonic-build-hooks/buildinfo/sonic-build-hooks_1.0_all.deb"
+        bootstrap_record = {"bytes": 12148, "sha256": "e" * 64}
         inventory = {"files": {"target/original-input": {}, "artifacts/original.json": {},
-                                "files/tracked-source": {}}}
+                                "files/tracked-source": {}, bootstrap: bootstrap_record}}
         def guard(native, workspace, **kwargs):
             events.append("source")
             if reject:
                 raise ValueError("fixture dirty source")
             self.assertEqual(kwargs["revision"], assembly["commit"])
             self.assertEqual(kwargs["tree"], assembly["tree"])
-            self.assertEqual(kwargs["allowed_untracked"], ["artifacts/original.json", "target/original-input"])
+            self.assertEqual(kwargs["allowed_untracked"], ["artifacts/original.json", bootstrap, "target/original-input"])
+            self.assertEqual(kwargs["bootstrap_input"], bootstrap_record)
             return {"status": "CHECKOUT_VERIFIED_ONLY"}
         def process(argv, **kwargs):
             events.append("canonical-native-admission")
@@ -258,7 +261,7 @@ class ConnectedSourceAdmissionTest(unittest.TestCase):
                 "assembly": assembly}).encode())
         planner = {"data": lambda *args: inventory, "assembly_domain": lambda value, **context: assembly,
                    "strict_json": json.loads}
-        stages = {"verify_assembly_checkout": guard,
+        stages = {"BOOTSTRAP_INPUT": bootstrap, "verify_assembly_checkout": guard,
                   "planner_command": lambda *args, **kwargs: ["python", "admission"]}
         scope = {"Path": Path, "sys": sys, "os": os, "subprocess": subprocess,
                  "workspace": Path("/fixture/workspace"), "native": object(),

@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 CAP = 256 * 1024
+BOOTSTRAP_INPUT = "src/sonic-build-hooks/buildinfo/sonic-build-hooks_1.0_all.deb"
 POLICIES = ("artifacts/vs/swss-installed-images-policy.json",
             "artifacts/vs/syncd-installed-images-policy.json")
 
@@ -65,7 +66,7 @@ def stable_record(filename, *, json_record=True):
     return body, decode(body) if json_record else None
 
 
-def verify_assembly_checkout(native, workspace, *, revision, tree, allowed_untracked=()):
+def verify_assembly_checkout(native, workspace, *, revision, tree, allowed_untracked=(), bootstrap_input=None):
     """Check the actual checkout before frontend Make or assembly source imports.
 
     The caller supplies the already verified native worker module and runs this
@@ -81,13 +82,27 @@ def verify_assembly_checkout(native, workspace, *, revision, tree, allowed_untra
             "Missing assembly commit or tree")
     admitted = set()
     for name in allowed_untracked:
-        require(type(name) is str and name.startswith(("target/", "artifacts/"))
+        require(type(name) is str and (name.startswith(("target/", "artifacts/")) or name == BOOTSTRAP_INPUT)
                 and not name.endswith(".dep")
                 and not any(c in name for c in "\0\r\n")
                 and not any(part in {"", ".", ".."} for part in name.split("/")),
                 "Only exact artifact data paths may be untracked")
         require(name not in admitted, "Duplicate admitted untracked path")
         admitted.add(name)
+
+    if BOOTSTRAP_INPUT in admitted:
+        require(type(bootstrap_input) is dict and set(bootstrap_input) == {"bytes", "sha256"}
+                and type(bootstrap_input["bytes"]) is int and 0 < bootstrap_input["bytes"] <= CAP
+                and type(bootstrap_input["sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", bootstrap_input["sha256"]),
+                "Existing bootstrap input is not hash-bound")
+        # The vendored buildinfo directory is normally gitignored. Admit only
+        # this original data file, through the existing held regular-file reader.
+        body, _ = stable_record(workspace / BOOTSTRAP_INPUT, json_record=False)
+        require(len(body) == bootstrap_input["bytes"] and digest(body) == bootstrap_input["sha256"],
+                "Existing bootstrap bytes differ from frozen input")
+    else:
+        require(bootstrap_input is None, "Unadmitted bootstrap declaration")
 
     native.source_check(workspace, revision)
 

@@ -198,12 +198,14 @@ inventory_path = Path(os.environ["VS_REUSE_INPUTS"])
 inventory = planner["data"](inventory_path, os.environ["VS_REUSE_INPUTS_SHA256"])
 assembly = planner["assembly_domain"](inventory,
     tested_merge=os.environ["VS_SOURCE_MERGE"], tested_tree=os.environ["VS_SOURCE_TREE"])
-allowed = [name for name in inventory["files"] if name.startswith(("target/", "artifacts/"))]
+allowed = [name for name in inventory["files"]
+           if name.startswith(("target/", "artifacts/")) or name == stages["BOOTSTRAP_INPUT"]]
 if inventory_path.is_relative_to(workspace):
     allowed.append(str(inventory_path.relative_to(workspace)))
 checkout = stages["verify_assembly_checkout"](
     native, workspace, revision=assembly["commit"], tree=assembly["tree"],
-    allowed_untracked=sorted(set(allowed)))
+    allowed_untracked=sorted(set(allowed)),
+    bootstrap_input=inventory["files"].get(stages["BOOTSTRAP_INPUT"]))
 admission = subprocess.run(
     stages["planner_command"]("admission", controller=controller, workspace=workspace,
                              manifest=inventory_path,
