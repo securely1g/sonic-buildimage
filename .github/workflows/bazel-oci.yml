@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, preflight, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -4075,5 +4075,165 @@ jobs:
           path: |
             ${{ steps.paths.outputs.root }}/outputs/legacy/*.json
             ${{ steps.paths.outputs.root }}/outputs/original-artifact-metadata.json
+          if-no-files-found: error
+          retention-days: 30
+  vs_original_socat_comparison:
+    name: Compare three original Socat binaries (K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-socat-binary' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 35
+    concurrency:
+      group: vs-socat-binary-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Require metadata scope and fresh private paths
+        id: paths
+        timeout-minutes: 1
+        env:
+          EXPECTED_WORKER: ${{ runner.name }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_PATHS'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('SOURCE_REVISION', 'REGISTRY_REVISION', 'SOURCE_CI_REQUEST', 'SOURCE_INPUTS_RUN')) or os.environ['REGISTRY_CONSUMER'] != 'none':
+              raise SystemExit('Metadata observation accepts no native or replacement-source inputs')
+          run, attempt, worker = (os.environ[key] for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'EXPECTED_WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', item) for item in (run, attempt)) or worker != os.environ['RUNNER_NAME'] or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected current runner identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve() != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Expected the current private K3s workspace')
+          # Upstream streams the 276 MB ZIP into extraction; bounded decoder/ELF scratch stays below 64 MiB.
+          if shutil.disk_usage(workspace).free < 2 * 1024**3:
+              raise SystemExit('Socat observation requires 2 GiB free temporary storage')
+          name = f'vs-socat-binary-{run}-{attempt}-{worker}'
+          root = workspace / name
+          if os.path.lexists(root):
+              raise SystemExit('Preserve existing metadata observation work')
+          root.mkdir(mode=0o700)
+          for child in ('outputs', 'temporary', 'inputs', 'inspection', 'host-scratch'):
+              (root / child).mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as output:
+              output.write(f'root={root}\ncontrol={name}/control\n')
+          PY_PATHS
+      - name: Checkout the reviewed metadata observers
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          clean: false
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bazel/ci/observe_original_socat.py
+            tools/bazel/ci/observe_vs_host_binaries.py
+            tools/bazel/ci/recover_vs_original_inputs.py
+            tools/bazel/ci/vs_original_binary_artifacts.json
+            tools/bazel/ci/vs_socat_original_binary_comparison.json
+            tools/bazel/tests/observe_original_socat_test.py
+      - name: Verify exact sources and 12 focused Socat fixtures
+        id: sources
+        timeout-minutes: 2
+        env:
+          OBS_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          set -euo pipefail
+          command -v /usr/bin/dpkg-deb /usr/bin/readelf
+          test "$(git -C "$OBS_ROOT/control" -c protocol.allow=never rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$OBS_ROOT/control" -c protocol.allow=never diff --exit-code --ignore-submodules=none HEAD
+          python3 -I -S -B - <<'PY_COPY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['OBS_ROOT'])
+          expected = {
+              'control/tools/bazel/ci/observe_original_socat.py': 'da41bb8bd78caa23aa4ac57ee4a5be63ce4f294647987a5714d66fda2bf11efe',
+              'control/tools/bazel/ci/observe_vs_host_binaries.py': 'ad0af004e1d84ca178798b4d16fee7062275d1d36b1e7dfa8cd61771a271304c',
+              'control/tools/bazel/ci/recover_vs_original_inputs.py': '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5',
+              'control/tools/bazel/ci/vs_original_binary_artifacts.json': '8334736fa50eb466d3d25761e41fc236a62cd11038eb99658821481543c05965',
+              'control/tools/bazel/ci/vs_socat_original_binary_comparison.json': '30696e01cb3b9a1c05bc94cbe42a425d3e2d566322f413feb12762037a6290ba',
+              'control/tools/bazel/tests/observe_original_socat_test.py': 'f79a198d335f941cd7be737a8218fbb52b1aef638cd107a66182278807daa300',
+          }
+          for name, digest in expected.items():
+              source = root / name
+              if not source.is_file() or source.is_symlink():
+                  raise SystemExit('Expected a regular reviewed source file')
+              raw = source.read_bytes()
+              if hashlib.sha256(raw).hexdigest() != digest:
+                  raise SystemExit('Metadata observation source identity differs')
+              relative = Path(name).relative_to(Path(name).parts[0])
+              destination = root / 'inspection' / relative
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              with destination.open('xb') as output:
+                  output.write(raw)
+          plan = json.loads((root / 'inspection/tools/bazel/ci/vs_original_binary_artifacts.json').read_bytes())
+          plan['artifacts'] = [row for row in plan['artifacts'] if row['id'] == 14030424431]
+          if len(plan['artifacts']) != 1:
+              raise SystemExit('Expected exactly the original host artifact')
+          with (root / 'outputs/original-inputs.json').open('x') as output:
+              json.dump(plan, output, indent=2)
+              output.write('\n')
+          PY_COPY
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBS_ROOT/temporary" TMPDIR="$OBS_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B -c 'import sys,unittest; sys.path.insert(0,sys.argv[1]); suite=unittest.defaultTestLoader.loadTestsFromNames(["tools.bazel.tests.observe_original_socat_test"]); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(result.testsRun != 12 or not result.wasSuccessful())' "$OBS_ROOT/inspection"
+      - name: Confirm immutable original artifact metadata
+        id: artifacts
+        timeout-minutes: 5
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8, Node24
+        env:
+          OBS_ROOT: ${{ steps.paths.outputs.root }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('node:fs');
+            const root = process.env.OBS_ROOT;
+            const plan = JSON.parse(fs.readFileSync(root + '/outputs/original-inputs.json', 'utf8'));
+            const retained = [];
+            for (const expected of plan.artifacts) {
+              const response = await github.rest.actions.getArtifact({owner: 'securely1g', repo: 'sonic-buildimage', artifact_id: expected.id});
+              const actual = response.data;
+              if (actual.id !== expected.id || actual.name !== expected.name || actual.digest !== expected.digest || actual.size_in_bytes !== expected.size_in_bytes || actual.expired || actual.workflow_run.id !== expected.workflow_run.id || actual.workflow_run.head_sha !== expected.workflow_run.head_sha) throw new Error('Original artifact identity differs');
+              retained.push(actual);
+            }
+            fs.writeFileSync(root + '/outputs/original-artifact-metadata.json', JSON.stringify(retained, null, 2) + '\n', {flag: 'wx'});
+      - name: Read original host cache objects
+        id: host_download
+        timeout-minutes: 5
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: securely1g/sonic-buildimage
+          github-token: ${{ github.token }}
+          run-id: 43415239936
+          artifact-ids: '14030424431'
+          path: ${{ steps.paths.outputs.root }}/inputs/host
+          digest-mismatch: error
+      - name: Compare only the three original Socat binaries without execution
+        id: observation
+        timeout-minutes: 11
+        env:
+          OBS_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          env -i PATH=/usr/bin:/bin LANG=C.UTF-8 HOME="$OBS_ROOT/temporary" TMPDIR="$OBS_ROOT/temporary" \
+            /usr/bin/python3 -I -S -B "$OBS_ROOT/inspection/tools/bazel/ci/observe_original_socat.py" \
+            --manifest "$OBS_ROOT/inspection/tools/bazel/ci/vs_socat_original_binary_comparison.json" \
+            --artifact "$OBS_ROOT/inputs/host" --scratch "$OBS_ROOT/host-scratch" \
+            --report "$OBS_ROOT/outputs/socat-binary-comparison.json"
+      - name: Retain only the small Socat comparison report
+        if: always() && !cancelled() && steps.sources.outcome == 'success'
+        timeout-minutes: 3
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-socat-binary-comparison-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.paths.outputs.root }}/outputs/*.json
           if-no-files-found: error
           retention-days: 30
