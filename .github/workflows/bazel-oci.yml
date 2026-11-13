@@ -4386,7 +4386,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads(r'{"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":11916,"sha256":"dac71caf20fcd4efd516a7651c8cbeca6f512fe9d894ae1efc10517e3cadee4f"},"tools/bazel/ci/vs_swss_installed_policy_inputs.json":{"bytes":2940,"sha256":"bb96f3430c5c23a777544d361df12651fef1a2b18061129eacaa6a67285f50ce"},"tools/bazel/tests/vs_swss_installed_policy_test.py":{"bytes":7164,"sha256":"f9096e29a999fb94f4ac9158940aaba09d6cc515dea68e5a6a20a73f3287ce89"}}')
+          expected = json.loads(r'{"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":11922,"sha256":"86c7a047da513ad05bd3214a62c8b486d8990f4baad24f9991d070a797a30276"},"tools/bazel/ci/vs_swss_installed_policy_inputs.json":{"bytes":3012,"sha256":"cc91fd8533d31777bfc38fa10ce75dd5408713b6a0cec140c766b9c8ab9ce696"},"tools/bazel/tests/vs_swss_installed_policy_test.py":{"bytes":11547,"sha256":"9a925942fb08f5a8e7e8bfa98a1068b3cc92db242d9fb9f04c4425bcac00daa3"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -4427,7 +4427,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
+          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
           path: ${{ steps.paths.outputs.catalog }}
           persist-credentials: false
           clean: false

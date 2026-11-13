@@ -142,5 +142,76 @@ class AuditBeforeBuildTests(_Fixture):
         self.assertEqual(result['original_archives'], self.plan['expected_archives'])
 
 
+class SourceMirrorRevisionTests(_Fixture):
+    def mocked_setup(self, actual_mirror_revision):
+        source, native = self.root / 'source', self.root / 'native'
+        source.mkdir()
+        native.mkdir()
+        mirrors = self.root / 'mirrors/ci/source_mirrors.cfg'
+        mirrors.parent.mkdir(parents=True)
+        mirrors.write_bytes(b'reviewed source mirrors')
+        binary = self.root / 'bazel'
+        binary.write_bytes(b'qualified launcher')
+        binary.chmod(0o700)
+        plan = copy.deepcopy(self.plan)
+        plan['native_files'] = {}
+        plan['bazel_launcher_sha256'] = caller.hashlib.sha256(binary.read_bytes()).hexdigest()
+        worker = SimpleNamespace(
+            prepare_source_downloads=mock.Mock(return_value=([], {'verified': True})),
+            mirror_configuration=mock.Mock(return_value=b'reviewed downloader config'),
+            prepare_remote_cache=mock.Mock(return_value={}),
+            launcher_text=mock.Mock(return_value='#!/bin/sh\n'))
+        preflight = SimpleNamespace(cpu_limit=mock.Mock(return_value=4.0),
+                                    select_build_profile=mock.Mock(return_value={'jobs': 2}))
+        checks = []
+        def source_check(path, revision):
+            checks.append((path, revision))
+            if path == mirrors.parent.parent and revision != actual_mirror_revision:
+                raise ValueError('Source revision differs')
+        original_read = Path.read_text
+        def read_text(path, *args, **kwargs):
+            values = {'/sys/fs/cgroup/memory.max': str(24 * 1024**3),
+                      '/sys/fs/cgroup/memory.current': '0',
+                      '/sys/fs/cgroup/cpu.max': '400000 100000'}
+            return values[str(path)] if str(path) in values else original_read(path, *args, **kwargs)
+        original_stat = Path.stat
+        def file_stat(path, *args, **kwargs):
+            if path == binary:
+                return SimpleNamespace(st_mode=0o100700, st_uid=0, st_size=18)
+            return original_stat(path, *args, **kwargs)
+        for patch in (
+            mock.patch.object(caller, 'source_check', side_effect=source_check),
+            mock.patch.object(caller, 'import_from', return_value=worker),
+            mock.patch.object(caller.importlib, 'import_module', return_value=preflight),
+            mock.patch.object(caller.platform, 'machine', return_value='x86_64'),
+            mock.patch.object(caller.platform, 'freedesktop_os_release', return_value={'VERSION_CODENAME': 'trixie'}),
+            mock.patch.object(caller.shutil, 'disk_usage', return_value=SimpleNamespace(free=1024**4)),
+            mock.patch.object(caller.shutil, 'which', return_value=str(binary)),
+            mock.patch.object(Path, 'read_text', read_text),
+            mock.patch.object(Path, 'stat', file_stat),
+        ):
+            self.enterContext(patch)
+        return plan, source, native, mirrors, worker, checks
+
+    def test_native_mirror_revision_is_independent_of_bazel_catalog(self):
+        self.assertEqual(self.plan['source_mirror_revision'], '97cc502556b7ec3435d2d67b105315bcc18bb47e')
+        self.assertEqual(self.plan['catalog_revision'], 'e6ef022c94dd2fdeeac364dfd591f9701cd37c29')
+        plan, source, native, mirrors, worker, checks = self.mocked_setup(self.plan['source_mirror_revision'])
+        caller.prepare_cache(plan, source, native, self.root, self.root / 'archives', mirrors)
+        self.assertEqual(checks, [(source, plan['source_revision']), (native, plan['native_revision']),
+                                  (mirrors.parent.parent, plan['source_mirror_revision'])])
+        worker.mirror_configuration.assert_called_once_with(b'reviewed source mirrors')
+        worker.prepare_remote_cache.assert_called_once()
+
+    def test_catalog_checkout_is_rejected_before_download_setup_or_cache_access(self):
+        plan, source, native, mirrors, worker, checks = self.mocked_setup(self.plan['catalog_revision'])
+        with self.assertRaisesRegex(ValueError, 'Source revision differs'):
+            caller.prepare_cache(plan, source, native, self.root, self.root / 'archives', mirrors)
+        self.assertEqual(checks[-1], (mirrors.parent.parent, plan['source_mirror_revision']))
+        worker.prepare_source_downloads.assert_not_called()
+        worker.mirror_configuration.assert_not_called()
+        worker.prepare_remote_cache.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

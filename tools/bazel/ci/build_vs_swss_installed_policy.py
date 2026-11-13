@@ -100,7 +100,7 @@ def prepare_cache(plan, source, native, scratch, archives, mirrors):
             'Different original source-input run')
     require(mirrors.name == 'source_mirrors.cfg' and mirrors.parent.name == 'ci',
             'Different source mirror owner path')
-    source_check(mirrors.parent.parent, plan['catalog_revision'])
+    source_check(mirrors.parent.parent, plan['source_mirror_revision'])
     distdirs, verified_downloads = worker.prepare_source_downloads(archives, cache)
     mirror = scratch / 'source-mirrors.cfg'
     mirror.write_bytes(worker.mirror_configuration(mirrors.read_bytes()))
