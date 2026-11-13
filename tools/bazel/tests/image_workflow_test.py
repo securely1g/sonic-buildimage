@@ -245,11 +245,45 @@ class VerificationWorkflowTest(unittest.TestCase):
             self.assertEqual(step["env"]["CI_BASE_SHA"], "${{ steps.checkout_identity.outputs.base_sha }}")
         runtime_steps = workflow["jobs"]["swss_layer_runtime"]["steps"]
         identity = next(step for step in runtime_steps if step.get("name") == "Bind the tested checkout identity")
+        retain_swss = next(step for step in runtime_steps if step.get("name") == "Retain installed-image evidence")
+        preserve_runtime = next(
+            step for step in runtime_steps
+            if step.get("name") == "Preserve completed SWSS runtime evidence before sFlow acceptance"
+        )
+        download_sflow = next(
+            step for step in runtime_steps
+            if (step.get("with") or {}).get("name") == "sflow-source-amd64"
+        )
         loaded = next(step for step in runtime_steps if step.get("name") == "Exercise installed sFlow manager, mapper and exporter variants")
         self.assertEqual(identity["id"], "checkout_identity")
         self.assertLess(runtime_steps.index(identity), runtime_steps.index(loaded))
+        self.assertLess(runtime_steps.index(retain_swss), runtime_steps.index(preserve_runtime))
+        self.assertLess(runtime_steps.index(preserve_runtime), runtime_steps.index(download_sflow))
+        self.assertLess(runtime_steps.index(download_sflow), runtime_steps.index(loaded))
         self.assertEqual(loaded["env"]["CI_HEAD_SHA"], "${{ steps.checkout_identity.outputs.head_sha }}")
         self.assertEqual(loaded["env"]["CI_BASE_SHA"], "${{ steps.checkout_identity.outputs.base_sha }}")
+        with tempfile.TemporaryDirectory(prefix="swss runtime evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            artifacts = root / "artifacts"
+            (artifacts / "swss-layer").mkdir(parents=True)
+            (artifacts / "swss-layer/runtime-smoke.json").write_text('{"status": "passed"}\n')
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", preserve_runtime["run"]],
+                cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(artifacts.exists())
+            candidates = list(scratch.glob("pre-sflow-runtime-artifacts.*"))
+            self.assertEqual(len(candidates), 1)
+            destination = candidates[0]
+            self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(
+                (destination / "artifacts/swss-layer/runtime-smoke.json").read_text(),
+                '{"status": "passed"}\n',
+            )
         script = public["run"].split("python3 - <<'PYCODE'\n", 1)[1].split("\nPYCODE", 1)[0]
         with tempfile.TemporaryDirectory(prefix="sflow early failure ") as temporary:
             directory = Path(temporary)
