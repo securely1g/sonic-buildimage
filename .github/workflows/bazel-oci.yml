@@ -629,6 +629,28 @@ jobs:
             printf 'Completed Sysmgr evidence preserved at %s/artifacts\n' "$preserved"
           fi
 
+      - name: Build and validate SNMP runtime and debug archives
+        id: snmp_build
+        if: matrix.architecture == 'amd64'
+        run: |
+          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$BAZEL" --artifacts "$RUNNER_TEMP/snmp"
+          python3 -B tools/bazel/ci/snmp_image.py validate --artifacts "$RUNNER_TEMP/snmp"
+          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$BAZEL" --artifacts "$RUNNER_TEMP/snmp"
+          git diff --exit-code
+      - name: Prepare public SNMP build evidence
+        id: snmp_public
+        if: always() && (steps.snmp_build.outcome == 'success' || steps.snmp_build.outcome == 'failure')
+        run: python3 -B tools/bazel/ci/snmp_image.py publish --artifacts "$RUNNER_TEMP/snmp"
+      - name: Retain SNMP archives and build evidence
+        if: always() && steps.snmp_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: snmp-images-amd64-${{ github.sha }}
+          path: ${{ runner.temp }}/snmp/public
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
       - name: Build and inspect the shared runtime and symbols
         id: swss_layer_build
         if: matrix.architecture == 'amd64'
@@ -926,6 +948,29 @@ jobs:
         with:
           name: sflow-runtime-amd64
           path: artifacts/sflow/*.runtime.json
+          if-no-files-found: error
+          retention-days: 14
+
+  snmp_runtime:
+    name: Run installed SNMP images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: snmp-images-amd64-${{ github.sha }}
+          path: artifacts/snmp
+      - name: Query installed SNMP agents through private Redis and AgentX
+        run: python3 -B tools/bazel/ci/snmp_loaded.py --artifacts artifacts/snmp
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: snmp-installed-amd64-${{ github.sha }}
+          path: artifacts/snmp/*.runtime.json
           if-no-files-found: error
           retention-days: 14
 
