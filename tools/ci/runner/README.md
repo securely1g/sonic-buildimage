@@ -2,13 +2,17 @@
 
 ## Current ONIE workflow
 
-The [native VS installer job](container-vs.md) runs `make -f slave.mk target/sonic-vs.bin`
-inside a privileged `sonic-slave-container-k3s` worker. Same-repository PRs,
-pushes to master, and manual runs with the installer enabled use this pool.
-The worker uses its configured remote Bazel cache and a shared Make package
-cache. The job validates the installer and the SWSS and Syncd runtime/debug
-image pairs before publishing them. Building this ONIE installer does not
-require KVM.
+The [native VS installer job](container-vs.md#dedicated-host-agent-route) uses
+`[self-hosted, linux, bazel-x64, vs]` host agents. The Actions runner stays on
+the host, and `make target/sonic-vs.bin` launches the SONiC build containers.
+Same-repository PRs, pushes to master, and manual runs with the installer enabled
+use this pool. The job explicitly selects `grpc://172.16.0.4:9092` for Bazel's
+remote cache and downloader, with persistent Bazel and Make package caches under
+the runner workspace. Remote uploads are enabled only for master pushes.
+It does not require the K3s worker's managed cache configuration or `/actions`
+layout. The job validates the installer and the SWSS and Syncd runtime/debug
+image pairs before publishing them. Building this ONIE installer does not require
+KVM.
 
 GitHub-hosted Ubuntu runs the OCI regression checks and supplies verified
 source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
@@ -33,7 +37,7 @@ The optional manager below registers replacements automatically after each job.
 Bootstrap, rearm and the manager omit `--build-target` and retain KVM
 preflight for their legacy routes, which can receive `.img.gz` jobs. Those
 helpers therefore still require a KVM-capable host. The host setup below
-prepares that legacy pool; it does not register a `sonic-slave-container-k3s` runner.
+prepares that legacy pool; it does not register a host agent with the `vs` label.
 
 Use Ubuntu 22.04 or 24.04 for the documented SONiC host baseline. The initial
 host uses Ubuntu 26.04; passing preflight does not establish full compatibility.
@@ -230,7 +234,7 @@ python3 /opt/sonic-runner-tools/runner/rearm.py --master
 ```
 
 Use `--master` only for workflows requesting the legacy shared pool. It does
-not arm a runner for the current K3s installer workflow. Arm only after reviewing
+not arm a runner for the current host-agent installer workflow. Arm only after reviewing
 the PR code and workflow that will run. For a failed attempt, retry the workflow with
 `gh run rerun RUN_ID --failed --repo securely1g/sonic-buildimage`; workflow edits
 require a new run on the updated commit, because rerunning uses the original
