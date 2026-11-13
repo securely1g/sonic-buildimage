@@ -382,6 +382,46 @@ def check_managed_cache_probe_receipt(directory, output_name, configuration, res
     require(access["access_probe"] == "passed", "Managed cache access probe did not pass")
 
 
+def managed_setup_failure_sites(error):
+    """Project only fixed source sites; never read exception text or locals."""
+    native = {getattr(worker, name).__code__: name for name in (
+        "require", "digest", "managed_cache_helper", "load_managed_cache_owner",
+        "remote_cache_configuration")}
+    owner = {"origin": (29, 52), "host_configuration": (55, 89),
+             "public_settings": (92, 96), "settings": (99, 101)}
+    owner_path = worker.K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"]
+    sites, errors_seen = [], set()
+    current = error
+    for context in range(4):
+        if current is None or id(current) in errors_seen:
+            break
+        errors_seen.add(id(current))
+        trace, traces_seen = current.__traceback__, set()
+        for _ in range(64):
+            if trace is None or id(trace) in traces_seen or len(sites) == 16:
+                break
+            traces_seen.add(id(trace))
+            frame, line = trace.tb_frame, trace.tb_lineno
+            code = frame.f_code
+            role, name, bounds = None, None, None
+            if code in native and frame.f_globals is worker.__dict__:
+                role, name = "native_worker", native[code]
+                lines = [value for _, _, value in code.co_lines() if value is not None]
+                bounds = (min(lines), max(lines))
+            elif (code.co_filename == owner_path and
+                    frame.f_globals.get("__file__") == owner_path and
+                    frame.f_globals.get("__name__") == "reviewed_native_cache_owner" and
+                    code.co_name in owner):
+                role, name, bounds = "installed_owner", code.co_name, owner[code.co_name]
+            if role is not None and type(line) is int and bounds[0] <= line <= bounds[1]:
+                sites.append({"context": context, "source": role, "function": name, "line": line})
+            trace = trace.tb_next
+        if len(sites) == 16:
+            break
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    return sites
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--native-revision", required=True)
@@ -437,6 +477,8 @@ def main():
         receipt["stage"] = "complete"
         receipt["status"] = "TINY_COPY_REMOTE_CACHE_QUALIFIED"
     except BaseException as error:
+        if receipt.get("stage") == "managed_cache_setup":
+            receipt["setup_failure_sites"] = managed_setup_failure_sites(error)
         receipt["failure_reason"] = error.reason if isinstance(error, ProbeFailure) else "Unhandled runtime or I/O exception"
         receipt["error_type"] = type(error).__name__ if type(error).__name__ in (
             "ProbeFailure", "ValueError", "OSError", "FileNotFoundError", "TimeoutError", "InterruptedError", "JSONDecodeError") else "ProbeFailure"

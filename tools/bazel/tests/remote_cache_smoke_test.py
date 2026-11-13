@@ -1,6 +1,7 @@
 """Pure cache-evidence fixtures; no Bazel, daemon, compiler or package execution."""
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -389,6 +390,90 @@ class RemoteCacheSmokeTest(unittest.TestCase):
             with self.assertRaises(smoke.ProbeFailure):
                 smoke.check_managed_cache_probe_receipt(directory, "access.json", self.managed_configuration(),
                     {"status": "CAPTURED"}, {})
+
+
+class ManagedSetupDiagnosticTest(unittest.TestCase):
+    @staticmethod
+    def trace(code, globals_, line, next_=None):
+        return SimpleNamespace(tb_frame=SimpleNamespace(f_code=code, f_globals=globals_,
+            f_locals={"password": "private-local-secret"}), tb_lineno=line, tb_next=next_)
+
+    @staticmethod
+    def error(trace=None, context=None, cause=None):
+        return SimpleNamespace(__traceback__=trace, __context__=context, __cause__=cause)
+
+    @staticmethod
+    def owner_code(name="host_configuration", path=None):
+        return ManagedSetupDiagnosticTest.owner_code.__code__.replace(
+            co_name=name, co_filename=path or smoke.worker.K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"])
+
+    @staticmethod
+    def owner_globals():
+        return {"__file__": smoke.worker.K3S_MANAGED_REMOTE_CACHE_POLICY["credential_helper_path"],
+                "__name__": "reviewed_native_cache_owner", "password": "private-global-secret"}
+
+    def test_real_worker_guard_keeps_site_without_exception_text(self):
+        try:
+            smoke.worker.require(False, "https://user:private-secret@private.invalid/?token=private-secret")
+        except ValueError as error:
+            sites = smoke.managed_setup_failure_sites(error)
+        self.assertEqual(len(sites), 1)
+        self.assertEqual(sites[0]["source"], "native_worker")
+        self.assertEqual(sites[0]["function"], "require")
+        self.assertIs(type(sites[0]["line"]), int)
+        self.assertNotIn("private", json.dumps(sites))
+
+    def test_suppressed_owner_context_retains_only_known_source_site(self):
+        owner = self.error(self.trace(self.owner_code(), self.owner_globals(), 71))
+        native = smoke.worker.remote_cache_configuration
+        outer = self.error(self.trace(native.__code__, smoke.worker.__dict__, native.__code__.co_firstlineno), owner)
+        sites = smoke.managed_setup_failure_sites(outer)
+        self.assertEqual([(s["context"], s["source"], s["function"]) for s in sites],
+            [(0, "native_worker", "remote_cache_configuration"), (1, "installed_owner", "host_configuration")])
+        self.assertNotIn("private", json.dumps(sites))
+        self.assertNotIn("/opt/", json.dumps(sites))
+
+    def test_unknown_owner_file_function_and_module_are_omitted(self):
+        for code, globals_ in (
+            (self.owner_code(path="/private/cache_credentials.py"), self.owner_globals()),
+            (self.owner_code(name="configured_authorization"), self.owner_globals()),
+            (self.owner_code(), {**self.owner_globals(), "__file__": "/private/source"}),
+            (self.owner_code(), {**self.owner_globals(), "__name__": "unreviewed"})):
+            self.assertEqual(smoke.managed_setup_failure_sites(self.error(self.trace(code, globals_, 71))), [])
+        code = smoke.worker.require.__code__
+        self.assertEqual(smoke.managed_setup_failure_sites(self.error(self.trace(code, dict(smoke.worker.__dict__), code.co_firstlineno))), [])
+
+    def test_non_source_lines_and_boolean_lines_are_omitted(self):
+        for line in (True, 0, 54, 90, 91, 1000000, "private-secret"):
+            self.assertEqual(smoke.managed_setup_failure_sites(self.error(
+                self.trace(self.owner_code(), self.owner_globals(), line))), [])
+
+    def test_trace_cycles_and_sixteen_site_bound_terminate(self):
+        trace = self.trace(self.owner_code(), self.owner_globals(), 71)
+        trace.tb_next = trace
+        self.assertEqual(len(smoke.managed_setup_failure_sites(self.error(trace))), 1)
+        head = None
+        for _ in range(40):
+            head = self.trace(self.owner_code(), self.owner_globals(), 71, head)
+        self.assertEqual(len(smoke.managed_setup_failure_sites(self.error(head))), 16)
+
+    def test_four_context_bound_cycles_and_explicit_cause(self):
+        head = None
+        for _ in range(8):
+            head = self.error(self.trace(self.owner_code(), self.owner_globals(), 71), head)
+        self.assertEqual([s["context"] for s in smoke.managed_setup_failure_sites(head)], [0, 1, 2, 3])
+        head.__context__ = head
+        self.assertEqual(len(smoke.managed_setup_failure_sites(head)), 1)
+        cause = self.error(self.trace(self.owner_code("origin"), self.owner_globals(), 43))
+        outer = self.error(context=head, cause=cause)
+        self.assertEqual([s["function"] for s in smoke.managed_setup_failure_sites(outer)], ["origin"])
+
+    def test_absent_and_long_unrelated_traces_retain_no_values(self):
+        self.assertEqual(smoke.managed_setup_failure_sites(self.error()), [])
+        head = self.trace(self.owner_code(), self.owner_globals(), 71)
+        for _ in range(64):
+            head = self.trace(self.owner_code(path="/private/source"), {"secret": "private-secret"}, 71, head)
+        self.assertEqual(smoke.managed_setup_failure_sites(self.error(head)), [])
 
 
 if __name__ == "__main__":
