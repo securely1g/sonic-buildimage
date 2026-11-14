@@ -4681,7 +4681,7 @@ jobs:
           compression-level: 9
           retention-days: 14
   vs_coherent_installed_policies:
-    name: Build coherent SWSS and Syncd installed-image policies (AMD64)
+    name: Build coherent source images and validate component runtimes (AMD64)
     if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-coherent-installed-policies' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
     runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
     timeout-minutes: 360
@@ -4720,8 +4720,8 @@ jobs:
           workspace = Path(os.environ['GITHUB_WORKSPACE'])
           if workspace.resolve(strict=True) != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
               raise SystemExit('Unexpected worker workspace or user')
-          if shutil.disk_usage(workspace).free < 180 * 1024**3:
-              raise SystemExit('The policy build needs 180 GiB of free scratch')
+          if shutil.disk_usage(workspace).free < 360 * 1024**3:
+              raise SystemExit('The policy build needs 360 GiB of free scratch')
           root = workspace / ('vs-coherent-installed-policies-' + run + '-' + attempt + '-' + worker)
           if os.path.lexists(root):
               raise SystemExit('Policy scratch already exists')
@@ -4730,6 +4730,7 @@ jobs:
               (root / name).mkdir(mode=0o700)
           values = {'root': str(root)}
           values.update({name: str((root / name).relative_to(workspace)) for name in ('control', 'source', 'native', 'catalog')})
+          values['cleanup'] = str((root / 'scratch/runtime-control-native-cleanup').relative_to(workspace))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
               for name, value in values.items():
                   stream.write(name + '=' + value + '\n')
@@ -4748,6 +4749,9 @@ jobs:
             /tools/bazel/ci/build_vs_coherent_installed_policies.py
             /tools/bazel/ci/vs_coherent_installed_policy_inputs.json
             /tools/bazel/tests/vs_coherent_installed_policy_test.py
+            /tools/bazel/ci/vs_component_runtime_owner.py
+            /tools/bazel/tests/vs_component_runtime_test.py
+            /tools/bazel/tests/vs_component_runtime_callback_test.py
             /tools/bazel/ci/vs_original_metadata/kernel-context-744d.json
       - name: Check out the final VS source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -4761,13 +4765,14 @@ jobs:
       - name: Verify the fixed caller and its focused fixtures
         env:
           POLICY_ROOT: ${{ steps.paths.outputs.root }}
+          COMPONENT_RUNTIME_TEST_SOURCE: ${{ steps.paths.outputs.root }}/source
           COHORT_REVIEW_RC_OWNER: ${{ steps.paths.outputs.root }}/source/tools/bazel/ci/review_bazel_rc.py
         run: |
           python3 -I -S -B - <<'PYTHON'
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":16521,"sha256":"d5686dd39a68dc48e248e17d52a038481a9bc1a8f6405457f0dde4e7caafa449"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":6644,"sha256":"93a9dc5f77df5b61a42dd0a8ef8ac708bc505452e45cc12b8abb202626095287"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":20280,"sha256":"2d73d65f5dfe1bc17e494785f7f3832b9bb3709f18c4995a8f96600de1fabdf5"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"}}')
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":119683,"sha256":"fbb4b4a8c7ad19b7ddeab9051d5b8402077ef8dc2f880e98676e3d24e090a1a8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":33909,"sha256":"59bd3e6251aae596117a5fa106b5b691b654bf5f14e3dce4e7d99185a5655dcd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":47548,"sha256":"067b757a80db35e2a46a02dfee935f684e654070febcc8efe7058bb383e4984f"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -4777,6 +4782,8 @@ jobs:
                   raise SystemExit('Reviewed policy caller seal differs')
           PYTHON
           python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/tests/vs_coherent_installed_policy_test.py"
+          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/tests/vs_component_runtime_test.py"
+          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/tests/vs_component_runtime_callback_test.py"
       - name: Check out the existing native cache and source-input helpers
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4795,6 +4802,15 @@ jobs:
             /tools/bazel/ci/source_image_worker.py
             /tools/bazel/ci/source_worker_preflight.py
             /tools/bazel/gzip/source_archive.py
+      - name: Check out the existing private Docker cleanup owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ba575106ea25c3a5f14a428b0326b6a3c891b5ef
+          path: ${{ steps.paths.outputs.cleanup }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          submodules: false
       - name: Check out the existing verified source-download configuration
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4862,6 +4878,10 @@ jobs:
           BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
           TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
           PYTHONDONTWRITEBYTECODE: '1'
+          SONIC_CONTAINER_BAZEL_OPTIONS: ''
+          SONIC_CONTAINER_BAZEL_CACHE_DIR: ''
+          SONIC_SWSS_BAZEL_OPTIONS: ''
+          SONIC_SWSS_BAZEL_CACHE_DIR: ''
         run: |
           command -v readelf >/dev/null
           command -v objcopy >/dev/null
@@ -4878,8 +4898,9 @@ jobs:
           if-no-files-found: error
           compression-level: 9
           retention-days: 14
-      - name: Build and validate the shared parent and both service image pairs
-        timeout-minutes: 300
+      - name: Check the native parent then refresh the coherent component images
+        id: coherent_build
+        timeout-minutes: 240
         env:
           POLICY_ROOT: ${{ steps.paths.outputs.root }}
           SOURCE_INPUTS_RUN: '43428792950'
@@ -4889,13 +4910,125 @@ jobs:
           BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
           TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
           PYTHONDONTWRITEBYTECODE: '1'
+          SONIC_CONTAINER_BAZEL_OPTIONS: ''
+          SONIC_CONTAINER_BAZEL_CACHE_DIR: ''
+          SONIC_SWSS_BAZEL_OPTIONS: ''
+          SONIC_SWSS_BAZEL_CACHE_DIR: ''
         run: |
           python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/ci/build_vs_coherent_installed_policies.py" build \
             --plan "$POLICY_ROOT/control/tools/bazel/ci/vs_coherent_installed_policy_inputs.json" \
             --source "$POLICY_ROOT/source" --native "$POLICY_ROOT/native" \
             --scratch "$POLICY_ROOT/scratch" --output "$POLICY_ROOT/outputs" \
             --archives "$POLICY_ROOT/inputs" --mirrors "$POLICY_ROOT/catalog/ci/source_mirrors.cfg"
+      - name: Preserve original Teamd runtime inputs before private checks
+        id: teamd_support
+        if: always() && steps.coherent_build.outcome == 'success'
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+        run: |
+          python3 -I -S -B - <<'PY'
+          import hashlib, json, os, shutil, sys
+          from pathlib import Path
+          root = Path(os.environ['POLICY_ROOT']).resolve(strict=True)
+          plan = json.loads((root / 'control/tools/bazel/ci/vs_coherent_installed_policy_inputs.json').read_bytes())
+          owner = root / 'native/tools/bazel/ci/public_artifacts.py'
+          expected_owner = plan['runtime_control_files']['tools/bazel/ci/public_artifacts.py']
+          assert expected_owner['origin'] == 'native' and owner.is_file() and not owner.is_symlink()
+          assert owner.stat().st_size == expected_owner['bytes']
+          assert hashlib.sha256(owner.read_bytes()).hexdigest() == expected_owner['sha256']
+          sys.path.insert(0, str(root / 'native'))
+          from tools.bazel.ci.public_artifacts import safe_json
+
+          def identity(path):
+              assert path.is_file() and not path.is_symlink()
+              with path.open('rb') as stream:
+                  digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+              return {'bytes': path.stat().st_size, 'sha256': digest}
+
+          def public(path):
+              assert path.is_file() and not path.is_symlink() and path.stat().st_size <= 8 * 1024 * 1024
+              value = json.loads(path.read_bytes())
+              safe_json(value)
+              return value
+
+          reports = root / 'outputs/reports'
+          private = root / 'scratch/cohort-build/teamd'
+          cohort = public(reports / 'cohort.json')
+          assert cohort['status'] == 'COHERENT_POLICIES_AND_SOURCE_IMAGES_VALIDATED'
+          for key in ('source_revision', 'source_head', 'source_tree'):
+              assert cohort[key] == plan[key]
+          assert cohort['operator'] == {key: os.environ.get(key) for key in cohort['operator']}
+          validation = public(reports / 'teamd-validation.json')
+          receipt = public(reports / 'teamd-public-receipt.json')
+          assert validation['status'] == 'passed' and validation['revision'] == plan['source_revision']
+          assert validation['architecture'] == receipt['architecture'] == 'amd64'
+          assert receipt['revision'] == plan['source_revision']
+          files, archives = {}, {}
+          for image in ('docker-teamd', 'docker-teamd-dbg'):
+              name = image + '.validation.json'
+              detail = public(private / name)
+              expected = cohort['archives'][image]
+              for record in (detail['archive'], validation['artifacts'][image + '.gz'], receipt['artifacts'][image + '.gz']):
+                  assert {key: record[key] for key in ('bytes', 'sha256')} == expected
+              assert detail['status'] == 'passed'
+              files[name] = identity(private / name)
+              archives[image + '.gz'] = expected
+          files['test-redis.tar'] = identity(private / 'test-redis.tar')
+          assert files['test-redis.tar'] == {key: receipt['artifacts']['test-redis.tar'][key] for key in ('bytes', 'sha256')}
+          result = {'schema': 1, 'status': 'ORIGINAL_TEAMD_RUNTIME_INPUTS_RETAINED',
+              **{key: cohort[key] for key in ('source_revision', 'source_head', 'source_tree', 'operator')},
+              'cohort': identity(reports / 'cohort.json'),
+              'source_validation': identity(reports / 'teamd-validation.json'),
+              'public_receipt': identity(reports / 'teamd-public-receipt.json'),
+              'archives': archives, 'support_files': files,
+              'runtime_acceptance_claimed': False, 'hosted_execution_requested': False,
+              'full_vs_admission_claimed': False}
+          safe_json(result)
+          out = root / 'outputs/teamd-runtime-inputs'
+          out.mkdir(mode=0o700)
+          for name, expected in files.items():
+              original, destination = private / name, out / name
+              with original.open('rb') as src, destination.open('xb') as dst:
+                  shutil.copyfileobj(src, dst, 1024 * 1024)
+              assert identity(original) == identity(destination) == expected
+          with (out / 'binding.json').open('x') as stream:
+              json.dump(result, stream, indent=2, sort_keys=True)
+              stream.write('\n')
+          PY
+      - name: Retain source-bound Teamd runtime support
+        if: always() && steps.teamd_support.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-coherent-teamd-runtime-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/outputs/teamd-runtime-inputs
+          if-no-files-found: error
+          compression-level: 0
+      - name: Run original component checks in separate private Docker groups
+        id: component_runtime
+        if: always() && steps.coherent_build.outcome == 'success'
+        timeout-minutes: 105
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+          SOURCE_INPUTS_RUN: '43428792950'
+          BAZEL_REAL: ${{ steps.paths.outputs.root }}/scratch/native-bazel
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
+          USE_BAZEL_VERSION: '8.5.1'
+          BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
+          TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
+          PYTHONDONTWRITEBYTECODE: '1'
+          SONIC_CONTAINER_BAZEL_OPTIONS: ''
+          SONIC_CONTAINER_BAZEL_CACHE_DIR: ''
+          SONIC_SWSS_BAZEL_OPTIONS: ''
+          SONIC_SWSS_BAZEL_CACHE_DIR: ''
+        run: |
+          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/ci/build_vs_coherent_installed_policies.py" runtime \
+            --plan "$POLICY_ROOT/control/tools/bazel/ci/vs_coherent_installed_policy_inputs.json" \
+            --control "$POLICY_ROOT/control" \
+            --source "$POLICY_ROOT/source" --native "$POLICY_ROOT/native" \
+            --scratch "$POLICY_ROOT/scratch" --output "$POLICY_ROOT/outputs" \
+            --archives "$POLICY_ROOT/inputs" --mirrors "$POLICY_ROOT/catalog/ci/source_mirrors.cfg"
       - name: Upload the coherent policies and validation reports
+        if: always() && steps.coherent_build.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vs-coherent-installed-policy-reports-${{ github.run_id }}-${{ github.run_attempt }}
@@ -4903,6 +5036,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
       - name: Upload the validated coherent image archives
+        if: always() && steps.coherent_build.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vs-coherent-installed-policy-archives-${{ github.run_id }}-${{ github.run_attempt }}
@@ -4917,6 +5051,7 @@ jobs:
           path: |
             ${{ steps.paths.outputs.root }}/evidence/original-source-input.json
             ${{ steps.paths.outputs.root }}/scratch/resources.json
+            ${{ steps.paths.outputs.root }}/scratch/cohort-build/base-parent-preflight/prefix.json
           if-no-files-found: warn
           compression-level: 0
 

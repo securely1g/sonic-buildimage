@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -36,6 +38,13 @@ class CohortTests(unittest.TestCase):
         self.home.mkdir()
         self.output = self.root / 'outputs'
         self.plan = caller.load_plan(PLAN)
+        # Keep the original core-scope fixtures exact while the checked plan
+        # additionally declares the fixed component refresh.
+        self.plan.pop('component_refresh', None)
+        self.plan.pop('component_families', None)
+        self.plan.pop('component_profile', None)
+        self.plan['exports'] = {name: target for name, target in self.plan['exports'].items()
+                                if name in caller.PRIMARY or name.startswith(('swss--', 'syncd--'))}
         self.events = []
         self.problem = None
         self.payload = {name: ('original:' + name).encode() for name in self.plan['exports']}
@@ -376,6 +385,426 @@ class CohortTests(unittest.TestCase):
                              {'docker-config-engine-trixie', *images})
 
 
+
+    def base_prefix_fixture(self, observed):
+        private = self.scratch / 'base-check'
+        private.mkdir()
+        expected = ['sha256:' + str(index) * 64 for index in range(9)]
+        plan = dict(self.plan, expected_native_base_diff_ids=expected)
+        calls = []
+        def collect(source, directory, receipt, targets, **kwargs):
+            self.assertEqual(list(targets), ['docker-base-trixie.gz'])
+            self.assertEqual(kwargs['additional_targets'], ['//dockers/docker-base-trixie:docker-base-trixie'])
+            calls.append('base-build')
+            archive = directory / 'docker-base-trixie.gz'
+            archive.write_bytes(b'genuine fixture archive')
+            return {'docker-base-trixie.gz': archive}
+        def query(*args, **kwargs):
+            calls.append('base-layout')
+            return 'bazel-out/base-layout\n'
+        audit = SimpleNamespace(audit_targets=lambda *a, **kw: calls.append('base-audit'))
+        layout = SimpleNamespace(config={'rootfs': {'diff_ids': observed(expected)}})
+        return plan, private, calls, audit, SimpleNamespace(collect_archives=collect), SimpleNamespace(execute=query), lambda *args: layout
+
+    def test_base_prefix_gate_records_all_original_ids_without_admission(self):
+        plan, private, calls, audit, builder, logs, reader = self.base_prefix_fixture(lambda value: value[:])
+        receipt = {}
+        result = caller.check_base_parent(plan, self.source, private, receipt, 'fixed-proxy',
+                                         audit, builder, logs, reader, self.owners[0].check)
+        self.assertEqual(calls, ['base-audit', 'base-build', 'base-layout'])
+        self.assertEqual(result['expected_diff_ids'], result['observed_diff_ids'])
+        self.assertFalse(result['stored_layer_or_full_archive_equivalence'])
+        self.assertTrue(result['full_native_archive_gate_required'])
+        self.assertEqual(receipt['base_parent_preflight'], result)
+
+    def test_base_prefix_mismatch_preserves_full_expected_and_observed_ids(self):
+        plan, private, calls, audit, builder, logs, reader = self.base_prefix_fixture(
+            lambda value: value[:2] + ['sha256:' + 'f' * 64] + value[3:])
+        receipt = {}
+        with self.assertRaisesRegex(ValueError, 'BASE parent differs') as raised:
+            caller.check_base_parent(plan, self.source, private, receipt, 'fixed-proxy',
+                                     audit, builder, logs, reader, self.owners[0].check)
+        original = json.loads((private / 'base-parent-preflight/prefix.json').read_bytes())
+        self.assertEqual(original['status'], 'failed')
+        self.assertEqual(len(original['expected_diff_ids']), 9)
+        self.assertEqual(len(original['observed_diff_ids']), 9)
+        for value in original['expected_diff_ids'] + original['observed_diff_ids']:
+            self.assertIn(value, str(raised.exception))
+        self.assertEqual(receipt['base_parent_preflight'], original)
+
+    def test_base_prefix_layout_validation_failure_is_not_ignored(self):
+        plan, private, calls, audit, builder, logs, reader = self.base_prefix_fixture(lambda value: value[:])
+        def reject(*args):
+            raise ValueError('original layout validation failed')
+        receipt = {}
+        with self.assertRaisesRegex(ValueError, 'original layout validation failed'):
+            caller.check_base_parent(plan, self.source, private, receipt, 'fixed-proxy',
+                                     audit, builder, logs, reject, self.owners[0].check)
+        self.assertNotIn('base_parent_preflight', receipt)
+
+    def test_component_proxy_forwards_final_options_and_preserves_arguments(self):
+        source = self.root / 'source with spaces'
+        owner = source / 'tools/bazel/ci/review_bazel.sh'
+        owner.parent.mkdir(parents=True)
+        owner.write_text('#!' + sys.executable + '\nimport json, os, sys\nprint(json.dumps([sys.argv[1:], os.environ.get("HOME")]))\n')
+        owner.chmod(0o700)
+        command = caller.shlex.join([str(owner), '--batch',
+                                    '--output_user_root=' + str(self.scratch / 'output-user-root')])
+        proxy = self.scratch / 'review-bazel'
+        proxy.write_text('#!/bin/sh\nexec ' + command + ' "$@"\n')
+        caller.prepare_component_proxy(source, self.scratch)
+        for action in ('build', 'test', 'aquery', 'cquery', 'info'):
+            for supplied in ([], caller.COMPONENT_PROFILE[:1], caller.COMPONENT_PROFILE):
+                with self.subTest(action=action, supplied=supplied):
+                    arguments = [action, 'a b', "x'y", *supplied]
+                    result = subprocess.run([str(proxy), *arguments],
+                                            check=True, text=True, capture_output=True)
+                    argv, child_home = json.loads(result.stdout)
+                    expected = ['--batch', '--output_user_root=' + str(self.scratch / 'output-user-root'),
+                                *arguments]
+                    if action != 'info':
+                        expected.extend(option for option in caller.COMPONENT_PROFILE if option not in supplied)
+                    self.assertEqual(argv, expected)
+                    self.assertEqual(child_home, self.start_home)
+        self.assertEqual(os.environ.get('HOME'), self.start_home)
+
+    def test_component_proxy_rejects_unreviewed_prepared_command(self):
+        proxy = self.scratch / 'review-bazel'
+        proxy.write_text('#!/bin/sh\nexit 0\n')
+        with self.assertRaisesRegex(ValueError, 'Different prepared review proxy'):
+            caller.prepare_component_proxy(self.source, self.scratch)
+        self.assertEqual(proxy.read_text(), '#!/bin/sh\nexit 0\n')
+
+    def test_component_native_gate_stops_before_remaining_actions(self):
+        private = self.scratch / 'preflight'
+        private.mkdir()
+        calls = []
+        audit = SimpleNamespace(audit_targets=lambda *a, **kw: calls.append('audit') or {})
+        builder = SimpleNamespace(collect_archives=lambda *a, **kw: calls.append('collect') or {})
+        def reject(*args):
+            calls.append('native-equality')
+            raise ValueError('accepted native mismatch')
+        with mock.patch.object(caller, 'bind_policies', side_effect=reject):
+            with self.assertRaisesRegex(ValueError, 'accepted native mismatch'):
+                caller.collect_with_native_anchor(self.plan, self.source, private, {},
+                    {**caller.PRIMARY, 'additional.tar': '//component:archive'}, [],
+                    'fixed-proxy', audit, builder, self.owners[0].check, self.owners[-2])
+        self.assertEqual(calls, ['audit', 'collect', 'native-equality'])
+
+    def test_component_native_gate_precedes_remaining_collection(self):
+        private = self.scratch / 'preflight'
+        private.mkdir()
+        calls = []
+        audit = SimpleNamespace(audit_targets=lambda *a, **kw: calls.append('audit') or {})
+        def collect(source, directory, receipt, targets, **kwargs):
+            calls.append(('collect', set(targets)))
+            return {name: directory / name for name in targets}
+        builder = SimpleNamespace(collect_archives=collect)
+        def accept(*args):
+            calls.append('native-equality')
+            return {'genuine-native': True}, {'genuine-policies': True}
+        receipt = {}
+        exports = {**caller.PRIMARY, 'additional.tar': '//component:archive'}
+        with mock.patch.object(caller, 'bind_policies', side_effect=accept):
+            paths = caller.collect_with_native_anchor(self.plan, self.source, private, receipt,
+                exports, [], 'fixed-proxy', audit, builder, self.owners[0].check, self.owners[-2])
+        self.assertEqual(calls, ['audit', ('collect', set(caller.PRIMARY)), 'native-equality',
+                                 'audit', ('collect', {'additional.tar'})])
+        self.assertEqual(set(paths), set(exports))
+        self.assertIs(receipt['native_parent_preflight']['passed'], True)
+
+    def test_component_plan_requires_the_complete_fixed_family_set(self):
+        value = json.loads(PLAN.read_bytes())
+        self.assertTrue(value['component_refresh'])
+        self.assertEqual(len(caller.component_primary()), 32)
+        self.assertIn('docker-dash-engine.gz', caller.component_primary())
+        self.assertNotIn('docker-dash-engine-dbg.gz', caller.component_primary())
+        value['component_families'].remove('dash-engine')
+        path = self.root / 'changed-plan.json'
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'Different component refresh scope'):
+            caller.load_plan(path)
+
+    def test_component_archive_binding_rejects_changed_selected_bytes(self):
+        paths, receipt = {}, {'artifacts': {}}
+        for name, target in caller.component_primary().items():
+            path = self.scratch / name
+            path.write_bytes(('accepted:' + name).encode())
+            paths[name] = path
+            receipt['artifacts'][name] = {'target': target, 'bytes': path.stat().st_size, 'sha256': sha(path)}
+        actual = caller.bind_component_archives(paths, receipt, self.owners[0].check)
+        self.assertEqual(len(actual), 32)
+        paths['docker-dash-engine.gz'].write_bytes(b'different archive')
+        with self.assertRaisesRegex(ValueError, 'Component archive identity differs'):
+            caller.bind_component_archives(paths, receipt, self.owners[0].check)
+
+    def component_validation_fixture(self, family, incremental):
+        private = self.scratch / 'component-validation'
+        private.mkdir()
+        spec = copy.deepcopy(caller.COMPONENTS[family])
+        self.enterContext(mock.patch.object(caller, 'COMPONENTS', {family: spec}))
+        targets = {name: spec['prefix'] + name for name in spec['selected_archives']}
+        paths, receipt = {}, {'commands': [], 'artifacts': {}, 'action_audit': {}}
+        for name, target in targets.items():
+            path = private / name
+            path.write_bytes(name.encode())
+            paths[name] = path
+            receipt['artifacts'][name] = {'target': target, 'bytes': path.stat().st_size, 'sha256': sha(path)}
+        for name in ('build-events.jsonl', 'build.execution.json'):
+            (private / name).write_text('{}\n')
+        def validate(directory):
+            (directory / 'validation.json').write_text(json.dumps({
+                'status': 'passed', 'revision': self.plan['source_revision']}))
+        owner = SimpleNamespace(TARGETS=targets, validate_images=validate, incremental=incremental)
+        layouts = {label: 'bazel-out/example' for label in [spec['parent'],
+                   *[spec['prefix'] + name for name in spec['images']]]}
+        self.enterContext(mock.patch.object(caller, 'component_owner_checks', return_value={}))
+        return (private, receipt, paths, layouts, owner)
+
+    def run_component_validation_fixture(self, family, incremental):
+        private, receipt, paths, layouts, owner = self.component_validation_fixture(family, incremental)
+        return caller.validate_components(self.plan, self.source, private, receipt, paths, layouts,
+            {'revision': self.plan['source_revision']}, {}, {family: owner}, 'fixed-proxy',
+            self.owners[4], shutil.copyfile, self.owners[0].check, mock.Mock(), self.owners[2])
+
+    def test_component_original_statusless_incremental_is_retained(self):
+        def incremental(args, directory):
+            self.assertEqual(args.bazel, 'fixed-proxy')
+            value = {phase: {'sha256': {'image': 'a'}} for phase in ('baseline', 'noop', 'restore')}
+            value['edit'] = {'sha256': {'image': 'b'}}
+            (directory / 'incremental.json').write_text(json.dumps(value))
+        _, records, _ = self.run_component_validation_fixture('database', incremental)
+        self.assertIn('database', records)
+        self.assertNotIn('status', json.loads((self.scratch / 'component-validation/database/incremental.json').read_bytes()))
+
+    def test_component_owner_exception_never_becomes_success(self):
+        def incremental(args, directory):
+            (directory / 'incremental.json').write_text('{"status":"passed"}')
+            raise ValueError('original owner failed restoration')
+        with self.assertRaisesRegex(ValueError, 'original owner failed restoration'):
+            self.run_component_validation_fixture('database', incremental)
+
+    def test_component_failed_incremental_record_is_rejected(self):
+        def incremental(args, directory):
+            value = {phase: {'sha256': {'image': 'a'}} for phase in ('baseline', 'noop', 'restore')}
+            value.update(edit={'sha256': {'image': 'b'}}, status='failed')
+            (directory / 'incremental.json').write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'Component incremental check did not pass'):
+            self.run_component_validation_fixture('mgmt-framework', incremental)
+
+    def test_component_incremental_changed_restore_is_rejected(self):
+        def incremental(args, directory):
+            value = dict(baseline={'image': 'a'}, unchanged={'image': 'a'},
+                         changed={'image': 'b'}, restored={'image': 'c'}, status='passed')
+            (directory / 'incremental.json').write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'Component incremental restoration differs'):
+            self.run_component_validation_fixture('snmp', incremental)
+
+
+
+
+class BaseOwnerJoinTests(unittest.TestCase):
+    def fixture(self, failure=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source, private = root / 'source', root / 'private'
+        source.mkdir(); private.mkdir(); (private / 'owner-checks').mkdir()
+        revisions = {'base_images.py': '510da5e87c168fae4b9ccbaa491255610e237f855f976f8df3e184afa7e3762b',
+                     'config_engine_rebuild.py': 'a77668728df8bd5f417541d9819a82e727dde8d73eb38c32ab93991857aa547b'}
+        for name in revisions:
+            path = source / 'tools/bazel/ci' / name
+            path.parent.mkdir(parents=True, exist_ok=True); path.write_text('source data only')
+        files = ['docker-base-trixie.gz', 'docker-config-engine-trixie.gz',
+                 'config-engine.startup.tar', 'config-engine.python-and-models.tar',
+                 'docker-config-engine-trixie.source.tar']
+        artifacts, collected_paths = {}, {}
+        for name in files:
+            stage = private / ('native-parent-preflight' if name.endswith('.gz') else 'component-remainder')
+            stage.mkdir(exist_ok=True)
+            path = stage / name; path.write_text('original-' + name)
+            collected_paths[name] = path
+            artifacts[name] = {'target': '//fixed:' + name, 'bytes': path.stat().st_size, 'sha256': sha(path)}
+        receipt = {'source_revision': 'c' * 40, 'artifacts': artifacts}
+        self.calls = []
+        def check(path):
+            return revisions[path.name] if path.parent == source / 'tools/bazel/ci' else sha(path)
+        def execute(argv, directory, outer, label, **kwargs):
+            self.calls.append(label)
+            self.assertEqual(kwargs['cwd'], source)
+            if label == 'original-base-owner':
+                self.assertIn('--config-engine-acceptance', argv)
+                for name in files: shutil.copyfile(collected_paths[name], directory / name)
+                policy = directory / 'installed-images-policy.json'; policy.write_text('{"images": []}')
+                images = {}
+                for image in ('docker-base-trixie', 'docker-config-engine-trixie'):
+                    images[image] = {'manifest_digest': 'sha256:' + 'a' * 64}
+                    (directory / (image + '.validation.json')).write_text(json.dumps({
+                        **images[image], 'config': {'Env': ['PATH=/usr/bin']}}))
+                value = {'status': 'passed', 'architecture': 'amd64', 'revision': 'c' * 40,
+                         'images': images, 'artifacts': artifacts, 'installed_images_policy_sha256': sha(policy)}
+                (directory / 'receipt.json').write_text(json.dumps(value))
+                (directory / 'action-audit.json').write_text('{"status": "passed"}')
+                if failure == 'archive': (directory / files[0]).write_text('changed')
+            else:
+                self.assertEqual(label, 'original-config-engine-rebuild')
+                selected = dict(zip(('base', 'image', 'startup', 'python_and_models', 'native'), files))
+                baseline = {name: artifacts[file]['sha256'] for name, file in selected.items()}
+                edited = {**baseline, 'startup': 'e' * 64, 'image': 'e' * 64}
+                restored = {**baseline, 'native': 'f' * 64} if failure == 'restore' else baseline
+                (directory / 'config-engine-rebuild.json').write_text(json.dumps({'status': 'passed',
+                    'phases': {name: {'sha256': value} for name, value in (
+                        ('baseline', baseline), ('noop', baseline), ('template-edit', edited), ('restore', restored))}}))
+        self.enterContext(mock.patch.object(caller, 'manifest_snapshot', return_value={'manifest': 'fixed'}))
+        return source, private, receipt, 'fixed-bazel', SimpleNamespace(execute=execute), shutil.copyfile, SimpleNamespace(sha=check), (lambda value: None), collected_paths
+
+    def test_original_base_and_rebuild_results_bind_exact_cohort_bytes(self):
+        args = self.fixture()
+        result = caller.component_base_owner_checks(*args)
+        self.assertEqual(self.calls, ['original-base-owner', 'original-config-engine-rebuild'])
+        self.assertEqual(result['status'], 'passed')
+        self.assertNotIn('Env', json.dumps(result))
+        self.assertFalse(result['diagnostic_validation_public_admission_claimed'])
+        self.assertTrue((args[1] / 'owner-checks/base/installed-images-policy.json').is_file())
+
+    def test_base_join_uses_native_first_paths_and_preserves_remainder_outputs(self):
+        args = self.fixture()
+        before = {name: sha(path) for name, path in args[-1].items()}
+        self.assertFalse((args[1] / 'docker-base-trixie.gz').exists())
+        self.assertEqual(args[-1]['docker-base-trixie.gz'].parent.name, 'native-parent-preflight')
+        self.assertEqual(args[-1]['config-engine.startup.tar'].parent.name, 'component-remainder')
+        caller.component_base_owner_checks(*args)
+        self.assertEqual({name: sha(path) for name, path in args[-1].items()}, before)
+
+    def test_base_archive_mismatch_stops_before_rebuild_and_runtime(self):
+        args = self.fixture('archive')
+        with self.assertRaisesRegex(ValueError, 'archive differs'):
+            caller.component_base_owner_checks(*args)
+        self.assertEqual(self.calls, ['original-base-owner'])
+
+    def test_config_engine_restoration_must_match_original_collected_outputs(self):
+        args = self.fixture('restore')
+        with self.assertRaisesRegex(ValueError, 'did not restore'):
+            caller.component_base_owner_checks(*args)
+        self.assertFalse((args[1] / 'owner-checks/base/source-owner.json').exists())
+
+class RuntimeWiringTests(unittest.TestCase):
+    def test_root_phase_accepts_only_context_and_seal_without_build_arguments(self):
+        with mock.patch.object(sys, 'argv', ['caller', 'runtime-root', '--runtime-context',
+                '/fixed/context.json', '--runtime-context-sha256', 'a' * 64]), \
+                mock.patch.object(caller, 'component_runtime_root', return_value=0) as root:
+            self.assertEqual(caller.main(), 0)
+        root.assert_called_once_with(Path('/fixed/context.json'), 'a' * 64)
+
+    def test_root_phase_rejects_general_build_arguments(self):
+        with mock.patch.object(sys, 'argv', ['caller', 'runtime-root', '--runtime-context',
+                '/fixed/context.json', '--runtime-context-sha256', 'a' * 64, '--source', '/fixed/source']), \
+                mock.patch.object(caller, 'component_runtime_root') as root:
+            with self.assertRaisesRegex(ValueError, 'only its sealed context'):
+                caller.main()
+        root.assert_not_called()
+
+    def test_runtime_phase_uses_distinct_control_source_native_and_output_paths(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dirs = {name: root / name for name in ('source', 'native', 'scratch', 'output', 'control')}
+            for path in dirs.values():
+                path.mkdir()
+            plan = caller.load_plan(PLAN)
+            argv = ['caller', 'runtime', '--plan', str(PLAN), '--archives', str(root),
+                    '--mirrors', str(root)]
+            for name, path in dirs.items():
+                argv.extend(['--' + name, str(path)])
+            with mock.patch.object(sys, 'argv', argv), \
+                    mock.patch.object(caller, 'environment_check') as environment, \
+                    mock.patch.object(caller, 'run_component_runtimes', return_value={'status': 'pending'}) as run:
+                self.assertEqual(caller.main(), 0)
+            environment.assert_called_once_with(plan, dirs['scratch'], dirs['source'])
+            run.assert_called_once_with(plan, PLAN.resolve(), dirs['source'], dirs['native'],
+                                        dirs['scratch'], dirs['output'], dirs['control'])
+
+    def test_child_command_preserves_home_presence_without_replacement(self):
+        present = caller.component_root_command(Path('/fixed/context'), 'a' * 64, True)
+        absent = caller.component_root_command(Path('/fixed/context'), 'a' * 64, False)
+        self.assertEqual(present[:3], ['sudo', '-n', '--preserve-env=HOME'])
+        self.assertEqual(absent[:5], ['sudo', '-n', '/usr/bin/env', '-u', 'HOME'])
+        for value in (present, absent):
+            self.assertIn('runtime-root', value)
+            self.assertNotIn('--source', value)
+            self.assertNotIn('--plan', value)
+
+    def test_group_paths_are_distinct_for_both_state_and_exec(self):
+        row = {'run': '123', 'attempt': '1'}
+        owner = SimpleNamespace(state_paths=lambda row, temporary: {
+            'state': Path('/tmp/fixed'), 'exec': Path('/run/fixed')})
+        rows = [caller.component_runtime_paths(owner, row, '/tmp', family)
+                for family in caller.component_runtime_families()]
+        self.assertEqual(len(rows), 19)
+        self.assertEqual(len({item['state'] for item in rows}), 19)
+        self.assertEqual(len({item['exec'] for item in rows}), 19)
+        self.assertTrue(all(item['component_runtime'] is True for item in rows))
+        self.assertTrue(all(item['docker_data'].name == 'source-image-docker-123-1' for item in rows))
+
+    def test_public_projection_excludes_complete_private_supervision(self):
+        identity = {'bytes': 5, 'sha256': 'b' * 64}
+        original = {'schema': 1, 'status': 'passed', 'source_revision': 'c' * 40,
+            'source_tree': 'd' * 40, 'operator': {'run': '123'}, 'cohort_sha256': 'e' * 64,
+            'host_kernel_configuration_changed': False, 'full_vs_admission_claimed': False,
+            'prerequisites': {'private_path': '/private/worker'}, 'archives': {'image': identity},
+            'groups': {'base': {'status': 'passed', 'daemon_started': True, 'daemon_closed': True,
+                'native_stop': {'private_data_removed': True, 'diagnostic_path': '/private/cleanup'},
+                'component_runtime': {'revision': 'c' * 40, 'archives': {'image': identity},
+                    'reports': {'runtime.json': {**identity, 'path': '/private/report',
+                        'original_path': '/private/original'}},
+                    'original_owner_results': {'environment': {'HOME': '/private/home'}}}}}}
+        snapshot = copy.deepcopy(original)
+        public = caller.public_component_runtime_result(original)
+        self.assertEqual(original, snapshot)
+        self.assertNotIn('/private', json.dumps(public))
+        self.assertEqual(public['groups']['base']['reports'], {'runtime.json': identity})
+        self.assertTrue(public['groups']['base']['private_data_removed'])
+
+    def test_runtime_staging_uses_distinct_component_owner_and_preserves_observer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, native, control, scratch = [root / name for name in ('source', 'native', 'control', 'scratch')]
+            for path in (source, native, control, scratch):
+                path.mkdir()
+            name = 'tools/bazel/ci/vs_runtime_check.py'
+            component = 'tools/bazel/ci/vs_component_runtime_owner.py'
+            original = control / name
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b'original observer and its pinned jobs')
+            raw = b'qualified component owner'
+            (control / component).write_bytes(raw)
+            entry = {'origin': 'control', 'source_path': component, 'bytes': len(raw),
+                     'sha256': hashlib.sha256(raw).hexdigest()}
+            staged = caller.stage_component_runtime({'runtime_control_files': {name: entry}},
+                source, native, scratch, control)
+            self.assertEqual((staged / name).read_bytes(), raw)
+            self.assertEqual(original.read_bytes(), b'original observer and its pinned jobs')
+            rejected = root / 'rejected'
+            rejected.mkdir()
+            with self.assertRaisesRegex(ValueError, 'Different runtime control source path'):
+                caller.stage_component_runtime({'runtime_control_files': {name: dict(entry, source_path=name)}},
+                    source, native, rejected, control)
+
+    def test_runtime_staging_uses_native_preflight_without_consumer_substitution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, native, control, scratch = [root / name for name in ('source', 'native', 'control', 'scratch')]
+            for path in (source, native, control, scratch):
+                path.mkdir()
+            name = 'tools/bazel/ci/source_worker_preflight.py'
+            for path, data in ((source, b'different consumer API'), (native, b'qualified native API')):
+                target = path / name
+                target.parent.mkdir(parents=True)
+                target.write_bytes(data)
+            raw = (native / name).read_bytes()
+            plan = {'runtime_control_files': {name: {'origin': 'native', 'bytes': len(raw),
+                    'sha256': hashlib.sha256(raw).hexdigest()}}}
+            staged = caller.stage_component_runtime(plan, source, native, scratch, control)
+            self.assertEqual((staged / name).read_bytes(), raw)
 
 if __name__ == '__main__':
     unittest.main()
