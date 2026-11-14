@@ -16,10 +16,11 @@ go_deps = use_extension("@bazel_gazelle//:extensions.bzl", "go_deps")
 go_deps.zip_lock(file = "//tools/bazel/go:go.zip.sums.json")
 use_repo(go_deps, go_zip_lock_plan = "bazel_gazelle_go_repository_config")
 
-bazel_dep(name = "aspect_bazel_lib", version = "2.14.0")
-bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "aspect_bazel_lib", version = "2.19.3")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "gawk", version = "5.3.2.sonic.1")
 bazel_dep(name = "googletest", version = "1.16.0")
+bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # P4 producers retain their upstream Make/configure builds and export TARs.
@@ -80,6 +81,7 @@ bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f8
 bazel_dep(name = "hsflowd", version = "2.1.26.sonic.1")
 bazel_dep(name = "sflowtool", version = "6.11.0.sonic.3")
 bazel_dep(name = "libpsample", version = "1.1.0.sonic.2")
+bazel_dep(name = "scapy", version = "2.6.1.sonic.2")
 bazel_dep(
     name = "sonic-yang-mgmt",
     version = "1.0.0-9ab452d22773c41783092ae3bd6c206d6c257c8d",
@@ -228,6 +230,24 @@ apt_inputs(
     root_packages = ["iputils-ping", "libjemalloc2", "libyaml-cpp0.8"],
 )
 
+# Orchagent debug selects its seven roots from the shared snapshot lock without
+# pulling openssh-server's libwtmpdb0 dependency from sysmgr_debug_debian.
+apt_inputs(
+    name = "orchagent_debug_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    dependency_set = "sysmgr_debug_debian",
+    architecture = "amd64",
+    root_packages = [
+        "gdb",
+        "gdbserver",
+        "libedit2",
+        "libfido2-1",
+        "sshpass",
+        "strace",
+        "vim",
+    ],
+)
+
 # eventd owns its Lua runtime and the private Redis service used by its tests.
 apt.install(
     dependency_set = "eventd_deps",
@@ -305,12 +325,14 @@ source_modules(
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
+        "@sonic_sairedis//:MODULE.bazel": "sonic-sairedis",
         "@sonic_swss_common//:MODULE.bazel": "sonic-swss-common",
         "@hsflowd//:MODULE.bazel": "hsflowd",
         "@sflowtool//:MODULE.bazel": "sflowtool",
         "@libpsample//:MODULE.bazel": "libpsample",
         "@sonic_mgmt_common//:MODULE.bazel": "sonic-mgmt-common",
         "@sonic_gnmi//:MODULE.bazel": "sonic-gnmi",
+        "@scapy//:MODULE.bazel": "scapy",
         "@libyang//:MODULE.bazel": "libyang",
         "@libyang_python//:MODULE.bazel": "libyang-python",
         "@libnl3//:MODULE.bazel": "libnl3",
@@ -375,7 +397,6 @@ local_path_override(
 )
 
 bazel_dep(name = "protobuf-legacy", version = "3.21.12.sonic.2", repo_name = "sonic_protobuf")
-bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 
 use_repo(apt, "sysmgr_debian", "sysmgr_debug_debian", "sysmgr_test_debian")
 

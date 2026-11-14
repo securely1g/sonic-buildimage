@@ -154,6 +154,77 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
                     self.assertNotEqual(failed.returncode, 0)
                     self.assertNotIn('"python3"', calls.read_text())
 
+    def test_draft_wrapper_forwards_startup_jvm_and_output_base_options(self):
+        wrapper = ROOT / "tools/bazel/ci/libteam_draft_bazel.sh"
+        oci_workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        step = next(item for item in oci_workflow["jobs"]["archive"]["steps"]
+                    if item.get("name") == "Validate Orchagent owner packages and original Scapy tests")
+        heredoc = re.search(r"cat > \"\$owner_bazel\" <<'SH'\n(.*?)\n\s*SH", step["run"], re.S)[1]
+        import textwrap
+        heredoc = textwrap.dedent(heredoc)
+        with tempfile.TemporaryDirectory(prefix="draft startup flags ") as temporary:
+            root = Path(temporary)
+            calls = root / "calls.jsonl"
+            recorder = root / "bazel"
+            recorder.write_text(
+                "#!/usr/bin/python3\nimport json, os, sys\n"
+                "with open(os.environ['CALLS'], 'a') as out:\n"
+                "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "if sys.argv[1:] == ['--version']:\n"
+                "    print('bazel 8.5.1')\n"
+            )
+            recorder.chmod(0o755)
+            owner_output = root / "orchagent-owner-output.abc12345"
+            owner_output.mkdir()
+            owner_bazel = root / "orchagent-owner-bazel.abc12345"
+            owner_bazel.write_text(heredoc + "\n")
+            owner_bazel.chmod(0o755)
+            base_env = {k: v for k, v in os.environ.items() if k != "OWNER_OUTPUT"}
+            base_env.update(PATH=str(root) + ":/usr/bin:/bin",
+                            CALLS=str(calls), BAZEL=str(wrapper), RUNNER_TEMP=str(root))
+            missing = subprocess.run(["bash", str(owner_bazel), "query", "//..."],
+                                     cwd=ROOT, env=base_env, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            env = dict(base_env, OWNER_OUTPUT=str(owner_output))
+            for args in (["--version"], ["query", "//..."], ["build", "//dockers/docker-orchagent:ci_artifacts"],
+                         ["cquery", "//dockers/docker-orchagent:ci_artifacts"],
+                         ["test", "//dockers/docker-orchagent:ci_tests"]):
+                subprocess.run(["bash", str(owner_bazel), *args], cwd=ROOT, env=env,
+                               capture_output=True, text=True, check=True)
+            recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual(recorded[0], ["--version"])
+            # query: no pre-shutdown, no build/test extra flags
+            self.assertIn("query", recorded[1])
+            self.assertEqual(recorded[1][:2], [f"--output_base={owner_output}", "--host_jvm_args=-Xmx6g"])
+            self.assertNotIn("--noexecution_log_sort", recorded[1])
+            self.assertNotIn("--experimental_build_event_upload_strategy=local", recorded[1])
+            # build: pre-shutdown with matching startup flags + build with --noexecution_log_sort and local BEP upload
+            self.assertEqual(recorded[2][-1], "shutdown")
+            self.assertEqual(recorded[2][0], f"--output_base={owner_output}")
+            self.assertIn("--host_jvm_args=-Xmx6g", recorded[2])
+            self.assertIn("--nohome_rc", recorded[2])
+            build_call = recorded[3]
+            self.assertEqual(build_call[:2], [f"--output_base={owner_output}", "--host_jvm_args=-Xmx6g"])
+            self.assertLess(build_call.index("--host_jvm_args=-Xmx6g"), build_call.index("build"))
+            self.assertIn("--noexecution_log_sort", build_call)
+            self.assertIn("--experimental_build_event_upload_strategy=local", build_call)
+            self.assertLess(build_call.index("build"), build_call.index("--noexecution_log_sort"))
+            self.assertLess(build_call.index("--noexecution_log_sort"),
+                            build_call.index("--experimental_build_event_upload_strategy=local"))
+            # cquery: no pre-shutdown, no build/test extra flags
+            self.assertIn("cquery", recorded[4])
+            self.assertNotIn("--noexecution_log_sort", recorded[4])
+            self.assertNotIn("--experimental_build_event_upload_strategy=local", recorded[4])
+            # test: pre-shutdown + test with local BEP upload and without --noexecution_log_sort
+            self.assertEqual(recorded[5][-1], "shutdown")
+            self.assertEqual(recorded[5][0], f"--output_base={owner_output}")
+            test_call = recorded[6]
+            self.assertIn("test", test_call)
+            self.assertNotIn("--noexecution_log_sort", test_call)
+            self.assertIn("--experimental_build_event_upload_strategy=local", test_call)
+            self.assertLess(test_call.index("test"),
+                            test_call.index("--experimental_build_event_upload_strategy=local"))
+
 
 if __name__ == "__main__":
     unittest.main()

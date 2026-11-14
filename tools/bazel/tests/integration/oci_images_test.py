@@ -24,6 +24,8 @@ def main():
     for name in (*IMAGE_INPUTS, "base_symbols", "base_metadata", "config_metadata", "workspace_module",
                  "policy", "make_runtime_archive", "make_debug_archive", "readelf", "objcopy"):
         parser.add_argument("--" + name.replace("_", "-"), required=True, type=Path)
+    parser.add_argument("--debug-apt-lock-path", type=Path)
+    parser.add_argument("--package-state-contract", type=Path)
     for name in ("runtime_payload_layer", "debug_payload_layer"):
         parser.add_argument("--" + name.replace("_", "-"), action="append", required=True, type=Path)
     inputs = vars(parser.parse_args())
@@ -33,6 +35,8 @@ def main():
                 variant + " Make archive differs from the Bazel output")
     images = image_validation.validate_images(
         source_root=Path.cwd(), policy=policy, runtime_handoff=None, debug_handoff=None,
+        debug_apt_lock_path=inputs["debug_apt_lock_path"],
+        package_state_contract=inputs["package_state_contract"],
         runtime_payload_layers=inputs["runtime_payload_layer"],
         debug_payload_layers=inputs["debug_payload_layer"],
         **{name: inputs[name] for name in IMAGE_INPUTS})

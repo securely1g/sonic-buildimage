@@ -199,6 +199,57 @@ class VerificationWorkflowTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
 
+    def test_sflow_evidence_preserves_previous_and_repeated_runs(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        upload = next(step for step in steps if step.get("name") == "Retain sFlow archives and source evidence")
+        preserve = next(
+            step for step in steps
+            if step.get("name") == "Preserve completed sFlow evidence before Orchagent acceptance"
+        )
+        build = next(step for step in steps if step.get("name") == "Build Orchagent variants from source owners")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(build))
+        self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
+        with tempfile.TemporaryDirectory(prefix="sflow evidence ") as temporary:
+            root = Path(temporary)
+            scratch = root / "scratch"
+            old = scratch / "pre-orchagent-artifacts"
+            old.mkdir(parents=True)
+            (old / "receipt").write_text("previous")
+
+            def run(directory=scratch):
+                return subprocess.run(
+                    ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
+                    cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=str(directory)),
+                )
+
+            destinations = []
+            for value in ("first", "second"):
+                artifacts = root / "artifacts"
+                artifacts.mkdir()
+                (artifacts / "receipt").write_text(value)
+                result = run()
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertFalse(artifacts.exists())
+                candidates = set(scratch.glob("pre-orchagent-artifacts.*")) - set(destinations)
+                self.assertEqual(len(candidates), 1)
+                destination = candidates.pop()
+                self.assertEqual(destination.stat().st_mode & 0o777, 0o700)
+                destinations.append(destination)
+            receipts = {p: p.read_text() for p in scratch.rglob("receipt")}
+            self.assertCountEqual(receipts.values(), ["previous", "first", "second"])
+            self.assertEqual((old / "receipt").read_text(), "previous")
+            result = run()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual({p: p.read_text() for p in scratch.rglob("receipt")}, receipts)
+            artifacts.mkdir()
+            (artifacts / "receipt").write_text("keep on failure")
+            result = run(root / "missing")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
+
     def test_sysmgr_evidence_requires_a_build_attempt_but_retains_failure_evidence(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["archive"]["steps"]

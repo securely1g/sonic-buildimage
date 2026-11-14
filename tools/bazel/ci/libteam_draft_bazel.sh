@@ -8,7 +8,7 @@ fi
 startup_options=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --batch|--output_base=*|--output_user_root=*) startup_options+=("$1"); shift ;;
+    --batch|--host_jvm_args=*|--output_base=*|--output_user_root=*) startup_options+=("$1"); shift ;;
     *) break ;;
   esac
 done
