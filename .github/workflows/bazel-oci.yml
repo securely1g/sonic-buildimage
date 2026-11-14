@@ -1885,75 +1885,37 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: teamd-image-amd64-${{ github.sha }}
           path: artifacts/teamd
-      - name: Verify and load only this run's images
-        run: |
-          python3 - <<'PY'
-          import hashlib,json,subprocess
-          from pathlib import Path
-          from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
-          from tools.bazel.ci.sysmgr_image import source_identity
-          directory=Path('artifacts/teamd')
-          receipt=json.loads((directory/'validation.json').read_text())
-          assert receipt['status']=='passed' and receipt['architecture']=='amd64'
-          identity = source_identity()
-          if (receipt['revision'], receipt['tested_revision_parents']) != (identity['revision'], identity['tested_revision_parents']):
-              raise ValueError('installed runtime evidence belongs to a different checkout')
-          for name in ['docker-teamd','docker-teamd-dbg']:
-              path=directory/(name+'.gz')
-              assert hashlib.sha256(path.read_bytes()).hexdigest()==receipt['artifacts'][path.name]['sha256']
-              expected=json.loads((directory/(name+'.validation.json')).read_text())
-              tag='sonic-teamd-validation-'+name+':latest'
-              actual,config,_=load_archive(path,tag,expected['config_digest'])
-              verify_loaded_image(actual,config,expected['config_digest'])
-              assert actual['Os']=='linux' and actual['Architecture']=='amd64'
-              assert actual['RootFS']['Layers']==expected['rootfs']['diff_ids']
-          assert hashlib.sha256((directory/'test-redis.tar').read_bytes()).hexdigest()==receipt['artifacts']['test-redis.tar']['sha256']
-          PY
-          mkdir -p artifacts/teamd/redis-fixture
-          tar --no-same-owner -xf artifacts/teamd/test-redis.tar -C artifacts/teamd/redis-fixture
       - name: Enable the kernel team driver on this isolated CI worker
         run: |
           test -d /sys/module/team || sudo modprobe team
           test -d /sys/module/team_mode_loadbalance || sudo modprobe team_mode_loadbalance
-      - name: Exercise real Teamd control and inherited SWSS services
-        run: |
-          set -euo pipefail
-          for image in docker-teamd docker-teamd-dbg; do
-            probe_args=()
-            if [[ "$image" == *-dbg ]]; then probe_args+=(--debug); fi
-            # teamdctl resolves the interface through PF_PACKET/SOCK_DGRAM;
-            # that read-only ioctl socket requires NET_RAW as well as NET_ADMIN.
-            docker run --rm --network=none --cap-drop=ALL --cap-add=NET_ADMIN --cap-add=NET_RAW --security-opt=no-new-privileges \
-              --read-only --pids-limit=128 --memory=4g --cpus=2 \
-              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
-              --tmpfs /run/teamd:rw,nosuid,nodev,noexec,size=16m \
-              --tmpfs /var/warmboot:rw,nosuid,nodev,noexec,size=16m \
-              --mount type=volume,dst=/run/redis \
-              --mount "type=bind,src=$PWD/dockers/docker-teamd/bazel/runtime_probe.py,dst=/probe/runtime_probe.py,readonly" \
-              --mount "type=bind,src=$PWD/tools/bazel/oci/runtime_smoke.py,dst=/probe/runtime_smoke.py,readonly" \
-              --mount "type=bind,src=$PWD/artifacts/teamd/redis-fixture,dst=/probe/redis,readonly" \
-              --mount "type=bind,src=$PWD/artifacts/teamd/validation.json,dst=/probe/validation.json,readonly" \
-              --entrypoint /usr/bin/python3 "sonic-teamd-validation-$image:latest" -B /probe/runtime_probe.py --validation /probe/validation.json "${probe_args[@]}" \
-              | tee "artifacts/teamd/$image.runtime.json"
-          done
-      - name: Check both installed teamd runtime receipts
-        run: |
-          python3 - <<'PYREPORT'
-          import json
-          from pathlib import Path
-          for image in ('docker-teamd', 'docker-teamd-dbg'):
-              receipt = json.loads((Path('artifacts/teamd') / (image + '.runtime.json')).read_text())
-              if receipt.get('status') != 'passed':
-                  raise SystemExit(f'{image} did not pass installed service validation')
-          PYREPORT
+      - name: Exercise and verify both installed Teamd images
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: python3 -B tools/bazel/ci/teamd_loaded.py --artifacts artifacts/teamd
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: teamd-runtime-amd64-${{ github.sha }}
-          path: artifacts/teamd/*.runtime.json
+          path: |
+            artifacts/teamd/*.runtime.json
+            artifacts/teamd/loaded-validation.json
           if-no-files-found: error
           retention-days: 14
 

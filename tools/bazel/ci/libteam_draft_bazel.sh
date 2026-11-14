@@ -3,7 +3,7 @@
 # Preserves explicit --bazelrc=tools/bazel/common.bazelrc across fresh snapshots.
 set -euo pipefail
 if [[ $# == 1 && "$1" == --version ]]; then
-  exec bazel --version
+  exec "${BAZEL_REAL:-bazel}" --version
 fi
 startup_options=()
 while [[ $# -gt 0 ]]; do
@@ -36,7 +36,7 @@ if [[ -n "${SONIC_BASE_REVIEW_REGISTRY:-}" ]]; then
   done
 fi
 # The cache-reuse verifier runs this wrapper from fresh source snapshots too.
-exec bazel "${startup_options[@]}" --nosystem_rc --nohome_rc --noworkspace_rc \
+exec "${BAZEL_REAL:-bazel}" "${startup_options[@]}" --nosystem_rc --nohome_rc --noworkspace_rc \
   --bazelrc="$PWD/tools/bazel/common.bazelrc" \
   "$bazel_command" \
   --registry="$registry" \

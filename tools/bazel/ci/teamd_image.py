@@ -4,6 +4,7 @@
 import argparse
 from functools import partial
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import base_images, bazel_commands, build, command_log, resolution
-from tools.bazel.ci.sysmgr_image import source_identity
+from tools.bazel.ci.sysmgr_image import clean_source, source_identity
 from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 
 OWNER = "//dockers/docker-teamd:"
@@ -287,9 +288,14 @@ def main():
     parser.add_argument("--bazel", default="tools/bazel/ci/libteam_draft_bazel.sh")
     args = parser.parse_args()
     directory = args.artifacts.resolve(); directory.mkdir(parents=True, exist_ok=True)
+    # Dedicated worker checkouts keep evidence and transient files outside the source.
+    if os.environ.get("BAZEL_REAL"):
+        clean_source(directory)
     if args.phase == "build": build_images(args, directory)
     elif args.phase == "validate": validate_images(directory)
     else: incremental(args, directory)
+    if os.environ.get("BAZEL_REAL"):
+        clean_source(directory)
 
 
 if __name__ == "__main__":
