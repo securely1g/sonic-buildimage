@@ -29,6 +29,10 @@ jobs:
             runner: ubuntu-24.04-arm
             platform: aarch64_trixie
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6eb6ac5c29787461e34b243f580203f3f558c87e
+      BAZEL: ${{ runner.temp }}/frr-python-bazel
     defaults:
       run:
         shell: bash
@@ -62,28 +66,38 @@ jobs:
           disk-cache: buildimage-frr-python-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Select the Draft catalog while retaining execution caches
+        run: |
+          cat > "$BAZEL" <<'BAZEL'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec bazel --noworkspace_rc --bazelrc="$PWD/tools/bazel/common.bazelrc" "$@"
+          BAZEL
+          chmod 700 "$BAZEL"
+
       - name: Build wheels and runtime TARs and run complete upstream suites
         env:
           NATIVE_PLATFORM: ${{ matrix.platform }}
           NATIVE_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
           set -euo pipefail
-          options=(--platforms="@sonic_build_infra//platforms:$NATIVE_PLATFORM"
+          options=(--registry="$SONIC_BAZEL_REGISTRY" --registry=https://bcr.bazel.build
+                   --platforms="@sonic_build_infra//platforms:$NATIVE_PLATFORM"
                    --host_platform="@sonic_build_infra//platforms:$NATIVE_PLATFORM"
                    --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000
                    --lockfile_mode=update)
-          bazel build "${options[@]}" \
+          "$BAZEL" build "${options[@]}" \
             //src/sonic-frr-mgmt-framework:sonic_frr_mgmt_framework_wheel \
             //src/sonic-frr-mgmt-framework:runtime \
             //src/sonic-bgpcfgd:sonic_bgpcfgd_wheel \
             //src/sonic-bgpcfgd:runtime
-          bazel test "${options[@]}" --nocache_test_results --test_output=errors \
+          "$BAZEL" test "${options[@]}" --nocache_test_results --test_output=errors \
             //src/sonic-frr-mgmt-framework:upstream_tests \
             //src/sonic-bgpcfgd:upstream_tests
           # The new installed-wheel acceptance is scoped to native AMD64.
           # Preserve the existing ARM64 source suite without extending its scope.
           if [[ "$NATIVE_ARCHITECTURE" == amd64 ]]; then
-            bazel test "${options[@]}" --nocache_test_results --test_output=errors \
+            "$BAZEL" test "${options[@]}" --nocache_test_results --test_output=errors \
               //src/sonic-frr-mgmt-framework:installed_wheel_test \
               //src/sonic-bgpcfgd:installed_wheel_test
           fi
@@ -99,7 +113,8 @@ jobs:
           directory = Path("artifacts/frr-python")
           directory.mkdir(parents=True)
           platform = "@sonic_build_infra//platforms:" + os.environ["NATIVE_PLATFORM"]
-          options = ["--platforms=" + platform, "--host_platform=" + platform,
+          options = ["--registry=" + os.environ["SONIC_BAZEL_REGISTRY"], "--registry=https://bcr.bazel.build",
+                     "--platforms=" + platform, "--host_platform=" + platform,
                      "--lockfile_mode=update"]
           event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
           pull = event.get("pull_request", {})
@@ -127,7 +142,7 @@ jobs:
               outputs = []
               for target in (component.replace("-", "_") + "_wheel", "runtime"):
                   paths = subprocess.check_output(
-                      ["bazel", "cquery", *options, "--output=files", package + ":" + target],
+                      [os.environ["BAZEL"], "cquery", *options, "--output=files", package + ":" + target],
                       text=True).splitlines()
                   if len(paths) != 1:
                       raise ValueError("Expected one package output: " + repr(paths))
@@ -166,6 +181,9 @@ jobs:
         if: matrix.architecture == 'amd64'
         run: |
           python3 tools/bazel/ci/frr_python_rebuild.py \
+            --bazel "$BAZEL" \
+            --bazel-arg="--registry=$SONIC_BAZEL_REGISTRY" \
+            --bazel-arg=--registry=https://bcr.bazel.build \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--jobs=4 \

@@ -245,8 +245,10 @@ jobs:
     container:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     env:
-      # Shared CI entry point with the canonical registry; the full Make VS job is separate.
+      # Shared CI entry point; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
     defaults:
       run:
         shell: bash
@@ -388,7 +390,8 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          # Default-catalog fixtures control their own review-registry environment.
+          env -u SONIC_BASE_REVIEW_REGISTRY python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B tools/bazel/ci/verify_make_archive.py \
             --artifacts artifacts/archive/make-export \
             --bazel "$BAZEL" \
@@ -1423,6 +1426,8 @@ jobs:
     env:
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
     defaults:
       run:
         shell: bash
@@ -1472,7 +1477,8 @@ jobs:
 
       - name: Check Make handoff and archive validation
         run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          # Default-catalog fixtures control their own review-registry environment.
+          env -u SONIC_BASE_REVIEW_REGISTRY python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
@@ -1976,7 +1982,7 @@ jobs:
         working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
-      BAZEL: bazel
+      BAZEL: artifacts/vs/bazel-prerequisites
       # Use the explicitly selected gRPC service, not the legacy HTTPS override.
       BAZEL_REMOTE_AUTH: ""
       SONIC_BAZEL_KERNEL_REMOTE_CACHE: grpc://172.16.0.4:9092
@@ -1994,7 +2000,10 @@ jobs:
       SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
       BAZEL_CONTAINER_ARGS: >-
+        --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6eb6ac5c29787461e34b243f580203f3f558c87e
+        --registry=https://bcr.bazel.build
         --jobs=4 --local_resources=memory=12288
         --remote_cache=grpc://172.16.0.4:9092
         --experimental_remote_downloader=grpc://172.16.0.4:9092
@@ -2111,6 +2120,13 @@ jobs:
         id: native_build
         run: |
           set -euo pipefail
+          mkdir -p artifacts/vs
+          cat > "$BAZEL" <<'BAZEL'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec bazel --noworkspace_rc --bazelrc="$PWD/tools/bazel/common.bazelrc" "$@"
+          BAZEL
+          chmod 700 "$BAZEL"
           bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
           test -s target/sonic-vs.bin
           test -s target/sonic-vs.bin.dockers
@@ -2265,7 +2281,9 @@ jobs:
       run:
         shell: bash
     env:
-      BAZEL: bazel
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
@@ -2282,6 +2300,8 @@ jobs:
           repository-cache: true
           disk-cache: gnmi-image-amd64
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Validate Make handoff and version inputs
         run: |
           python3 -B tools/bazel/tests/gnmi_make_test.py
@@ -2414,7 +2434,9 @@ jobs:
       run:
         shell: bash
     env:
-      BAZEL: bazel
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools

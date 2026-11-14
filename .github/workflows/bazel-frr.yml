@@ -68,8 +68,9 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Use the published dependencies from the maintained registry.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+          # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+          SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6eb6ac5c29787461e34b243f580203f3f558c87e
         run: |
           set -euo pipefail
           mkdir -p artifacts
