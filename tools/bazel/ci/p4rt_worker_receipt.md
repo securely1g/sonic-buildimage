@@ -16,12 +16,11 @@ expired, duplicate or missing requests require a new normal workflow run.
 
 An operator reviews that request and its source before dispatching `source_image:
 p4rt` on the contract's controller, with `source_revision: M`, the selected
-registry and `source_ci_request` set to the request artifact ID. Admission still
-requires an idle allowed worker, the existing resource and isolation checks, and
-a fresh capacity assessment of the shared filesystem. The existing 50 GiB
-preflight minimum alone is not a sufficient P4RT space budget. Preserve worker
-caches and account for concurrent jobs, intermediate images and receipt exports.
-There is no automatic assignment to a self-hosted worker from a PR event.
+registry, `source_worker_pool: sonic-slave-container-k3s` and `source_ci_request`
+set to the original request artifact ID. The controller verifies GitHub's assigned
+runner and actual pool, the reviewed resource profile, the installed cache owner
+and per-attempt scratch before accepting evidence. K3s uses the managed remote
+cache with local disk and repository caches disabled.
 
 The controller verifies the request's API provenance and current PR R/B, then
 runs the existing seven native phases, all 59 original owner tests, ten SDK roots
