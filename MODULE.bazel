@@ -355,6 +355,7 @@ source_modules(
     name = "image_source_modules",
     modules = {
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
+        "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
         "@libteam//:MODULE.bazel": "libteam",
         "@sonic_dash_api//:MODULE.bazel": "sonic-dash-api",
         "@socat//:MODULE.bazel": "socat",
@@ -603,4 +604,21 @@ apt_inputs(
     dependency_set = "lldpd_deps",
     architecture = "amd64",
     root_packages = ["libbsd0", "libcap2", "libevent-2.1-7t64", "libreadline8t64", "libsnmp40t64", "libxml2"],
+)
+
+
+# MUX consumes the Linkmgrd runtime and debug TARs.
+bazel_dep(name = "sonic-linkmgrd", version = "1.0.0-e0f9f94901c30ed30f5fe82af6dafca38f8b35d7", repo_name = "sonic_linkmgrd")
+
+apt_inputs(
+    name = "mux_runtime_apt_inputs",
+    architecture = "amd64",
+    dependency_set = "trixie",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    root_packages = [
+        "libboost-filesystem1.83.0",
+        "libboost-log1.83.0",
+        "libboost-program-options1.83.0",
+        "libboost-thread1.83.0",
+    ],
 )
