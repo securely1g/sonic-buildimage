@@ -457,10 +457,11 @@ class ImageWorkerTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         worker.publish(SimpleNamespace(artifacts=root, image=image))
 
-    def test_workflow_allowlist_matches_fixed_driver_choices(self):
+    def test_workflow_allowlist_matches_fixed_driver_and_eventd_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
-        self.assertEqual(set(choices), set(worker.DRIVERS))
+        # Eventd uses dedicated reviewed-source jobs instead of the generic worker.
+        self.assertEqual(set(choices), set(worker.DRIVERS) | {"eventd"})
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)
         for gate in gates:

@@ -27,6 +27,7 @@ PRIVATE_CACHE_JOBS = {
     ("bazel-oci.yml", "archive"), ("bazel-supervisor-rust.yml", "native"),
     ("bazel-yang-models.yml", "package"),
 }
+AMD64_PRIVATE_CACHE_JOBS = {("bazel-oci.yml", "eventd_review")}
 PRIVATE_CACHE_SETTINGS = [
     "common --remote_cache=grpc://172.16.0.4:9092",
     "common --experimental_remote_downloader=grpc://172.16.0.4:9092",
@@ -70,6 +71,9 @@ class SetupBazelCacheTest(unittest.TestCase):
                             "${{ matrix.architecture == 'amd64' && 'bazel-x64' || 'bazel-arm64' }}",
                         ])
                         continue
+                    if (path.name, name) in AMD64_PRIVATE_CACHE_JOBS:
+                        self.assertEqual(job["runs-on"], ["self-hosted", "linux", "bazel-x64"])
+                        continue
                     self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
                     matrix = job["strategy"]["matrix"]["include"]
                     self.assertEqual(len(matrix), 2)
@@ -77,7 +81,7 @@ class SetupBazelCacheTest(unittest.TestCase):
                         ("self-hosted", "linux", "bazel-x64"),
                         ("self-hosted", "linux", "bazel-arm64"),
                     })
-        self.assertEqual(enabled, PRIVATE_CACHE_JOBS)
+        self.assertEqual(enabled, PRIVATE_CACHE_JOBS | AMD64_PRIVATE_CACHE_JOBS)
 
     def test_explicit_private_cache_preserves_local_caches_and_upload_policy(self):
         for upload in ("true", "false"):

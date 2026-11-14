@@ -9,10 +9,14 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
+        options: [none, preflight, eventd, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
+        type: string
+        default: ''
+      registry_revision:
+        description: Reviewed 40-character Eventd catalog commit (only for source_image=eventd)
         type: string
         default: ''
       source_worker:
@@ -219,6 +223,304 @@ jobs:
           name: source-worker-${{ matrix.worker }}-${{ github.run_id }}
           path: artifacts/source-worker/preflight.json
           if-no-files-found: error
+          retention-days: 14
+
+  eventd_review:
+    name: Reviewed Eventd images (AMD64)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'eventd'
+    runs-on: [self-hosted, linux, bazel-x64]
+    timeout-minutes: 300
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    defaults:
+      run:
+        shell: bash
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/review_bazel.sh
+      SONIC_BAZEL_REGISTRY_REVISION: ${{ inputs.registry_revision }}
+      SOURCE_DIRECTORY: review-source
+    steps:
+      - name: Validate the optional reviewed Eventd source selection
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+        run: |
+          [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$REGISTRY_REVISION" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ -z "$SOURCE_INPUTS_RUN" ]] || {
+              echo 'Select paired immutable Eventd source and catalog SHAs without source_inputs_run.' >&2
+              exit 2
+            }
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libarchive-tools libtool libxml2 pkg-config python3 python3-jinja2 python3-yaml tar unzip zstd
+          for tool in bsdtar gdb readelf objcopy; do
+            command -v "$tool"
+          done
+      - name: Checkout reviewed Eventd controller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Checkout the exact reviewed Eventd source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          path: review-source
+          persist-credentials: false
+      - name: Configure remote cache uploads
+        env:
+          UPLOAD_CACHE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: |
+          printf '\nbuild --remote_upload_local_results=%s\n' \
+            "$UPLOAD_CACHE" >> .bazelrc.user
+      - name: Check selected native architecture and generated dependency state
+        run: |
+          cd "$SOURCE_DIRECTORY"
+          git config --global --add safe.directory "$PWD"
+          test "$(uname -m)" = x86_64
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+      - name: Initialize selected Sysmgr's pinned gNOI source
+        run: |
+          cd "$SOURCE_DIRECTORY"
+          git submodule update --init -- src/sonic-sysmgr/gnoi
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: swss-layer-amd64
+          cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
+      - name: Restore default Bazel startup ownership
+        run: python3 tools/bazel/ci/repair_bazel_startup.py
+      - name: Configure shared source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
+      - name: Prepare the reviewed libpcre2-dev download
+        if: >-
+          github.event_name == 'workflow_dispatch' &&
+          inputs.source_revision == 'a5a1f8dfa22b0b99226968f8d11dfe9d654e9a97' &&
+          inputs.registry_revision == '6a69c2d89070d4d2ffc80b1e13626da387f7ea65'
+        run: |
+          cd "$SOURCE_DIRECTORY"
+          mkdir -p artifacts/source-downloads
+          python3 - <<'PYDEB'
+          import hashlib
+          import json
+          from pathlib import Path
+          from urllib.request import urlopen
+          from tools.bazel.gzip.source_archive import publish
+
+          URL = "https://snapshot.debian.org/file/648dd0b86870e854e02868553a2246b3470b96dd"
+          SHA256 = "b5cb023bfaad356053583af384f7b75caec3ac127a197f889164ef4d96397cef"
+          SIZE = 852668
+          FILENAME = "libpcre2-dev_10.46-1~deb13u1_amd64.deb"
+
+          def prepare():
+              destination = Path("artifacts/source-downloads") / FILENAME
+              receipt = Path("artifacts/eventd/libpcre2-dev-download.json")
+              if destination.is_symlink() or receipt.is_symlink():
+                  raise ValueError("Reviewed download path must not be a symlink")
+              cached = destination.is_file() and destination.stat().st_size == SIZE
+              if cached:
+                  cached = hashlib.sha256(destination.read_bytes()).hexdigest() == SHA256
+              if not cached:
+                  with urlopen(URL, timeout=60) as response:
+                      if response.status != 200:
+                          raise ValueError("Reviewed download did not return HTTP 200")
+                      data = response.read(SIZE + 1)
+                  if len(data) != SIZE or hashlib.sha256(data).hexdigest() != SHA256:
+                      raise ValueError("Reviewed download differs from the locked SHA256 or size")
+                  publish(data, destination)
+              result = {"url": URL, "sha256": SHA256, "bytes": SIZE,
+                        "filename": FILENAME, "reused_verified_file": cached}
+              publish((json.dumps(result, sort_keys=True) + "\n").encode(), receipt)
+              print(json.dumps(result, sort_keys=True))
+
+          if __name__ == "__main__":
+              prepare()
+          PYDEB
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> "$GITHUB_WORKSPACE/.bazelrc.user"
+      - name: Build Eventd runtime and debug images
+        id: eventd_build
+        run: |
+          cd "$SOURCE_DIRECTORY"
+          available_bytes=$(df --output=avail --block-size=1 /github/home | tail -n 1)
+          if (( available_bytes < 45 * 1024 * 1024 * 1024 )); then
+            echo 'Eventd image validation requires 45 GiB of free build space.' >&2
+            exit 1
+          fi
+          python3 -B tools/bazel/tests/eventd_make_test.py
+          python3 -B tools/bazel/ci/eventd_image.py build --bazel "$BAZEL" --artifacts artifacts/eventd
+      - name: Validate Eventd image contents, matching symbols and incremental reuse
+        run: |
+          cd "$SOURCE_DIRECTORY"
+          python3 -B tools/bazel/ci/eventd_image.py validate --artifacts artifacts/eventd
+          python3 -B tools/bazel/ci/eventd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/eventd
+          git diff --exit-code HEAD --
+      - name: Bind the completed Eventd artifacts to the reviewed source
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          CONTROL_REVISION: ${{ steps.checkout_identity.outputs.revision }}
+          CONTROL_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CONTROL_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          cd "$SOURCE_DIRECTORY"
+          python3 - <<'PYBIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          expected = os.environ['SOURCE_REVISION']
+          control = os.environ['CONTROL_REVISION']
+          assert control == os.environ['GITHUB_SHA']
+          assert subprocess.check_output(['git', '-C', os.environ['GITHUB_WORKSPACE'], 'rev-parse', 'HEAD'], text=True).strip() == control
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == expected
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True)
+          root = Path('artifacts/eventd')
+          for name, status in [('build-receipt.json', 'built'), ('validation.json', 'passed')]:
+              value = json.loads((root / name).read_text())
+              assert value['revision'] == expected and value['status'] == status
+          value = {'source_revision': expected, 'registry_revision': os.environ['REGISTRY_REVISION'],
+                   'control_revision': control, 'control_head_sha': os.environ['CONTROL_HEAD_SHA'],
+                   'control_base_sha': os.environ['CONTROL_BASE_SHA'],
+                   'loaded_driver_sha256': hashlib.sha256(Path('tools/bazel/ci/eventd_loaded.py').read_bytes()).hexdigest()}
+          (root / 'reviewed-selection.json').write_text(json.dumps(value, indent=2) + '\n')
+          PYBIND
+      - name: Prepare Eventd archives and reviewed public evidence
+        id: eventd_public
+        if: always() && steps.eventd_build.outcome != 'skipped'
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          CONTROL_REVISION: ${{ steps.checkout_identity.outputs.revision }}
+        run: |
+          test -d "$GITHUB_WORKSPACE/$SOURCE_DIRECTORY/artifacts/eventd"
+          test ! -L "$GITHUB_WORKSPACE/$SOURCE_DIRECTORY/artifacts/eventd"
+          test ! -L "$GITHUB_WORKSPACE/$SOURCE_DIRECTORY/artifacts/eventd/public"
+          python3 -B tools/bazel/ci/eventd_image.py publish --artifacts "$GITHUB_WORKSPACE/$SOURCE_DIRECTORY/artifacts/eventd"
+          python3 - <<'PYPUBLIC'
+          import hashlib, json, os
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json
+          source = Path(os.environ['GITHUB_WORKSPACE']) / os.environ['SOURCE_DIRECTORY']
+          root = source / 'artifacts/eventd'
+          selection = root / 'reviewed-selection.json'
+          if selection.exists():
+              assert selection.is_file() and not selection.is_symlink()
+              value = json.loads(selection.read_text())
+              expected = {'source_revision': os.environ['SOURCE_REVISION'], 'registry_revision': os.environ['REGISTRY_REVISION'],
+                          'control_revision': os.environ['CONTROL_REVISION'], 'control_head_sha': '', 'control_base_sha': '',
+                          'loaded_driver_sha256': hashlib.sha256((source / 'tools/bazel/ci/eventd_loaded.py').read_bytes()).hexdigest()}
+              assert value == expected
+              safe_json(value)
+              (root / 'public/reviewed-selection.json').write_text(json.dumps(value, indent=2) + '\n')
+          download = root / 'libpcre2-dev-download.json'
+          exact_pair = os.environ['SOURCE_REVISION'] == 'a5a1f8dfa22b0b99226968f8d11dfe9d654e9a97' and os.environ['REGISTRY_REVISION'] == '6a69c2d89070d4d2ffc80b1e13626da387f7ea65'
+          if selection.exists() and exact_pair:
+              assert download.is_file()
+          if download.exists():
+              assert exact_pair and download.is_file() and not download.is_symlink()
+              value = json.loads(download.read_text())
+              reused = value.pop('reused_verified_file')
+              assert type(reused) is bool
+              assert value == {'url': 'https://snapshot.debian.org/file/648dd0b86870e854e02868553a2246b3470b96dd',
+                               'sha256': 'b5cb023bfaad356053583af384f7b75caec3ac127a197f889164ef4d96397cef', 'bytes': 852668,
+                               'filename': 'libpcre2-dev_10.46-1~deb13u1_amd64.deb'}
+              value['reused_verified_file'] = reused
+              safe_json(value)
+              (root / 'public/libpcre2-dev-download.json').write_text(json.dumps(value, indent=2) + '\n')
+          PYPUBLIC
+      - name: Upload reviewed Eventd archives and public evidence
+        if: always() && steps.eventd_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eventd-reviewed-image-amd64
+          path: |
+            review-source/artifacts/eventd/public/*.gz
+            review-source/artifacts/eventd/public/*.tar
+            review-source/artifacts/eventd/public/public-receipt.json
+            review-source/artifacts/eventd/public/reviewed-selection.json
+            review-source/artifacts/eventd/public/libpcre2-dev-download.json
+            review-source/artifacts/eventd/public/validation.json
+            review-source/artifacts/eventd/public/incremental.json
+            review-source/artifacts/eventd/public/action-audit.json
+            review-source/artifacts/eventd/public/debug-packages.json
+            review-source/artifacts/eventd/public/build-summary.json
+            review-source/artifacts/eventd/public/MODULE.bazel.lock
+            review-source/artifacts/eventd/public/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  eventd_review_runtime:
+    name: Reviewed Eventd installed runtime (AMD64)
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.source_image == 'eventd'
+    needs: eventd_review
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require a successful reviewed Eventd build
+        env:
+          REVIEW_RESULT: ${{ needs.eventd_review.result }}
+        run: test "$REVIEW_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: eventd-reviewed-image-amd64
+          path: artifacts/eventd
+      - name: Verify the selected source against the downloaded Eventd evidence
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+        run: |
+          python3 - <<'PYBIND'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          root = Path('artifacts/eventd')
+          value = json.loads((root / 'reviewed-selection.json').read_text())
+          assert value['source_revision'] == os.environ['SOURCE_REVISION']
+          assert value['registry_revision'] == os.environ['REGISTRY_REVISION']
+          assert value['control_revision'] == os.environ['GITHUB_SHA']
+          assert value['control_head_sha'] == '' and value['control_base_sha'] == ''
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() == value['source_revision']
+          assert hashlib.sha256(Path('tools/bazel/ci/eventd_loaded.py').read_bytes()).hexdigest() == value['loaded_driver_sha256']
+          for name, status in [('public-receipt.json', 'built'), ('validation.json', 'passed')]:
+              receipt = json.loads((root / name).read_text())
+              assert receipt['revision'] == value['source_revision'] and receipt['status'] == status
+          PYBIND
+      - name: Verify loaded archives and installed event publishing and database delivery
+        run: python3 -B tools/bazel/ci/eventd_loaded.py --artifacts artifacts/eventd
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: eventd-reviewed-runtime-amd64
+          path: |
+            artifacts/eventd/*.runtime.json
+            artifacts/eventd/loaded-validation.json
+          if-no-files-found: warn
           retention-days: 14
 
   archive:
