@@ -275,6 +275,10 @@ def main():
     if args.phase == 'cache':
         setup.prepare_cache(plan, source, native, scratch,
                             args.archives.resolve(strict=True), args.mirrors.resolve(strict=True))
+        # prepare_cache has verified and imported this immutable native owner.
+        validation_tools = scratch / 'validation-tools'
+        validation_tools.mkdir(mode=0o700)
+        importlib.import_module('tools.bazel.ci.source_image_worker').prepare_validation_tools(validation_tools)
     else:
         setup.source_check(source, plan['source_revision'])
         orch = setup.import_from(source, 'tools.bazel.ci.orchagent_image')
