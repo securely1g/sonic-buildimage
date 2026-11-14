@@ -204,3 +204,19 @@ py_binary(
     srcs = ["installed_images_policy.py"],
     deps = [":container_validation"],
 )
+
+py_library(
+    name = "statoverride_lib",
+    srcs = ["statoverride.py"],
+    deps = [":oci_layout"],
+)
+
+py_binary(
+    name = "statoverride",
+    srcs = ["statoverride.py"],
+    main = "statoverride.py",
+    deps = [
+        ":statoverride_lib",
+        "@sonic_build_infra//oci:package_metadata",
+    ],
+)

@@ -555,3 +555,17 @@ apt_inputs(
     name = "snmp_apt_inputs",
     lock = "@sonic_build_infra//apt:apt.lock.json",
 )
+
+# LLDP runtime comes from lldpd and DBSyncd. Select its six external runtime
+# library roots from the reviewed native build dependencies.
+bazel_dep(name = "lldpd", version = "1.0.16.sonic.1")
+bazel_dep(name = "sonic-dbsyncd", version = "2.0.0-8a3830704d3f6067823f7c10b3b31913965add81", repo_name = "sonic_dbsyncd")
+use_repo(apt, "lldpd_deps")
+
+apt_inputs(
+    name = "lldp_runtime_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    dependency_set = "lldpd_deps",
+    architecture = "amd64",
+    root_packages = ["libbsd0", "libcap2", "libevent-2.1-7t64", "libreadline8t64", "libsnmp40t64", "libxml2"],
+)
