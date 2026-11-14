@@ -158,7 +158,7 @@ class CohortTests(unittest.TestCase):
         result = self.run_cohort()
         self.assertEqual(self.events, ['swss.manifests', 'syncd.manifests', 'audit', 'build', 'merge',
                                        'validate:swss', 'validate:syncd'])
-        self.assertEqual(len(list((self.output / 'archives').iterdir())), 5)
+        self.assertEqual(len(list((self.output / 'archives').iterdir())), 6)
         self.assertEqual(result['source_revision'], self.plan['source_revision'])
         self.assertTrue(result['accepted_native_archive_equality'])
         self.assertFalse(result['native_acceptance'])
@@ -183,6 +183,30 @@ class CohortTests(unittest.TestCase):
         self.problem = 'native'
         with self.assertRaisesRegex(ValueError, 'Accepted native archive differs'): self.run_cohort()
         self.assertNotIn('merge', self.events)
+        self.assertFalse(self.output.exists())
+
+    def test_multiple_native_mismatches_retain_only_public_expected_and_observed_tuples(self):
+        self.problem = 'native'
+        self.plan['expected_native_archives']['docker-syncd-vs-dbg']['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'Accepted native archive differs') as raised:
+            self.run_cohort()
+        prefix = 'Accepted native archive differs: '
+        self.assertTrue(str(raised.exception).startswith(prefix))
+        details = json.loads(str(raised.exception)[len(prefix):])
+        expected = {}
+        for name in ('docker-syncd-vs', 'docker-syncd-vs-dbg'):
+            raw = self.payload[name + '.gz']
+            if name == 'docker-syncd-vs':
+                raw += b' changed'
+            expected[name] = {
+                'target': caller.PRIMARY[name + '.gz'],
+                'expected': self.plan['expected_native_archives'][name],
+                'observed': {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()},
+            }
+        self.assertEqual(details, expected)
+        self.assertNotIn('merge', self.events)
+        self.assertNotIn('validate:swss', self.events)
+        self.assertNotIn('validate:syncd', self.events)
         self.assertFalse(self.output.exists())
 
     def test_policy_must_bind_actual_same_graph_archive(self):
@@ -310,6 +334,47 @@ class CohortTests(unittest.TestCase):
         path.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError, 'Different coherent policy scope'):
             caller.load_plan(path)
+
+    def test_base_archive_is_required_in_the_fixed_export_plan(self):
+        for replacement in (None, '//unreviewed:base.gz'):
+            with self.subTest(replacement=replacement):
+                value = copy.deepcopy(self.plan)
+                if replacement is None:
+                    del value['exports']['docker-base-trixie.gz']
+                else:
+                    value['exports']['docker-base-trixie.gz'] = replacement
+                path = self.root / 'base-plan.json'
+                path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(ValueError, 'Different primary target'):
+                    caller.load_plan(path)
+        self.assertEqual(self.events, [])
+
+    def test_tampered_base_archive_stops_before_merge_and_publication(self):
+        collect = self.owners[3].collect_archives
+        def tampered(*args, **kwargs):
+            paths = collect(*args, **kwargs)
+            paths['docker-base-trixie.gz'].write_bytes(b'changed base bytes')
+            return paths
+        self.owners[3].collect_archives = tampered
+        with self.assertRaisesRegex(ValueError, 'Exported archive identity differs'):
+            self.run_cohort()
+        self.assertNotIn('merge', self.events)
+        self.assertFalse(self.output.exists())
+
+    def test_same_graph_base_is_copied_and_reported_without_expanding_policy_images(self):
+        result = self.run_cohort()
+        path = self.output / 'archives/docker-base-trixie.gz'
+        self.assertEqual(path.read_bytes(), self.payload['docker-base-trixie.gz'])
+        expected = {'bytes': path.stat().st_size, 'sha256': sha(path)}
+        self.assertEqual(result['archives']['docker-base-trixie'], expected)
+        report = json.loads((self.output / 'reports/cohort.json').read_bytes())
+        self.assertEqual(report['archives']['docker-base-trixie'], expected)
+        for family, (_, images) in caller.FAMILIES.items():
+            policy = json.loads((self.output / 'reports' /
+                                 (family + '-installed-images-policy.json')).read_bytes())
+            self.assertEqual({row['name'] for row in policy['images']},
+                             {'docker-config-engine-trixie', *images})
+
 
 
 if __name__ == '__main__':

@@ -28,7 +28,8 @@ FAMILIES = {
 POLICIES = {name + '-installed-images-policy.json':
             '//tools/bazel/tests:' + name + '_installed_images_policy' for name in FAMILIES}
 OPTIONS = ['--jobs=2', '--local_resources=cpu=2', '--local_resources=memory=8000', '--config=syncd-dash']
-PRIMARY = {'docker-config-engine-trixie.gz': BASE + '.gz', **POLICIES,
+PRIMARY = {'docker-base-trixie.gz': '//dockers/docker-base-trixie:docker-base-trixie.gz',
+           'docker-config-engine-trixie.gz': BASE + '.gz', **POLICIES,
            **{name + '.gz': owner + name + '.gz'
               for owner, images in FAMILIES.values() for name in images}}
 
@@ -132,7 +133,13 @@ def bind_policies(paths, receipt, plan, check, merge):
             actual[name[:-3]] = {'bytes': row['bytes'], 'sha256': row['sha256']}
     mismatches = [name for name, expected in plan['expected_native_archives'].items()
                   if actual[name] != expected]
-    require(not mismatches, 'Accepted native archive differs: ' + ', '.join(mismatches))
+    require(not mismatches, 'Accepted native archive differs: ' + json.dumps({
+        name: {
+            'target': PRIMARY[name + '.gz'],
+            'expected': {key: plan['expected_native_archives'][name][key]
+                         for key in ('bytes', 'sha256')},
+            'observed': actual[name],
+        } for name in mismatches}, sort_keys=True))
     policies, identities = [], {}
     for family, (_, images) in FAMILIES.items():
         name = family + '-installed-images-policy.json'

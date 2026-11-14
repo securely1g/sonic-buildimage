@@ -4748,10 +4748,11 @@ jobs:
             /tools/bazel/ci/build_vs_coherent_installed_policies.py
             /tools/bazel/ci/vs_coherent_installed_policy_inputs.json
             /tools/bazel/tests/vs_coherent_installed_policy_test.py
+            /tools/bazel/ci/vs_original_metadata/kernel-context-744d.json
       - name: Check out the final VS source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 3a06e4ec7627390967730b78a34dc00c86bb34dd
+          ref: c02d93956919e4ea6886f347be4ac0ab6e3e36f0
           path: ${{ steps.paths.outputs.source }}
           persist-credentials: false
           clean: false
@@ -4766,7 +4767,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":15867,"sha256":"120e3e53a479269841b9e07f0c80627d7db71a31226f405f9399f7061b7da8ed"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":6561,"sha256":"ade81c11d72348555b81b8a79dee1bf2f8c28aced028b3911509e96ff345200a"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":16811,"sha256":"7fedac292cce30258a9d8989f31833e9abe5702e2b694957d834e66df57b7bca"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"}}')
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":16230,"sha256":"ad4a8a5786466a9b0fd306f1277abae9926f07d60697560e85f84edac6d489c3"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":6644,"sha256":"93a9dc5f77df5b61a42dd0a8ef8ac708bc505452e45cc12b8abb202626095287"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":20280,"sha256":"2d73d65f5dfe1bc17e494785f7f3832b9bb3709f18c4995a8f96600de1fabdf5"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -4869,6 +4870,14 @@ jobs:
             --source "$POLICY_ROOT/source" --native "$POLICY_ROOT/native" \
             --scratch "$POLICY_ROOT/scratch" --output "$POLICY_ROOT/outputs" \
             --archives "$POLICY_ROOT/inputs" --mirrors "$POLICY_ROOT/catalog/ci/source_mirrors.cfg"
+      - name: Retain the reviewed current744d kernel consumer context
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-kernel-consumer-context-744d-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/control/tools/bazel/ci/vs_original_metadata/kernel-context-744d.json
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 14
       - name: Build and validate the shared parent and both service image pairs
         timeout-minutes: 300
         env:
