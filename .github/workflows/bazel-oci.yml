@@ -694,6 +694,79 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Build FRR runtime and debug images from source owners
+        id: frr_build
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
+          python3 -B tools/bazel/ci/frr_image.py build --bazel "$BAZEL" --artifacts artifacts/frr
+      - name: Validate FRR image contents and source symbols
+        if: matrix.architecture == 'amd64'
+        run: python3 -B tools/bazel/ci/frr_image.py validate --artifacts artifacts/frr
+      - name: Check FRR incremental rebuild and restored image digests
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/frr_image.py incremental --bazel "$BAZEL" --artifacts artifacts/frr
+          git diff --exit-code
+      - name: Prepare reviewed FRR evidence
+        id: frr_public
+        if: always() && (steps.frr_build.outcome == 'success' || steps.frr_build.outcome == 'failure')
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/frr')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'tested_revision_parents', 'image_version', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*.packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYCODE
+      - name: Retain FRR images and reviewed build evidence
+        if: always() && steps.frr_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frr-image-amd64-${{ github.sha }}
+          path: |
+            artifacts/frr/*.gz
+            artifacts/frr/*.tar
+            artifacts/frr/*.status
+            artifacts/frr/*.packages.json
+            artifacts/frr/*.validation.json
+            artifacts/frr/validation.json
+            artifacts/frr/public-receipt.json
+            artifacts/frr/action-audit.json
+            artifacts/frr/incremental.json
+            artifacts/frr/build-summary.json
+            artifacts/frr/MODULE.bazel.lock
+            artifacts/frr/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
       - name: Build and inspect the shared runtime and symbols
         id: swss_layer_build
         if: matrix.architecture == 'amd64'
@@ -1208,7 +1281,7 @@ jobs:
     # Keep the required status on the job that actually loads and tests both archives.
     name: Container archive (AMD64)
     if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
-    needs: [archive, database_acceptance]
+    needs: [archive, database_acceptance, frr_runtime]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -1411,6 +1484,78 @@ jobs:
           path: artifacts/sysmgr/*.runtime.json
           if-no-files-found: error
           retention-days: 14
+
+  frr_runtime:
+    name: Run installed FRR images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: frr-image-amd64-${{ github.sha }}
+          path: artifacts/frr
+      - name: Verify and load only this run's images
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,subprocess
+          from pathlib import Path
+          from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
+          from tools.bazel.ci.sysmgr_image import source_identity
+          directory=Path('artifacts/frr')
+          receipt=json.loads((directory/'validation.json').read_text())
+          assert receipt['status']=='passed' and receipt['architecture']=='amd64'
+          identity = source_identity()
+          if (receipt['revision'], receipt['tested_revision_parents']) != (identity['revision'], identity['tested_revision_parents']):
+              raise ValueError('installed runtime evidence belongs to a different checkout')
+          for name in ['docker-fpm-frr','docker-fpm-frr-dbg']:
+              path=directory/(name+'.gz')
+              assert hashlib.sha256(path.read_bytes()).hexdigest()==receipt['artifacts'][path.name]['sha256']
+              expected=json.loads((directory/(name+'.validation.json')).read_text())
+              tag='sonic-frr-validation-'+name+':latest'
+              actual,config,_=load_archive(path,tag,expected['config_digest'])
+              verify_loaded_image(actual,config,expected['config_digest'])
+              assert actual['Os']=='linux' and actual['Architecture']=='amd64'
+              assert actual['RootFS']['Layers']==expected['rootfs']['diff_ids']
+          assert hashlib.sha256((directory/'test-redis.tar').read_bytes()).hexdigest()==receipt['artifacts']['test-redis.tar']['sha256']
+          PY
+          mkdir -p artifacts/frr/redis-fixture
+          tar --no-same-owner -xf artifacts/frr/test-redis.tar -C artifacts/frr/redis-fixture
+      - name: Query private BGPD and installed Python services
+        run: |
+          set -euo pipefail
+          for image in docker-fpm-frr docker-fpm-frr-dbg; do
+            probe_args=()
+            if [[ "$image" == *-dbg ]]; then probe_args+=(--debug); fi
+            docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+              --read-only --user=300:300 --group-add=102 --pids-limit=128 --memory=4g --cpus=2 \
+              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=256m \
+              --mount "type=bind,src=$PWD/dockers/docker-fpm-frr/bazel/runtime_probe.py,dst=/probe/runtime_probe.py,readonly" \
+              --mount "type=bind,src=$PWD/artifacts/frr/redis-fixture,dst=/probe/redis,readonly" \
+              --mount "type=bind,src=$PWD/artifacts/frr/validation.json,dst=/probe/validation.json,readonly" \
+              --entrypoint /usr/bin/python3 "sonic-frr-validation-$image:latest" -B /probe/runtime_probe.py --validation /probe/validation.json "${probe_args[@]}" \
+              | tee "artifacts/frr/$image.runtime.json"
+          done
+      - name: Check both installed frr runtime receipts
+        run: |
+          python3 - <<'PYREPORT'
+          import json
+          from pathlib import Path
+          for image in ('docker-fpm-frr', 'docker-fpm-frr-dbg'):
+              receipt = json.loads((Path('artifacts/frr') / (image + '.runtime.json')).read_text())
+              if receipt.get('status') != 'passed':
+                  raise SystemExit(f'{image} did not pass installed service validation')
+          PYREPORT
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frr-runtime-amd64-${{ github.sha }}
+          path: artifacts/frr/*.runtime.json
+          if-no-files-found: error
+          retention-days: 14
+
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
