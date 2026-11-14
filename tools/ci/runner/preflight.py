@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 
 from apparmor_gs import check_ghostscript
+from apparmor_kernel import check_kernel_sandbox
 
 
 def output(*args):
@@ -140,6 +141,7 @@ def main():
         parser.error("The VS job needs native x86_64")
     check_worker_umasks(args.host_agent)
     check_ghostscript()
+    check_kernel_sandbox()
     check_legacy_nat()
     if not args.host_agent:
         check_data_storage(build_target=args.build_target)
