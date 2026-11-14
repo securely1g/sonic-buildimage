@@ -230,6 +230,14 @@ apt_inputs(
     root_packages = ["iputils-ping", "libjemalloc2", "libyaml-cpp0.8"],
 )
 
+# FRR runtime, debug tools and private test Redis share the production lock.
+use_repo(apt, "frr_image_debian", "frr_image_debug_debian", "frr_image_test_debian")
+
+apt_inputs(
+    name = "frr_image_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
 # Orchagent debug selects its seven roots from the shared snapshot lock without
 # pulling openssh-server's libwtmpdb0 dependency from sysmgr_debug_debian.
 apt_inputs(
