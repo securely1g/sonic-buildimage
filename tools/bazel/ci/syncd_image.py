@@ -259,7 +259,12 @@ def incremental(args, directory):
     result = {"baseline": snapshot("baseline"), "noop": snapshot("noop")}
     check.require(result["baseline"]["sha256"] == result["noop"]["sha256"], "no-op changed outputs")
     for name in IMAGES:
-        check.require(result["baseline"]["sha256"][OWNER + name + ".gz"] == receipt["artifacts"][name + ".gz"]["sha256"], "baseline archive differs")
+        check.require(
+            result["baseline"]["sha256"][OWNER + name + ".gz"] == receipt["artifacts"][name + ".gz"]["sha256"],
+            f"baseline archive differs: target={OWNER + name + '.gz'} "
+            f"expected_sha256={receipt['artifacts'][name + '.gz']['sha256']} "
+            f"observed_sha256={result['baseline']['sha256'][OWNER + name + '.gz']}",
+        )
     path = ROOT / "platform/vs/docker-syncd-vs/supervisord.conf"
     original = path.read_bytes(); changed = b"# Syncd incremental probe\n" + original
     try:
