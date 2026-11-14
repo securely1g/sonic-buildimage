@@ -47,7 +47,9 @@ The directory contains both `.gz` archives and `validation.json`.
 
 The shared `bazel-oci.yml` workflow builds the AMD64 archives once, checks their
 contents and incremental reuse, then passes those same archives to the installed
-service test. Review builds use `tools/bazel/ci/libteam_draft_bazel.sh` and one
+service test. Output lookup uses each build's recorded execution root, and
+incremental receipts retain action/cache counters when Bazel reports them.
+Review builds use `tools/bazel/ci/libteam_draft_bazel.sh` and one
 complete catalog selected by `SONIC_BASE_REVIEW_REGISTRY`; the default remains
 registry `main` plus BCR. The receipt records the actual selection. This PR stays
 Draft until its required source and registry entries land. Make/Bazel image
