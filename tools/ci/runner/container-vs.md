@@ -48,9 +48,9 @@ fetched or rebuilt. The VS job recreates its Bazel directory and prepares source
 distdirs after preflight. Cleanup refuses redirected paths,
 remaining mounts, or references from running or stopped Docker containers, and
 reports failures rather than continuing to preflight. Use an idle dedicated agent
-with no active build processes using these directories. The VS installer also
-removes the obsolete local `vs-cache/packages` directory, but only after its NFS
-package cache passes validation. Publisher cleanup leaves local packages alone.
+with no active build processes using these directories. Both workflows retain
+the legacy local `vs-cache/packages` directory for now. The VS installer still
+uses the NFS package cache; the retained local directory is not a fallback.
 Neither cleanup removes `_temp`, other home/cache directories, NFS caches, or checkouts.
 
 For pre-merge testing, pushes to the same repository's `vs-runner` branch
