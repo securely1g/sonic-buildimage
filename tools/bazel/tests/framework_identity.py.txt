@@ -1,0 +1,12 @@
+# Exact Framework identity function from Git blob
+# dde57cfe42538976839e914a637b740d47dbddcf.
+# This is source data: the test AST-extracts it with all Git calls mocked.
+def identity():
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    headers = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], cwd=ROOT, text=True).split("\n\n", 1)[0]
+    parents = [line.split()[1] for line in headers.splitlines() if line.startswith("parent ")]
+    if os.environ.get("CI_HEAD_SHA"):
+        check.require(os.environ["CI_HEAD_SHA"] in [revision, *parents], "CI source differs from requested PR head")
+    if os.environ.get("CI_BASE_SHA"):
+        check.require(os.environ["CI_BASE_SHA"] in parents, "CI merge differs from requested PR base")
+    return {"revision": revision, "tested_revision_parents": parents}

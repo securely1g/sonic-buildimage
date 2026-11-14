@@ -77,7 +77,8 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `framework`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
+`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux` or `frr`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -154,19 +155,16 @@ does not run unrelated owner test suites, package Make recipes, or the full VS
 installer. The selected image drivers still audit their configured graph for
 DEB generation before building.
 
+Trusted native source-image jobs use the Debian mirror roots configured for this repository. The pinned registry helper selects the snapshots and retains public fallback. [Registry mirror configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/README.md#private-debian-snapshot-mirrors)
+
 The worker also uses Bazel's official mirror for the exact BCR `gawk@5.3.2`
 source archive. Its existing SHA256 and upstream build overlay stay unchanged.
 Only the three selected GNU/kernel source URLs are rewritten; the original
-checksum-verified pigz downloader configuration is retained. Phase resource
+checksum-verified shared downloader configuration is retained. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
 
-For four observed Debian snapshot HTTP 503 failures, the downloader retains the
-original timestamped URL and adds its verified official content-addressed
-`snapshot.debian.org/file/` endpoint. Both endpoints returned identical bytes
-matching the checked-in SHA256 and size. The URL's SHA1 identifier only locates
-the file; Bazel continues enforcing the original SHA256. Other snapshots,
-package versions and architectures are unchanged. Public Syncd/Gearbox policy
+Public Syncd/Gearbox policy
 validation recognizes only the exact checked-in `DEBIAN_FRONTEND=noninteractive`
 constant and retains the policy's original bytes and hash.
 
@@ -192,6 +190,26 @@ supplies the reviewed registry revision, just as for gNMI. This enables
 to run the same image checks on an idle native AMD64 worker. Select an immutable
 source commit and retain the source/catalog and all four phase receipts; adding
 the selector alone does not establish image acceptance.
+
+Database, Eventd, FRR, LLDP, MACsec, MUX and Router Advertiser use the source checkout's
+image build, static validation and incremental checks. The merged sources use
+the maintained SONiC registry and the shared Bazel entrypoint. An empty catalog
+selection follows registry `main`. The worker records the endpoint and the tip
+observed during preparation. An optional immutable catalog selects that commit
+for the whole run. The bounded launcher and worker-local caches apply in both
+modes. Source checks bind to the selected image revision, and the worker records
+its controller revision separately.
+
+The installed phase runs the selected checkout's helper for Database, Eventd,
+LLDP, MACsec, MUX and Router Advertiser. The merged FRR workflow runs its probe inline.
+The dispatcher invokes its reviewed FRR adapter against the selected checkout,
+verifies source parents, both archives, image configurations, layers and Redis,
+then checks both installed probe results. Earlier reviewed sources retain their own wrapper and catalog requirements.
+
+SNMP and the shared base/config-engine/SWSS layers are not selectable here.
+Their existing workflows need an explicit adapter preserving all checks and
+receipts; a missing phase must not be treated as a pass. Use their dedicated
+workflows until that interface is reviewed.
 
 ## Explicit ordinary registry consumers
 
