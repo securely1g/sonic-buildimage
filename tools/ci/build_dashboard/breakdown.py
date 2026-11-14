@@ -112,6 +112,91 @@ TARGET = re.compile(r"\[ (building|finished|cached) \] \[ (\S{1,256}) \]\s*\Z")
 IMAGE_PHASE_MARKER = re.compile(r"\[ image phases \] \[ (\S{1,256}) \] (.*)\Z")
 IMAGE_PAIR_MARKER = re.compile(r"\[ bazel image pair \] \[ (\S{1,256}) \] \[ (\S{1,256}) \]\Z")
 IMAGE_PAIR_KINDS = {"target/docker-orchagent.gz": "orchagent-pair", "target/docker-syncd-vs.gz": "syncd-pair"}
+RECIPE_OWNERS = {"docker-teamd.gz", "docker-syncd-vs.gz", "docker-fpm-frr.gz", "docker-mux.gz"}
+RECIPE_METRICS = {
+    "bazel_phases": (3, ("bazel_seconds",)),
+    "profiles": (3, ("lock_seconds", "compile_seconds", "foreign_seconds", "fetch_seconds")),
+    "exports": (2, ("export_seconds",)),
+}
+RECIPE_FIELDS = ({"owner", "failed"} | RECIPE_METRICS.keys() |
+                 {key for _, metrics in RECIPE_METRICS.values() for key in metrics})
+RECIPE_REASONS = {"pending-collection", "step-not-successful", "logs-expired", "logs-too-large",
+                  "logs-temporarily-unavailable", "not-recorded", "invalid-timing"}
+RECIPE_MARKER = "SONIC_VS_IMAGE_TIMINGS_V1"
+RECIPE_COMMAND = "python3 -B tools/bazel/ci/summarize_vs_image_timings.py "
+
+
+def recipe_unavailable(reason):
+    return {"version": 1, "status": "unavailable", "reason": reason, "images": []}
+
+
+def valid_recipes(value):
+    if (not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1):
+        return False
+    if value.get("status") == "unavailable":
+        return (set(value) == {"version", "status", "reason", "images"} and value["images"] == []
+                and isinstance(value["reason"], str) and value["reason"] in RECIPE_REASONS)
+    if (set(value) != {"version", "status", "images"} or value["status"] != "available"
+            or not isinstance(value["images"], list) or len(value["images"]) != len(RECIPE_OWNERS)):
+        return False
+    owners = set()
+    for row in value["images"]:
+        if (not isinstance(row, dict) or set(row) != RECIPE_FIELDS or type(row["failed"]) is not bool
+                or not isinstance(row["owner"], str) or row["owner"] not in RECIPE_OWNERS):
+            return False
+        owners.add(row["owner"])
+        for key, (limit, metrics) in RECIPE_METRICS.items():
+            if type(row[key]) is not int or not 0 <= row[key] <= limit:
+                return False
+            if row[key]:
+                if not all(finite_seconds(row[metric]) for metric in metrics):
+                    return False
+            elif any(row[metric] is not None for metric in metrics):
+                return False
+    return owners == RECIPE_OWNERS
+
+
+def parse_recipe_log(log, step):
+    """Accept exactly one receipt from the identified summary command's output."""
+    if not isinstance(log, bytes) or len(log) > MAX_LOG_BYTES:
+        return recipe_unavailable("logs-too-large")
+    start, end = moment(step.get("started_at")), moment(step.get("completed_at"))
+    if not start or not end or end < start:
+        return recipe_unavailable("invalid-timing")
+    groups = 0
+    result = None
+    header = command = output = False
+    second = timedelta(seconds=1)
+    try:
+        for when, line in log_rows(log):
+            if not start <= when < end + second:
+                continue
+            if line.startswith("##[group]Run "):
+                # Adjacent steps can start within the same API timestamp second.
+                header = when < start + second
+                command = output = False
+            elif header:
+                if line == "##[endgroup]":
+                    header = False
+                    output = command
+                    groups += int(command)
+                elif ANSI.sub("", line).lstrip().startswith(RECIPE_COMMAND):
+                    command = True
+            elif output and line.startswith(RECIPE_MARKER):
+                if (result is not None or not line.startswith(RECIPE_MARKER + " {")
+                        or not line.endswith("}") or len(line.encode()) > 4096):
+                    return recipe_unavailable("invalid-timing")
+                value = json.loads(line[len(RECIPE_MARKER) + 1:], object_pairs_hook=unique_json_object)
+                if not isinstance(value, dict) or set(value) != {"version", "images"}:
+                    return recipe_unavailable("invalid-timing")
+                result = dict(value, status="available")
+                if not valid_recipes(result):
+                    return recipe_unavailable("invalid-timing")
+    except (UnicodeError, ValueError, RecursionError):
+        return recipe_unavailable("invalid-timing")
+    if groups != 1:
+        return recipe_unavailable("invalid-timing")
+    return result or recipe_unavailable("not-recorded")
 
 
 def phase_unavailable(reason):
@@ -238,6 +323,15 @@ def moment(value):
         return None
 
 
+def log_rows(log):
+    for line in log.decode("utf-8-sig").splitlines():
+        match = STAMP.fullmatch(line)
+        if match:
+            when = moment(match[1])
+            if when is not None:
+                yield when, match[2]
+
+
 def parse_log(log, step):
     """Measure a successful step; reject partial, ambiguous or inconsistent logs.
 
@@ -253,16 +347,9 @@ are observed recipe/cache intervals and are deliberately not summed.
     if not start or not end or end < start:
         return unavailable("invalid-timing")
     try:
-        lines = log.decode("utf-8-sig").splitlines()
+        rows = [(when, ANSI.sub("", line)) for when, line in log_rows(log)]
     except UnicodeError:
         return unavailable("unsupported-log-format")
-    rows = []
-    for line in lines:
-        match = STAMP.fullmatch(line)
-        if match:
-            when = moment(match[1])
-            if when is not None:
-                rows.append((when, ANSI.sub("", match[2])))
     groups = [(i, when) for i, (when, text) in enumerate(rows) if text.startswith("##[group]Run ")]
     starts = [(i, when) for i, when in groups if start <= when < start + timedelta(seconds=1)]
     if len(starts) != 1:

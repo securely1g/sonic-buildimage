@@ -3,12 +3,13 @@
 import gzip
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci.summarize_vs_image_timings import owner_row, summarize_profile
+from tools.bazel.ci.summarize_vs_image_timings import markdown_row, read_owner, summarize_profile
 
 
 def event(category, name, start, duration, tid=1, mnemonic=None):
@@ -53,8 +54,8 @@ class ImageTimingSummaryTest(unittest.TestCase):
     def test_recipe_uses_independent_profiles_and_handles_failed_or_missing_phases(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root) / "docker-teamd.gz"
-            row, issues = owner_row(directory)
-            self.assertEqual(row[1:], ["unavailable"] * 6)
+            row, issues = read_owner(directory)
+            self.assertEqual(markdown_row(row)[1:], ["unavailable"] * 6)
             self.assertTrue(issues)
             directory.mkdir()
             for phase in ("build", "cquery-docker-teamd.gz", "cquery-docker-teamd-dbg.gz",
@@ -66,18 +67,33 @@ class ImageTimingSummaryTest(unittest.TestCase):
                         json.dump({"traceEvents": [event(
                             "build phase marker", "Blocking on busy Bazel server (in server)", 0, 1)
                         ]}, stream)
-            row, issues = owner_row(directory)
-            self.assertEqual(row[1:], ["6.00", "3.00", "0.00", "0.00", "0.00", "4.00"])
+            row, issues = read_owner(directory)
+            self.assertEqual(markdown_row(row)[1:], ["6.00", "3.00", "0.00", "0.00", "0.00", "4.00"])
             self.assertEqual(issues, [])
             (directory / "build.profile.json.gz").write_bytes(b"truncated profile")
             (directory / "export-docker-teamd.gz.timing.json").unlink()
             (directory / "build.timing.json").write_text(json.dumps(
                 {"phase": "build", "elapsed_seconds": 2, "exit_code": 1}))
-            row, issues = owner_row(directory)
-            self.assertEqual(row[2], "2.00 (partial)")
-            self.assertEqual(row[-1], "2.00 (partial)")
+            row, issues = read_owner(directory)
+            self.assertEqual(markdown_row(row)[2], "2.00 (partial)")
+            self.assertEqual(markdown_row(row)[-1], "2.00 (partial)")
             self.assertIn("build exited 1", issues)
             self.assertIn("build profile missing or unreadable", issues)
+            output = Path(root) / "summary.json"
+            script = Path(__file__).resolve().parents[1] / "ci/summarize_vs_image_timings.py"
+            run = subprocess.run([sys.executable, "-B", script, root, "--dashboard-json", output],
+                                 text=True, capture_output=True, check=True)
+            self.assertIn("2.00 (partial)", run.stdout)
+            receipt = json.loads(output.read_text())
+            self.assertEqual(receipt["version"], 1)
+            self.assertEqual(len(receipt["images"]), 4)
+            records = {image["owner"]: image for image in receipt["images"]}
+            self.assertEqual(records["docker-teamd.gz"], {
+                "owner": "docker-teamd.gz", "bazel_seconds": 6, "lock_seconds": 2,
+                "compile_seconds": 0, "foreign_seconds": 0, "fetch_seconds": 0, "export_seconds": 2,
+                "bazel_phases": 3, "profiles": 2, "exports": 1, "failed": True,
+            })
+            self.assertIsNone(records["docker-mux.gz"]["compile_seconds"])
 
 
 if __name__ == "__main__":

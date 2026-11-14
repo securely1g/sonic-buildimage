@@ -74,6 +74,19 @@ environment variables, machine names, and build artifacts are not published.
 
 ## Expand an image build
 
+Select a run and the **VS installer in SONiC slave (AMD64)** job. Builds with
+image profiling show wall times for FRR, mux, TeamD and Syncd VS in the job
+details. Compare compiler work, foreign builds, Bazel lock waits, cache fetches
+and archive exports. The Bazel total includes the build and its two output
+queries. Cache fetches can use disk or remote storage, and timing categories
+can overlap. A partial measurement uses only the phases that completed
+recording. A measured zero means Bazel recorded no matching span.
+
+The dashboard keeps the numeric summary in its build history. For the raw
+traces and Make logs, open the timing artifact upload step for that run and
+download `sonic-vs-image-timings-amd64` during its 14-day retention period.
+Runs from before profiling retain their original measurements.
+
 Open **Step timings**, then expand the Make VS image-build step marked
 **Measured breakdown**. Each section covers one sequential Make target, including its
 setup, prerequisite checks and cleanup. Sections follow the actual top-level

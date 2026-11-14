@@ -68,6 +68,25 @@ does not execute a build or execute any content from a log.
   without this field remains readable; the next collection recomputes it from
   retained steps. A display without verified step identities uses an explicitly
   labeled job execution time instead of inventing an image step timestamp.
+- A Make VS installer job that contains the profiling summary step may include
+  `image_recipe_timings` (version 1). An available record has `status: "available"`
+  and one entry in `images` for each of `docker-fpm-frr.gz`, `docker-mux.gz`,
+  `docker-teamd.gz` and `docker-syncd-vs.gz`. Each entry has an `owner` and:
+  - `bazel_seconds` and `bazel_phases` count wall time and timed commands for
+    the build and two output queries (maximum three).
+  - `lock_seconds`, `compile_seconds`, `foreign_seconds` and `fetch_seconds`
+    cover observed spans in `profiles` readable Bazel traces (maximum three).
+    Within each category concurrent spans count once per trace. A foreign
+    build covers the whole build subprocess. Fetches include cache input
+    staging and output materialization from local or remote storage.
+  - `export_seconds` and `exports` cover the runtime and debug archive exports
+    (maximum two). `failed` records an observed nonzero command exit.
+  A duration is `null` when its source count is zero. Positive counts below
+  the maximum indicate partial measurements. Published categories may overlap.
+  An unavailable record carries a fixed `reason` and an empty `images` list.
+  Jobs predating the profiling step omit this field. The collector reads the
+  numeric receipt from the same job's summary step and retains it across
+  refreshes of that execution.
 - Each step: `number`, `name`, `status`, `conclusion`, `started_at`,
   `completed_at`, `duration_seconds`, `phase`.
   An optional `breakdown` provides nested Make build timings without changing

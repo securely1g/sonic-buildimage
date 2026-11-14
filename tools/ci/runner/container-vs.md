@@ -297,7 +297,8 @@ same slave, and publishes `sonic-vs-slave-amd64` with the installer, matching
 container archives, and SHA256 checksums. `sonic-vs-slave-evidence-amd64` retains
 the configuration and validation receipts.
 
-For TeamD, Syncd VS, FRR and mux, the VS job summary shows seconds spent
+For TeamD, Syncd VS, FRR and mux, the VS job summary and the
+[build dashboard](https://securely1g.github.io/sonic-buildimage/) show seconds spent
 in Bazel, including recorded command-lock waits, compiler subprocesses, foreign
 builds and cache fetches. Make times the runtime and debug archive exports
 separately. The `sonic-vs-image-timings-amd64` artifact holds the Make logs,

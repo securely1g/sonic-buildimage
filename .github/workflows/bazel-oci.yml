@@ -2675,8 +2675,9 @@ jobs:
           set -euo pipefail
           timings=artifacts/vs/image-timings
           if [[ -d "$timings" ]]; then
-            python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" \
+            python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" --dashboard-json "$timings/summary.json" \
               | tee "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            printf 'SONIC_VS_IMAGE_TIMINGS_V1 %s\n' "$(<"$timings/summary.json")"
           fi
 
       - name: Preserve VS image build profiles, timings and Make logs

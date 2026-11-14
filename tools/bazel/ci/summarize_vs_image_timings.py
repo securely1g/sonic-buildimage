@@ -73,19 +73,20 @@ def add_process(spans, mnemonic, interval):
         spans["foreign"].append(interval)
 
 
-def measured(values, expected):
-    if not values:
+def measured(seconds, complete):
+    if seconds is None:
         return "unavailable"
-    suffix = "" if len(values) == expected else " (partial)"
-    seconds = sum(values)
     display = "<0.01" if 0 < seconds < 0.01 else f"{seconds:.2f}"
-    return display + suffix
+    return display if complete else display + " (partial)"
 
 
-def owner_row(directory):
+def read_owner(directory):
     owner = directory.name
+    row = {"owner": owner, "bazel_seconds": None, "export_seconds": None,
+           **{key + "_seconds": None for key in CATEGORIES},
+           "bazel_phases": 0, "profiles": 0, "exports": 0, "failed": False}
     if not directory.is_dir():
-        return [owner] + ["unavailable"] * 6, ["recipe timing directory missing"]
+        return row, ["recipe timing directory missing"]
     archives = (owner, owner.removesuffix(".gz") + "-dbg.gz")
     queries = ["cquery-" + archive for archive in archives]
     bazel = ["build", *queries]
@@ -97,11 +98,15 @@ def owner_row(directory):
         try:
             timing = json.loads((directory / f"{phase}.timing.json").read_text())
             duration = timing["elapsed_seconds"]
-            if timing["phase"] != phase or not math.isfinite(duration) or duration < 0:
+            if (timing["phase"] != phase or type(duration) not in (float, int)
+                    or not math.isfinite(duration) or duration < 0):
                 raise ValueError("invalid phase or duration")
             code = timing["exit_code"]
+            if type(code) is not int or not 0 <= code <= 255:
+                raise ValueError("invalid command exit code")
             elapsed[phase] = duration
             if code != 0:
+                row["failed"] = True
                 problems.append(f"{phase} exited {code}")
         except (OSError, ValueError, KeyError, TypeError):
             problems.append(f"{phase} timing missing or unreadable")
@@ -115,23 +120,35 @@ def owner_row(directory):
         except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError):
             problems.append(f"{phase} profile missing or unreadable")
 
-    return [
-        owner,
-        measured([elapsed[p] for p in bazel if p in elapsed], len(bazel)),
-        *(measured([profile[k] for profile in profiles], len(bazel)) for k in CATEGORIES),
-        measured([elapsed[p] for p in exports if p in elapsed], len(exports)),
-    ], problems
+    for phases, count_key, time_key in ((bazel, "bazel_phases", "bazel_seconds"),
+                                        (exports, "exports", "export_seconds")):
+        values = [elapsed[phase] for phase in phases if phase in elapsed]
+        row[count_key] = len(values)
+        row[time_key] = sum(values) if values else None
+    row["profiles"] = len(profiles)
+    if profiles:
+        for key in CATEGORIES:
+            row[key + "_seconds"] = sum(profile[key] for profile in profiles)
+    return row, problems
 
 
-def report(root):
+def markdown_row(row):
+    return [row["owner"], measured(row["bazel_seconds"], row["bazel_phases"] == 3),
+            *(measured(row[key + "_seconds"], row["profiles"] == 3) for key in CATEGORIES),
+            measured(row["export_seconds"], row["exports"] == 2)]
+
+
+def report(root, dashboard_json=None):
     print("### VS image recipe timings (wall seconds)\n")
     print("| Image pair | Bazel build + queries | Bazel lock wait | Native compiler "
           "subprocesses | Foreign build subprocesses | Cache input/output fetch | Archive export |")
     print("|---|---:|---:|---:|---:|---:|---:|")
     notes = []
+    images = []
     for owner in OWNERS:
-        row, problems = owner_row(root / owner)
-        print("| " + " | ".join(row) + " |")
+        row, problems = read_owner(root / owner)
+        images.append(row)
+        print("| " + " | ".join(markdown_row(row)) + " |")
         if problems:
             notes.append(f"- `{owner}` — " + ", ".join(problems))
     print("\nBazel wall time includes the build and two output queries. Lock wait covers "
@@ -147,9 +164,14 @@ def report(root):
     if notes:
         print("\nIncomplete measurements\n")
         print("\n".join(notes))
+    if dashboard_json is not None:
+        dashboard_json.write_text(json.dumps({"version": 1, "images": images},
+                                             allow_nan=False, separators=(",", ":")) + "\n")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
-    report(parser.parse_args().directory)
+    parser.add_argument("--dashboard-json", type=Path, help="Write numeric timings and coverage counts")
+    args = parser.parse_args()
+    report(args.directory, args.dashboard_json)

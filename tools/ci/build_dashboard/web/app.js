@@ -4,8 +4,10 @@
 const IMAGE_KINDS = new Set(["make-vs", "bazel-vs"]);
 const KIND_LABELS = {"make-vs": "Make VS", "bazel-vs": "Bazel VS installer", container: "Container", source: "Source", checks: "Checks", other: "Other"};
 const PHASES = ["setup", "build", "validation", "upload", "other"];
+const HOST_VS_BUILD_STEP = "Build sonic-vs.bin through the host Make wrapper";
 // Match collect.py's IMAGE_STEPS. Exact names preserve historical timing boundaries.
 const IMAGE_STEP_LABELS = {
+  [HOST_VS_BUILD_STEP]: "VS installer (.bin) and paired image archives through host Make",
   "Build the VS installer (.bin)": "VS installer (.bin); VM generation and boot checks excluded",
   "Build the VS image": "VS build with embedded boot checks; post-build validation excluded",
   "Build the VS image with Bazel SWSS archives": "Build the VS image with Bazel SWSS archives",
@@ -56,6 +58,24 @@ const IMAGE_PHASE_REASONS = {
   "invalid-timing": "The inner phase measurements could not be verified. The outer recipe timing is still available above.",
   "incomplete-timing": "The inner phase measurements are incomplete. The outer recipe timing is still available above.",
 };
+const RECIPE_OWNERS = {"docker-teamd.gz": "TeamD", "docker-syncd-vs.gz": "Syncd VS", "docker-fpm-frr.gz": "FRR", "docker-mux.gz": "Mux"};
+const RECIPE_REASONS = {
+  "pending-collection": "Image recipe timings are pending collection.",
+  "step-not-successful": "The timing summary did not finish successfully.",
+  "logs-expired": "The GitHub log for these image timings has expired.",
+  "logs-too-large": "The timing log exceeds the collector’s size limit.",
+  "logs-temporarily-unavailable": "GitHub’s timing log is temporarily unavailable.",
+  "not-recorded": "No image recipe timings were recorded for this build.",
+  "invalid-timing": "The image timing measurements could not be verified.",
+};
+const RECIPE_METRICS = [
+  ["bazel_seconds", "Bazel build + queries", "bazel_phases", 3],
+  ["lock_seconds", "Bazel lock wait", "profiles", 3],
+  ["compile_seconds", "Compiler subprocesses", "profiles", 3],
+  ["foreign_seconds", "Foreign build subprocesses", "profiles", 3],
+  ["fetch_seconds", "Cache fetch", "profiles", 3],
+  ["export_seconds", "Archive export", "exports", 2],
+];
 const state = {data: null, selectedRun: null, selectedJob: null, loading: false};
 
 function seconds(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
@@ -367,8 +387,8 @@ function badge(value, label) {
   const allowed = new Set(["success", "failure", "timed_out", "action_required", "startup_failure", "in_progress", "queued", "requested", "waiting", "pending", "current"]);
   return el("span", `badge${allowed.has(value) ? ` ${value}` : ""}`, label || resultLabel(value));
 }
-function link(text, url) {
-  const safe = safeGithubUrl(url, state.data.repository);
+function link(text, url, repository = state.data.repository) {
+  const safe = safeGithubUrl(url, repository);
   if (!safe) return el("span", "", text);
   const anchor = el("a", "", text);
   anchor.href = safe;
@@ -638,6 +658,93 @@ function renderStep(step) {
   return item;
 }
 
+function recipeImages(value) {
+  const owners = Object.keys(RECIPE_OWNERS);
+  if (value?.version !== 1 || value.status !== "available" ||
+      !Array.isArray(value.images) || value.images.length !== owners.length) return null;
+  const images = new Map();
+  for (const image of value.images) {
+    if (!image || typeof image.owner !== "string" || !Object.hasOwn(RECIPE_OWNERS, image.owner) ||
+        images.has(image.owner) || typeof image.failed !== "boolean") return null;
+    for (const [metric, , count, limit] of RECIPE_METRICS) {
+      if (!Number.isInteger(image[count]) || image[count] < 0 || image[count] > limit) return null;
+      if (image[count] === 0 ? image[metric] !== null :
+          seconds(image[metric]) === null || image[metric] > Number.MAX_SAFE_INTEGER) return null;
+    }
+    images.set(image.owner, image);
+  }
+  return owners.map(owner => images.get(owner));
+}
+
+function recipeTable(images) {
+  const box = el("div");
+  const scroll = el("div", "table-scroll");
+  const table = el("table");
+  const caption = el("caption", "", "Image recipe timings");
+  const head = el("thead"), headings = el("tr"), units = el("th", "", "Wall seconds");
+  units.scope = "col"; headings.append(units);
+  for (const image of images) {
+    const label = el("th", "", RECIPE_OWNERS[image.owner]);
+    label.scope = "col";
+    if (image.failed) label.append(el("span", "recipe-failed", "Phase failed"));
+    headings.append(label);
+  }
+  head.append(headings);
+  const body = el("tbody");
+  const format = new Intl.NumberFormat(undefined, {maximumFractionDigits: 3});
+  let partial = false, missing = false;
+  for (const [metric, title, count, limit] of RECIPE_METRICS) {
+    const row = el("tr"), label = el("th", "", title);
+    label.scope = "row"; row.append(label);
+    for (const image of images) {
+      const elapsed = image[metric];
+      const cell = el("td");
+      if (elapsed === null) {
+        missing = true;
+        cell.textContent = "—";
+      } else {
+        cell.textContent = elapsed > 0 && elapsed < 0.001 ? "<0.001" : format.format(elapsed);
+        if (image[count] < limit) {
+          partial = true;
+          cell.append(el("small", "recipe-sample", ` (${image[count]}/${limit})`));
+        }
+      }
+      row.append(cell);
+    }
+    body.append(row);
+  }
+  table.append(caption, head, body);
+  scroll.append(table); box.append(scroll);
+  const notes = ["Bazel covers the build and both output queries. Compiler and foreign build times cover observed subprocesses. Cache fetch includes disk and remote reads. Activities and image recipes can overlap. Zero means no matching time was recorded."];
+  if (partial) notes.push("Fractions show how many commands, profiles or exports were measured.");
+  if (missing) notes.push("A dash means no measurement.");
+  box.append(el("p", "stage-note", notes.join(" ")));
+  return box;
+}
+
+function renderRecipeTimings(job, repository) {
+  if (job.kind !== "make-vs" || !job.steps.some(step => step.name === HOST_VS_BUILD_STEP)) return null;
+  const value = job.image_recipe_timings, images = recipeImages(value);
+  const box = el("div", "recipe-timings");
+  if (images) {
+    box.append(recipeTable(images));
+  } else {
+    let reason = value === undefined ? "not-recorded" : "invalid-timing";
+    if (value?.version === 1 && value.status === "unavailable" &&
+        typeof value.reason === "string" && Object.hasOwn(RECIPE_REASONS, value.reason)) reason = value.reason;
+    box.append(el("p", "stage-note", RECIPE_REASONS[reason]));
+  }
+  const upload = job.steps.find(step => step.name === "Preserve VS image build profiles, timings and Make logs" &&
+    step.conclusion === "success" && Number.isSafeInteger(step.number) && step.number > 0);
+  const jobUrl = safeGithubUrl(job.url, repository);
+  if (upload && jobUrl) {
+    const url = new URL(jobUrl);
+    url.hash = `step:${upload.number}:1`;
+    box.append(link("Profiles and Make logs · upload log ↗", url.href, repository));
+  }
+  return box;
+}
+
 function renderDetails() {
   const box = byId("details"); box.replaceChildren();
   const run = state.data.runs.find(item => runKey(item) === state.selectedRun);
@@ -694,6 +801,8 @@ function renderDetails() {
     const item = el("span"); item.append(el("i", `stage-${phase}`), document.createTextNode(phase[0].toUpperCase() + phase.slice(1)), el("b", "", duration(value))); legend.append(item);
   }
   box.append(bar, legend, el("p", "stage-note", "Stage totals sum recorded step durations. They may not equal job elapsed time, and the build phase can include more work than the image build step. Step times exclude queue time. Total elapsed can include waiting for a runner when a job never starts. Cache state and runner comparability are unknown."));
+  const recipes = renderRecipeTimings(job, state.data.repository);
+  if (recipes) box.append(recipes);
   const steps = el("details", "steps"); steps.append(el("summary", "", `Step timings · ${job.steps.length} steps`));
   const list = el("ol");
   for (const step of job.steps) list.append(renderStep(step));
@@ -738,4 +847,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, coverageRows, baseSummary, prStateLabel};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, coverageRows, baseSummary, prStateLabel};
