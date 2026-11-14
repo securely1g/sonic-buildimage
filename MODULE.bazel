@@ -622,3 +622,6 @@ apt_inputs(
         "libboost-thread1.83.0",
     ],
 )
+
+apt.import_lock(lock = "//platform/vs/docker-gbsyncd-vs/bazel:apt-test.lock.json")
+use_repo(apt, "gbsyncd_test_debian")
