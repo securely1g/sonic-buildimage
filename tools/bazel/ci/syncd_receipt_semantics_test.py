@@ -294,5 +294,94 @@ class GearboxReceiptTest(unittest.TestCase):
             with self.subTest(case=index), self.assertRaises(AssertionError): self.verify()
 
 
+class WorkerCacheCompatibilityTest(unittest.TestCase):
+    """Family semantics use the same reviewed cache authority as canonical receipts."""
+
+    def setUp(self):
+        network = patch.object(socket, 'socket', side_effect=AssertionError('No network'))
+        process = patch.object(subprocess, 'Popen', side_effect=AssertionError('No native process'))
+        network.start(); process.start()
+        self.addCleanup(network.stop); self.addCleanup(process.stop)
+
+    def documents(self, image, schema=3):
+        from tools.bazel.ci import image_worker_receipt as reader
+        docs, outputs = (fixture(), OUTPUTS) if image == 'syncd' else gearbox_fixture()
+        policy = (copy.deepcopy(reader.K3S_REMOTE_CACHE_POLICY) if schema == 2 else
+                  dict(reader.K3S_MANAGED_REMOTE_CACHE_POLICY,
+                       endpoint='https://cache.example/', host='cache.example'))
+        docs['worker.json'].update(schema=schema, cache_mode='remote_only_run_attempt',
+                                  remote_cache=policy)
+        return docs, outputs
+
+    def verify(self, image, docs, outputs, pool=None):
+        return semantics.verify(lambda n: docs[n], lambda n: encoded(docs[n]),
+                                source=SOURCE, outputs=outputs, image=image, worker_pool=pool)
+
+    def test_remote_schema2_and3_are_accepted_in_reviewed_pool(self):
+        for image in ('syncd', 'gearbox'):
+            for schema in (2, 3):
+                with self.subTest(image=image, schema=schema):
+                    docs, outputs = self.documents(image, schema)
+                    result = self.verify(image, docs, outputs, 'sonic-slave-container-k3s')
+                    self.assertEqual((result['exports'], result['audit_roots']), (22, 25))
+
+    def test_remote_requires_explicit_reviewed_pool(self):
+        for image in ('syncd', 'gearbox'):
+            for schema in (2, 3):
+                for pool in (None, 'sonic-buildimage-worker', 'unreviewed-pool'):
+                    with self.subTest(image=image, schema=schema, pool=pool):
+                        docs, outputs = self.documents(image, schema)
+                        with self.assertRaises(ValueError): self.verify(image, docs, outputs, pool)
+
+    def test_remote_rejects_disk_and_repository_cache(self):
+        for image in ('syncd', 'gearbox'):
+            for schema in (2, 3):
+                for key in ('action_disk_cache', 'repository_cache'):
+                    with self.subTest(image=image, schema=schema, key=key):
+                        docs, outputs = self.documents(image, schema)
+                        docs['worker.json']['remote_cache'][key] = 'enabled'
+                        with self.assertRaises(ValueError):
+                            self.verify(image, docs, outputs, 'sonic-slave-container-k3s')
+
+    def test_remote_rejects_untrusted_policy_or_origin(self):
+        changes = ({'access_probe': 'failed'}, {'credential_helper_sha256': '0' * 64},
+                   {'remote_executor': 'enabled'}, {'endpoint': 'http://cache.example/'},
+                   {'endpoint': 'https://cache.example/path'}, {'host': 'other.example'},
+                   {'endpoint': 'https://user:password@cache.example/'})
+        for image in ('syncd', 'gearbox'):
+            for change in changes:
+                with self.subTest(image=image, changed=sorted(change)):
+                    docs, outputs = self.documents(image)
+                    docs['worker.json']['remote_cache'].update(change)
+                    with self.assertRaises(ValueError):
+                        self.verify(image, docs, outputs, 'sonic-slave-container-k3s')
+
+    def test_unknown_schema_or_mode_is_rejected(self):
+        changes = ({'schema': 4}, {'schema': True}, {'schema': '3'},
+                   {'cache_mode': 'anything'}, {'cache_mode': 'persistent_worker_local'})
+        for image in ('syncd', 'gearbox'):
+            for change in changes:
+                with self.subTest(image=image, changed=change):
+                    docs, outputs = self.documents(image)
+                    docs['worker.json'].update(change)
+                    with self.assertRaises(ValueError):
+                        self.verify(image, docs, outputs, 'sonic-slave-container-k3s')
+
+    def test_legacy_scope_and_remote_family_checks_preserved(self):
+        for image in ('syncd', 'gearbox'):
+            docs, outputs = (fixture(), OUTPUTS) if image == 'syncd' else gearbox_fixture()
+            self.assertEqual(self.verify(image, docs, outputs)['exports'], 22)
+            docs['worker.json']['remote_cache'] = {}
+            with self.subTest(image=image, case='legacy-policy-injection'), self.assertRaises(ValueError):
+                self.verify(image, docs, outputs)
+            for case in ('source', 'failed-phase', 'architecture'):
+                docs, outputs = self.documents(image)
+                if case == 'source': docs['worker.json']['source_revision'] = 'b' * 40
+                elif case == 'failed-phase': docs['worker-loaded.json']['status'] = 'skipped'
+                else: docs['worker.json']['architecture'] = 'arm64'
+                with self.subTest(image=image, case=case), self.assertRaises(AssertionError):
+                    self.verify(image, docs, outputs, 'sonic-slave-container-k3s')
+
+
 if __name__ == '__main__':
     unittest.main()
