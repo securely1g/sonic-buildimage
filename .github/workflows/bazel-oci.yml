@@ -225,12 +225,12 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.architecture == 'amd64' && 240 || 60 }}
+    timeout-minutes: ${{ matrix.architecture == 'amd64' && 300 || 60 }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: AMD64
+          - name: AMD64 build
             architecture: amd64
             machine: x86_64
             runner: [self-hosted, linux, bazel-x64]
@@ -534,6 +534,49 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
+
+      - name: Build Eventd runtime and debug images
+        id: eventd_build
+        if: matrix.architecture == 'amd64'
+        run: |
+          available_bytes=$(df --output=avail --block-size=1 /github/home | tail -n 1)
+          if (( available_bytes < 45 * 1024 * 1024 * 1024 )); then
+            echo 'Eventd image validation requires 45 GiB of free build space.' >&2
+            exit 1
+          fi
+          python3 -B tools/bazel/ci/eventd_image.py build --bazel "$BAZEL" --artifacts artifacts/eventd
+
+      - name: Validate Eventd image contents, matching symbols and incremental reuse
+        if: matrix.architecture == 'amd64'
+        run: |
+          python3 -B tools/bazel/ci/eventd_image.py validate --artifacts artifacts/eventd
+          python3 -B tools/bazel/ci/eventd_image.py incremental --bazel "$BAZEL" --artifacts artifacts/eventd
+          git diff --exit-code
+
+      - name: Prepare Eventd archives and public evidence
+        id: eventd_public
+        if: always() && matrix.architecture == 'amd64' && steps.eventd_build.outcome != 'skipped'
+        run: python3 -B tools/bazel/ci/eventd_image.py publish --artifacts artifacts/eventd
+
+      - name: Upload Eventd archives and public evidence
+        if: always() && steps.eventd_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eventd-image-amd64
+          path: |
+            artifacts/eventd/public/*.gz
+            artifacts/eventd/public/*.tar
+            artifacts/eventd/public/public-receipt.json
+            artifacts/eventd/public/validation.json
+            artifacts/eventd/public/incremental.json
+            artifacts/eventd/public/action-audit.json
+            artifacts/eventd/public/debug-packages.json
+            artifacts/eventd/public/build-summary.json
+            artifacts/eventd/public/MODULE.bazel.lock
+            artifacts/eventd/public/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
 
       - name: Preserve completed archive evidence before Sysmgr acceptance
         if: matrix.architecture == 'amd64'
@@ -862,6 +905,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
+
+  eventd_runtime:
+    # Keep the required status on the job that actually loads and tests both archives.
+    name: Container archive (AMD64)
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require a successful archive build
+        env:
+          ARCHIVE_RESULT: ${{ needs.archive.result }}
+        run: test "$ARCHIVE_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: eventd-image-amd64
+          path: artifacts/eventd
+      - name: Verify loaded archives and installed event publishing and database delivery
+        run: python3 -B tools/bazel/ci/eventd_loaded.py --artifacts artifacts/eventd
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: eventd-runtime-amd64
+          path: |
+            artifacts/eventd/*.runtime.json
+            artifacts/eventd/loaded-validation.json
+          if-no-files-found: warn
+          retention-days: 14
 
   swss_layer_runtime:
     name: Load and run the shared SWSS image (AMD64)

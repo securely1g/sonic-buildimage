@@ -513,7 +513,7 @@ def publish(args):
         if getattr(args, "image", None) in GNMI_PROFILES:
             require(receipt.get("dialout_enabled") is (GNMI_PROFILES[args.image] == "enabled"),
                     "gNMI receipt differs from the selected fixed dialout profile")
-        public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "artifacts") if k in receipt}
+        public = {k: receipt[k] for k in ("status", "architecture", "revision", "tested_revision_parents", "dialout_enabled", "image_version", "artifacts") if k in receipt}
         safe_json(public)
         (destination / "public-receipt.json").write_text(json.dumps(public, indent=2) + "\n")
         for name, item in receipt.get("artifacts", {}).items():

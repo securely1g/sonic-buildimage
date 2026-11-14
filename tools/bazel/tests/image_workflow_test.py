@@ -69,6 +69,40 @@ class VerificationWorkflowTest(unittest.TestCase):
                         self.run_sysmgr_public_evidence(directory)
                     self.assertFalse((root / "build-summary.json").exists())
 
+    def test_required_amd64_archive_check_runs_installed_eventd(self):
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        archive = jobs["archive"]
+        gate = jobs["eventd_runtime"]
+        self.assertEqual(gate["name"], "Container archive (AMD64)")
+        self.assertEqual(gate["needs"], "archive")
+        self.assertEqual(gate["if"], "always() && (" + archive["if"] + ")")
+        build = next(step for step in archive["steps"] if step.get("id") == "eventd_build")
+        self.assertEqual(build["if"], "matrix.architecture == 'amd64'")
+        producer_names = {archive["name"].replace("${{ matrix.name }}", row["name"])
+                          for row in archive["strategy"]["matrix"]["include"]}
+        self.assertNotIn(gate["name"], producer_names)
+        self.assertIn("Container archive (ARM64)", producer_names)
+        upload = next(step for step in archive["steps"]
+                      if "eventd/public/*.gz" in step.get("with", {}).get("path", ""))
+        download = next(step for step in gate["steps"] if "download-artifact@" in step.get("uses", ""))
+        # Paths within the checkout resolve the same way for container shell
+        # steps and upload-artifact. Downloaded files must share one flat root.
+        patterns = upload["with"]["path"].splitlines()
+        root = Path("artifacts/eventd/public")
+        self.assertEqual({Path(pattern).parent for pattern in patterns}, {root})
+        for name in ("docker-eventd.gz", "docker-eventd-dbg.gz", "validation.json",
+                     "test-redis.tar", "config-engine-source.tar", "eventd-runtime.tar"):
+            self.assertTrue(any((root / name).match(pattern) for pattern in patterns), name)
+        self.assertEqual(upload["with"]["name"], download["with"]["name"])
+        self.assertTrue(any("eventd_loaded.py" in step.get("run", "") for step in gate["steps"]))
+        guard = gate["steps"][0]
+        self.assertEqual(guard["env"]["ARCHIVE_RESULT"], "${{ needs.archive.result }}")
+        for status in ("success", "failure", "skipped", "cancelled"):
+            with self.subTest(status=status):
+                result = subprocess.run(["bash", "-ec", guard["run"]],
+                                        env=dict(os.environ, ARCHIVE_RESULT=status))
+                self.assertEqual(result.returncode == 0, status == "success")
+
     def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["archive"]["steps"]
