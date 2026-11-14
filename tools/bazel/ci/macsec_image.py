@@ -10,7 +10,6 @@ import platform
 import subprocess
 import sys
 import tempfile
-import time
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -93,14 +92,19 @@ def build_images(args, directory):
         layouts = [BASE, *[OWNER + name for name in IMAGES]]
         receipt["action_audit"] = bazel_commands.audit_targets(args.bazel, OPTIONS, [*TARGETS.values(), *layouts],
             workspace=ROOT, output=directory / "action-audit.json")
-        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=OPTIONS)
+        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel,
+                               options=OPTIONS, use_execution_root=True)
         # Remote/cache hits for compressed archives need not materialize the
         # layouts inspected below. Request those outputs explicitly.
-        execute([args.bazel, "build", *OPTIONS, *layouts], directory, receipt, "layouts")
+        execute([args.bazel, "build", *OPTIONS,
+                 "--build_event_json_file=" + str(directory / "layouts-events.jsonl"),
+                 *layouts], directory, receipt, "layouts")
+        receipt["layout_execution_root"] = str(build.execution_root_from_bep(directory / "layouts-events.jsonl"))
         receipt["layouts"] = {name: execute([args.bazel, "cquery", *OPTIONS, "--output=files", OWNER + name],
             directory, receipt, name + ".layout").strip() for name in IMAGES}
         receipt["base_layout"] = execute([args.bazel, "cquery", *OPTIONS, "--output=files", BASE],
             directory, receipt, "base.layout").strip()
+        layout_paths(directory, receipt)
         receipt["resolution"] = resolution.collect(ROOT, directory, bazel=[args.bazel])
         clean_source(directory)
         check.require(source_identity()["revision"] == receipt["revision"], "build checkout changed")
@@ -112,6 +116,13 @@ def build_images(args, directory):
         (directory / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
+def layout_paths(directory, receipt):
+    execution_root = build.execution_root_from_bep(directory / "layouts-events.jsonl")
+    check.require(str(execution_root) == receipt["layout_execution_root"], "layout execution root changed")
+    layouts = {name: build.resolve_output(execution_root, receipt["layouts"][name]) for name in IMAGES}
+    return execution_root, build.resolve_output(execution_root, receipt["base_layout"]), layouts
+
+
 def validate_images(directory):
     clean_source(directory)
     receipt = json.loads((directory / "build-receipt.json").read_text())
@@ -120,7 +131,8 @@ def validate_images(directory):
     selection = json.loads((directory / "runtime-apt.json").read_text())
     for name, artifact in receipt["artifacts"].items():
         check.require(check.sha(directory / name) == artifact["sha256"], "artifact changed: " + name)
-    parent = oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64")
+    _, base_path, layouts = layout_paths(directory, receipt)
+    parent = oci_layout.validate_layout(base_path, "linux/amd64")
     inherited = base_images.installed_inventory(parent)
     selected, origins = source_base_validation.inventory(parent)
     with tempfile.TemporaryDirectory(prefix="macsec-parent-accounts-") as temporary:
@@ -149,7 +161,7 @@ def validate_images(directory):
     inventories = {}
     group_rows = {}
     for name in IMAGES:
-        layout = oci_layout.validate_layout(ROOT / receipt["layouts"][name], "linux/amd64")
+        layout = oci_layout.validate_layout(layouts[name], "linux/amd64")
         base_images.verify_unique_layer_paths(layout)
         files = base_images.installed_inventory(layout)
         base_images.verify_directory_aliases(files)
@@ -249,8 +261,8 @@ def validate_images(directory):
     pairs = base_images.verify_symbols(native, runtimes, directory / "macsec.debug.tar", directory)
     check.require(debug["usr/bin/ssh-agent"]["gid"] == 104 and debug["usr/bin/ssh-agent"]["mode"] == 0o2755,
                   "debug FIPS OpenSSH client permissions differ")
-    debug_layout = oci_layout.validate_layout(ROOT / receipt["layouts"][IMAGES[1]], "linux/amd64")
-    runtime_layout = oci_layout.validate_layout(ROOT / receipt["layouts"][IMAGES[0]], "linux/amd64")
+    debug_layout = oci_layout.validate_layout(layouts[IMAGES[1]], "linux/amd64")
+    runtime_layout = oci_layout.validate_layout(layouts[IMAGES[0]], "linux/amd64")
     check.require(debug_layout.manifest["layers"][:len(runtime_layout.manifest["layers"])] == runtime_layout.manifest["layers"],
                   "debug image does not extend the exact runtime layers")
     elfs = []
@@ -269,17 +281,45 @@ def validate_images(directory):
     print(json.dumps({"status": "passed", "source_elf_debug_pairs": len(pairs)}))
 
 
+def action_metrics(path):
+    """Keep reported action/cache counters, without inferring hits from hashes."""
+    summaries = [event["buildMetrics"]["actionSummary"]
+                 for line in path.read_text().splitlines()
+                 if "actionSummary" in (event := json.loads(line)).get("buildMetrics", {})]
+    check.require(len(summaries) <= 1, "ambiguous Bazel action statistics")
+    if not summaries:
+        return {"available": False}
+    summary = summaries[0]
+
+    def count(value):
+        check.require(not isinstance(value, bool) and isinstance(value, (int, str))
+                      and str(value).isdecimal(), "invalid Bazel action count")
+        return int(value)
+
+    result = {"available": True,
+              "actions_created": count(summary.get("actionsCreated", 0)),
+              "actions_executed": count(summary.get("actionsExecuted", 0)),
+              "runners": {item["name"]: count(item.get("count", 0))
+                          for item in summary.get("runnerCount", [])}}
+    if "actionCacheStatistics" in summary:
+        statistics = summary["actionCacheStatistics"]
+        result["action_cache"] = {name: count(statistics.get(name, 0)) for name in ("hits", "misses")}
+    return result
+
+
 def incremental(args, directory):
     clean_source(directory)
     baseline = json.loads((directory / "build-receipt.json").read_text())
     check.require(baseline["status"] == "built" and source_identity()["revision"] == baseline["revision"],
                   "incremental checkout differs from built source")
+    execution_root, base, layouts = layout_paths(directory, baseline)
     def output(label):
-        return ROOT / subprocess.check_output([args.bazel, "cquery", *OPTIONS, "--output=files", label], cwd=ROOT, text=True).strip()
+        files = subprocess.check_output([args.bazel, "cquery", *OPTIONS, "--output=files", label],
+                                        cwd=ROOT, text=True).splitlines()
+        check.require(len(files) == 1, "Expected one Bazel output: " + label)
+        return build.resolve_output(execution_root, files[0])
     archives = {name: output(OWNER + name + ".gz") for name in IMAGES}
     owners = {name: output(TARGETS[name]) for name in ("macsec.source.tar", "swss.source.tar")}
-    base = output(BASE)
-    layouts = {name: ROOT / path for name, path in baseline["layouts"].items()}
     targets = [OWNER + name + suffix for name in IMAGES for suffix in ("", ".gz")]
     targets += [BASE, *[TARGETS[name] for name in owners]]
     command = [args.bazel, "build", *OPTIONS, *targets]
@@ -289,10 +329,22 @@ def incremental(args, directory):
                 "owners": {name: check.sha(path) for name, path in owners.items()},
                 "base": oci_layout.validate_layout(base, "linux/amd64").descriptor["digest"]}
     timings = {}
+    invocations = {}
+    private = directory / "incremental"
+    private.mkdir(exist_ok=True)
     def timed_build(name):
-        start = time.monotonic()
-        subprocess.run(command, cwd=ROOT, check=True)
-        timings[name] = round(time.monotonic() - start, 3)
+        events = private / (name + "-events.jsonl")
+        receipt = {"commands": []}
+        try:
+            command_log.execute([*command, "--build_event_json_file=" + str(events)],
+                                private, receipt, name, cwd=ROOT)
+        finally:
+            (private / (name + "-receipt.json")).write_text(json.dumps(receipt, indent=2) + "\n")
+        check.require(build.execution_root_from_bep(events) == execution_root,
+                      "incremental build changed the accepted execution root")
+        timings[name] = round(receipt["commands"][0]["elapsed_seconds"], 3)
+        invocations[name] = {"bep": str(events.relative_to(directory)), "bep_sha256": check.sha(events),
+                             "action_statistics": action_metrics(events)}
     timed_build("baseline")
     original = snapshot()
     check.require(all(original["archives"][name] == baseline["artifacts"][name + ".gz"]["sha256"] for name in IMAGES),
@@ -318,7 +370,8 @@ def incremental(args, directory):
     check.require(source_identity()["revision"] == baseline["revision"], "incremental checkout changed")
     check.require(restored == original, "restoring the configuration did not reproduce exact image/archive bytes")
     (directory / "incremental.json").write_text(json.dumps({"status": "passed", "input": str(source.relative_to(ROOT)),
-        "timings_seconds": timings, "baseline": original, "unchanged": unchanged, "changed": changed, "restored": restored}, indent=2) + "\n")
+        "timings_seconds": timings, "invocations": invocations,
+        "baseline": original, "unchanged": unchanged, "changed": changed, "restored": restored}, indent=2) + "\n")
 
 
 def main():
