@@ -131,8 +131,11 @@ These are admission limits, not guaranteed maximum build sizes.
 Each run uses a distinct checkout and label-scoped builder cleanup. Local Bazel
 state lives in `vs-cache/bazel` under the runner workspace and is cleared before
 preflight. The VS installer uses `/nfs/dpkg_cache/vs` for Make's package/image
-cache, mounted into the slave as `/dpkg_cache`. Pull requests and manual runs use
-`rcache` (read entries only); push builds use `rwcache` (read and publish entries).
+cache, mounted into the slave as `/dpkg_cache`. Master push builds and
+same-repository PRs from `vs-nfs-cache-build-jobs` use `rwcache` (read and publish
+entries). Other PRs and manual runs use `rcache` (read entries only). The named
+branch exception allows testing shared-cache writes and can be removed when
+that testing is complete.
 Matching dependency/configuration keys are required for hits. This does not
 replace Bazel's remote cache or resolve its connection failures.
 
@@ -143,7 +146,7 @@ increasing Make concurrency does not bypass that lock and may increase memory
 or I/O pressure.
 
 Before local cache cleanup, the job requires an existing accessible NFS-backed
-cache directory; push builds additionally require write permission. There is no
+cache directory; `rwcache` builds additionally require write permission. There is no
 local fallback, directory creation, or permission repair for the NFS cache in
 the workflow. Provision access for both the runner and slave build user's
 UID/GID on the NFS server, accounting for root squashing.

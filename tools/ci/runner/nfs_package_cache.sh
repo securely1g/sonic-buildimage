@@ -17,7 +17,7 @@ case "$filesystem" in
     *) printf 'Package cache must be NFS-backed, found %s: %s\n' "$filesystem" "$cache" >&2; exit 1 ;;
 esac
 if [[ "$mode" == rwcache && ! -w "$cache" ]]; then
-    printf 'NFS package cache is not writable for push builds: %s\n' "$cache" >&2
+    printf 'NFS package cache is not writable in rwcache mode: %s\n' "$cache" >&2
     exit 1
 fi
 printf 'Validated NFS package cache: %s (mode=%s)\n' "$cache" "$mode"
