@@ -124,10 +124,8 @@ elif name == "stat":
         self.assertEqual(self.consumer["env"]["ENABLE_DOCKER_BASE_PULL"], "y")
         self.assertEqual(
             " ".join(self.consumer["env"]["SONIC_DPKG_CACHE_METHOD"].split()),
-            "${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || "
-            "(github.event_name == 'pull_request' && "
-            "github.event.pull_request.head.repo.full_name == github.repository && "
-            "github.head_ref == 'vs-nfs-cache-build-jobs')) && 'rwcache' || 'rcache' }}")
+            "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' "
+            "&& 'rwcache' || 'rcache' }}")
         self.assertEqual(self.consumer["env"]["SONIC_DPKG_CACHE_SOURCE"], "/nfs/dpkg_cache/vs")
         self.assertEqual(self.publisher["env"]["ACR_REGISTRY_NAME"], "sonicdev")
         self.assertEqual(self.publisher["env"]["REGISTRY_SERVER"], "sonicdev-microsoft.azurecr.io")

@@ -1587,11 +1587,7 @@ jobs:
       SONIC_BAZEL_KERNEL_REMOTE_CACHE: grpc://172.16.0.4:9092
       SONIC_BAZEL_KERNEL_REMOTE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}
       SONIC_CONFIG_USE_DOCKER_CACHE: "y"
-      SONIC_DPKG_CACHE_METHOD: >-
-        ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-             (github.event_name == 'pull_request' &&
-              github.event.pull_request.head.repo.full_name == github.repository &&
-              github.head_ref == 'vs-nfs-cache-build-jobs')) && 'rwcache' || 'rcache' }}
+      SONIC_DPKG_CACHE_METHOD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'rwcache' || 'rcache' }}
       SONIC_DPKG_CACHE_SOURCE: /nfs/dpkg_cache/vs
       SONIC_BUILD_JOBS: "4"
       ENABLE_DOCKER_BASE_PULL: "y"
