@@ -41,6 +41,12 @@ WRAPPERS["framework"] = "review_bazel.sh"
 WRAPPERS["p4rt"] = "review_bazel.sh"
 for name in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
     WRAPPERS[name] = "review_bazel.sh"
+# These image drivers have landed in the shared OCI workflow. Older source
+# checkouts can still carry their own reviewed wrapper and immutable catalog.
+CANONICAL_IMAGES = {"database", "eventd", "frr", "lldp", "macsec", "mux", "radv"}
+REGISTRY_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
+CANONICAL_WRAPPER = "libteam_draft_bazel.sh"
+
 # Older service branches select their catalog in a dedicated image workflow.
 # Keep the common workflow first for reviewed combined-source checkouts.
 SOURCE_WORKFLOWS = {
@@ -63,21 +69,13 @@ P4RT_OWNER_PROFILE = {"revision": P4RT_OWNER, "bazel": "6.4.0", "jobs": 1, "jvm_
                       "scheduler_memory_mb": 4096, "cache_mode": "separate_persistent_worker_local"}
 P4RT_PHASES = ("prepare-owner", "prepare-owner-runtime", "owner-tests", "build", "validate", "incremental", "loaded")
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-MIRROR_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4952d79f02632d44676e4947adb4338b13bf5f0b/ci/source_mirrors.cfg"
+MIRROR_SHA = "2e01494e18c47475b29309b9f6ac1506665b3331498996d24f69d6dfc77eacc8"
 
 
 def mirror_configuration(original):
     require(hashlib.sha256(original).hexdigest() == MIRROR_SHA, "Source mirror configuration checksum mismatch")
-    # BCR gawk@5.3.2 retains SHA256 f8c3486509de705192138b00ef2c00bbbdd0e84c30d5c07d23fc73a9dc4cc9cc.
-    # The official Bazel mirror was independently verified to contain these exact bytes.
-    destination = "https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz"
-    expressions = [r"mirrors\.kernel\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
-                   r"ftp\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
-                   r"ftpmirror\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz"]
-    lines = ["rewrite " + expression + " " + destination for expression in expressions]
-    return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
-                       "\n".join(lines) + "\n").encode()
+    return original
 
 
 def require(value, message):
@@ -606,10 +604,43 @@ def prepare_validation_tools(artifacts):
          "scope": "disposable_worker_execution_tools"}, indent=2) + "\n")
 
 
+def canonical_source(image, workspace):
+    rc = workspace / ".bazelrc"
+    if image not in CANONICAL_IMAGES or not rc.is_file():
+        return False
+    endpoints = re.findall(r"^common --registry=(.*)$", rc.read_text(), re.M)
+    sonic_endpoints = [url for url in endpoints if url.startswith(REGISTRY_URL)]
+    if REGISTRY_URL + "main" not in sonic_endpoints:
+        return False
+    require(sonic_endpoints == [REGISTRY_URL + "main"], "Expected one maintained SONiC registry")
+    return True
+
+
+def source_wrapper(image, workspace):
+    return CANONICAL_WRAPPER if canonical_source(image, workspace) else WRAPPERS[image]
+
+
+def canonical_registry_observation():
+    output_line = output(["git", "ls-remote", "--exit-code",
+                          "https://github.com/securely1g/sonic-bazel-registry.git", "refs/heads/main"])
+    match = re.fullmatch(r"([0-9a-f]{40})\s+refs/heads/main", output_line)
+    require(match, "Could not identify the observed registry main revision")
+    return match.group(1)
+
+
 def catalog_for(image, workspace, registry_revision=""):
     require(not registry_revision or re.fullmatch(r"[0-9a-f]{40}", registry_revision),
             "Registry revision must be a full lowercase Git SHA")
     workflow = (workspace / ".github/workflows/bazel-oci.yml").read_text()
+    if canonical_source(image, workspace):
+        stem = DRIVERS[image]
+        require(f'python3 -B tools/bazel/ci/{stem}_image.py build --bazel "$BAZEL"' in workflow,
+                "Selected image is missing from the shared OCI workflow")
+        wrapper = (workspace / "tools/bazel/ci" / CANONICAL_WRAPPER).read_text()
+        require("SONIC_BASE_REVIEW_REGISTRY" in wrapper and REGISTRY_URL + "main" in wrapper,
+                "Source Bazel wrapper cannot select the maintained or reviewed registry")
+        return registry_revision
+
     catalogs = sorted(set(re.findall(r"^ +SONIC_BAZEL_REGISTRY_REVISION: ([0-9a-f]{40})$", workflow, re.M)))
     wrapper = WRAPPERS[image]
     wrapper_pattern = r"^ +BAZEL: (?:\$\{\{ github.workspace \}\}/|\./)?tools/bazel/ci/" + re.escape(wrapper) + r"$"
@@ -876,6 +907,7 @@ def launcher_text(binary, base, profile, remote_cache=None):
              "--local_resources=memory=" + str(profile["scheduler_memory_mb"])]
     return ("#!/usr/bin/env python3\nimport os, sys\n" +
             "binary = " + repr(binary) + "\nbase = " + repr(str(base)) + "\nargs = sys.argv[1:]\n" +
+            "if args == ['--version']:\n    os.execv(binary, [binary, '--version'])\n" +
             "if any(value in ('build', 'test', 'aquery', 'cquery') for value in args):\n" +
             "    args.extend(" + repr(flags) + ")\n" +
             "os.execv(binary, [binary, '--output_base=' + base, '--host_jvm_args=-Xmx" +
@@ -975,7 +1007,7 @@ def phase_command(image, phase, workspace, artifacts, owner=None):
     require(image in DRIVERS and phase in (P4RT_PHASES if image == "p4rt" else
             ("build", "validate", "incremental", "loaded")), "Unknown driver phase")
     prefix = [sys.executable, "-B"]
-    wrapper = str(workspace / "tools/bazel/ci" / WRAPPERS[image])
+    wrapper = str(workspace / "tools/bazel/ci" / source_wrapper(image, workspace))
     if image == "p4rt":
         require(owner and owner.get("revision") == P4RT_OWNER and owner.get("jobs") == 1 and
                 owner.get("source") == str(workspace / P4RT_OWNER_PATH), "Missing fixed P4RT owner context")
@@ -988,6 +1020,10 @@ def phase_command(image, phase, workspace, artifacts, owner=None):
                          "--bazel", wrapper, "--owner-revision", owner["revision"],
                          "--owner-bazel", owner["bazel"], "--owner-output-base", owner["output_base"], "--jobs", "1"]
     if phase == "loaded":
+        if image == "frr" and canonical_source(image, workspace):
+            # The landed FRR workflow runs its installed probe inline.
+            return prefix + [str(ROOT / "tools/bazel/ci/frr_loaded.py"), "--source", str(workspace),
+                             "--artifacts", str(artifacts)]
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
         return prefix + [str(workspace / "tools/bazel/ci/swss_rebuild.py"), "--bazel", wrapper,
@@ -1125,7 +1161,13 @@ def prepare(args):
         prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
     source_check(workspace, args.revision)
-    for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
+    canonical = canonical_source(args.image, workspace)
+    files = [f"{DRIVERS[args.image]}_image.py", source_wrapper(args.image, workspace)]
+    if args.image != "frr" or not canonical:
+        files.append(f"{DRIVERS[args.image]}_loaded.py")
+    if not canonical:
+        files.append("review_bazel.sh")
+    for name in files:
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
     for name in BUILD_CHECKS.get(args.image, ()):
@@ -1176,6 +1218,14 @@ def prepare(args):
     env = {"BAZEL_REAL": str(launch), "BAZELISK_HOME": str(cache / "bazelisk"),
            "SONIC_BAZEL_REGISTRY_REVISION": catalog, "CI_HEAD_SHA": args.revision, "CI_BASE_SHA": "",
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
+    if canonical:
+        # The maintained wrapper resolves bazel from PATH. Keep the measured
+        # worker limits and private output base authoritative for every phase.
+        bin_dir = temporary / "source-bazel-bin"
+        bin_dir.mkdir(mode=0o700)
+        (bin_dir / "bazel").symlink_to(launch)
+        env.update(PATH=str(bin_dir) + os.pathsep + os.environ["PATH"], SONIC_BASE_REVIEW_REGISTRY=catalog,
+                   GITHUB_SHA=args.revision)
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
              "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
     if remote_cache is not None:
@@ -1217,6 +1267,11 @@ def prepare(args):
         receipt["remote_cache"] = dict(K3S_MANAGED_REMOTE_CACHE_POLICY, endpoint=remote_cache["endpoint"], host=remote_cache["host"])
     if args.image == "p4rt":
         receipt["owner_profile"] = owner_build_profile(pool)
+    if canonical:
+        receipt["registry_endpoint"] = REGISTRY_URL + (catalog or "main")
+        if not catalog:
+            del receipt["review_catalog"]
+            receipt["observed_registry_main_at_prepare"] = canonical_registry_observation()
     safe_json(receipt)
     (artifacts / "worker.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
@@ -1226,7 +1281,11 @@ def state_for(args):
     require(state["image"] == args.image and state["revision"] == args.revision and state["workspace"] == str(args.workspace),
             "Worker preparation does not match this selection")
     catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
-    require(not catalog or state["environment"]["SONIC_BAZEL_REGISTRY_REVISION"] == catalog,
+    environment = state["environment"]
+    if "SONIC_BASE_REVIEW_REGISTRY" in environment:
+        require(environment["SONIC_BASE_REVIEW_REGISTRY"] == catalog,
+                "Prepared catalog differs from the requested source/catalog pair")
+    require(not catalog or environment["SONIC_BAZEL_REGISTRY_REVISION"] == catalog,
             "Prepared catalog differs from the requested source/catalog pair")
     return state
 
