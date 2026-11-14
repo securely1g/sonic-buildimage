@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[3]
 ARTIFACTS = (
     "target/docker-orchagent.gz",
     "target/docker-orchagent-dbg.gz",
+    "target/docker-database.gz",
+    "target/docker-database-dbg.gz",
     "target/sonic-vs.bin",
     "target/sonic-vs.img.gz",
     "target/sonic-vs.raw",
@@ -26,6 +28,9 @@ class MakeForwardingTest(unittest.TestCase):
         (self.directory / "target").mkdir()
         (self.directory / "scripts").mkdir()
         (self.directory / "scripts/run_with_retry").symlink_to(ROOT / "scripts/run_with_retry")
+        (self.directory / "tools/bazel").mkdir(parents=True)
+        (self.directory / "tools/bazel/direct_image_goals.mk").symlink_to(
+            ROOT / "tools/bazel/direct_image_goals.mk")
         self.log = self.directory / "forwarded.log"
         targets = " ".join((*ARTIFACTS, "jessie", "bookworm", "docker-cleanup"))
         # This controlled inner Make records dispatch only. Its phony targets
@@ -89,9 +94,9 @@ class MakeForwardingTest(unittest.TestCase):
                 self.assertEqual(calls[0], [target, "y", "trixie", ""])
 
     def test_unrelated_existing_output_is_not_forced(self):
-        """Leave existing outputs outside the SWSS and VS handoff scope up to date.
+        """Leave an existing archive outside the direct-forwarding list up to date.
         """
-        target = "target/docker-lldp.gz"
+        target = "target/docker-nat.gz"
         (self.directory / target).write_bytes(b"unrelated archive")
         before = self.state(target)
         for mode in ("y", "n"):

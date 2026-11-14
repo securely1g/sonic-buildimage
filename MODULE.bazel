@@ -284,6 +284,16 @@ apt_inputs(
     lock = "@sonic_build_infra//apt:apt.lock.json",
 )
 
+# Redis server and tools have the same package closure as the shared management test set.
+use_repo(apt, "mgmt_test_deps")
+
+pip.parse(
+    hub_name = "database_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-database/bazel:requirements_lock.txt",
+)
+use_repo(pip, "database_pip")
+
 bazel_dep(name = "socat", version = "1.8.0.2.sonic.6")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.6")
 bazel_dep(name = "libnl3", version = "3.7.0.sonic.7")
@@ -322,6 +332,7 @@ source_modules(
     modules = {
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@libteam//:MODULE.bazel": "libteam",
+        "@sonic_dash_api//:MODULE.bazel": "sonic-dash-api",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",

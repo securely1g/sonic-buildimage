@@ -35,3 +35,17 @@ $(SONIC_BAZEL_IMAGE_ENVIRONMENT_FILES): private export SONIC_IMAGE_VERSION := $(
 $(SONIC_BAZEL_IMAGE_ENVIRONMENT_FILES): $(TARGET_PATH)/bazel-manifests/%/image.env : tools/bazel/prepare_image_environment.py bazel-manifests-force
 	python3 -B tools/bazel/prepare_image_environment.py --output "$@"
 endif
+
+# Component labels are a declared input for images that other SONiC packages
+# depend on. Use the same label selection as the native Docker invocation.
+SONIC_BAZEL_COMPONENT_LABEL_FILES := $(addprefix $(TARGET_PATH)/bazel-manifests/,$(addsuffix /components.labels,$(sort $(SONIC_BAZEL_COMPONENT_LABELS))))
+ifneq ($(strip $(SONIC_BAZEL_COMPONENT_LABEL_FILES)),)
+$(SONIC_BAZEL_COMPONENT_LABEL_FILES): private export COMPONENT_LABELS = $(call docker_component_version_labels,$($*_MANIFEST_IMAGE))
+$(SONIC_BAZEL_COMPONENT_LABEL_FILES): $(TARGET_PATH)/bazel-manifests/%/components.labels : bazel-manifests-force
+	@mkdir -p "$(@D)"
+	stage=$$(mktemp "$(@D)/.labels.XXXXXX")
+	trap 'rm -f "$$stage"' EXIT
+	set -f
+	for label in $$COMPONENT_LABELS; do printf '%s\n' "$$label"; done > "$$stage"
+	if ! cmp -s "$$stage" "$@"; then mv -f "$$stage" "$@"; fi
+endif

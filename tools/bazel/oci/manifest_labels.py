@@ -40,6 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--component-labels", type=Path)
     parser.add_argument("--package-metadata", type=Path)
     parser.add_argument("--version-package", action="append", default=[])
     parser.add_argument("--image-version", help="SONiC image version for the Make Tag label")
@@ -50,6 +51,8 @@ def main():
         parser.error("a package receipt and at least one version package must be supplied together")
     if args.package_metadata:
         label += component_labels(args.package_metadata.read_text(encoding="utf-8"), args.version_package)
+    if args.component_labels:
+        label += args.component_labels.read_text(encoding="utf-8")
     args.output.write_text(label, encoding="utf-8")
 
 
