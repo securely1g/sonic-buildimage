@@ -312,7 +312,7 @@ jobs:
           # common.bazelrc imports this ignored file, including through Draft wrappers.
           printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
-      - name: Check Make OCI bases and reproducible Docker archives
+      - name: Check OCI archives and VS installer assembly contracts
         run: |
           set -euo pipefail
           mkdir -p artifacts/archive
@@ -357,6 +357,19 @@ jobs:
             //tools/bazel/oci/tests:native_symbols_test \
             //tools/bazel/oci/tests:normalize_layer_test \
             //tools/bazel/oci/tests:normalize_layer_rule_test \
+            //tools/bazel/image:metadata_test \
+            //tools/bazel/image:host_test \
+            //tools/bazel/image:store_test \
+            //tools/bazel/image:import_store_test \
+            //tools/bazel/image:installer_test \
+            //tools/bazel/image:run_test \
+            //tools/bazel/image:prepare_inputs_test \
+            //tools/bazel/image:verify_inputs_test \
+            //tools/bazel/image:build_test \
+            //tools/bazel/image/native:producer_test \
+            //tools/bazel/image/native:handoff_test \
+            //tools/bazel/image/native:source_identity_test \
+            //tools/bazel/ci:verify_image_test \
             //tools/bazel/tests:archive-fixture.gz \
             //tools/bazel/tests:oci-consumer-first.gz
           "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
@@ -376,6 +389,19 @@ jobs:
             //tools/bazel/oci/tests:native_symbols_test \
             //tools/bazel/oci/tests:normalize_layer_test \
             //tools/bazel/oci/tests:normalize_layer_rule_test \
+            //tools/bazel/image:metadata_test \
+            //tools/bazel/image:host_test \
+            //tools/bazel/image:store_test \
+            //tools/bazel/image:import_store_test \
+            //tools/bazel/image:installer_test \
+            //tools/bazel/image:run_test \
+            //tools/bazel/image:prepare_inputs_test \
+            //tools/bazel/image:verify_inputs_test \
+            //tools/bazel/image:build_test \
+            //tools/bazel/image/native:producer_test \
+            //tools/bazel/image/native:handoff_test \
+            //tools/bazel/image/native:source_identity_test \
+            //tools/bazel/ci:verify_image_test \
             2>&1 | tee artifacts/archive/test.log
           output=$("$BAZEL" cquery --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
