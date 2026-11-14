@@ -562,7 +562,7 @@ class ExplicitWheelReuseTests(unittest.TestCase):
         final23 = mock.Mock()
         with mock.patch.object(plan, "inputs", return_value=(Path("/fixture"), value)), \
              mock.patch.object(plan, "verify_native_inputs", return_value=({}, {})), \
-             mock.patch.dict(plan.sys.modules, {"tools.bazel.ci.vs_final23": final23}), \
+             mock.patch("tools.bazel.ci.vs_final23", final23, create=True), \
              mock.patch.object(plan, "archive_paths", return_value=["target/docker-x.gz"]), \
              mock.patch.object(plan, "bazel_marker_archives", return_value=["target/docker-fixture.gz"]), \
              mock.patch.object(plan, "kernel_arguments", return_value=[]), \
@@ -1204,7 +1204,6 @@ class ConfiguredSourceClosureTests(unittest.TestCase):
             plan.configured_source_closure(root, capture, packages, kernels)
 
     def test_plan_does_not_admit_a_fresh_checkout_with_empty_body_globs(self):
-        import sys
         from types import SimpleNamespace
         case = ConfiguredPackageClosureTests("test_host_install_walks_mixed_transitive_edges_and_cycles_once")
         case.fixture()
@@ -1217,7 +1216,7 @@ class ConfiguredSourceClosureTests(unittest.TestCase):
             args = fixture_args(make_inputs=source, make_inputs_sha256="a" * 64,
                                       manifest_sha256="b" * 64, receipt=root / "capture.json")
             fake = SimpleNamespace(capture=mock.Mock(return_value={}), verify=mock.Mock())
-            with mock.patch.dict(sys.modules, {"tools.bazel.ci.vs_final23": fake}), \
+            with mock.patch("tools.bazel.ci.vs_final23", fake, create=True), \
                  mock.patch.object(plan, "inputs", return_value=(root, {"groups": {"kernel": []}})), \
                  mock.patch.object(plan, "verify_native_inputs", return_value=({}, {})), \
                  mock.patch.object(plan, "archive_paths", return_value=["target/docker-fixture.gz"]), \
