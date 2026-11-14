@@ -165,10 +165,16 @@ class VerificationWorkflowTest(unittest.TestCase):
 
     def test_sysmgr_evidence_preserves_previous_and_repeated_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["archive"]["steps"]
+        upload = next(step for step in steps if step.get("name") == "Retain Sysmgr image artifacts and evidence")
         preserve = next(
-            step for step in workflow["jobs"]["archive"]["steps"]
+            step for step in steps
             if step.get("name") == "Preserve completed Sysmgr evidence before SWSS layer acceptance"
         )
+        next_build = next(step for step in steps if step.get("name") == "Build and validate SNMP runtime and debug archives")
+        self.assertEqual(preserve["if"], "matrix.architecture == 'amd64'")
+        self.assertLess(steps.index(upload), steps.index(preserve))
+        self.assertLess(steps.index(preserve), steps.index(next_build))
         with tempfile.TemporaryDirectory(prefix="sysmgr evidence ") as temporary:
             root = Path(temporary)
             scratch = root / "scratch"
@@ -193,6 +199,9 @@ class VerificationWorkflowTest(unittest.TestCase):
             receipts = {p: p.read_text() for p in scratch.rglob("receipt")}
             self.assertCountEqual(receipts.values(), ["previous", "first", "second"])
             self.assertEqual((old / "receipt").read_text(), "previous")
+            preserved = list(scratch.glob("pre-swss-layer-artifacts.*"))
+            self.assertEqual(len(preserved), 2)
+            self.assertTrue(all(path.stat().st_mode & 0o777 == 0o700 for path in preserved))
             result = run()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual({p: p.read_text() for p in scratch.rglob("receipt")}, receipts)
