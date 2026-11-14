@@ -4508,7 +4508,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.VS_NATIVE_REVISION }}
-          path: ${{ env.VS_REL }}/native
+          path: ${{ env.VS_REL }}/temporary/native
           persist-credentials: false
       - name: Check out the qualified cleanup controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -4559,7 +4559,7 @@ jobs:
           def git(directory, *args):
               return subprocess.check_output(["git", "-C", str(directory), *args], text=True).rstrip("\n")
           expected = {"controller": "VS_SOURCE_HEAD", "assembly": "VS_TESTED_MERGE",
-                      "native": "VS_NATIVE_REVISION", "controller-native-cleanup": "VS_CLEANUP_REVISION",
+                      "temporary/native": "VS_NATIVE_REVISION", "controller-native-cleanup": "VS_CLEANUP_REVISION",
                       "kernel-producer": "VS_KERNEL_REVISION", "registry": "VS_REGISTRY_REVISION",
                       "inventory": "VS_INVENTORY_REVISION", "download-action": "VS_DOWNLOAD_REVISION"}
           for directory, variable in expected.items():
@@ -4652,7 +4652,7 @@ jobs:
               "merge": os.environ["VS_TESTED_MERGE"], "source_head": os.environ["VS_SOURCE_HEAD"],
               "source_tree": os.environ["VS_SOURCE_TREE"],
               "producer": str(root / "kernel-producer"), "registry": str(root / "registry"),
-              "native_controller": str(root / "native"),
+              "native_controller": str(root / "temporary" / "native"),
               "expected_short_commit": os.environ["VS_SHORT_COMMIT"],
               "profile_paths": inventory["groups"]["profile"],
               "manager_revision": os.environ["VS_MANAGER_REVISION"],
