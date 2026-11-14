@@ -146,7 +146,10 @@ increasing Make concurrency does not bypass that lock and may increase memory
 or I/O pressure.
 
 Before local cache cleanup, the job uses noninteractive `sudo` to check that the
-cache directory exists and is NFS-backed. These privileged host checks match
+cache directory exists and is NFS-backed. The `stat --file-system` probe triggers
+on-demand mounts and checks the filesystem actually reached, rather than an
+`autofs` mount-table entry. An unresolved `autofs` filesystem or a local
+filesystem is still rejected. These privileged host checks match
 source-path resolution by the rootful Docker daemon: the non-root runner does
 not need to traverse `/nfs` itself. Read/write access and existing permission
 initialization remain inside the slave through the unchanged `Makefile.cache`.

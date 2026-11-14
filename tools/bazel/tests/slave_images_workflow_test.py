@@ -64,12 +64,13 @@ elif name == "sudo" and args[:3] == ["-n", "test", "-d"]:
     exists = (os.environ["CACHE_DIRECTORY_EXISTS"] == "1"
               if "CACHE_DIRECTORY_EXISTS" in os.environ else os.path.isdir(args[3]))
     raise SystemExit(0 if exists else 1)
-elif name == "sudo" and args[:2] == ["-n", "findmnt"]:
-    os.execvp("findmnt", args[1:])
-elif name == "findmnt":
-    print(os.environ.get("CACHE_FILESYSTEM", "nfs4"))
+elif name == "sudo" and args[:2] == ["-n", "stat"]:
+    os.execvp("stat", args[1:])
+elif name == "stat":
+    print(os.environ.get("CACHE_AUTOMOUNT_FILESYSTEM",
+                         os.environ.get("CACHE_FILESYSTEM", "nfs")))
 '''
-        for name in ("make", "docker", "az", "curl", "sudo", "findmnt"):
+        for name in ("make", "docker", "az", "curl", "sudo", "stat"):
             executable = self.commands / name
             executable.write_text(shim)
             executable.chmod(0o755)
@@ -253,7 +254,7 @@ elif name == "findmnt":
         cache = self.directory / "shared packages"
         cache.mkdir()
         for mode in ("rcache", "rwcache"):
-            for filesystem in ("nfs", "nfs4", "ext4", "overlay", ""):
+            for filesystem in ("nfs", "nfs4", "autofs", "ext4", "overlay", ""):
                 with self.subTest(mode=mode, filesystem=filesystem):
                     result = self.run_shell(
                         script, SONIC_DPKG_CACHE_SOURCE=str(cache),
@@ -262,17 +263,16 @@ elif name == "findmnt":
                                      result.stdout + result.stderr)
                     self.assertEqual(self.recorded(), [
                         ["sudo", "-n", "test", "-d", str(cache)],
-                        ["sudo", "-n", "findmnt", "--noheadings", "--raw", "--output",
-                         "FSTYPE", "--target", str(cache)],
-                        ["findmnt", "--noheadings", "--raw", "--output", "FSTYPE",
-                         "--target", str(cache)]])
+                        ["sudo", "-n", "stat", "--file-system", "--format=%T",
+                         "--", str(cache)],
+                        ["stat", "--file-system", "--format=%T", "--", str(cache)]])
         for mode, source in (("rcache", cache / "missing"), ("none", cache)):
             result = self.run_shell(script, SONIC_DPKG_CACHE_SOURCE=str(source),
                                     SONIC_DPKG_CACHE_METHOD=mode)
             self.assertNotEqual(result.returncode, 0)
         result = self.run_shell(
             script, SONIC_DPKG_CACHE_SOURCE=str(cache), SONIC_DPKG_CACHE_METHOD="rcache",
-            FAIL_COMMAND="findmnt --noheadings")
+            FAIL_COMMAND="stat --file-system")
         self.assertNotEqual(result.returncode, 0)
         result = self.run_shell(
             script, SONIC_DPKG_CACHE_SOURCE=str(cache), SONIC_DPKG_CACHE_METHOD="rcache",
@@ -280,6 +280,22 @@ elif name == "findmnt":
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("privileged host access", result.stderr)
         self.assertEqual(self.recorded(), [["sudo", "-n", "test", "-d", str(cache)]])
+
+    def test_nfs_validation_checks_the_filesystem_reached_through_autofs(self):
+        script = (ROOT / "tools/ci/runner/nfs_package_cache.sh").read_text()
+        cache = self.directory / "automounted packages"
+        cache.mkdir()
+        for mode in ("rcache", "rwcache"):
+            for filesystem in ("nfs", "nfs4", "autofs", "ext4", "overlay", ""):
+                with self.subTest(mode=mode, filesystem=filesystem):
+                    result = self.run_shell(
+                        script, SONIC_DPKG_CACHE_SOURCE=str(cache),
+                        SONIC_DPKG_CACHE_METHOD=mode, CACHE_FILESYSTEM="autofs",
+                        CACHE_AUTOMOUNT_FILESYSTEM=filesystem)
+                    self.assertEqual(result.returncode == 0, filesystem in ("nfs", "nfs4"),
+                                     result.stdout + result.stderr)
+                    self.assertEqual(self.recorded()[-1], [
+                        "stat", "--file-system", "--format=%T", "--", str(cache)])
 
     def test_nfs_validation_leaves_read_write_permissions_to_the_slave(self):
         script = (ROOT / "tools/ci/runner/nfs_package_cache.sh").read_text()
@@ -315,10 +331,9 @@ elif name == "findmnt":
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.recorded(), [
                     ["sudo", "-n", "test", "-d", str(cache)],
-                    ["sudo", "-n", "findmnt", "--noheadings", "--raw", "--output",
-                     "FSTYPE", "--target", str(cache)],
-                    ["findmnt", "--noheadings", "--raw", "--output", "FSTYPE",
-                     "--target", str(cache)]])
+                    ["sudo", "-n", "stat", "--file-system", "--format=%T",
+                     "--", str(cache)],
+                    ["stat", "--file-system", "--format=%T", "--", str(cache)]])
         finally:
             parent.chmod(0o755)
         current = cache.stat()
