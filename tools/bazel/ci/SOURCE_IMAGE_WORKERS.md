@@ -78,7 +78,7 @@ existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
 `otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
-`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux` or `frr`,
+`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux`, `frr` or `snmp`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -206,10 +206,17 @@ The dispatcher invokes its reviewed FRR adapter against the selected checkout,
 verifies source parents, both archives, image configurations, layers and Redis,
 then checks both installed probe results. Earlier reviewed sources retain their own wrapper and catalog requirements.
 
-SNMP and the shared base/config-engine/SWSS layers are not selectable here.
-Their existing workflows need an explicit adapter preserving all checks and
-receipts; a missing phase must not be treated as a pass. Use their dedicated
-workflows until that interface is reviewed.
+The `snmp` selector runs the selected source checkout's `snmp_image.py` and
+`snmp_loaded.py` on a dedicated AMD64/Trixie worker. Select buildimage #134's
+merge or a compatible descendant. A blank registry input uses the canonical
+SONiC registry main endpoint. The worker records the tip observed during
+preparation. For an immutable review pair, supply a full registry SHA as well
+as the source SHA. The build and incremental phases check both archives. The loaded phase
+checks both installed variants with private Redis, AgentX and SNMP queries.
+The regular PR workflow still runs its kernel checks and VS installer.
+
+The shared base/config-engine/SWSS layers are not selectable here. Their dedicated
+workflows retain their existing checks and receipts.
 
 ## Explicit ordinary registry consumers
 

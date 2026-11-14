@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr]
+        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, snmp]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd or Gearbox validation
@@ -169,7 +169,7 @@ jobs:
 
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -209,7 +209,7 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr"]'), inputs.source_image)
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp"]'), inputs.source_image)
     runs-on: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && fromJSON('["sonic-slave-container-k3s"]') || fromJSON(format('["sonic-slave-container-dpool","{0}"]', inputs.source_worker)) }}
     concurrency:
       group: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && format('sonic-source-image-k3s-{0}-{1}', inputs.source_image, inputs.source_ci_request) || format('source-image-native-{0}-{1}', github.run_id, github.run_attempt) }}
