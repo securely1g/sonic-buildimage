@@ -343,16 +343,16 @@ class ScopedWorkflowRoutingTest(unittest.TestCase):
                         self.assertEqual(retained, produced)
                         self.assertEqual(retained.read_text(), '{"retained":"original-context"}\n')
 
-    def test_pr206_and_parent_pr196_narrow_the_four_shared_matrices(self):
+    def test_pr206_and_parent_pr196_narrow_the_eight_shared_matrices(self):
         seen = 0
-        for filename in ("bazel-oci.yml", "bazel-base-images.yml", "runtime-image-validation.yml"):
+        for filename in ("bazel-oci.yml", "bazel-base-images.yml", "runtime-image-validation.yml", "bazel-eventd.yml", "bazel-supervisor-rust.yml", "bazel-yang-models.yml", "bazel-libteam.yml"):
             for job in jobs(ROOT / ".github/workflows" / filename).values():
                 header = job.split("    steps:\n", 1)[0]
                 if "include: >-" not in header or "github.event.pull_request.number == 206" not in header:
                     continue
                 expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
                 both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
-                amd64 = [row for row in both if row.get("architecture", row.get("arch")) == "amd64"]
+                amd64 = [row for row in both if row.get("architecture", row.get("debian_arch", row.get("arch"))).lower() == "amd64"]
                 self.assertEqual(len(both), 2)
                 self.assertEqual(len(amd64), 1)
                 for event, repo, number, expected in (
@@ -369,7 +369,7 @@ class ScopedWorkflowRoutingTest(unittest.TestCase):
                             "github.event.pull_request.number": number,
                         }), expected)
                 seen += 1
-        self.assertEqual(seen, 4)
+        self.assertEqual(seen, 8)
 
     def test_only_trusted_hub_requests_use_k3s_without_a_job_container(self):
         workflow = WORKFLOW.read_text()
