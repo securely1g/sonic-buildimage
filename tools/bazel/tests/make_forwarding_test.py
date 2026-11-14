@@ -20,6 +20,8 @@ ARTIFACTS = (
     "target/docker-teamd-dbg.gz",
     "target/docker-router-advertiser.gz",
     "target/docker-router-advertiser-dbg.gz",
+    "target/docker-lldp.gz",
+    "target/docker-lldp-dbg.gz",
     "target/sonic-vs.bin",
     "target/sonic-vs.img.gz",
     "target/sonic-vs.raw",
