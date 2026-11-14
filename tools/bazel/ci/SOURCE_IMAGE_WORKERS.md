@@ -83,9 +83,13 @@ An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
 catalog selection. The `review_bazel.sh` entrypoint accepts the explicit
 catalog and records it in `worker.json`; later phases reject a catalog that
-differs from preparation. Compatibility entrypoints keep their fixed pin and
-reject an explicit different catalog. No module, lockfile or source is edited
-by this selection.
+differs from preparation. Historical compatibility entrypoints keep their fixed
+pin and reject an explicit different catalog. The current compatibility
+entrypoint uses canonical registry `main` when the input is blank and
+`SONIC_BASE_REVIEW_REGISTRY` only for an explicit SHA. `worker.json` records
+`main` or that SHA. The worker clears inherited registry selectors and routes
+direct `bazel` calls through its private launcher. No module, lockfile or source
+is edited by this selection.
 For example, the accepted HA source can be tested on worker 1 with:
 
 ```sh
@@ -102,8 +106,10 @@ The disposable slave installs only missing archive/debug execution packages
 (`libarchive-tools`, GDB and binutils), checks their tools before building and
 retains the installed package versions. These do not enter the image layers.
 Sysmgr, OTEL, Syncd, Gearbox, DASH engine, Framework and both gNMI profiles use `review_bazel.sh` with the explicitly selected catalog or each workflow's immutable default;
-the other three use their compatibility entrypoint and verify any workflow catalog
-agrees. No module or source-owner override is added. Selected Rust modules use
+the remaining images use their compatibility entrypoint and verify any workflow catalog
+agrees. Orchagent supports the landed `swss_image_rebuild.py` interface and the
+historical `swss_rebuild.py` interface selected by the checked-out source.
+No module or source-owner override is added. Selected Rust modules use
 `rules_rs` with tracked Cargo inputs; their normal module extension prepares
 crate repositories. Sysmgr initializes its existing gNOI submodule. The image
 drivers retain their metadata-only `prepare_manifests.mk` step. OTEL reuses its

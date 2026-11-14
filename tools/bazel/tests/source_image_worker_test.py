@@ -230,6 +230,8 @@ class ImageWorkerTest(unittest.TestCase):
             (root / "tools/bazel/ci/libteam_draft_bazel.sh").write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
             self.assertEqual(worker.catalog_for("dash-ha", root), "a" * 40)
             self.assertEqual(worker.catalog_for("dash-ha", root, "a" * 40), "a" * 40)
+            self.assertEqual(worker.registry_environment("dash-ha", root, "a" * 40),
+                             {"SONIC_BAZEL_REGISTRY_REVISION": "a" * 40, "SONIC_BASE_REVIEW_REGISTRY": ""})
             with self.assertRaisesRegex(ValueError, "cannot override"):
                 worker.catalog_for("dash-ha", root, "b" * 40)
 
@@ -246,6 +248,64 @@ class ImageWorkerTest(unittest.TestCase):
                     patch.object(worker.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "Prepared catalog"):
                 worker.execute_phase(args)
             run.assert_not_called()
+
+    def test_landed_orchagent_wrapper_uses_main_or_explicit_review_with_private_launcher(self):
+        # Exact wrapper from buildimage #151 merge 2943b6cf, blob 4299c78b.
+        fixture = ROOT / "tools/bazel/tests/fixtures/source_image_worker/libteam_draft_bazel_2943b6cf.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ci = root / "tools/bazel/ci"
+            ci.mkdir(parents=True)
+            workflow = root / ".github/workflows/bazel-oci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n")
+            wrapper = ci / "libteam_draft_bazel.sh"
+            wrapper.write_bytes(fixture.read_bytes())
+            for name in ("orchagent_image.py", "orchagent_loaded.py", "swss_image_rebuild.py"):
+                (ci / name).write_text("# landed driver fixture\n")
+            self.assertFalse((ci / "review_bazel.sh").exists())
+            worker.require_source_drivers("orchagent", root)
+            self.assertTrue(worker.canonical_registry_wrapper("orchagent", root))
+            command = worker.phase_command("orchagent", "incremental", root, root / "artifacts")
+            self.assertEqual(command[2], str(ci / "swss_image_rebuild.py"))
+            self.assertFalse(any("source_config_engine" in value for value in command))
+            binary = root / "real-bazel"
+            binary.write_text("#!" + sys.executable + "\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            private_bin = root / "source-image-bin"
+            private_bin.mkdir()
+            launcher = private_bin / "bazel"
+            launcher.write_text(worker.launcher_text(str(binary), root / "output-base",
+                                                     worker.select_build_profile(20 * 1024**3, 4)))
+            launcher.chmod(0o755)
+            for requested, selected in (("", "main"), ("b" * 40, "b" * 40)):
+                with self.subTest(requested=requested):
+                    catalog = worker.catalog_for("orchagent", root, requested)
+                    self.assertEqual(catalog, selected)
+                    registry = worker.registry_environment("orchagent", root, catalog)
+                    self.assertEqual(registry, {"SONIC_BAZEL_REGISTRY_REVISION": "",
+                                               "SONIC_BASE_REVIEW_REGISTRY": requested})
+                    environment = {**os.environ, "SONIC_BASE_REVIEW_REGISTRY": "c" * 40,
+                                   "PATH": str(private_bin) + os.pathsep + os.environ["PATH"], **registry}
+                    argv = json.loads(subprocess.check_output(["bash", str(wrapper), "build", "//dockers/docker-orchagent:docker-orchagent.gz"],
+                                                             cwd=root, env=environment, text=True))
+                    self.assertEqual(argv[0], "--output_base=" + str(root / "output-base"))
+                    self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" + selected, argv)
+                    self.assertEqual("--remote_upload_local_results=false" in argv, bool(requested))
+                    self.assertIn("--jobs=2", argv)
+            (ci / "swss_image_rebuild.py").unlink()
+            (ci / "swss_rebuild.py").write_text("# historical driver fixture\n")
+            self.assertEqual(worker.phase_command("orchagent", "incremental", root, root / "artifacts")[2],
+                             str(ci / "swss_rebuild.py"))
+            wrapper.write_text(wrapper.read_text() + "export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
+            for select in (lambda: worker.catalog_for("orchagent", root),
+                           lambda: worker.registry_environment("orchagent", root, "main")):
+                with self.assertRaisesRegex(ValueError, "Ambiguous registry"):
+                    select()
+            wrapper.unlink()
+            wrapper.symlink_to(fixture)
+            with self.assertRaisesRegex(ValueError, "Missing reviewed driver"):
+                worker.require_source_drivers("orchagent", root)
 
     def test_syncd_tap_requires_exact_device_and_private_namespace_proof(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -226,6 +226,10 @@ def catalog_for(image, workspace, registry_revision=""):
     if wrapper != "review_bazel.sh":
         text = (workspace / "tools/bazel/ci" / wrapper).read_text()
         selected = re.findall(r"^export SONIC_BAZEL_REGISTRY_REVISION=([0-9a-f]{40})$", text, re.M)
+        if canonical_registry_wrapper(image, workspace):
+            require(not catalogs, "Canonical entrypoint cannot use a pinned workflow catalog")
+            require("SONIC_BASE_REVIEW_REGISTRY" in text, "Canonical entrypoint lacks its review registry input")
+            return registry_revision or "main"
         require(len(selected) == 1 and (not catalogs or selected == catalogs),
                 "Workflow and compatibility entrypoint catalogs differ")
         require(not registry_revision or registry_revision == selected[0],
@@ -233,6 +237,43 @@ def catalog_for(image, workspace, registry_revision=""):
         return selected[0]
     require(len(catalogs) == 1, "Expected one immutable global workflow catalog")
     return registry_revision or catalogs[0]
+
+
+def canonical_registry_wrapper(image, workspace):
+    wrapper = WRAPPERS[image]
+    if wrapper == "review_bazel.sh":
+        return False
+    text = (workspace / "tools/bazel/ci" / wrapper).read_text()
+    pinned = re.findall(r"^export SONIC_BAZEL_REGISTRY_REVISION=([0-9a-f]{40})$", text, re.M)
+    canonical = re.findall(r"^registry=https://raw\.githubusercontent\.com/securely1g/sonic-bazel-registry/main$", text, re.M)
+    require(len(pinned) <= 1 and len(canonical) <= 1 and not (pinned and canonical),
+            "Ambiguous registry entrypoint contract")
+    return bool(canonical)
+
+
+def registry_environment(image, workspace, catalog):
+    canonical = canonical_registry_wrapper(image, workspace)
+    return {"SONIC_BAZEL_REGISTRY_REVISION": "" if canonical else catalog,
+            "SONIC_BASE_REVIEW_REGISTRY": catalog if canonical and catalog != "main" else ""}
+
+
+def orchagent_rebuild_driver(workspace):
+    current = workspace / "tools/bazel/ci/swss_image_rebuild.py"
+    return current if current.is_file() else workspace / "tools/bazel/ci/swss_rebuild.py"
+
+
+def require_source_drivers(image, workspace):
+    wrapper = workspace / "tools/bazel/ci" / WRAPPERS[image]
+    require(wrapper.is_file() and wrapper.resolve().is_relative_to(workspace),
+            "Missing reviewed driver: " + wrapper.name)
+    names = [f"{DRIVERS[image]}_image.py", f"{DRIVERS[image]}_loaded.py", WRAPPERS[image]]
+    if not canonical_registry_wrapper(image, workspace):
+        names.append("review_bazel.sh")
+    if image == "orchagent":
+        names.append(orchagent_rebuild_driver(workspace).name)
+    for name in names:
+        path = workspace / "tools/bazel/ci" / name
+        require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
 
 
 def memory_snapshot():
@@ -270,7 +311,7 @@ def phase_command(image, phase, workspace, artifacts):
     if phase == "loaded":
         return prefix + [str(workspace / f"tools/bazel/ci/{DRIVERS[image]}_loaded.py"), "--artifacts", str(artifacts)]
     if phase == "incremental" and image == "orchagent":
-        return prefix + [str(workspace / "tools/bazel/ci/swss_rebuild.py"), "--bazel", wrapper,
+        return prefix + [str(orchagent_rebuild_driver(workspace)), "--bazel", wrapper,
                          "--runtime-target", "//dockers/docker-orchagent:docker-orchagent.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:docker-orchagent-dbg.gz",
                          "--additional-runtime-target", "//dockers/docker-orchagent:rdeps",
@@ -364,9 +405,7 @@ def prepare(args):
         prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
     source_check(workspace, args.revision)
-    for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
-        path = workspace / "tools/bazel/ci" / name
-        require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
+    require_source_drivers(args.image, workspace)
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
@@ -379,7 +418,9 @@ def prepare(args):
     temporary.mkdir(parents=True, exist_ok=True)
     distdirs, download_receipt = prepare_source_downloads(temporary / "source-image-inputs", cache)
     (artifacts / "worker-source-downloads.json").write_text(json.dumps(download_receipt, indent=2) + "\n")
-    launch = temporary / "source-image-bazel"
+    launcher_directory = temporary / "source-image-bin"
+    launcher_directory.mkdir()
+    launch = launcher_directory / "bazel"
     launch.write_text(launcher_text(shutil.which("bazel"), cache / args.image / "output-base", profile))
     launch.chmod(0o755)
     mirror = temporary / "source-image-mirrors.cfg"
@@ -408,7 +449,8 @@ def prepare(args):
     daemon_config = temporary / "source-image-dockerd.json"
     daemon_config.write_text("{}\n")
     env = {"BAZEL_REAL": str(launch), "BAZELISK_HOME": str(cache / "bazelisk"),
-           "SONIC_BAZEL_REGISTRY_REVISION": catalog, "CI_HEAD_SHA": args.revision, "CI_BASE_SHA": "",
+           "PATH": str(launcher_directory) + os.pathsep + os.environ["PATH"],
+           **registry_environment(args.image, workspace, catalog), "CI_HEAD_SHA": args.revision, "CI_BASE_SHA": "",
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
              "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
@@ -449,7 +491,9 @@ def state_for(args):
     require(state["image"] == args.image and state["revision"] == args.revision and state["workspace"] == str(args.workspace),
             "Worker preparation does not match this selection")
     catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
-    require(not catalog or state["environment"]["SONIC_BAZEL_REGISTRY_REVISION"] == catalog,
+    prepared_catalog = (state["environment"].get("SONIC_BASE_REVIEW_REGISTRY") or
+                        state["environment"].get("SONIC_BAZEL_REGISTRY_REVISION"))
+    require(not catalog or prepared_catalog == catalog,
             "Prepared catalog differs from the requested source/catalog pair")
     return state
 
