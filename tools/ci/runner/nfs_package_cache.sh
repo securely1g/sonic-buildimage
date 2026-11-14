@@ -7,17 +7,13 @@ case "$mode" in
     rcache|rwcache) ;;
     *) printf 'Unsupported NFS package cache mode: %s\n' "$mode" >&2; exit 1 ;;
 esac
-if [[ ! -d "$cache" || ! -r "$cache" || ! -x "$cache" ]]; then
-    printf 'NFS package cache is missing or inaccessible: %s\n' "$cache" >&2
+if ! sudo -n test -d "$cache"; then
+    printf 'NFS package cache is missing or inaccessible to privileged host access: %s\n' "$cache" >&2
     exit 1
 fi
-filesystem=$(findmnt --noheadings --raw --output FSTYPE --target "$cache")
+filesystem=$(sudo -n findmnt --noheadings --raw --output FSTYPE --target "$cache")
 case "$filesystem" in
     nfs|nfs4) ;;
     *) printf 'Package cache must be NFS-backed, found %s: %s\n' "$filesystem" "$cache" >&2; exit 1 ;;
 esac
-if [[ "$mode" == rwcache && ! -w "$cache" ]]; then
-    printf 'NFS package cache is not writable in rwcache mode: %s\n' "$cache" >&2
-    exit 1
-fi
-printf 'Validated NFS package cache: %s (mode=%s)\n' "$cache" "$mode"
+printf 'Validated NFS package cache source: %s (mode=%s; cache access handled by the slave)\n' "$cache" "$mode"

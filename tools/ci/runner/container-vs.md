@@ -145,11 +145,15 @@ separate `--jobs=4` limit. Commands sharing one Bazel output base still serializ
 increasing Make concurrency does not bypass that lock and may increase memory
 or I/O pressure.
 
-Before local cache cleanup, the job requires an existing accessible NFS-backed
-cache directory; `rwcache` builds additionally require write permission. There is no
-local fallback, directory creation, or permission repair for the NFS cache in
-the workflow. Provision access for both the runner and slave build user's
-UID/GID on the NFS server, accounting for root squashing.
+Before local cache cleanup, the job uses noninteractive `sudo` to check that the
+cache directory exists and is NFS-backed. These privileged host checks match
+source-path resolution by the rootful Docker daemon: the non-root runner does
+not need to traverse `/nfs` itself. Read/write access and existing permission
+initialization remain inside the slave through the unchanged `Makefile.cache`.
+There is no local fallback, directory creation, or permission repair for the
+NFS cache in the workflow. Provision access for the Docker daemon to mount the
+source and for the slave build user's UID/GID to use `/dpkg_cache`, accounting
+for root squashing.
 
 After artifact upload attempts, the job removes its labeled containers and then
 its own `vs-<run-id>-<attempt>` checkout, including per-run nested-Docker state.

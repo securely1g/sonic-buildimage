@@ -60,6 +60,12 @@ elif name == "az" and operation == "acr":
 elif name == "docker" and operation == "login":
     if sys.stdin.read() != os.environ.get("ACR_TOKEN", "fixture-acr-token"):
         raise SystemExit(1)
+elif name == "sudo" and args[:3] == ["-n", "test", "-d"]:
+    exists = (os.environ["CACHE_DIRECTORY_EXISTS"] == "1"
+              if "CACHE_DIRECTORY_EXISTS" in os.environ else os.path.isdir(args[3]))
+    raise SystemExit(0 if exists else 1)
+elif name == "sudo" and args[:2] == ["-n", "findmnt"]:
+    os.execvp("findmnt", args[1:])
 elif name == "findmnt":
     print(os.environ.get("CACHE_FILESYSTEM", "nfs4"))
 '''
@@ -255,6 +261,9 @@ elif name == "findmnt":
                     self.assertEqual(result.returncode == 0, filesystem in ("nfs", "nfs4"),
                                      result.stdout + result.stderr)
                     self.assertEqual(self.recorded(), [
+                        ["sudo", "-n", "test", "-d", str(cache)],
+                        ["sudo", "-n", "findmnt", "--noheadings", "--raw", "--output",
+                         "FSTYPE", "--target", str(cache)],
                         ["findmnt", "--noheadings", "--raw", "--output", "FSTYPE",
                          "--target", str(cache)]])
         for mode, source in (("rcache", cache / "missing"), ("none", cache)):
@@ -265,25 +274,57 @@ elif name == "findmnt":
             script, SONIC_DPKG_CACHE_SOURCE=str(cache), SONIC_DPKG_CACHE_METHOD="rcache",
             FAIL_COMMAND="findmnt --noheadings")
         self.assertNotEqual(result.returncode, 0)
+        result = self.run_shell(
+            script, SONIC_DPKG_CACHE_SOURCE=str(cache), SONIC_DPKG_CACHE_METHOD="rcache",
+            FAIL_COMMAND="sudo -n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("privileged host access", result.stderr)
+        self.assertEqual(self.recorded(), [["sudo", "-n", "test", "-d", str(cache)]])
 
-    @unittest.skipIf(os.geteuid() == 0, "root bypasses local directory mode restrictions")
-    def test_nfs_read_only_permissions_allow_pr_reads_but_reject_push_writes(self):
+    def test_nfs_validation_leaves_read_write_permissions_to_the_slave(self):
         script = (ROOT / "tools/ci/runner/nfs_package_cache.sh").read_text()
         cache = self.directory / "read-only packages"
         cache.mkdir(mode=0o555)
+        original = cache.stat()
         for mode in ("rcache", "rwcache"):
             result = self.run_shell(script, SONIC_DPKG_CACHE_SOURCE=str(cache),
                                     SONIC_DPKG_CACHE_METHOD=mode)
-            self.assertEqual(result.returncode == 0, mode == "rcache",
-                             result.stdout + result.stderr)
-        cache.chmod(0o000)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("cache access handled by the slave", result.stdout)
+        current = cache.stat()
+        self.assertEqual(
+            (current.st_mode, current.st_uid, current.st_gid, current.st_mtime_ns),
+            (original.st_mode, original.st_uid, original.st_gid, original.st_mtime_ns))
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses local directory mode restrictions")
+    def test_nfs_validation_does_not_require_host_user_parent_traversal(self):
+        script = (ROOT / "tools/ci/runner/nfs_package_cache.sh").read_text()
+        parent = self.directory / "restricted nfs"
+        parent.mkdir()
+        cache = parent / "packages"
+        cache.mkdir()
+        original = cache.stat()
+        parent.chmod(0o000)
         try:
-            result = self.run_shell(script, SONIC_DPKG_CACHE_SOURCE=str(cache),
-                                    SONIC_DPKG_CACHE_METHOD="rcache")
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("inaccessible", result.stderr)
+            self.assertFalse(os.path.isdir(cache))
+            self.assertFalse(os.access(cache, os.R_OK | os.X_OK))
+            for mode in ("rcache", "rwcache"):
+                result = self.run_shell(
+                    script, SONIC_DPKG_CACHE_SOURCE=str(cache),
+                    SONIC_DPKG_CACHE_METHOD=mode, CACHE_DIRECTORY_EXISTS="1")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.recorded(), [
+                    ["sudo", "-n", "test", "-d", str(cache)],
+                    ["sudo", "-n", "findmnt", "--noheadings", "--raw", "--output",
+                     "FSTYPE", "--target", str(cache)],
+                    ["findmnt", "--noheadings", "--raw", "--output", "FSTYPE",
+                     "--target", str(cache)]])
         finally:
-            cache.chmod(0o755)
+            parent.chmod(0o755)
+        current = cache.stat()
+        self.assertEqual(
+            (current.st_mode, current.st_uid, current.st_gid, current.st_mtime_ns),
+            (original.st_mode, original.st_uid, original.st_gid, original.st_mtime_ns))
 
     def test_vs_build_forwards_four_make_jobs_to_slave(self):
         self.assertEqual(self.consumer["env"]["SONIC_BUILD_JOBS"], "4")
