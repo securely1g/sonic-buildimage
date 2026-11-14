@@ -26,7 +26,7 @@ from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd",
            "database": "database", "eventd": "eventd", "lldp": "lldp",
-           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr"}
+           "radv": "radv", "macsec": "macsec", "mux": "mux", "frr": "frr", "snmp": "snmp"}
 WRAPPERS = {name: "libteam_draft_bazel.sh" for name in DRIVERS}
 WRAPPERS["sysmgr"] = "review_bazel.sh"
 WRAPPERS["otel"] = "review_bazel.sh"
@@ -40,7 +40,7 @@ for name in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
     WRAPPERS[name] = "review_bazel.sh"
 # These image drivers have landed in the shared OCI workflow. Older source
 # checkouts can still carry their own reviewed wrapper and immutable catalog.
-CANONICAL_IMAGES = {"database", "eventd", "frr", "lldp", "macsec", "mux", "radv"}
+CANONICAL_IMAGES = {"database", "eventd", "frr", "lldp", "macsec", "mux", "radv", "snmp"}
 REGISTRY_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
 CANONICAL_WRAPPER = "libteam_draft_bazel.sh"
 
@@ -518,6 +518,7 @@ def catalog_for(image, workspace, registry_revision=""):
         require("SONIC_BASE_REVIEW_REGISTRY" in wrapper and REGISTRY_URL + "main" in wrapper,
                 "Source Bazel wrapper cannot select the maintained or reviewed registry")
         return registry_revision
+    require(image != "snmp", "SNMP requires the merged source image and maintained registry wrapper")
 
     catalogs = sorted(set(re.findall(r"^ +SONIC_BAZEL_REGISTRY_REVISION: ([0-9a-f]{40})$", workflow, re.M)))
     wrapper = WRAPPERS[image]

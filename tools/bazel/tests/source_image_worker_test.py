@@ -908,6 +908,35 @@ class ImageWorkerTest(unittest.TestCase):
                 self.assertEqual(worker.phase_command(image, "loaded", root, artifacts),
                                  prefix + [f"/source/tools/bazel/ci/{stem}_loaded.py", "--artifacts", str(artifacts)])
 
+    def test_snmp_reuses_existing_phases_and_libteam_catalog_entrypoint(self):
+        root, artifacts = Path("/source"), Path("/evidence")
+        for phase in ("build", "validate", "incremental"):
+            command = [sys.executable, "-B", "/source/tools/bazel/ci/snmp_image.py", phase,
+                       "--artifacts", str(artifacts)]
+            if phase != "validate":
+                command += ["--bazel", "/source/tools/bazel/ci/libteam_draft_bazel.sh"]
+            self.assertEqual(worker.phase_command("snmp", phase, root, artifacts), command)
+        self.assertEqual(worker.phase_command("snmp", "loaded", root, artifacts),
+                         [sys.executable, "-B", "/source/tools/bazel/ci/snmp_loaded.py", "--artifacts", str(artifacts)])
+
+    def test_snmp_accepts_the_maintained_source_and_rejects_historical_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflow = root / ".github/workflows/bazel-oci.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text('  python3 -B tools/bazel/ci/snmp_image.py build --bazel "$BAZEL"\n')
+            wrapper = root / "tools/bazel/ci" / worker.CANONICAL_WRAPPER
+            wrapper.parent.mkdir(parents=True)
+            wrapper.write_text('registry=' + worker.REGISTRY_URL + 'main\n'
+                               'review=${SONIC_BASE_REVIEW_REGISTRY:-}\n')
+            rc = root / ".bazelrc"
+            rc.write_text("common --registry=" + worker.REGISTRY_URL + "main\n")
+            self.assertEqual(worker.catalog_for("snmp", root), "")
+            self.assertEqual(worker.catalog_for("snmp", root, "b" * 40), "b" * 40)
+            rc.write_text("common --registry=" + worker.REGISTRY_URL + "a" * 40 + "\n")
+            with self.assertRaisesRegex(ValueError, "SNMP requires the merged source"):
+                worker.catalog_for("snmp", root)
+
     def test_orchagent_incremental_uses_current_source_parent_and_all_six_targets(self):
         command = worker.phase_command("orchagent", "incremental", Path("/source"), Path("/evidence"))
         self.assertEqual(command[:5], [
@@ -992,7 +1021,7 @@ class ImageWorkerTest(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
+        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr", "snmp"):
             with self.subTest(image=image):
                 selected = [name for name, job in jobs.items() if condition(
                     str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
@@ -1002,7 +1031,7 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertIn("inputs.source_worker_pool == 'sonic-slave-container-k3s'", jobs["source_image"]["runs-on"])
         self.assertIn('sonic-slave-container-dpool', jobs["source_image"]["runs-on"])
         self.assertIn('inputs.source_worker', jobs["source_image"]["runs-on"])
-        for image in ("snmp", "base", "config-engine", "swss-layer"):
+        for image in ("snmp-other", "base", "config-engine", "swss-layer"):
             with self.subTest(unsupported=image), self.assertRaises(ValueError):
                 worker.selection(image, "a" * 40)
 
@@ -1244,6 +1273,23 @@ class ImageWorkerTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 worker.publish(SimpleNamespace(artifacts=root, image='syncd'))
             self.assertFalse((root / 'public/policy.json').exists())
+
+    def test_publishes_landed_snmp_receipts_without_an_environment_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = {"status": "passed", "rootfs": {"type": "layers", "diff_ids": []},
+                       "config_digest": "sha256:" + "a" * 64, "parent_digest": "sha256:" + "b" * 64,
+                       "manifest_digest": "sha256:" + "c" * 64, "wheel_payloads": {}}
+            names = ("docker-snmp.validation.json", "docker-snmp-dbg.validation.json")
+            data = (json.dumps(receipt, indent=2) + "\n").encode()
+            for name in names:
+                (root / name).write_bytes(data)
+            worker.publish(SimpleNamespace(artifacts=root, image="snmp"))
+            for name in names:
+                self.assertEqual((root / "public" / name).read_bytes(), data)
+            (root / names[0]).write_text(json.dumps({**receipt, "config": {"Env": ["NAME=value"]}}))
+            with self.assertRaisesRegex(ValueError, "diagnostic-json-field"):
+                worker.publish(SimpleNamespace(artifacts=root, image="snmp"))
 
     def test_publication_keeps_declared_bytes_and_excludes_private_state(self):
         with tempfile.TemporaryDirectory() as directory:
