@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
+        options: [none, vs-bitarray-abi-debug, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -5521,5 +5521,490 @@ jobs:
         with:
           name: vs-bitarray-registry-qualification-outputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.paths.outputs.root }}/scratch/pass-1/private/outputs
+          if-no-files-found: error
+          compression-level: 0
+  vs_bitarray_elf_debug:
+    name: Inspect declared bitarray ABI and debug build (AMD64)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-bitarray-abi-debug' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: vs-bitarray-abi-debug-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Allocate fresh bitarray qualification scratch
+        id: paths
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKER: ${{ runner.name }}
+          INPUT_SOURCE_REVISION: ${{ inputs.source_revision }}
+          INPUT_REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          INPUT_SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          INPUT_SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          INPUT_REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('INPUT_SOURCE_REVISION', 'INPUT_REGISTRY_REVISION',
+                  'INPUT_SOURCE_CI_REQUEST', 'INPUT_SOURCE_INPUTS_RUN')):
+              raise SystemExit('This fixed qualification job does not accept revision or source-input overrides')
+          if os.environ.get('INPUT_REGISTRY_CONSUMER') != 'none':
+              raise SystemExit('This job does not select a registry consumer')
+          run, attempt, worker = (os.environ[key] for key in ('RUN_ID', 'RUN_ATTEMPT', 'WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run, attempt)):
+              raise SystemExit('Invalid run identity')
+          if worker != os.environ.get('RUNNER_NAME') or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected K3s worker identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve(strict=True) != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Unexpected worker workspace or user')
+          if shutil.disk_usage(workspace).free < 90 * 1024**3:
+              raise SystemExit('The qualification needs 90 GiB of free scratch')
+          root = workspace / ('vs-bitarray-abi-debug-' + run + '-' + attempt + '-' + worker)
+          if os.path.lexists(root):
+              raise SystemExit('Qualification scratch already exists')
+          root.mkdir(mode=0o700)
+          for name in ('scratch', 'scratch/bazelisk', 'scratch/temporary', 'inputs', 'evidence', 'reports', 'baseline-reports', 'baseline-outputs'):
+              (root / name).mkdir(mode=0o700)
+          values = {'root': str(root)}
+          values.update({name: str((root / name).relative_to(workspace)) for name in ('control', 'source', 'native', 'catalog', 'registry')})
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              for name, value in values.items():
+                  stream.write(name + '=' + value + '\n')
+          PYTHON
+      - name: Check out the reviewed qualification caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/bazel/ci/build_vs_swss_installed_policy.py
+            /tools/bazel/ci/declared_bitarray_wheels_test.py
+            /tools/bazel/ci/observe_declared_bitarray_wheels.py
+            /tools/bazel/ci/observe_final_bitarray_elf.py
+            /tools/bazel/ci/observe_original_socat.py
+            /tools/bazel/ci/observe_vs_host_binaries.py
+            /tools/bazel/ci/qualify_bitarray_registry_module.py
+            /tools/bazel/ci/recover_vs_original_inputs.py
+            /tools/bazel/ci/vs_declared_bitarray_wheels.json
+      - name: Check out the fixed existing setup and action-audit owners
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 3a06e4ec7627390967730b78a34dc00c86bb34dd
+          path: ${{ steps.paths.outputs.source }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          submodules: false
+      - name: Check out the existing native cache and source-input helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 1e423956afe2cb706c239c8be93c1000bbc7a479
+          path: ${{ steps.paths.outputs.native }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/bazel/ci/image_worker_receipt.py
+            /tools/bazel/ci/native_apt_cache_policy.py
+            /tools/bazel/ci/p4rt_receipt_semantics.py
+            /tools/bazel/ci/p4rt_sdk_receipt_semantics.py
+            /tools/bazel/ci/public_artifacts.py
+            /tools/bazel/ci/source_image_worker.py
+            /tools/bazel/ci/source_worker_preflight.py
+            /tools/bazel/gzip/source_archive.py
+            /tools/bazel/ci/remote_cache_smoke.py
+      - name: Check out the reviewed fixed registry candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 9694e1420031b66fc673810aca074be4a0c4b17d
+          path: ${{ steps.paths.outputs.registry }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          submodules: false
+      - name: Check out the existing verified source-download configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
+          path: ${{ steps.paths.outputs.catalog }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /ci/source_mirrors.cfg
+      - name: Verify the fixed sources and twelve wheel boundaries
+        timeout-minutes: 5
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import hashlib, json, os, stat, sys, unittest
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          groups = json.loads("{\"control\":{\"tools/bazel/ci/build_vs_swss_installed_policy.py\":{\"bytes\":12396,\"sha256\":\"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44\"},\"tools/bazel/ci/declared_bitarray_wheels_test.py\":{\"bytes\":13916,\"sha256\":\"1a92b3dae9fb987bc7c5d1816feb561c55cdff07e0d0e2c0dd5217941f49f537\"},\"tools/bazel/ci/observe_declared_bitarray_wheels.py\":{\"bytes\":12827,\"sha256\":\"4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95\"},\"tools/bazel/ci/observe_final_bitarray_elf.py\":{\"bytes\":22400,\"sha256\":\"068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380\"},\"tools/bazel/ci/observe_original_socat.py\":{\"bytes\":9579,\"sha256\":\"da41bb8bd78caa23aa4ac57ee4a5be63ce4f294647987a5714d66fda2bf11efe\"},\"tools/bazel/ci/observe_vs_host_binaries.py\":{\"bytes\":21581,\"sha256\":\"ad0af004e1d84ca178798b4d16fee7062275d1d36b1e7dfa8cd61771a271304c\"},\"tools/bazel/ci/qualify_bitarray_registry_module.py\":{\"bytes\":22368,\"sha256\":\"34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186\"},\"tools/bazel/ci/recover_vs_original_inputs.py\":{\"bytes\":26407,\"sha256\":\"6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5\"},\"tools/bazel/ci/vs_declared_bitarray_wheels.json\":{\"bytes\":10067,\"sha256\":\"da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2\"}},\"source\":{\"tools/bazel/ci/vs_reuse_stage.py\":{\"bytes\":14238,\"sha256\":\"f3c9e0d88e86b285d8ef6273882c49b7dfe09b12d628816c70d517c1cb11f89c\"},\"tools/bazel/ci/vs_reuse_plan.py\":{\"bytes\":51875,\"sha256\":\"7d980a2252e90d8a725a61c02b42a90895e6597a8780f9b94da0c3f251b5653e\"},\"tools/bazel/ci/image_worker_receipt.py\":{\"bytes\":43504,\"sha256\":\"eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db\"},\"tools/bazel/ci/public_artifacts.py\":{\"bytes\":42677,\"sha256\":\"69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4\"},\"tools/bazel/ci/p4rt_receipt_semantics.py\":{\"bytes\":10420,\"sha256\":\"0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661\"},\"tools/bazel/ci/p4rt_sdk_receipt_semantics.py\":{\"bytes\":6744,\"sha256\":\"d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9\"}},\"registry\":{\"ci/registry_ci.py\":{\"bytes\":112220,\"sha256\":\"11698617660f45425658c37df5b5175c180565f32a8feed768760945f79d9d36\"},\"ci/cross_toolchain.py\":{\"bytes\":17060,\"sha256\":\"0838b86ac0a6ff8ac7dacaa3c05c6c094b0338b17e98913cd345379dcb2b6061\"},\"ci/cross_pip.py\":{\"bytes\":7797,\"sha256\":\"dc13e862ff4d078a7bea8135d91b4982d45fdf3561735124f74290c89685857f\"},\"ci/cross_autoconf.py\":{\"bytes\":1789,\"sha256\":\"169053824f712ea83a6db84d682638382eeeaeb0c2868b33ec52f86316c01d81\"},\"ci/github_sources.py\":{\"bytes\":19706,\"sha256\":\"9c1ad2a9548608d06e49de0c9c119ae19d97ab95cca2505fc1e7e233e62e9b3d\"}},\"native\":{\"tools/bazel/ci/image_worker_receipt.py\":{\"bytes\":43504,\"sha256\":\"eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db\"},\"tools/bazel/ci/native_apt_cache_policy.py\":{\"bytes\":12232,\"sha256\":\"c5393e4ba76c78d6aef3742ae84c69689b28e6064ae91e36ee3a4eb4d6ac0401\"},\"tools/bazel/ci/p4rt_receipt_semantics.py\":{\"bytes\":10420,\"sha256\":\"0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661\"},\"tools/bazel/ci/p4rt_sdk_receipt_semantics.py\":{\"bytes\":6744,\"sha256\":\"d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9\"},\"tools/bazel/ci/public_artifacts.py\":{\"bytes\":33105,\"sha256\":\"74d05c44670861437b75e6370d018eee139f1c86acdedd46dcacb64a63b11ff9\"},\"tools/bazel/ci/source_image_worker.py\":{\"bytes\":113520,\"sha256\":\"6209cdc35435169a6a5c3e6d606008523bdc61a7afedd9bf5a4614c79234bdad\"},\"tools/bazel/ci/source_worker_preflight.py\":{\"bytes\":11944,\"sha256\":\"9ffde2a7a08e5cb86bf9d91a05c6b462537fe9586c0576ca912f6983e49d9e9f\"},\"tools/bazel/gzip/source_archive.py\":{\"bytes\":3773,\"sha256\":\"82aee637250567edf198e9355a5bf6d592ac33460456f7e042c01c3bcb757aa6\"},\"tools/bazel/ci/remote_cache_smoke.py\":{\"bytes\":30684,\"sha256\":\"5a81d8adfeae943497dfaf5d93c78cd5984713a8f37b1006cb1bb318572adbc1\"}}}")
+          for directory, files in groups.items():
+              for name, identity in files.items():
+                  path = root / directory / name
+                  if path.resolve(strict=True) != path or not stat.S_ISREG(path.lstat().st_mode):
+                      raise SystemExit('Reviewed source type differs')
+                  raw = path.read_bytes()
+                  if len(raw) != identity['bytes'] or hashlib.sha256(raw).hexdigest() != identity['sha256']:
+                      raise SystemExit('Reviewed source seal differs')
+          reader = Path('/usr/bin/readelf').resolve(strict=True)
+          if not stat.S_ISREG(reader.stat().st_mode) or reader.stat().st_uid != 0 or reader.stat().st_mode & 0o022 or not os.access(reader, os.X_OK):
+              raise SystemExit('Existing readelf owner is unavailable')
+          sys.path.insert(0, str(root / 'control'))
+          suite = unittest.defaultTestLoader.loadTestsFromName('tools.bazel.ci.declared_bitarray_wheels_test')
+          if suite.countTestCases() != 12:
+              raise SystemExit('Expected exactly twelve boundary fixtures')
+          if not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful():
+              raise SystemExit('Declared-wheel boundary fixture failed')
+          PYTHON
+      - name: Retain the two fixed original baseline API records
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const root = process.env.ABI_ROOT;
+            const plan = JSON.parse(fs.readFileSync(root + '/control/tools/bazel/ci/vs_declared_bitarray_wheels.json', 'utf8'));
+            const owner = 'securely1g', repo = 'sonic-buildimage';
+            const fixed = plan.baseline.transfers;
+            const [run, job, reports, outputs] = await Promise.all([
+              github.rest.actions.getWorkflowRun({owner, repo, run_id: fixed.reports.run_id}),
+              github.rest.actions.getJobForWorkflowRun({owner, repo, job_id: fixed.reports.job_id}),
+              github.rest.actions.getArtifact({owner, repo, artifact_id: fixed.reports.artifact_id}),
+              github.rest.actions.getArtifact({owner, repo, artifact_id: fixed.outputs.artifact_id})]);
+            const rows = {reports: {artifact: reports.data, run: run.data, job: job.data},
+                          outputs: {artifact: outputs.data, run: run.data, job: job.data}};
+            const encoded = JSON.stringify(rows, null, 2) + '\n';
+            if (Buffer.byteLength(encoded) > 2 * 1024 * 1024) throw new Error('Original API metadata exceeds bound');
+            fs.writeFileSync(root + '/evidence/baseline-apis.json', encoded, {flag: 'wx'});
+      - name: Authenticate the original baseline producer before download
+        timeout-minutes: 5
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          sys.path.insert(0, str(root / 'control/tools/bazel/ci'))
+          import qualify_bitarray_registry_module as qualifier
+          qualifier.exact(Path(qualifier.__file__), {'bytes': 22368, 'sha256': '34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186'})
+          plan_path = root / 'control/tools/bazel/ci/vs_declared_bitarray_wheels.json'
+          qualifier.exact(plan_path, {'bytes': 10067, 'sha256': 'da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2'})
+          plan = json.loads(plan_path.read_bytes())
+          observer = qualifier.load_owner('fixed_declared_wheels', root / 'control/tools/bazel/ci/observe_declared_bitarray_wheels.py', {'bytes': 12827, 'sha256': '4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95'})
+          elf = qualifier.load_owner('fixed_elf_metadata', root / 'control/tools/bazel/ci/observe_final_bitarray_elf.py', {'bytes': 22400, 'sha256': '068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380'})
+          source_files = json.loads("{\"tools/bazel/ci/vs_reuse_stage.py\":{\"bytes\":14238,\"sha256\":\"f3c9e0d88e86b285d8ef6273882c49b7dfe09b12d628816c70d517c1cb11f89c\"},\"tools/bazel/ci/vs_reuse_plan.py\":{\"bytes\":51875,\"sha256\":\"7d980a2252e90d8a725a61c02b42a90895e6597a8780f9b94da0c3f251b5653e\"},\"tools/bazel/ci/image_worker_receipt.py\":{\"bytes\":43504,\"sha256\":\"eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db\"},\"tools/bazel/ci/public_artifacts.py\":{\"bytes\":42677,\"sha256\":\"69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4\"},\"tools/bazel/ci/p4rt_receipt_semantics.py\":{\"bytes\":10420,\"sha256\":\"0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661\"},\"tools/bazel/ci/p4rt_sdk_receipt_semantics.py\":{\"bytes\":6744,\"sha256\":\"d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9\"}}")
+          for name, identity in source_files.items():
+              qualifier.exact(root / 'source' / name, identity)
+          sys.path.insert(0, str(root / 'source'))
+          from tools.bazel.ci import vs_reuse_stage as producer
+          for name in source_files:
+              module = sys.modules[name[:-3].replace('/', '.')]
+              if Path(module.__file__).resolve(strict=True) != (root / 'source' / name).resolve(strict=True):
+                  raise SystemExit('Metadata source module origin differs')
+          api_rows = json.loads((root / 'evidence/baseline-apis.json').read_bytes())
+          for name, row in plan['baseline']['transfers'].items():
+              actual = api_rows[name]
+              producer.check_producer(row, actual['artifact'], actual['run'], actual['job'])
+              if actual['run']['conclusion'] != 'success' or actual['job']['conclusion'] != 'success':
+                  raise SystemExit('Original baseline producer was not successful')
+          elf.write_report(root / 'evidence/baseline-producer-authentication.json',
+                           {'original_transfers': plan['baseline']['transfers'], 'operator': elf.operator_identity()})
+          PYTHON
+      - name: Download the fixed original baseline reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: securely1g/sonic-buildimage
+          github-token: ${{ github.token }}
+          run-id: 43529888900
+          artifact-ids: '14086259725'
+          merge-multiple: true
+          path: ${{ steps.paths.outputs.root }}/baseline-reports
+          digest-mismatch: error
+      - name: Download the fixed original baseline outputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: securely1g/sonic-buildimage
+          github-token: ${{ github.token }}
+          run-id: 43529888900
+          artifact-ids: '14087820356'
+          merge-multiple: true
+          path: ${{ steps.paths.outputs.root }}/baseline-outputs
+          digest-mismatch: error
+      - name: Bind the original successful qualification report
+        timeout-minutes: 5
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          sys.path.insert(0, str(root / 'control/tools/bazel/ci'))
+          import qualify_bitarray_registry_module as qualifier
+          qualifier.exact(Path(qualifier.__file__), {'bytes': 22368, 'sha256': '34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186'})
+          plan_path = root / 'control/tools/bazel/ci/vs_declared_bitarray_wheels.json'
+          qualifier.exact(plan_path, {'bytes': 10067, 'sha256': 'da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2'})
+          plan = json.loads(plan_path.read_bytes())
+          observer = qualifier.load_owner('fixed_declared_wheels', root / 'control/tools/bazel/ci/observe_declared_bitarray_wheels.py', {'bytes': 12827, 'sha256': '4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95'})
+          elf = qualifier.load_owner('fixed_elf_metadata', root / 'control/tools/bazel/ci/observe_final_bitarray_elf.py', {'bytes': 22400, 'sha256': '068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380'})
+          source_files = json.loads("{\"tools/bazel/ci/vs_reuse_stage.py\":{\"bytes\":14238,\"sha256\":\"f3c9e0d88e86b285d8ef6273882c49b7dfe09b12d628816c70d517c1cb11f89c\"},\"tools/bazel/ci/vs_reuse_plan.py\":{\"bytes\":51875,\"sha256\":\"7d980a2252e90d8a725a61c02b42a90895e6597a8780f9b94da0c3f251b5653e\"},\"tools/bazel/ci/image_worker_receipt.py\":{\"bytes\":43504,\"sha256\":\"eae654c75ff20d3dbc18a0e8e32bf065fb9b5b136d232548b1cbef5804d9b5db\"},\"tools/bazel/ci/public_artifacts.py\":{\"bytes\":42677,\"sha256\":\"69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4\"},\"tools/bazel/ci/p4rt_receipt_semantics.py\":{\"bytes\":10420,\"sha256\":\"0f402b44ca9c15ef0006d20381e796636d54a4ecea4a9a54553e594f2403b661\"},\"tools/bazel/ci/p4rt_sdk_receipt_semantics.py\":{\"bytes\":6744,\"sha256\":\"d9f46296577e1f0f94bbe0ab2e0aadb65bed400e6b477c9e56223ac21b22e5b9\"}}")
+          for name, identity in source_files.items():
+              qualifier.exact(root / 'source' / name, identity)
+          sys.path.insert(0, str(root / 'source'))
+          from tools.bazel.ci import vs_reuse_stage as producer
+          for name in source_files:
+              module = sys.modules[name[:-3].replace('/', '.')]
+              if Path(module.__file__).resolve(strict=True) != (root / 'source' / name).resolve(strict=True):
+                  raise SystemExit('Metadata source module origin differs')
+          api_rows = json.loads((root / 'evidence/baseline-apis.json').read_bytes())
+          original = qualifier.load_owner('fixed_original_reader', root / 'control/tools/bazel/ci/recover_vs_original_inputs.py', {'bytes': 26407, 'sha256': '6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5'})
+          proof = observer.baseline_proof(plan, api_rows,
+              root / 'baseline-reports/scratch/reports/qualification.json', producer, original)
+          elf.write_report(root / 'evidence/baseline-proof.json', proof)
+          PYTHON
+      - name: Inspect the two preserved baseline extensions
+        timeout-minutes: 5
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          sys.path.insert(0, str(root / 'control/tools/bazel/ci'))
+          import qualify_bitarray_registry_module as qualifier
+          qualifier.exact(Path(qualifier.__file__), {'bytes': 22368, 'sha256': '34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186'})
+          plan_path = root / 'control/tools/bazel/ci/vs_declared_bitarray_wheels.json'
+          qualifier.exact(plan_path, {'bytes': 10067, 'sha256': 'da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2'})
+          plan = json.loads(plan_path.read_bytes())
+          observer = qualifier.load_owner('fixed_declared_wheels', root / 'control/tools/bazel/ci/observe_declared_bitarray_wheels.py', {'bytes': 12827, 'sha256': '4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95'})
+          elf = qualifier.load_owner('fixed_elf_metadata', root / 'control/tools/bazel/ci/observe_final_bitarray_elf.py', {'bytes': 22400, 'sha256': '068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380'})
+          sys.path.insert(0, str(root / 'control'))
+          from tools.bazel.ci import recover_vs_original_inputs as original
+          from tools.bazel.ci import observe_original_socat as sections
+          from tools.bazel.ci import observe_vs_host_binaries as host
+          elf_imports = json.loads("{\"tools/bazel/ci/recover_vs_original_inputs.py\":{\"bytes\":26407,\"sha256\":\"6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5\"},\"tools/bazel/ci/observe_original_socat.py\":{\"bytes\":9579,\"sha256\":\"da41bb8bd78caa23aa4ac57ee4a5be63ce4f294647987a5714d66fda2bf11efe\"},\"tools/bazel/ci/observe_vs_host_binaries.py\":{\"bytes\":21581,\"sha256\":\"ad0af004e1d84ca178798b4d16fee7062275d1d36b1e7dfa8cd61771a271304c\"}}")
+          for name, identity in elf_imports.items():
+              qualifier.exact(root / 'control' / name, identity)
+              module = sys.modules[name[:-3].replace('/', '.')]
+              if Path(module.__file__).resolve(strict=True) != (root / 'control' / name).resolve(strict=True):
+                  raise SystemExit('ELF source module origin differs')
+          proof = json.loads((root / 'evidence/baseline-proof.json').read_bytes())
+          wheel = root / 'baseline-outputs/bazel-out/k8-fastbuild/bin/external/bitarray+/bitarray-2.8.1-cp313-cp313-linux_x86_64.whl'
+          report = observer.observe_wheel(wheel, plan['baseline']['wheel'], root / 'scratch/temporary', original, elf, sections)
+          elf.write_report(root / 'reports/baseline-elf.json',
+                           {'observation': report, 'original_baseline': proof, 'operator': elf.operator_identity()})
+          PYTHON
+      - name: Authenticate the original verified source inputs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const root = process.env.ABI_ROOT;
+            const plan = JSON.parse(fs.readFileSync(root + '/control/tools/bazel/ci/vs_declared_bitarray_wheels.json', 'utf8'));
+            const expected = plan.source_inputs;
+            const owner = 'securely1g', repo = 'sonic-buildimage';
+            const {data: artifact} = await github.rest.actions.getArtifact({owner, repo, artifact_id: expected.artifact_id});
+            const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: expected.run_id});
+            const {data: jobs} = await github.rest.actions.listJobsForWorkflowRun({owner, repo, run_id: expected.run_id, per_page: 100});
+            const sourceHead = 'df17080469e74093c373e55522bf5c029d3451fc';
+            if (artifact.id !== expected.artifact_id || artifact.name !== 'bazel-repository-inputs' ||
+                artifact.digest !== expected.digest || artifact.size_in_bytes !== expected.zip_bytes || artifact.expired ||
+                artifact.workflow_run.id !== expected.run_id || artifact.workflow_run.head_sha !== sourceHead ||
+                run.id !== expected.run_id || run.head_sha !== sourceHead || run.repository.full_name !== owner + '/' + repo ||
+                run.path !== '.github/workflows/bazel-oci.yml' || run.name !== 'Bazel OCI' ||
+                artifact.workflow_run.repository_id !== run.repository.id || jobs.total_count > 100) {
+              throw new Error('Original verified source-input identity differs');
+            }
+            const producers = jobs.jobs.filter(job => job.name === 'OCI regression checks (AMD64)' && job.conclusion === 'success');
+            const requiredSteps = ['Retain the verified GitLab source downloads', 'Upload the source downloads for the VS job'];
+            if (producers.length !== 1 || !requiredSteps.every(name =>
+                producers[0].steps.some(step => step.name === name && step.conclusion === 'success'))) {
+              throw new Error('The original source-input producer has not succeeded');
+            }
+            const retained = {repository: owner + '/' + repo, source_revision: sourceHead, run: run.id,
+              run_attempt: run.run_attempt, producer_job: producers[0].id, artifact: artifact.id,
+              artifact_name: artifact.name, artifact_bytes: artifact.size_in_bytes, artifact_digest: artifact.digest,
+              verified_producer_steps: requiredSteps};
+            fs.writeFileSync(root + '/evidence/original-source-input.json', JSON.stringify(retained, null, 2) + '\n', {flag: 'wx'});
+      - name: Download only the original source-input artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: securely1g/sonic-buildimage
+          github-token: ${{ github.token }}
+          run-id: 43428792950
+          artifact-ids: '14039465053'
+          merge-multiple: true
+          path: ${{ steps.paths.outputs.root }}/inputs
+          digest-mismatch: error
+      - name: Prepare one fresh debug workspace with the existing managed cache
+        timeout-minutes: 10
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+          SOURCE_INPUTS_RUN: '43428792950'
+          USE_BAZEL_VERSION: '8.5.1'
+          BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
+          TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          sys.path.insert(0, str(root / 'control/tools/bazel/ci'))
+          import qualify_bitarray_registry_module as qualifier
+          qualifier.exact(Path(qualifier.__file__), {'bytes': 22368, 'sha256': '34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186'})
+          plan_path = root / 'control/tools/bazel/ci/vs_declared_bitarray_wheels.json'
+          qualifier.exact(plan_path, {'bytes': 10067, 'sha256': 'da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2'})
+          plan = json.loads(plan_path.read_bytes())
+          observer = qualifier.load_owner('fixed_declared_wheels', root / 'control/tools/bazel/ci/observe_declared_bitarray_wheels.py', {'bytes': 12827, 'sha256': '4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95'})
+          elf = qualifier.load_owner('fixed_elf_metadata', root / 'control/tools/bazel/ci/observe_final_bitarray_elf.py', {'bytes': 22400, 'sha256': '068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380'})
+          support = qualifier.load_owner('fixed_setup_owner', root / 'control/tools/bazel/ci/build_vs_swss_installed_policy.py', plan['setup_owner'])
+          proof = json.loads((root / 'evidence/baseline-proof.json').read_bytes())
+          observer.prepare_debug(plan, proof, root / 'source', root / 'native', root / 'registry', root / 'scratch',
+                                 root / 'inputs', root / 'catalog/ci/source_mirrors.cfg', support, qualifier)
+          PYTHON
+      - name: Run the original registry tests once with debug compilation
+        id: debug_run
+        timeout-minutes: 75
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+          SOURCE_INPUTS_RUN: '43428792950'
+          USE_BAZEL_VERSION: '8.5.1'
+          BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
+          TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          sys.path.insert(0, str(root / 'control/tools/bazel/ci'))
+          import qualify_bitarray_registry_module as qualifier
+          qualifier.exact(Path(qualifier.__file__), {'bytes': 22368, 'sha256': '34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186'})
+          plan_path = root / 'control/tools/bazel/ci/vs_declared_bitarray_wheels.json'
+          qualifier.exact(plan_path, {'bytes': 10067, 'sha256': 'da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2'})
+          plan = json.loads(plan_path.read_bytes())
+          observer = qualifier.load_owner('fixed_declared_wheels', root / 'control/tools/bazel/ci/observe_declared_bitarray_wheels.py', {'bytes': 12827, 'sha256': '4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95'})
+          elf = qualifier.load_owner('fixed_elf_metadata', root / 'control/tools/bazel/ci/observe_final_bitarray_elf.py', {'bytes': 22400, 'sha256': '068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380'})
+          support = qualifier.load_owner('fixed_setup_owner', root / 'control/tools/bazel/ci/build_vs_swss_installed_policy.py', plan['setup_owner'])
+          registry_owners = json.loads("{\"ci/registry_ci.py\":{\"bytes\":112220,\"sha256\":\"11698617660f45425658c37df5b5175c180565f32a8feed768760945f79d9d36\"},\"ci/cross_toolchain.py\":{\"bytes\":17060,\"sha256\":\"0838b86ac0a6ff8ac7dacaa3c05c6c094b0338b17e98913cd345379dcb2b6061\"},\"ci/cross_pip.py\":{\"bytes\":7797,\"sha256\":\"dc13e862ff4d078a7bea8135d91b4982d45fdf3561735124f74290c89685857f\"},\"ci/cross_autoconf.py\":{\"bytes\":1789,\"sha256\":\"169053824f712ea83a6db84d682638382eeeaeb0c2868b33ec52f86316c01d81\"},\"ci/github_sources.py\":{\"bytes\":19706,\"sha256\":\"9c1ad2a9548608d06e49de0c9c119ae19d97ab95cca2505fc1e7e233e62e9b3d\"}}")
+          for name, identity in registry_owners.items():
+              qualifier.exact(root / 'registry' / name, identity)
+          proof = json.loads((root / 'evidence/baseline-proof.json').read_bytes())
+          runner = qualifier.load_owner('fixed_registry_ci', root / 'registry/ci/registry_ci.py', plan['registry_runner'])
+          audit = qualifier.load_owner('fixed_action_audit', root / 'source/tools/bazel/ci/bazel_commands.py', plan['action_audit'])
+          wheel, identity = observer.run_debug(plan, proof, root / 'source', root / 'registry', root / 'scratch',
+                                              support, qualifier, runner, audit)
+          elf.write_report(root / 'reports/debug-wheel.json',
+                           {'relative_path': str(wheel.relative_to(root)), 'identity': identity, 'operator': elf.operator_identity()})
+          PYTHON
+      - name: Verify the debug extension ABI and retained DWARF sections
+        id: elf
+        timeout-minutes: 5
+        env:
+          ABI_ROOT: ${{ steps.paths.outputs.root }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import json, os, sys
+          from pathlib import Path
+          root = Path(os.environ['ABI_ROOT'])
+          sys.path.insert(0, str(root / 'control/tools/bazel/ci'))
+          import qualify_bitarray_registry_module as qualifier
+          qualifier.exact(Path(qualifier.__file__), {'bytes': 22368, 'sha256': '34daf9df42fbbaf0ac53729447a615e266fa9f127bc7cf94b185682974963186'})
+          plan_path = root / 'control/tools/bazel/ci/vs_declared_bitarray_wheels.json'
+          qualifier.exact(plan_path, {'bytes': 10067, 'sha256': 'da8496169867e9a3d637ab34b2397977f82152f60538a030e2a22f4137f392d2'})
+          plan = json.loads(plan_path.read_bytes())
+          observer = qualifier.load_owner('fixed_declared_wheels', root / 'control/tools/bazel/ci/observe_declared_bitarray_wheels.py', {'bytes': 12827, 'sha256': '4041076d8b29b7b40caaf8d4da0dd78998f8b1265adc69d90e2c17a3e74fdb95'})
+          elf = qualifier.load_owner('fixed_elf_metadata', root / 'control/tools/bazel/ci/observe_final_bitarray_elf.py', {'bytes': 22400, 'sha256': '068c1e8608fbbbb085123f94b0db94a40d8bb8e3ba404e047fe02cbd835a8380'})
+          sys.path.insert(0, str(root / 'control'))
+          from tools.bazel.ci import recover_vs_original_inputs as original
+          from tools.bazel.ci import observe_original_socat as sections
+          from tools.bazel.ci import observe_vs_host_binaries as host
+          elf_imports = json.loads("{\"tools/bazel/ci/recover_vs_original_inputs.py\":{\"bytes\":26407,\"sha256\":\"6699855d87b685f9b23a4b4c0a12084ec3100b45a59a8b575a06925f447988a5\"},\"tools/bazel/ci/observe_original_socat.py\":{\"bytes\":9579,\"sha256\":\"da41bb8bd78caa23aa4ac57ee4a5be63ce4f294647987a5714d66fda2bf11efe\"},\"tools/bazel/ci/observe_vs_host_binaries.py\":{\"bytes\":21581,\"sha256\":\"ad0af004e1d84ca178798b4d16fee7062275d1d36b1e7dfa8cd61771a271304c\"}}")
+          for name, identity in elf_imports.items():
+              qualifier.exact(root / 'control' / name, identity)
+              module = sys.modules[name[:-3].replace('/', '.')]
+              if Path(module.__file__).resolve(strict=True) != (root / 'control' / name).resolve(strict=True):
+                  raise SystemExit('ELF source module origin differs')
+          import hashlib
+          record = json.loads((root / 'reports/debug-wheel.json').read_bytes())
+          operator = elf.operator_identity()
+          if record['operator'] != operator:
+              raise SystemExit('Debug wheel producer identity changed')
+          wheel = root / record['relative_path']
+          if wheel.resolve(strict=True) != wheel or not wheel.is_relative_to(root / 'scratch/debug/private/outputs'):
+              raise SystemExit('Debug output escapes original collector')
+          proof = json.loads((root / 'evidence/baseline-proof.json').read_bytes())
+          report = observer.observe_wheel(wheel, record['identity'], root / 'scratch/temporary', original, elf, sections, debug=True)
+          elf.write_report(root / 'reports/debug-elf.json',
+                           {'observation': report, 'original_baseline': proof, 'operator': operator})
+          records = {}
+          for name in ('validation.json', 'source-validation.json', 'outputs.json', 'test-results.json', 'build-action-audit.json', 'test-action-audit.json'):
+              path = root / 'scratch/debug/private' / name
+              raw = path.read_bytes()
+              if len(raw) > 2 * 1024 * 1024:
+                  raise SystemExit('Original debug record exceeds bound')
+              records[name] = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+          elf.write_report(root / 'reports/declared-wheel-abi-debug.json',
+              {'status': 'DECLARED_BITARRAY_BASELINE_ABI_AND_DEBUG_PASSED', 'operator': operator,
+               'source_revision': plan['source_revision'], 'registry_revision': plan['registry_revision'],
+               'native_setup_owner': plan['native_revision'], 'source_archive_sha256': plan['source_archive_sha256'],
+               'original_baseline': proof, 'debug_wheel': record['identity'], 'debug_records': records,
+               'debug_configuration': '--compilation_mode=dbg', 'baseline_rebuilt': False,
+               'strip_or_normalization': False, 'source_image_admission': False, 'full_VS_admission': False})
+          PYTHON
+      - name: Retain original baseline lineage and debug validation metadata
+        if: always() && steps.paths.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-bitarray-abi-debug-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.paths.outputs.root }}/evidence
+            ${{ steps.paths.outputs.root }}/reports
+            ${{ steps.paths.outputs.root }}/scratch/resources.json
+            ${{ steps.paths.outputs.root }}/scratch/debug-setup.json
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/validation.json
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/source-validation.json
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/outputs.json
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/test-results.json
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/test-results
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/build-action-audit.json
+            ${{ steps.paths.outputs.root }}/scratch/debug/private/test-action-audit.json
+          if-no-files-found: warn
+          compression-level: 0
+      - name: Retain the original debug wheel and installed layer
+        if: success() && steps.elf.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-bitarray-abi-debug-outputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/scratch/debug/private/outputs
           if-no-files-found: error
           compression-level: 0
