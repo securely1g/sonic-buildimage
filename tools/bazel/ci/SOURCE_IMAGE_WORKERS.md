@@ -160,9 +160,12 @@ acceptance; a pass for one does not establish the other. They can use separate
 idle workers with the same immutable source/catalog. Neither selector adds a
 capability, command input, source override or new executor path.
 
-Teamd uses its existing `teamd_image.py` four-phase interface and
-`libteam_draft_bazel.sh` catalog wrapper. Before checking out the selected source
-or downloading its input artifact, the worker reads `/sys/module/team` and
+The Teamd source checkout provides `teamd_image.py` for building, static validation
+and incremental checks, and `teamd_loaded.py` for the installed checks. For
+sources using the maintained registry, preparation resolves registry main once,
+records the commit in the worker receipt, and passes that same commit and the
+worker's bounded Bazel executable to the source wrapper for every phase.
+Before checking out the selected source or downloading its input artifact, the worker reads `/sys/module/team` and
 `/sys/module/team_mode_loadbalance`. Both must already be directories. The same
 check runs again at direct preparation entry, before tools, cache preparation
 or Bazel. `worker-teamd-kernel.json` retains success or the exact missing module

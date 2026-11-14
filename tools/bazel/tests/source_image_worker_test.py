@@ -466,6 +466,29 @@ class ImageWorkerTest(unittest.TestCase):
         for gate in gates:
             self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
 
+    def test_teamd_uses_one_landed_catalog_and_the_bounded_launcher(self):
+        catalog = "a" * 40
+        with patch.object(worker, "output", return_value=catalog + "\trefs/heads/main") as lookup:
+            self.assertEqual(worker.catalog_for("teamd", ROOT), catalog)
+            self.assertEqual(lookup.call_args.args[0][-1], "refs/heads/main")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary = root / "actual-bazel"
+            binary.write_text("#!" + sys.executable + "\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+            binary.chmod(0o755)
+            bounded = root / "bounded-bazel"
+            bounded.write_text(worker.launcher_text(str(binary), root / "base", worker.select_build_profile(20 * 1024**3, 2)))
+            bounded.chmod(0o755)
+            wrapper = ROOT / "tools/bazel/ci" / worker.WRAPPERS["teamd"]
+            env = {**os.environ, "BAZEL_REAL": str(bounded), "SONIC_BASE_REVIEW_REGISTRY": catalog}
+            self.assertEqual(json.loads(subprocess.check_output([wrapper, "--version"], env=env)), ["--version"])
+            args = json.loads(subprocess.check_output([wrapper, "build", "--jobs=8", "//dockers/docker-teamd:docker-teamd.gz"], env=env))
+            self.assertEqual([arg for arg in args if arg.startswith("--registry=")], [
+                "--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/" + catalog,
+                "--registry=https://bcr.bazel.build"])
+            self.assertIn("--output_base=" + str(root / "base"), args)
+            self.assertEqual([arg for arg in args if arg.startswith("--jobs=")][-1], "--jobs=1")
+
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

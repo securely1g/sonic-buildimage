@@ -286,6 +286,14 @@ def catalog_for(image, workspace):
             "Selected workflow uses another Bazel entrypoint")
     if wrapper != "review_bazel.sh":
         text = (workspace / "tools/bazel/ci" / wrapper).read_text()
+        if image == "teamd" and "SONIC_BASE_REVIEW_REGISTRY" in text:
+            require("BAZEL_REAL" in text, "Teamd source wrapper must honor the worker's measured limits")
+            # Resolve the maintained default once for the complete run and receipts.
+            head = output(["git", "ls-remote", "--exit-code",
+                           "https://github.com/securely1g/sonic-bazel-registry.git", "refs/heads/main"])
+            match = re.fullmatch(r"([0-9a-f]{40})\s+refs/heads/main", head)
+            require(match, "Expected one canonical SONiC registry main commit")
+            return match[1]
         selected = re.findall(r"^export SONIC_BAZEL_REGISTRY_REVISION=([0-9a-f]{40})$", text, re.M)
         require(len(selected) == 1 and (not catalogs or selected == catalogs),
                 "Workflow and compatibility entrypoint catalogs differ")
@@ -314,6 +322,7 @@ def launcher_text(binary, base, profile):
              "--local_resources=memory=" + str(profile["scheduler_memory_mb"])]
     return ("#!/usr/bin/env python3\nimport os, sys\n" +
             "binary = " + repr(binary) + "\nbase = " + repr(str(base)) + "\nargs = sys.argv[1:]\n" +
+            "if args == ['--version']:\n    os.execv(binary, [binary, '--version'])\n" +
             "if any(value in ('build', 'test', 'aquery', 'cquery') for value in args):\n" +
             "    args.extend(" + repr(flags) + ")\n" +
             "os.execv(binary, [binary, '--output_base=' + base, '--host_jvm_args=-Xmx" +
@@ -377,7 +386,10 @@ def prepare(args):
         prepare_tap_fixture(artifacts)
     prepare_validation_tools(artifacts)
     source_check(workspace, args.revision)
-    for name in (f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image], "review_bazel.sh"):
+    drivers = [f"{DRIVERS[args.image]}_image.py", f"{DRIVERS[args.image]}_loaded.py", WRAPPERS[args.image]]
+    if args.image != "teamd":
+        drivers.append("review_bazel.sh")
+    for name in drivers:
         path = workspace / "tools/bazel/ci" / name
         require(path.is_file() and path.resolve().is_relative_to(workspace), "Missing reviewed driver: " + name)
     catalog = catalog_for(args.image, workspace)
@@ -417,6 +429,8 @@ def prepare(args):
     env = {"BAZEL_REAL": str(launch), "BAZELISK_HOME": str(cache / "bazelisk"),
            "SONIC_BAZEL_REGISTRY_REVISION": catalog, "CI_HEAD_SHA": args.revision, "CI_BASE_SHA": "",
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
+    if args.image == "teamd":
+        env["SONIC_BASE_REVIEW_REGISTRY"] = catalog
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
              "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
     (artifacts / "worker-private.json").write_text(json.dumps(state, indent=2) + "\n")
