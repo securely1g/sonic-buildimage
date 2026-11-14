@@ -13,6 +13,8 @@ import unittest
 
 import yaml
 
+from radv_review_workflow_test import evaluate
+
 ROOT = Path(__file__).resolve().parents[3]
 HELPER = "tools/bazel/ci/preserve_setup_bazel_cache.py"
 OWNER = "frr" if (ROOT / "tools/bazel/ci/frr_draft_bazel.sh").is_file() else "libteam"
@@ -53,15 +55,23 @@ class SetupBazelCacheTest(unittest.TestCase):
         for path in (ROOT / ".github/workflows").glob("*.yml"):
             document = yaml.safe_load(path.read_text())
             for name, job in document.get("jobs", {}).items():
-                calls = [step["run"] for step in job.get("steps", [])
-                         if "--private-remote-cache" in step.get("run", "")]
-                if not calls:
+                private_steps = [step for step in job.get("steps", [])
+                                 if "--private-remote-cache" in step.get("run", "")]
+                if not private_steps:
                     continue
                 with self.subTest(workflow=path.name, job=name):
                     enabled.add((path.name, name))
-                    self.assertEqual(calls, ["python3 " + HELPER + " --private-remote-cache"])
+                    self.assertEqual([step["run"] for step in private_steps],
+                                     ["python3 " + HELPER + " --private-remote-cache"])
                     if (path.name, name) == ("bazel-oci.yml", "radv_native"):
-                        self.assertEqual(job["runs-on"], ["self-hosted", "linux", "bazel-x64"])
+                        enabled_modes = []
+                        for image in ("none", "radv"):
+                            private_enabled = evaluate(private_steps[0]["if"], source_image=image)
+                            self.assertIsInstance(private_enabled, bool)
+                            self.assertEqual(private_enabled, evaluate(job["runs-on"], source_image=image) ==
+                                             ["self-hosted", "linux", "bazel-x64"])
+                            enabled_modes.append(private_enabled)
+                        self.assertEqual(enabled_modes, [True, False])
                         continue
                     if path.name == "bazel-base-images.yml":
                         self.assertEqual(job["strategy"]["matrix"]["architecture"], ["amd64", "arm64"])
