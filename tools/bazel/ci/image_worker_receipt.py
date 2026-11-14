@@ -614,7 +614,7 @@ def verify_evidence(directory, request, provenance, contract):
     else:
         from tools.bazel.ci import syncd_receipt_semantics
         observed = syncd_receipt_semantics.verify(load, raw, source=request['merge'],
-            outputs=contract['outputs'], image=image(request))
+            outputs=contract['outputs'], image=image(request), worker_pool=pool)
         require(observed['fixture_sources'] == contract['fixture_sources'], 'Installed-service fixture sources changed')
         require(observed['tested_revision_parents'] == [request['base'], request['head']],
                 'Installed-service validation tested another merge')

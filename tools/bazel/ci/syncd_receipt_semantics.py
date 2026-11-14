@@ -81,7 +81,7 @@ def verify_worker_resources(profile, facts):
     assert expected['minimum_cpu'] == 4 and profile == expected
 
 
-def verify(read, raw, *, source, outputs, image='syncd'):
+def verify(read, raw, *, source, outputs, image='syncd', worker_pool=None):
     """Return observations after the selected fixed image receipt checks pass."""
     image_names, owner, runtime_target, debug_target = image_profile(image)
     json_names = public_json_names(image)
@@ -114,7 +114,8 @@ def verify(read, raw, *, source, outputs, image='syncd'):
     assert worker['image'] == image and worker['source_revision'] == source
     assert worker['status'] == 'prepared' and worker['architecture'] == 'amd64'
     assert worker['distribution'] == 'trixie' and worker['docker_network'] == 'none'
-    assert worker['cache_mode'] == 'persistent_worker_local'
+    from tools.bazel.ci.image_worker_receipt import verify_worker_cache
+    verify_worker_cache(worker, worker_pool)
     profile = worker['build_profile']
     assert profile == preflight['build_profile'] and all(profile[k] == v for k, v in BUILD_PROFILE.items())
     assert preflight['status'] == 'passed' and preflight['checks'] and all(v is True for v in preflight['checks'].values())
