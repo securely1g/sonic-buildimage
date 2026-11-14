@@ -93,7 +93,7 @@ apt_layer(
     name = "runtime_layer",
     base = ":config_engine_base_layout",
     dependency_set = "syncd_vs_debian",
-    lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
     packages = APT_INPUTS["syncd_vs_debian"]["amd64"],
     policy = _APT_POLICY,
     source_receipt = ":source_package_receipt",
@@ -172,9 +172,9 @@ apt_layer(
     name = "debug_layer",
     base = ":docker-gbsyncd-vs",
     base_package_metadata = ":runtime_package_metadata",
-    dependency_set = "syncd_vs_debug_debian",
-    lock = "//platform/vs/docker-syncd-vs/bazel:apt.lock.json",
-    packages = APT_INPUTS["syncd_vs_debug_debian"]["amd64"],
+    dependency_set = "syncd_vs_vim_debug_debian",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    packages = APT_INPUTS["syncd_vs_vim_debug_debian"]["amd64"],
     policy = _APT_POLICY,
     source_receipt = ":source_package_receipt",
     variant = "debug",
@@ -214,7 +214,7 @@ installed_packages(
     apt_receipt = ":debug_apt_selection",
     architecture = "amd64",
     base = ":docker-gbsyncd-vs",
-    controls = [label + ":control" for label in APT_INPUTS["syncd_vs_debug_debian"]["amd64"].values()],
+    controls = [label + ":control" for label in APT_INPUTS["syncd_vs_vim_debug_debian"]["amd64"].values()],
     source_spec = ":debug_source_packages",
 )
 
@@ -257,7 +257,7 @@ sonic_docker_archive(
 sonic_layer(
     name = "test_redis",
     testonly = True,
-    tars = ["@gbsyncd_test_debian//redis-server"],
+    tars = ["@frr_image_test_debian//redis-server"],
 )
 
 # Share exact package/ELF guarantees while retaining gearbox image identity.

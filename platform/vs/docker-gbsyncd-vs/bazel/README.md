@@ -18,8 +18,8 @@ The parent remains the source-built config-engine image. Gearbox owns only its
 service configuration, package/image receipts, manifests, environment and final
 image composition. The BUILD files consume public source TARs directly; they do
 not produce or import project DEBs. Pinned Debian packages remain external inputs.
-The isolated Redis package lock is only a runtime-test fixture, with exact package
-records and closure reused from the accepted MUX fixture.
+The installed-image test uses the Redis server already pinned in the shared
+FRR test collection. The runtime and debug images share the Syncd collections.
 
 Build on native AMD64 Debian Trixie with the maintained SONiC registry and BCR.
 
