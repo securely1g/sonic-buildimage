@@ -7,6 +7,9 @@ def _manifest_labels_impl(ctx):
     args.add("--manifest", ctx.file.manifest)
     args.add("--output", ctx.outputs.out)
     inputs = [ctx.file.manifest]
+    if ctx.file.component_labels:
+        args.add("--component-labels", ctx.file.component_labels)
+        inputs.append(ctx.file.component_labels)
     if ctx.file.package_receipt:
         args.add("--package-metadata", ctx.file.package_receipt)
         args.add_all(ctx.attr.version_packages, before_each = "--version-package")
@@ -24,6 +27,7 @@ def _manifest_labels_impl(ctx):
 _manifest_labels = rule(
     implementation = _manifest_labels_impl,
     attrs = {
+        "component_labels": attr.label(allow_single_file = True),
         "manifest": attr.label(allow_single_file = True, mandatory = True),
         "image_version": attr.label(providers = [BuildSettingInfo]),
         "package_receipt": attr.label(allow_single_file = True),
@@ -37,13 +41,14 @@ _manifest_labels = rule(
     },
 )
 
-def manifest_labels(name, manifest, out = None, image_version = None, package_receipt = None, version_packages = [], **kwargs):
+def manifest_labels(name, manifest, out = None, image_version = None, package_receipt = None, version_packages = [], component_labels = None, **kwargs):
     """Encode Make's manifest and optional image and component version labels."""
     if bool(package_receipt) != bool(version_packages):
         fail("package_receipt and version_packages must be supplied together")
     _manifest_labels(
         name = name,
         manifest = manifest,
+        component_labels = component_labels,
         out = out or name + ".labels",
         image_version = image_version,
         package_receipt = package_receipt,

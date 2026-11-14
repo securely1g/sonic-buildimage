@@ -1076,18 +1076,146 @@ jobs:
           retention-days: 14
           compression-level: 1
 
-  eventd_runtime:
-    # Keep the required status on the job that actually loads and tests both archives.
-    name: Container archive (AMD64)
-    if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
+      - name: Validate Database Make handoff and event database selection
+        if: matrix.architecture == 'amd64'
+        run: |
+          python3 -B tools/bazel/tests/database_make_test.py
+          python3 -B -m unittest tools.bazel.tests.database_evidence_test tools.bazel.tests.database_packages_test
+      - name: Build Database runtime and debug images from owner TARs
+        id: database_build
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          python3 -B tools/bazel/ci/database_image.py build --bazel "$BAZEL" --artifacts artifacts/database
+      - name: Validate Database image contents and matching source symbols
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: python3 -B tools/bazel/ci/database_image.py validate --artifacts artifacts/database
+      - name: Verify Database no-op and restored image hashes
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          python3 -B tools/bazel/ci/database_image.py incremental --bazel "$BAZEL" --artifacts artifacts/database
+          git diff --exit-code
+      - name: Prepare public Database evidence
+        id: database_public_evidence
+        if: always() && matrix.architecture == 'amd64' && (steps.database_build.outcome == 'success' || steps.database_build.outcome == 'failure')
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/database')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'tested_revision_parents', 'include_system_eventd', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          for name in ('validation.json', 'incremental.json', 'action-audit.json', 'runtime-packages.json', 'base-packages.json', 'config-engine-packages.json', 'debug-packages.json'):
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          if (root / 'build-events.jsonl').exists():
+              value = bep_summary((root / 'build-events.jsonl').read_text().splitlines(), partial=True)
+              (root / 'build-summary.json').write_text(json.dumps(value, indent=2) + '\n')
+          PY
+      - name: Upload Database archives and public evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && matrix.architecture == 'amd64' && steps.database_public_evidence.outcome == 'success'
+        with:
+          name: database-image-amd64-${{ github.sha }}
+          path: |
+            artifacts/database/*.gz
+            artifacts/database/*.tar
+            artifacts/database/public-receipt.json
+            artifacts/database/validation.json
+            artifacts/database/incremental.json
+            artifacts/database/action-audit.json
+            artifacts/database/*-packages.json
+            artifacts/database/*.status
+            artifacts/database/build-summary.json
+            artifacts/database/MODULE.bazel.lock
+            artifacts/database/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  database_runtime:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    name: Run installed Database images (AMD64)
     needs: archive
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Require a successful archive build
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
         env:
-          ARCHIVE_RESULT: ${{ needs.archive.result }}
-        run: test "$ARCHIVE_RESULT" = success
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: database-image-amd64-${{ github.sha }}
+          path: artifacts/database
+      - name: Verify loaded archives and installed Redis startup, database access and DASH conversion
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: python3 -B tools/bazel/ci/database_loaded.py --artifacts artifacts/database
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: database-runtime-amd64-${{ github.sha }}
+          path: |
+            artifacts/database/*.runtime.json
+            artifacts/database/loaded-validation.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  database_acceptance:
+    name: Database acceptance (AMD64)
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
+    needs: [archive, database_runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both image construction and installed-service checks
+        env:
+          BUILD_RESULT: ${{ needs.archive.result }}
+          RUNTIME_RESULT: ${{ needs.database_runtime.result }}
+        run: |
+          test "$BUILD_RESULT" = success
+          test "$RUNTIME_RESULT" = success
+
+  eventd_runtime:
+    # Keep the required status on the job that actually loads and tests both archives.
+    name: Container archive (AMD64)
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
+    needs: [archive, database_acceptance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require successful archive and installed-image checks
+        env:
+          JOB_RESULTS: ${{ toJSON(needs.*.result) }}
+        run: jq -e 'length > 0 and all(.[]; . == "success")' <<< "$JOB_RESULTS"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
