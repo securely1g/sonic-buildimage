@@ -188,6 +188,8 @@ validate the resulting image and measure end-to-end time.
   safely extracts the pair and verifies matching build IDs, DWARF and debug links.
 - `build.py` builds a caller's filename-to-label mapping and collects one nonempty
   archive per label, with atomic publication, command logs, sizes and hashes.
+  Both collectors resolve query paths against the execution root recorded in the
+  build events, including external source files without a checkout symlink.
   `collect_artifacts` exports all files from a declared CI filegroup. It checks
   every output before publication and records each file's size, hash and Bazel
   output path. Owner package checks run as Bazel tests with declared source inputs.
