@@ -823,6 +823,8 @@ export SONIC_VERSION_CONTROL_COMPONENTS
 export PIP_HTTP_TIMEOUT
 export SECURE_UPGRADE_PROD_TOOL_ARGS
 
+include tools/bazel/direct_image_goals.mk
+
 %:: | sonic-build-hooks
 ifneq ($(filter y, $(MULTIARCH_QEMU_ENVIRON) $(CROSS_BUILD_ENVIRON)),)
 	$(Q)$(DOCKER_MULTIARCH_CHECK)

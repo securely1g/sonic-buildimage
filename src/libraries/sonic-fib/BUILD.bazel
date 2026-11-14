@@ -53,7 +53,7 @@ py_binary(
 # Bazel adds potentially empty generated include directories; its declared header
 # inputs replace GCC's filesystem-only -Wmissing-include-dirs check.
 _COPTS = [
-    "-ansi", "-fPIC", "-std=c++14", "-Wall", "-Wcast-align", "-Wcast-qual",
+    "-Wall", "-Wcast-align", "-Wcast-qual",
     "-Wconversion", "-Wdisabled-optimization", "-Werror", "-Wextra", "-Wfloat-equal",
     "-Wformat=2", "-Wformat-nonliteral", "-Wformat-security", "-Wformat-y2k",
     "-Wimport", "-Winit-self", "-Winvalid-pch", "-Wlong-long",
@@ -83,7 +83,7 @@ cc_library(
     name = "objects",
     srcs = [":src/nexthopgroupfull.cpp", "src/nexthopgroup_debug.cpp", "src/c-api/nexthopgroup_capi.cpp"],
     hdrs = _HEADERS,
-    copts = _COPTS,
+    copts = ["-ansi", "-fPIC", "-std=c++14"] + _COPTS,
     includes = [".", "src"],
     deps = [":target_json_headers"],
     alwayslink = True,
@@ -116,7 +116,8 @@ cc_library(
 cc_binary(
     name = "tests_binary",
     srcs = ["tests/c_api_ut.cpp", "tests/nexthopgroupfull_ut.cpp", "tests/nexthopgroupfull_json_ut.cpp", "tests/nexthopgroup_debug_ut.cpp", "tests/main.cpp"],
-    copts = _COPTS + ["-fno-access-control"],
+    # GoogleTest 1.17 headers require C++17 in the test translation units.
+    copts = ["-fPIC", "-std=c++17"] + _COPTS + ["-fno-access-control"],
     deps = [":objects", "@googletest//:gtest"],
     linkopts = ["-pthread"],
 )

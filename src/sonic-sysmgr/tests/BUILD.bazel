@@ -1,7 +1,7 @@
 load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_distroless//distroless:defs.bzl", "flatten")
 load("@rules_python//python:defs.bzl", "py_test")
-load("//:flags.bzl", "CFLAGS_COMMON", "DBGFLAGS")
+load("//:flags.bzl", "CFLAGS_GTEST", "DBGFLAGS")
 
 genrule(
     name = "mock_header",
@@ -83,7 +83,7 @@ cc_binary(
         "rebootbe_test.cpp",
         "test_main.cpp",
     ],
-    cxxopts = DBGFLAGS + CFLAGS_COMMON,
+    cxxopts = DBGFLAGS + CFLAGS_GTEST,
     deps = [
         "//rebootbackend:reboot_core",
         # The pinned upstream gtest target includes Google Mock.

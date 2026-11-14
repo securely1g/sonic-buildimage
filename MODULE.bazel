@@ -321,6 +321,7 @@ source_modules(
     name = "image_source_modules",
     modules = {
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
+        "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
         "@libteam//:MODULE.bazel": "libteam",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
@@ -554,4 +555,21 @@ use_repo(apt, "snmp_debian", "snmp_debug_debian", "snmp_test_debian")
 apt_inputs(
     name = "snmp_apt_inputs",
     lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
+
+# MUX consumes the Linkmgrd runtime and debug TARs.
+bazel_dep(name = "sonic-linkmgrd", version = "1.0.0-e0f9f94901c30ed30f5fe82af6dafca38f8b35d7", repo_name = "sonic_linkmgrd")
+
+apt_inputs(
+    name = "mux_runtime_apt_inputs",
+    architecture = "amd64",
+    dependency_set = "trixie",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    root_packages = [
+        "libboost-filesystem1.83.0",
+        "libboost-log1.83.0",
+        "libboost-program-options1.83.0",
+        "libboost-thread1.83.0",
+    ],
 )

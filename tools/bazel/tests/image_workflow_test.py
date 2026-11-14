@@ -74,7 +74,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         archive = jobs["archive"]
         gate = jobs["eventd_runtime"]
         self.assertEqual(gate["name"], "Container archive (AMD64)")
-        self.assertEqual(gate["needs"], "archive")
+        self.assertIn("archive", gate["needs"])
         self.assertEqual(gate["if"], "always() && (" + archive["if"] + ")")
         build = next(step for step in archive["steps"] if step.get("id") == "eventd_build")
         self.assertEqual(build["if"], "matrix.architecture == 'amd64'")
@@ -96,12 +96,15 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(upload["with"]["name"], download["with"]["name"])
         self.assertTrue(any("eventd_loaded.py" in step.get("run", "") for step in gate["steps"]))
         guard = gate["steps"][0]
-        self.assertEqual(guard["env"]["ARCHIVE_RESULT"], "${{ needs.archive.result }}")
-        for status in ("success", "failure", "skipped", "cancelled"):
-            with self.subTest(status=status):
-                result = subprocess.run(["bash", "-ec", guard["run"]],
-                                        env=dict(os.environ, ARCHIVE_RESULT=status))
-                self.assertEqual(result.returncode == 0, status == "success")
+        self.assertEqual(guard["env"]["JOB_RESULTS"], "${{ toJSON(needs.*.result) }}")
+        for position in range(len(gate["needs"])):
+            for status in ("success", "failure", "skipped", "cancelled"):
+                with self.subTest(job=gate["needs"][position], status=status):
+                    results = ["success"] * len(gate["needs"])
+                    results[position] = status
+                    result = subprocess.run(["bash", "-ec", guard["run"]], capture_output=True,
+                                            env=dict(os.environ, JOB_RESULTS=json.dumps(results)))
+                    self.assertEqual(result.returncode == 0, status == "success")
 
     def test_archive_evidence_preservation_is_unique_and_keeps_previous_runs(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
