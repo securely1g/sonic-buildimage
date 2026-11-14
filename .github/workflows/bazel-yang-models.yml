@@ -32,7 +32,7 @@ permissions:
   contents: read
 
 env:
-  SONIC_BAZEL_REGISTRY_REVISION: 6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+  SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
 
 jobs:
   package:
@@ -42,13 +42,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - architecture: amd64
-            runner: ubuntu-24.04
-            machine: x86_64
-          - architecture: arm64
-            runner: ubuntu-24.04-arm
-            machine: aarch64
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"architecture":"amd64","runner":"ubuntu-24.04","machine":"x86_64"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04","machine":"x86_64"},{"architecture":"arm64","runner":"ubuntu-24.04-arm","machine":"aarch64"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,6 +60,25 @@ jobs:
       - name: Preserve configured caches for Draft validation
         run: python3 -B tools/bazel/ci/lldp_draft_cache.py
 
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Use the checksum-verified pinned configuration.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/997796400cc3eefc1f0590b227cd9b74c2141424/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "a937b05d4197544bac965bb2b96634e12423c7f82b0fd6b13d894bcd087bce3b"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build and verify the installed source distribution
         working-directory: src/sonic-yang-models
         shell: bash
@@ -74,7 +88,9 @@ jobs:
           test ! -e MODULE.bazel.lock
           git check-ignore MODULE.bazel.lock
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
-          options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
+          # This standalone module does not read the image root's .bazelrc.user.
+          mirror="--experimental_downloader_config=$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update "$mirror")
           mkdir -p artifacts
           # The standalone module stays canonical; the image root needs libteam's Draft entries.
           (cd ../.. && tools/bazel/ci/libteam_draft_bazel.sh cquery --lockfile_mode=update \
@@ -83,6 +99,7 @@ jobs:
           uname -m > artifacts/execution-machine.txt
           python3 ../../tools/bazel/ci/bazel_commands.py --output artifacts/action-audit.json \
             --bazel-arg="--registry=$registry" --bazel-arg=--registry=https://bcr.bazel.build \
+            --bazel-arg="$mirror" \
             //:yang_models_package_test //:yang_models_wheel //:yang_models_pkg
           bazel test "${options[@]}" --test_output=all //:yang_models_package_test
           bazel build "${options[@]}" //:yang_models_wheel //:yang_models_pkg

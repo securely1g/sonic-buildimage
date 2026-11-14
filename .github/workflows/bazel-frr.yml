@@ -8,6 +8,7 @@ on:
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/sonic-buildimage-rule-inputs.json
       - tools/bazel/ci/frr_draft_bazel.sh
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/oci/runtime_smoke.py
@@ -43,13 +44,72 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 997796400cc3eefc1f0590b227cd9b74c2141424
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+          persist-credentials: false
+      - name: Prepare checksum-pinned Bazelisk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/bazelisk-bootstrap.json \
+            --github-token-env GITHUB_TOKEN
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          # Use the verified launcher prepared above.
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: frr-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Prepare checksum-pinned Bazel rule archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
+            --distdir "$PWD/artifacts/source-downloads" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
+          printf 'common --distdir=%s\n' "$PWD/artifacts/source-downloads" >> .bazelrc.user
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Load the checksum-verified pinned configuration. Archive integrity checks remain unchanged.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/997796400cc3eefc1f0590b227cd9b74c2141424/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "a937b05d4197544bac965bb2b96634e12423c7f82b0fd6b13d894bcd087bce3b"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -59,7 +119,7 @@ jobs:
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
           # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/e6ef022c94dd2fdeeac364dfd591f9701cd37c29
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -142,12 +202,26 @@ jobs:
             mkdir -p artifacts
             cp -aL bazel-testlogs artifacts/testlogs
           fi
-      - name: Upload source outputs and validation evidence
+      - name: Validate public download receipts
+        id: download_receipts
         if: always()
+        run: |
+          python3 - <<'PYRECEIPTS'
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          for name in ('bazelisk-bootstrap.json', 'rule-sources.json'):
+              path = Path('artifacts') / name
+              if path.exists():
+                  safe_json(load_json(path.read_bytes()))
+          PYRECEIPTS
+      - name: Upload source outputs and validation evidence
+        if: always() && steps.download_receipts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: frr-${{ matrix.architecture }}-${{ matrix.distribution }}
-          path: artifacts
+          path: |
+            artifacts
+            !artifacts/source-downloads/**
           if-no-files-found: error
           retention-days: 14
           compression-level: 1

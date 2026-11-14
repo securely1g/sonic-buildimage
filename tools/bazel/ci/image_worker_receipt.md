@@ -1,0 +1,55 @@
+# Dedicated-worker image validation
+
+The normal P4RT, Syncd and Gearbox PR jobs can verify a dedicated worker's results when
+the hosted runner cannot hold the source build. The existing image producers,
+validation commands and cache locations remain the build interface.
+
+For a same-repository PR, the first normal CI attempt saves a small immutable
+request artifact. It identifies the exact merge commit and tree, PR head and
+base, registry catalog, reviewed worker controller and validation contract.
+P4RT additionally binds its source-owner gitlink. A retry must reuse that
+original request; it cannot replace it with a different checkout.
+
+After reviewing the request and the worker's available resources, dispatch the
+existing `Bazel OCI` workflow with `source_image=p4rt`, `source_image=syncd`
+or `source_image=gearbox`,
+the requested controller revision, exact merge as `source_revision`, requested
+catalog as `registry_revision`, and original artifact ID as
+`source_ci_request`. Select one of the dedicated workers explicitly. The worker
+checks those identities before building and preserves its existing caches.
+
+The contracts pin the [source-manifest controller change](https://github.com/securely1g/sonic-buildimage/commit/944ea2bf52868928c550cd61becfc5f9d0b76250).
+Both its worker preparation and hosted source-input producer verify
+`tools/bazel/ci/sonic-buildimage-rule-inputs.json` against the exact SOURCE commit.
+The executable download reader remains pinned in CONTROL. Rule files stay in
+the worker cache or hosted temporary directory; the five-archive source handoff
+and its receipt remain unchanged. The controller implementation is reviewed
+separately from this checkout's legacy manual-worker workflow.
+
+A changed controller pin requires a fresh normal CI run and request. Existing
+requests keep their original controller and contract digest; retries reuse
+those requests without rewriting their provenance.
+
+Syncd and Gearbox run their existing build, contents/symbols, incremental and loaded-service
+phases. P4RT also runs its SDK preparation and complete owner test suite. The
+worker uploads a bounded JSON acceptance artifact after its private Docker
+daemon stops. Normal CI requires the whole worker job, checkout cleanup and
+workflow to finish successfully before accepting that artifact.
+
+Rerun the failed normal build job after the worker completes. Its verifier
+checks the original request, controller and worker identity, receipt hashes,
+source graph, output inventory, no-DEB action audit and all profile-specific
+results. The dependent runtime job verifies the same acceptance independently.
+A missing receipt or a changed PR head/base fails the check; it is not a skip.
+P4RT, Syncd and Gearbox use separate artifact names and request identities, so evidence
+from one cannot satisfy another profile.
+
+The JSON hashes are checked locally by the verifier. Large TAR/image payload
+hashes and native runtime results remain reported by the pinned CI worker.
+These checks do not establish ASIC forwarding or full VS installer acceptance.
+Fork PRs, maintained-branch builds and manual non-receipt jobs retain the
+existing hosted build and runtime steps.
+
+The implementation is `image_worker_receipt.py`. The old
+`p4rt_worker_receipt.py` command remains a compatibility entry point; its
+existing schema and artifact names are preserved.

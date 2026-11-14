@@ -26,13 +26,38 @@ jobs:
       - name: Install execution and verification tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends binutils build-essential ca-certificates gdb git j2cli jq libarchive-tools libxml2 python3
+          apt-get install -y --no-install-recommends binutils build-essential ca-certificates file gdb git j2cli jq libarchive-tools libxml2 python3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 997796400cc3eefc1f0590b227cd9b74c2141424
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            ci/github_sources.py
+            ci/github_sources/bazelisk-1.29.0-linux-amd64.json
+          persist-credentials: false
+      - name: Prepare checksum-pinned Bazelisk
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          bin="$RUNNER_TEMP/sonic-bazelisk/bin"
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "$inputs/github_sources/bazelisk-1.29.0-linux-amd64.json" \
+            --distdir "$bin" --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/snmp/bazelisk-bootstrap.json \
+            --github-token-env GITHUB_TOKEN
+          chmod 0755 "$bin/bazel"
+          printf '%s\n' "$bin" >> "$GITHUB_PATH"
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          bazelisk-version: 1.29.0
+          bazelisk-version: ""
           bazelisk-cache: true
           repository-cache: true
           disk-cache: snmp-image-amd64
@@ -42,6 +67,36 @@ jobs:
           mkdir -p artifacts/snmp
           python3 tools/bazel/gzip/prepare_pigz.py --output "$RUNNER_TEMP/pigz-distdir" > artifacts/snmp/pigz-source.json
           printf 'common --distdir=%s\n' "$RUNNER_TEMP/pigz-distdir" > .bazelrc.user
+      - name: Prepare checksum-pinned Bazel rule archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
+            --distdir "$RUNNER_TEMP/pigz-distdir" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt artifacts/snmp/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
+      - name: Configure verified Debian payload transport
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/997796400cc3eefc1f0590b227cd9b74c2141424/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          if hashlib.sha256(data).hexdigest() != "a937b05d4197544bac965bb2b96634e12423c7f82b0fd6b13d894bcd087bce3b":
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "base-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build runtime and debug images from source owners
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -50,17 +105,29 @@ jobs:
           test "$(uname -m)" = x86_64
           test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
           test ! -e MODULE.bazel.lock
-          python3 -B tools/bazel/ci/snmp_image.py build --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
       - name: Validate completed image contents and source symbols
         run: python3 -B tools/bazel/ci/snmp_image.py validate --artifacts artifacts/snmp
       - name: Check incremental rebuild and restored image digests
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
-          python3 -B tools/bazel/ci/snmp_image.py incremental --artifacts artifacts/snmp
+          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh" --artifacts artifacts/snmp
           git diff --exit-code
-      - name: Retain images and exact build evidence
+      - name: Validate public download receipts
+        id: download_receipts
         if: always()
+        run: |
+          python3 - <<'PYRECEIPTS'
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import load_json, safe_json
+          for name in ('bazelisk-bootstrap.json', 'rule-sources.json'):
+              path = Path('artifacts/snmp') / name
+              if path.exists():
+                  safe_json(load_json(path.read_bytes()))
+          PYRECEIPTS
+      - name: Retain images and exact build evidence
+        if: always() && steps.download_receipts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: snmp-image-amd64

@@ -94,6 +94,56 @@ class StartupTest(unittest.TestCase):
    with self.assertRaises(ValueError):loaded.copy_database_fixture(root,report,fixture)
 
 
+class RestReadinessTest(unittest.TestCase):
+ records=StartupTest.records
+ def setUp(self):
+  self.service=mock.Mock(pid=101);self.service.poll.return_value=None
+  self.certificate=mock.Mock();self.certificate.is_file.return_value=True
+  self.key=mock.Mock();self.key.is_file.return_value=True
+  self.rest={'pid':13,'parent_pid':101,'executable':'/usr/sbin/rest_server','argv':['private-not-published']}
+ def wait(self,records=None):
+  values=self.records() if records is None else records
+  return probe.wait_for_services(self.service,lambda:values,set(values),self.certificate,self.key,())
+ def test_running_shell_is_not_ready_until_actual_server_exec(self):
+  shell=dict(self.rest,executable='/usr/bin/bash')
+  with mock.patch.object(probe,'process_record',side_effect=[shell,self.rest]), mock.patch.object(probe.time,'monotonic',side_effect=[0,0.1]), mock.patch.object(probe.time,'sleep')as sleep:
+   self.assertEqual(self.wait(),self.records());sleep.assert_called_once_with(0.1)
+ def test_generated_certificate_and_key_must_both_arrive(self):
+  self.certificate.is_file.side_effect=[False,True,True]
+  self.key.is_file.side_effect=[False,True]
+  with mock.patch.object(probe,'process_record',return_value=self.rest), mock.patch.object(probe.time,'monotonic',side_effect=[0,0.1,0.2]), mock.patch.object(probe.time,'sleep')as sleep:
+   self.assertEqual(self.wait(),self.records());self.assertEqual(sleep.call_count,2)
+ def test_wrong_parent_or_unexecuted_launcher_uses_existing_deadline(self):
+  for changes in ({'parent_pid':999},{'executable':'/usr/bin/bash'}):
+   with self.subTest(changes=changes), mock.patch.object(probe,'process_record',return_value=dict(self.rest,**changes)), mock.patch.object(probe.time,'monotonic',side_effect=[100,145]), mock.patch.object(probe.time,'sleep')as sleep:
+    with self.assertRaisesRegex(AssertionError,'startup did not finish')as failure:self.wait()
+    self.assertIn('"certificate_present": true',str(failure.exception));sleep.assert_not_called()
+ def test_launcher_failure_reports_state_without_advancing(self):
+  records=self.records();records['rest-server'].update(statename='EXITED',exitstatus=2,pid=0)
+  self.certificate.is_file.return_value=False;self.key.is_file.return_value=False
+  with mock.patch.object(probe,'process_record',side_effect=FileNotFoundError), mock.patch.object(probe.time,'monotonic',side_effect=[0,45]), mock.patch.object(probe.time,'sleep')as sleep:
+   with self.assertRaisesRegex(AssertionError,'startup did not finish')as failure:self.wait(records)
+   message=str(failure.exception);self.assertIn('"rest_state": "EXITED"',message);self.assertIn('"rest_exitstatus": 2',message);self.assertIn('"certificate_present": false',message);sleep.assert_not_called()
+ def test_supervisor_exit_is_not_treated_as_readiness(self):
+  self.service.poll.return_value=3
+  with mock.patch.object(probe,'process_record',side_effect=FileNotFoundError), mock.patch.object(probe.time,'monotonic',return_value=0), mock.patch.object(probe.time,'sleep')as sleep:
+   with self.assertRaisesRegex(AssertionError,'Supervisor exited')as failure:self.wait()
+   self.assertIn('"supervisor_exit": 3',str(failure.exception));sleep.assert_not_called()
+ def test_disappearing_proc_entry_can_become_ready_within_deadline(self):
+  with mock.patch.object(probe,'process_record',side_effect=[FileNotFoundError,self.rest]), mock.patch.object(probe.time,'monotonic',side_effect=[0,0.1]), mock.patch.object(probe.time,'sleep')as sleep:
+   self.assertEqual(self.wait(),self.records());sleep.assert_called_once_with(0.1)
+ def test_diagnostics_are_bounded_markers_not_log_or_key_contents(self):
+  with tempfile.TemporaryDirectory()as temporary:
+   root=Path(temporary);log=root/'supervisor.log'
+   log.write_bytes(b'REST_SERVER_ARGS = '+b'x'*20000+b'Generating temporary TLS server certificate ...\n-----BEGIN PRIVATE KEY-----\nsecret-key-data\n-----END PRIVATE KEY-----\n')
+   with mock.patch.object(probe,'process_record',return_value=self.rest):
+    text=probe.startup_diagnostics(self.service,self.records(),self.certificate,self.key,(log,root/'absent.log'))
+   facts=probe.json.loads(text);self.assertEqual(facts['launcher_progress']['supervisor'],{'bytes_examined':8192,'certificate_generation_started':1,'rest_arguments_assembled':0})
+   self.assertTrue(facts['launcher_progress']['syslog']['unavailable'])
+   for secret in ('PRIVATE KEY','secret-key-data','private-not-published',str(root)):self.assertNotIn(secret,text)
+   self.certificate.read_bytes.assert_not_called();self.key.read_bytes.assert_not_called()
+
+
 
 from tools.bazel.ci import mgmt_framework_image as image_driver
 

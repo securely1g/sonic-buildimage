@@ -193,7 +193,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("build", "validate", "incremental"))
     parser.add_argument("--bazel", default="bazel")
-    parser.add_argument("--image-version", default="bazel-radv-ci")
+    parser.add_argument("--image-version", default="bazel-ci")
     parser.add_argument("--artifacts", type=Path, required=True)
     args = parser.parse_args()
     directory = args.artifacts.resolve()

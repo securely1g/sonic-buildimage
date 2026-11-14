@@ -19,19 +19,35 @@ def invoked_command(arguments):
     return arguments[0]
 
 
-def inspect_actions(path):
-    value = json.loads(path.read_bytes())
-    fragments = {item["id"]: item for item in value.get("pathFragments", [])}
+def artifact_paths(value):
+    """Resolve the existing aquery artifact/path-fragment representation."""
+    fragments = {str(item["id"]): item for item in value.get("pathFragments", [])}
+    if len(fragments) != len(value.get("pathFragments", [])):
+        raise ValueError("duplicate action path fragment")
     memo = {}
+    active = set()
     def fragment(identifier):
+        identifier = str(identifier)
         if identifier not in memo:
+            if identifier in active:
+                raise ValueError("cyclic action path fragments")
+            active.add(identifier)
             item = fragments[identifier]
             memo[identifier] = ((fragment(item["parentId"]) + "/") if item.get("parentId") else "") + item["label"]
+            active.remove(identifier)
         return memo[identifier]
-    artifacts = {item["id"]: fragment(item["pathFragmentId"]) for item in value.get("artifacts", [])}
+    artifacts = {str(item["id"]): fragment(item["pathFragmentId"]) for item in value.get("artifacts", [])}
+    if len(artifacts) != len(value.get("artifacts", [])):
+        raise ValueError("duplicate action artifact")
+    return artifacts
+
+
+def inspect_actions(path):
+    value = json.loads(path.read_bytes())
+    artifacts = artifact_paths(value)
     outputs, suspicious = [], []
     for action in value.get("actions", []):
-        outputs.extend(artifacts[identifier] for identifier in action.get("outputIds", []))
+        outputs.extend(artifacts[str(identifier)] for identifier in action.get("outputIds", []))
         arguments = action.get("arguments", [])
         command = " ".join(arguments)
         wrapper = re.search(r"(?:^|[/\s])(?:make|gmake)(?:\s|$)",

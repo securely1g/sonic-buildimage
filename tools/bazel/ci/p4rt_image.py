@@ -27,14 +27,16 @@ OWNER = '//dockers/docker-sonic-p4rt:'
 IMAGES = ('docker-sonic-p4rt', 'docker-sonic-p4rt-dbg')
 BASE = '//dockers/docker-config-engine-trixie:docker-config-engine-trixie'
 RUNTIME_INPUTS = ('owner-test-runtime.tar',)
-COMMON_REVISION = '43598143ef4a46431eae0859915cd7d951dad1ed'
+COMMON_REVISION = '334389eae54afd1f4f5ee69f89c3a7ad2062ee61'
 OPTIONS = ['--jobs=2', '--local_resources=cpu=2', '--local_resources=memory=8000',
+           '--@sonic_swss_common//tools/bazel:yang_modules=True',
            '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
            '--host_platform=@sonic_build_infra//platforms:x86_64_trixie']
 PREPARATION_TARGETS = {
     'common-sdk.tar': '@sonic_swss_common//dist:libswsscommon_sdk',
     'libnl-nf-sdk.tar': '@libnl3//:libnl-nf-3-dev_pkg',
     'libnl-genl-sdk.tar': '@libnl3//:libnl-genl-3-dev_pkg',
+    'libyang-runtime.tar': '@libyang//:libyang_pkg',
     'common-runtime.tar': '@sonic_swss_common//dist:libswsscommon_pkg',
     'common-runtime-runner.py': OWNER + 'owner_runtime_runner',
     'common.MODULE.bazel': OWNER + 'owner_common_module',
@@ -72,7 +74,7 @@ def root_options():
     extra = cache_options(cache) + shlex.split(arguments)
     check.require(all(value and not any(char in value for char in '\r\n\0') for value in extra),
                   'Bazel options must be nonempty single-line arguments')
-    # Preserve normal Make cache/custom options, then enforce this native profile.
+    # Preserve cache/custom options, then enforce the recorded YANG/native profile.
     return [*OPTIONS[:3], *extra, *OPTIONS[3:]]
 
 
@@ -180,7 +182,7 @@ def prepare_owner(args):
             workspace=ROOT, output=preparation / 'action-audit.json')
         build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options)
         module = (preparation / 'common.MODULE.bazel').read_text()
-        check.require(re.search(r'version\s*=\s*[\"\']0\.0\.8-' + COMMON_REVISION + r'[\"\']', module),
+        check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
                       'The fetched Common owner differs from the selected image parent')
         prepare_repository(preparation / 'common-sdk.tar', sdk, 'amd64', {
             'producer_bazel_version': '8.5.1', 'producer_target': PREPARATION_TARGETS['common-sdk.tar'],
@@ -189,6 +191,7 @@ def prepare_owner(args):
             'image_source_revision': revision, 'yang_modules': True,
         }, libnl_archives={PREPARATION_TARGETS[name]: preparation / name
                            for name in ('libnl-nf-sdk.tar', 'libnl-genl-sdk.tar')},
+            libyang_archive=preparation / 'libyang-runtime.tar',
             parent_archive=preparation / 'config-engine.source.tar')
         receipt['parent_common'] = p4rt_handoff.same_common_library(sdk,
             preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')

@@ -67,5 +67,25 @@ class ActionAuditTest(unittest.TestCase):
                     self.audit("output", command)
 
 
+class ArtifactPathsTest(unittest.TestCase):
+    def test_shared_resolver_accepts_nested_and_mixed_id_forms(self):
+        graph = {"pathFragments": [{"id": "1", "label": "bazel-out"},
+                                  {"id": 2, "parentId": 1, "label": "library.so"}],
+                 "artifacts": [{"id": 3, "pathFragmentId": "2"}]}
+        self.assertEqual(bazel_commands.artifact_paths(graph), {"3": "bazel-out/library.so"})
+
+    def test_cycles_and_duplicate_ids_are_rejected(self):
+        cases = [
+            {"pathFragments": [{"id": 1, "parentId": 1, "label": "loop"}],
+             "artifacts": [{"id": 1, "pathFragmentId": 1}]},
+            {"pathFragments": [{"id": 1, "label": "one"}, {"id": "1", "label": "two"}]},
+            {"pathFragments": [{"id": 1, "label": "one"}],
+             "artifacts": [{"id": 1, "pathFragmentId": 1}, {"id": "1", "pathFragmentId": 1}]},
+        ]
+        for graph in cases:
+            with self.subTest(graph=graph), self.assertRaises(ValueError):
+                bazel_commands.artifact_paths(graph)
+
+
 if __name__ == "__main__":
     unittest.main()

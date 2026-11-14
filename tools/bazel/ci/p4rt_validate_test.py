@@ -176,6 +176,53 @@ class LoadedSaiSelectionTest(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'missing or duplicate'):
             choose(report, native, True)
 
+    def installed_exec_readiness(self, read_bytes):
+        path = Path(__file__).resolve().parents[3] / 'dockers/docker-sonic-p4rt/bazel/runtime_probe.py'
+        tree = ast.parse(path.read_text())
+        selected = [item for item in ast.walk(tree) if isinstance(item, ast.FunctionDef) and
+                    item.name in ('require', 'wait_for', 'p4rt_executed')]
+        self.assertEqual({item.name for item in selected}, {'require', 'wait_for', 'p4rt_executed'})
+        self.assertEqual(len(selected), 3)
+        ticks, sleeps = [0], []
+
+        def sleep(seconds):
+            self.assertEqual(seconds, 0.2)
+            sleeps.append(seconds)
+            ticks[0] += 1
+
+        class FakeRedisError(Exception):
+            pass
+
+        namespace = {
+            'argv': SimpleNamespace(read_bytes=read_bytes),
+            'children': {},
+            'time': SimpleNamespace(monotonic=lambda: ticks[0] / 5, sleep=sleep),
+            'redis': SimpleNamespace(exceptions=SimpleNamespace(RedisError=FakeRedisError)),
+        }
+        exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), 'exec'), namespace)
+        return namespace, ticks, sleeps
+
+    def test_waits_for_the_installed_daemon_to_exec(self):
+        wrapper = b'/bin/bash\0/usr/local/bin/p4rt.sh\0'
+        daemon = (b'/usr/local/bin/p4rt\0--p4rt_grpc_port=9559\0--use_genetlink=false\0'
+                  b'--p4rt_unix_socket=/run/p4rt.sock\0--use_insecure_server_credentials\0')
+        read_bytes = mock.Mock(side_effect=[wrapper, daemon])
+        namespace, ticks, sleeps = self.installed_exec_readiness(read_bytes)
+        command = namespace['wait_for'](namespace['p4rt_executed'])
+        self.assertEqual(command, daemon.split(b'\0'))
+        self.assertEqual(read_bytes.call_count, 2)
+        self.assertEqual(ticks, [1])
+        self.assertEqual(sleeps, [0.2])
+
+    def test_wrapper_cannot_satisfy_the_default_readiness_deadline(self):
+        read_bytes = mock.Mock(return_value=b'/bin/bash\0/usr/local/bin/p4rt.sh\0')
+        namespace, ticks, sleeps = self.installed_exec_readiness(read_bytes)
+        with self.assertRaisesRegex(AssertionError, '^timed out waiting for the installed service$'):
+            namespace['wait_for'](namespace['p4rt_executed'])
+        self.assertEqual(read_bytes.call_count, 300)
+        self.assertEqual(ticks[0] / 5, 60)
+        self.assertEqual(sleeps, [0.2] * 300)
+
 
 class StageBindingTest(unittest.TestCase):
     def setUp(self):

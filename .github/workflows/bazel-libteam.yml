@@ -9,8 +9,10 @@ on:
       - MODULE.bazel
       - .bazelrc
       - tools/bazel/common.bazelrc
+      - tools/bazel/ci/sonic-buildimage-rule-inputs.json
       - tools/bazel/ci/artifact_validation.py
       - tools/bazel/ci/libteam_draft_bazel.sh
+      - tools/bazel/ci/resolution.py
       - tools/bazel/oci/runtime_smoke.py
       - .github/workflows/bazel-libteam.yml
   workflow_dispatch:
@@ -24,15 +26,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distribution: [trixie]
-        architecture: [amd64, arm64]
-        include:
-          - architecture: amd64
-            cpu: x86_64
-            runner: ubuntu-24.04
-          - architecture: arm64
-            cpu: aarch64
-            runner: ubuntu-24.04-arm
+        include: >-
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"distribution":"trixie","architecture":"amd64","cpu":"x86_64","runner":"ubuntu-24.04"}]' || '[{"distribution":"trixie","architecture":"amd64","cpu":"x86_64","runner":"ubuntu-24.04"},{"distribution":"trixie","architecture":"arm64","cpu":"aarch64","runner":"ubuntu-24.04-arm"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
@@ -47,6 +42,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check out the pinned GitHub input reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 997796400cc3eefc1f0590b227cd9b74c2141424
+          path: .bazel-inputs/github-reader
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ci/github_sources.py
+          persist-credentials: false
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -54,6 +58,39 @@ jobs:
           repository-cache: true
           disk-cache: libteam-${{ matrix.architecture }}-${{ matrix.distribution }}
           cache-version: "8.5.1"
+      - name: Prepare checksum-pinned Bazel rule archives
+        id: rule_archives
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          inputs=.bazel-inputs/github-reader/ci
+          python3 -B "$inputs/github_sources.py" \
+            --manifest "tools/bazel/ci/sonic-buildimage-rule-inputs.json" \
+            --distdir "$PWD/.cache/bazel-distdir" \
+            --repository-cache "$HOME/.cache/bazel-repo" \
+            --cache-dir "$HOME/.cache/sonic-github-sources" \
+            --receipt libteam-download-receipts/rule-sources.json \
+            --github-token-env GITHUB_TOKEN
+      - name: Configure the verified source mirror
+        run: |
+          python3 - <<'PYCFG'
+          import hashlib
+          import os
+          from pathlib import Path
+          from urllib.request import urlopen
+          # Load the merged registry configuration. Bazel verifies each archive against its pinned checksum.
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          with urlopen(url, timeout=60) as response:
+              data = response.read()
+          expected = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+          if hashlib.sha256(data).hexdigest() != expected:
+              raise SystemExit("Source mirror configuration checksum mismatch")
+          config = Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg"
+          config.write_bytes(data)
+          with Path(".bazelrc.user").open("a") as rc:
+              rc.write("common --experimental_downloader_config=" + str(config) + "\n")
+          PYCFG
       - name: Build source outputs and execute native tests
         env:
           BAZELISK_GITHUB_TOKEN: ""
@@ -63,7 +100,7 @@ jobs:
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
           # Draft validation only; replace with canonical main after prerequisites land.
-          SONIC_BAZEL_REGISTRY_REVISION: 6a69c2d89070d4d2ffc80b1e13626da387f7ea65
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
           BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
         run: |
           set -euo pipefail
@@ -109,7 +146,7 @@ jobs:
           done < artifacts/outputs.txt
           cp MODULE.bazel.lock artifacts/
           run_bazel test --nocache_test_results --build_event_json_file="$PWD/artifacts/test-events.json" \
-            //src/libteam:consumer_test \
+            @libteam//:consumer_test \
             2>&1 | tee artifacts/test.log
           if [[ "$CI_ARCHITECTURE" == amd64 ]]; then
             output() { run_bazel cquery "//src/libteam:$1" --output=files; }
@@ -123,13 +160,87 @@ jobs:
               --development "$(output libteam_dev)" \
               --dependency-development "$(run_bazel cquery @libnl3//:libnl-3-dev_files --output=files)" \
               --output artifacts/installed-runtime.json
-            python3 -B src/libteam/verify_rebuild.py \
-              --bazel "$PWD/tools/bazel/ci/libteam_draft_bazel.sh" \
+            # Resolve the selected owner's probe in this same Bazel execution
+            # root; cquery's external/ path is not relative to the Git checkout.
+            probe_bazel="$PWD/tools/bazel/ci/libteam_draft_bazel.sh"
+            probe_flags=(
+              "--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie"
+              "--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}"
+              "--distdir=$PWD/.cache/bazel-distdir"
+            )
+            # Bazel 8.5.1 Bzlmod uses the standard output_base/execroot/_main.
+            # Unlike info execution_root, output_base needs no platform configuration.
+            output_base="$("$probe_bazel" info "${probe_flags[@]}" output_base)"
+            if [[ "$output_base" != /* || "$output_base" == *$'\n'* ]]; then
+              printf 'Invalid Bazel output base: %s\n' "$output_base" >&2
+              exit 1
+            fi
+            execution_root="$output_base/execroot/_main"
+            if [[ ! -d "$execution_root" ]]; then
+              printf 'Missing Bazel 8.5.1 Bzlmod execution root: %s\n' "$execution_root" >&2
+              exit 1
+            fi
+            probe_file="$("$probe_bazel" cquery "${probe_flags[@]}" @libteam//:bazel/verify_rebuild.py --output=files)"
+            test -n "$probe_file"
+            [[ "$probe_file" != *$'\n'* ]]
+            case "$probe_file" in
+              /*) owner_probe="$probe_file" ;;
+              *) owner_probe="$execution_root/$probe_file" ;;
+            esac
+            test -f "$owner_probe"
+            python3 -B "$owner_probe" \
+              --bazel "$probe_bazel" \
               --bazel-arg="--host_platform=@sonic_build_infra//platforms:${CI_CPU}_trixie" \
               --bazel-arg="--platforms=@sonic_build_infra//platforms:${CI_CPU}_${CI_DISTRIBUTION}" \
+              --bazel-arg="--distdir=$PWD/.cache/bazel-distdir" \
               --output artifacts/rebuild
           fi
+          # Capture the graph in this tested workspace; platform and jobs flags
+          # configure build actions and are recorded rather than passed to mod.
+          python3 -B - "${options[@]}" <<'PYRESOLUTION'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+          from tools.bazel.ci import resolution
+
+          workspace = Path.cwd()
+          directory = (workspace / "artifacts").resolve()
+          build_options = sys.argv[1:]
+          build_only = ("--host_platform=", "--platforms=", "--jobs=")
+          graph_options = [option for option in build_options
+                           if not option.startswith(build_only)]
+          evidence = resolution.collect(
+              workspace, directory,
+              bazel=[os.environ["BAZEL"]],
+              options=graph_options,
+          )
+          evidence["build_options"] = build_options
+          evidence["omitted_build_only_options"] = [
+              option for option in build_options if option.startswith(build_only)
+          ]
+          evidence["scope"] = "Same-job module resolution; target configuration is recorded separately"
+          (directory / "resolution.json").write_text(json.dumps(evidence, indent=2) + "\n")
+          PYRESOLUTION
           git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code
+      - name: Validate public download receipts
+        id: download_receipts
+        if: always() && steps.rule_archives.outcome == 'success'
+        run: |
+          python3 - <<'PYRECEIPTS'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json
+          safe_json(json.loads(Path('libteam-download-receipts/rule-sources.json').read_text()))
+          PYRECEIPTS
+      - name: Upload public download receipts
+        if: always() && steps.download_receipts.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libteam-downloads-${{ matrix.architecture }}-${{ matrix.distribution }}
+          path: libteam-download-receipts/rule-sources.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload source outputs and validation evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

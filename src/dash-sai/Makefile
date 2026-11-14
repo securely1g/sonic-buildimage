@@ -15,7 +15,7 @@ $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 # Remove any stale files
 	rm -rf DASH
 
-	git clone https://github.com/sonic-net/DASH.git DASH
+	git clone https://github.com/securely1g/DASH.git DASH
 
 	pushd DASH/dash-pipeline
 	git checkout $(DASH_SAI_COMMIT)

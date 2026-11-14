@@ -1,8 +1,10 @@
 """Bind DASH engine archives to source owners, package state and base layers."""
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
+import re
 import tempfile
 
 from tools.bazel.ci import artifact_validation as check, base_images, build
@@ -16,13 +18,16 @@ DEBUG_FORWARDING = {"usr/bin/pi_CLI_dummy": {
     "provider": "usr/lib/x86_64-linux-gnu/libpicli.so.0", "symbol": "main", "source": "main.c"}}
 
 
-def require_item(files, path, item):
+def require_item(files, path, item, *, image=None):
     # The shared OCI inventory records Linux's installed symlink mode (0777),
     # even when an owner's TAR header has mode 0000. Keep the raw TAR-to-TAR
     # comparison below exact; only the installed link's mode has this meaning.
     expected = {**item, "mode": 0o777} if item.get("kind") == "symlink" else item
-    check.require(all(files.get(path, {}).get(key) == value for key, value in expected.items()),
-                  "installed payload differs: " + path)
+    actual = files.get(path, {})
+    differences = {key: {"expected": value, "actual": actual.get(key)}
+                   for key, value in expected.items() if actual.get(key) != value}
+    check.require(not differences, "installed payload differs: " + path + " " +
+                  json.dumps({"image": image, "differences": differences}, sort_keys=True))
 
 
 def verify_config(parent, actual, manifest):
@@ -120,6 +125,26 @@ def debug_alternatives(payload):
     return expected
 
 
+def layout_identity(layout):
+    """Retain comparable image metadata without publishing configuration values."""
+    diff_ids = layout.config["rootfs"]["diff_ids"]
+    check.require(isinstance(diff_ids, list) and
+                  all(isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+                      for value in diff_ids), "invalid OCI rootfs digest in layout evidence")
+    return {
+        "manifest_digest": layout.descriptor["digest"],
+        "config_digest": layout.manifest["config"]["digest"],
+        "layers": [{key: layer[key] for key in ("digest", "size")}
+                   for layer in layout.manifest["layers"]],
+        "rootfs": {"type": "layers", "diff_ids": diff_ids},
+        "config_fields": [
+            {"name": name, "sha256": hashlib.sha256(json.dumps(value, sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest()}
+            for name, value in sorted(layout.config.get("config", {}).items())
+        ],
+    }
+
+
 def validate(directory):
     clean_source(directory)
     identity = source_identity()
@@ -132,6 +157,15 @@ def validate(directory):
     root = build.execution_root(directory / "build-events.jsonl")
     parent = oci_layout.validate_layout(root / receipt["base_layout"], "linux/amd64")
     layouts = {name: oci_layout.validate_layout(root / receipt["layouts"][name], "linux/amd64") for name in IMAGES}
+    # Keep the live identities even when the archive or payload comparison fails.
+    # Full layouts are large and may no longer exist after hosted-runner cleanup.
+    (directory / "layout-identities.json").write_text(json.dumps({
+        "schema": 1,
+        "source_revision": identity["revision"],
+        "scope": "OCI identities only; not image acceptance",
+        "images": {name: layout_identity(layout) for name, layout in
+                   {"docker-base-trixie": parent, **layouts}.items()},
+    }, indent=2) + "\n")
     inherited = base_images.installed_inventory(parent)
     parent_groups = read_groups(parent)
     configuration = check.payload(directory / "engine.files.tar")
@@ -164,11 +198,15 @@ def validate(directory):
         base = layouts[IMAGES[0]] if debug else parent
         image_validation.assert_ancestry(base, layout, "engine stage ancestry")
         image_validation.verify_unique_layer_paths(layout)
+        # Bind the exported archive before inspecting the live OCI directory.
+        # A failed payload check must not hide a disagreement between them.
+        archive = image_validation.docker_archive(directory / (name + ".gz"), name + ":latest",
+            layout.manifest["config"]["digest"], layout.manifest["layers"])
         files = base_images.installed_inventory(layout)
         image_validation.verify_directory_aliases(files)
         for path, item in (source | configuration).items():
             if item["kind"] != "directory":
-                require_item(files, path, item)
+                require_item(files, path, item, image=name)
         stage_parent = inventories[IMAGES[0]] if debug else inherited
         prefix = "engine-debug" if debug else "engine"
         report = json.loads((directory / (prefix + ".packages.json")).read_text())
@@ -181,7 +219,7 @@ def validate(directory):
                               debug_alternatives(debug_tools) if debug else configuration)
         for path, item in payload.items():
             if item["kind"] != "directory":
-                require_item(files, path, item)
+                require_item(files, path, item, image=name)
         verify_groups(parent_groups, read_groups(layout), inherited["etc/group"], files["etc/group"], debug)
         reports.append(report)
         for path, artifact in (("var/lib/dpkg/status", prefix + ".status"),
@@ -189,8 +227,6 @@ def validate(directory):
             check.require(files.get(path, {}).get("sha256") == check.sha(directory / artifact), "installed package state differs: " + path)
         check.require(all(item.get("elf_machine", 62) == 62 for item in files.values()), "foreign ELF architecture")
         verify_config(parent.config.get("config", {}), layout.config.get("config", {}), manifest)
-        archive = image_validation.docker_archive(directory / (name + ".gz"), name + ":latest",
-            layout.manifest["config"]["digest"], layout.manifest["layers"])
         inventories[name] = files
         (directory / (name + ".validation.json")).write_text(json.dumps({"status": "passed",
             "manifest_digest": layout.descriptor["digest"], "rootfs": layout.config["rootfs"],

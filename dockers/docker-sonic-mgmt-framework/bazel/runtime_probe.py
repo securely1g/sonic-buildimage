@@ -60,6 +60,62 @@ def process_record(pid):
             "argv": (directory / "cmdline").read_bytes().rstrip(b"\0").decode().split("\0")}
 
 
+def startup_diagnostics(service, records, certificate, key, log_paths):
+    """Report bounded startup facts, never launcher arguments or certificate bytes."""
+    rest = records.get("rest-server", {})
+    state = rest.get("statename")
+    result = {"supervisor_exit": service.poll(),
+              "rest_state": state if state in {"STOPPED", "STARTING", "RUNNING", "BACKOFF", "STOPPING", "EXITED", "FATAL", "UNKNOWN"} else "UNKNOWN",
+              "rest_exitstatus": rest.get("exitstatus"), "rest_pid": rest.get("pid"),
+              "certificate_present": certificate.is_file(), "key_present": key.is_file()}
+    try:
+        observed = process_record(rest["pid"])
+        result.update(rest_executable_ready=observed["executable"] == "/usr/sbin/rest_server",
+                      rest_direct_child=observed["parent_pid"] == service.pid)
+    except (KeyError, OSError):
+        result.update(rest_executable_ready=False, rest_direct_child=False)
+    # Original service output goes through syslog; retain fixed progress markers
+    # from bounded tails without exposing arbitrary logs, argv or PEM material.
+    markers = {}
+    for name, path in zip(("supervisor", "syslog"), log_paths):
+        try:
+            with path.open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, stream.tell() - 8192))
+                tail = stream.read(8192)
+            markers[name] = {"bytes_examined": len(tail),
+                             "certificate_generation_started": tail.count(b"Generating temporary TLS server certificate ..."),
+                             "rest_arguments_assembled": tail.count(b"REST_SERVER_ARGS = ")}
+        except OSError:
+            markers[name] = {"unavailable": True}
+    result["launcher_progress"] = markers
+    return json.dumps(result, sort_keys=True)
+
+
+def wait_for_services(service, service_records, expected, certificate, key, log_paths):
+    # Supervisor RUNNING can still describe rest-server.sh generating its key.
+    # Keep the existing deadline; await the installed server's actual exec.
+    deadline = time.monotonic() + 45
+    records = {}
+    while True:
+        if service.poll() is not None:
+            raise AssertionError("original Supervisor exited during startup\n" +
+                                 startup_diagnostics(service, records, certificate, key, log_paths))
+        try:
+            records = service_records()
+            if services_ready(records, expected):
+                rest = process_record(records["rest-server"]["pid"])
+                if (rest["executable"] == "/usr/sbin/rest_server" and rest["parent_pid"] == service.pid
+                        and certificate.is_file() and key.is_file()):
+                    return records
+        except OSError:
+            pass
+        if time.monotonic() >= deadline:
+            raise AssertionError("original Supervisor startup did not finish\n" +
+                                 startup_diagnostics(service, records, certificate, key, log_paths))
+        time.sleep(0.1)
+
+
 def main():
     report = json.loads(Path(sys.argv[1]).read_text())
     variant = sys.argv[2]
@@ -162,19 +218,11 @@ def main():
                 with ServerProxy("http://localhost", transport=transport) as rpc:
                     return {item["name"]: item for item in rpc.supervisor.getAllProcessInfo()}
 
-            deadline = time.monotonic() + 45
-            while True:
-                require(service.poll() is None, details())
-                try:
-                    records = service_records()
-                    if services_ready(records, expected):
-                        break
-                except OSError:
-                    pass
-                require(time.monotonic() < deadline, "original Supervisor startup did not finish\n" + details())
-                time.sleep(0.1)
+            startup_logs = (root / "supervisor.log", Path("/var/log/syslog"))
+            records = wait_for_services(service, service_records, expected, certificate, key, startup_logs)
             require(Path("/var/sonic/config_status").read_bytes() == b"# Config files managed by sonic-config-engine\n", "original start hook failed")
-            require(certificate.is_file() and key.is_file(), "original REST launcher did not generate its TLS certificate")
+            require(certificate.is_file() and key.is_file(), "original REST launcher did not generate its TLS certificate\n" +
+                    startup_diagnostics(service, records, certificate, key, startup_logs))
             pids = {name: item["pid"] for name, item in records.items() if name not in ("start", "dependent-startup")}
             processes_before = {name: process_record(pid) for name, pid in pids.items()}
             require(all(item["parent_pid"] == service.pid for item in processes_before.values()), "service is not a direct original Supervisor child")

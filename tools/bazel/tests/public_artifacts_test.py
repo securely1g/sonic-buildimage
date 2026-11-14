@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -167,6 +168,195 @@ class PublicArtifactsTest(unittest.TestCase):
     def prepare(self, kind, status="success", architecture="amd64"):
         return artifacts.prepare(kind, self.root, self.root, status, REVISION, architecture,
                                  head_sha="3" * 40, base_sha="4" * 40)
+
+    def test_graph_failure_projection_never_returns_captured_text(self):
+        errors = (
+            "ERROR: https://user:password@github.com/private/repo/releases/download/v1/file?token=" +
+            SYNTHETIC_JOB_TOKEN + " -> /home/runner/private: GET returned response code 504\n" +
+            "Error: https://raw.githubusercontent.com/private/repo/file: connection reset\n" +
+            "ERROR: https://bcr.bazel.build/modules/private: Read timed out\n" +
+            "ERROR: https://snapshot-cloudflare.debian.org/private: no space left on device\n" +
+            "ERROR: https://deb.debian.org/debian/private: java.lang.OutOfMemoryError\n" +
+            "ERROR: https://github.com.evil.invalid/private: HTTP 503\n" +
+            "::error::" + SENTINEL + "\n##[error]" + SYNTHETIC_INSTALLATION_TOKEN)
+        result = artifacts.graph_failure_summary(SENTINEL, errors, 2)
+        self.assertEqual(result, {"schema": 1, "status": "failed", "returncode": 2,
+            "stdout": "nonempty", "stderr_tail_truncated": False,
+            "signals": ["connection_error", "disk_full", "http_error", "memory_exhaustion", "timeout"],
+            "origins": ["bazel_registry", "debian_pool", "debian_snapshot", "github_raw", "github_release", "other"],
+            "http_statuses": [503, 504],
+            "diagnostic_counts": {"error_lines": 6, "unclassified_error_lines": 0, "extension_summaries": 0}})
+        artifacts.safe_json(result)
+        public = json.dumps(result)
+        for private in (SENTINEL, SYNTHETIC_JOB_TOKEN, SYNTHETIC_INSTALLATION_TOKEN,
+                        "https://", "password", "token", "/home/", "::", "##[", "private"):
+            self.assertNotIn(private, public)
+
+    def test_graph_failure_ignores_warnings_and_does_not_infer_oom_from_exit(self):
+        warning = "WARNING: https://snapshot.debian.org/private returned response code 504, retrying\n"
+        for code in (-9, 137, 0):
+            with self.subTest(code=code):
+                result = artifacts.graph_failure_summary("", warning + "ERROR: unclassified failure", code)
+                self.assertEqual(result["signals"], [])
+                self.assertEqual(result["origins"], [])
+                self.assertEqual(result["http_statuses"], [])
+                self.assertEqual(result["returncode"], code)
+                self.assertEqual(result["stdout"], "empty")
+                self.assertEqual(result["diagnostic_counts"], {
+                    "error_lines": 1, "unclassified_error_lines": 1, "extension_summaries": 0})
+
+    def test_graph_failure_extension_classes_and_get_status_remain_fixed_values(self):
+        private = SENTINEL + SYNTHETIC_JOB_TOKEN
+        stderr = (
+            "ERROR: Error loading '@@private//:" + private + "' for module extensions, requested by /home/private\n"
+            "Error: 'struct' value has no field or method '" + private + "'\n"
+            "Error: file '/home/private.bzl' does not contain symbol '" + private + "'\n"
+            "Error: name '" + private + "' is not defined\n"
+            "ERROR: @@private does not export a module extension called " + private + "\n"
+            "ERROR: Results may be incomplete as 7 extensions failed.\n"
+            "ERROR: Results may be incomplete as 1 extension failed.\n"
+            "Error: GET returned 504 Gateway Timeout " + private + "\n"
+            "ERROR: unknown " + private + "\n"
+            "WARNING: GET returned 503\nWARNING: Results may be incomplete as 8 extensions failed.\n")
+        result = artifacts.graph_failure_summary(private, stderr, 2)
+        self.assertEqual(result["signals"], ["extension_load_error", "extension_summary", "http_error",
+                                              "missing_extension", "missing_symbol"])
+        self.assertEqual(result["diagnostic_counts"], {
+            "error_lines": 9, "unclassified_error_lines": 1, "extension_summaries": 2})
+        self.assertEqual(result["http_statuses"], [504])
+        self.assertEqual(result["origins"], [])
+        for text in (private, SENTINEL, SYNTHETIC_JOB_TOKEN, "@@", "/home", "private.bzl"):
+            self.assertNotIn(text, json.dumps(result))
+
+    def test_graph_failure_counts_are_optional_typed_bounded_and_consistent(self):
+        current = artifacts.graph_failure_summary("", "ERROR: unknown", 2)
+        legacy = {key: value for key, value in current.items() if key != "diagnostic_counts"}
+        self.assertEqual(artifacts.receipt_summary(legacy, "resolution"), legacy)
+        for counts in (
+            None, {"error_lines": 1},
+            {"error_lines": True, "unclassified_error_lines": 0, "extension_summaries": 0},
+            {"error_lines": 65537, "unclassified_error_lines": 0, "extension_summaries": 0},
+            {"error_lines": 1, "unclassified_error_lines": -1, "extension_summaries": 0},
+            {"error_lines": 1, "unclassified_error_lines": 2, "extension_summaries": 0},
+            {"error_lines": 1, "unclassified_error_lines": 0, "extension_summaries": 1},
+            {"error_lines": 1, "unclassified_error_lines": 0, "extension_summaries": SENTINEL},
+        ):
+            with self.subTest(counts=counts), self.assertRaises(artifacts.PublicArtifactError):
+                artifacts.receipt_summary({**current, "diagnostic_counts": counts}, "resolution")
+        maximum = {**current, "diagnostic_counts": {
+            "error_lines": 65536, "unclassified_error_lines": 65536, "extension_summaries": 0}}
+        self.assertEqual(artifacts.receipt_summary(maximum, "resolution"), maximum)
+        bounded = artifacts.graph_failure_summary("", "ERROR: unknown\n" * 10000, 2)
+        self.assertTrue(bounded["stderr_tail_truncated"])
+        self.assertLess(bounded["diagnostic_counts"]["error_lines"], 10000)
+        self.assertEqual(bounded["diagnostic_counts"]["unclassified_error_lines"],
+                         bounded["diagnostic_counts"]["error_lines"])
+
+    def test_mux_workflow_validates_optional_failure_projection_without_raw_output(self):
+        workflow = (ROOT / ".github/workflows/bazel-mux-image.yml").read_text()
+        script = workflow.split("      - name: Prepare public evidence\n", 1)[1]
+        script = script.split("          python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+        script = "\n".join(line[10:] for line in script.splitlines())
+        code = "import sys; sys.path.insert(0, " + repr(str(ROOT)) + ")\n" + script
+        projected = artifacts.graph_failure_summary("", "Error: GET returned 504 " + SENTINEL, 2)
+        legacy = {key: value for key, value in projected.items() if key != "diagnostic_counts"}
+        path = self.root / "artifacts/mux/module-graph-failure.json"
+        write(self.root, "artifacts/mux/module-graph.stderr", SENTINEL + SYNTHETIC_JOB_TOKEN)
+        write(self.root, "artifacts/mux/module-graph-inspection.json", SENTINEL)
+        for value, valid in ((None, True), (legacy, True), (projected, True),
+                             ({**projected, "stderr": SYNTHETIC_JOB_TOKEN}, False),
+                             ({"padding": "x" * 4096}, False)):
+            with self.subTest(value=value):
+                path.unlink(missing_ok=True)
+                if value is not None:
+                    path.write_text(json.dumps(value))
+                before = path.read_bytes() if path.exists() else None
+                result = subprocess.run([sys.executable, "-I", "-B", "-c", code], cwd=self.root,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, valid, result.stderr)
+                self.assertEqual(path.read_bytes() if path.exists() else None, before)
+                for private in (SENTINEL, SYNTHETIC_JOB_TOKEN):
+                    self.assertNotIn(private, result.stdout + result.stderr)
+        path.unlink()
+        path.symlink_to(self.root / "missing-private")
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code], cwd=self.root,
+                                capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        upload = workflow.split("          name: mux-image-amd64\n", 1)[1].split("          if-no-files-found:", 1)[0]
+        self.assertIn("artifacts/mux/module-graph-failure.json", upload)
+        self.assertNotIn("module-graph.stderr", upload)
+        self.assertNotIn("module-graph-inspection.json", upload)
+
+    def test_graph_failure_scan_is_bounded_and_discards_a_partial_line(self):
+        stderr = "ERROR: https://snapshot.debian.org/private Read timed out " + "x" * 70000
+        stderr += "\nERROR: https://github.com/p/r/releases/download/v/a HTTP 502\n"
+        result = artifacts.graph_failure_summary("", stderr, 2)
+        self.assertTrue(result["stderr_tail_truncated"])
+        self.assertEqual(result["signals"], ["http_error"])
+        self.assertEqual(result["origins"], ["github_release"])
+        self.assertEqual(result["http_statuses"], [502])
+        unicode = artifacts.graph_failure_summary("", "é" * 65536 + "\nERROR: no space left on device", 2)
+        self.assertTrue(unicode["stderr_tail_truncated"])
+        self.assertEqual(unicode["signals"], ["disk_full"])
+
+    def test_graph_failure_receipt_rejects_extra_fields_and_untrusted_values(self):
+        original = artifacts.graph_failure_summary("", "ERROR: HTTP 504", 2)
+        cases = ({**original, "stderr": SENTINEL}, {**original, "argv": [SENTINEL]},
+                 {**original, "status": "passed"}, {**original, "schema": True},
+                 {**original, "returncode": True}, {**original, "returncode": 99999},
+                 {**original, "stdout": SENTINEL}, {**original, "stderr_tail_truncated": "false"},
+                 {**original, "signals": [SENTINEL]}, {**original, "signals": ["http_error"] * 2},
+                 {**original, "origins": ["https://private/" + SYNTHETIC_JOB_TOKEN]},
+                 {**original, "http_statuses": [True]}, {**original, "http_statuses": [200]},
+                 {**original, "http_statuses": [504, 503]}, {**original, "http_statuses": []})
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(artifacts.PublicArtifactError):
+                artifacts.receipt_summary(value, "resolution")
+
+    def test_failed_archive_publishes_graph_receipt_but_never_raw_diagnostics(self):
+        seed(self.root, "archive")
+        projected = artifacts.graph_failure_summary("", "ERROR: HTTP 504", 2)
+        write_json(self.root, "artifacts/archive/module-graph-failure.json", projected)
+        for name in ("module-graph.stderr", "module-graph-inspection.json", "module-graph.json"):
+            write(self.root, "artifacts/archive/" + name, SENTINEL + SYNTHETIC_JOB_TOKEN)
+        summary, paths, ready = self.prepare("archive", "failure")
+        self.assertTrue(ready)
+        self.assertFalse(summary["complete"])
+        self.assertEqual(summary["receipts"]["resolution"], projected)
+        self.assertEqual(summary["files"], {})
+        self.assertEqual(paths, [artifacts.SUMMARY["archive"]])
+        public = (self.root / paths[0]).read_text()
+        self.assertNotIn(SENTINEL, public)
+        self.assertNotIn(SYNTHETIC_JOB_TOKEN, public)
+
+    def test_optional_graph_receipt_is_absent_before_collection_or_on_success(self):
+        seed(self.root, "archive")
+        for status in ("failure", "cancelled"):
+            summary, _paths, ready = self.prepare("archive", status)
+            self.assertTrue(ready)
+            self.assertNotIn("resolution", summary["receipts"])
+            self.assertNotIn("resolution-receipt", summary["missing"])
+        write_json(self.root, "artifacts/archive/module-graph-failure.json",
+                   artifacts.graph_failure_summary("", "", 2))
+        summary, _paths, ready = self.prepare("archive")
+        self.assertTrue(ready)
+        self.assertNotIn("resolution", summary["receipts"])
+
+    def test_invalid_graph_failure_receipt_blocks_publication_without_leaking(self):
+        seed(self.root, "archive")
+        name = "artifacts/archive/module-graph-failure.json"
+        for value in ({"stderr": SYNTHETIC_JOB_TOKEN}, {"padding": "x" * 4096}):
+            write_json(self.root, name, value)
+            summary, paths, ready = self.prepare("archive", "failure")
+            self.assertFalse(ready)
+            self.assertEqual(paths, [])
+            self.assertNotIn(SYNTHETIC_JOB_TOKEN, json.dumps(summary))
+        (self.root / name).unlink()
+        (self.root / name).symlink_to(self.root / "absent-private-file")
+        summary, paths, ready = self.prepare("archive", "failure")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "resolution-receipt", "reason": "unreadable-or-unsafe-input"}, summary["blocked"])
 
     def test_receipt_counts_match_the_actual_producer_suites(self):
         """Adding a package suite must not make successful CI unpublishable."""
@@ -465,6 +655,62 @@ class PublicArtifactsTest(unittest.TestCase):
         self.assertNotIn("docker-syncd-vs-dbg.gz", summary["receipts"]["outputs"])
         self.assertNotIn(SENTINEL, json.dumps(summary))
 
+    def pad_json(self, path, size):
+        """Grow valid JSON without changing its schema or allocating a huge value."""
+        remaining = size - path.stat().st_size
+        self.assertGreaterEqual(remaining, 0)
+        with path.open("ab") as stream:
+            while remaining:
+                count = min(remaining, 1024 * 1024)
+                stream.write(b" " * count)
+                remaining -= count
+
+    def test_valid_70_mib_dependency_lock_is_published_unchanged(self):
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/MODULE.bazel.lock"
+        self.pad_json(path, 70 * 1024 * 1024)
+        expected = hashlib.sha256(path.read_bytes()).hexdigest()
+        summary, paths, ready = self.prepare("archive")
+        self.assertTrue(ready, summary)
+        self.assertIn(str(path.relative_to(self.root)), paths)
+        self.assertEqual(summary["files"]["module-lock"], {
+            "sha256": expected, "bytes": 70 * 1024 * 1024,
+        })
+
+    def test_dependency_lock_above_128_mib_is_blocked(self):
+        seed(self.root, "archive")
+        self.pad_json(self.root / "artifacts/archive/MODULE.bazel.lock", 128 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-lock", "reason": "oversized-json"}, summary["blocked"])
+
+    def test_non_lock_json_keeps_64_mib_boundary(self):
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/module-graph.json"
+        self.pad_json(path, 64 * 1024 * 1024)
+        summary, _paths, ready = self.prepare("archive")
+        self.assertTrue(ready, summary)
+        self.pad_json(path, 64 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-graph", "reason": "oversized-json"}, summary["blocked"])
+
+    def test_large_lock_still_rejects_recorded_environment(self):
+        seed(self.root, "archive")
+        value = lock()
+        value["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {
+            "PRIVATE_VALUE": SENTINEL,
+        }
+        path = write_json(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+        self.pad_json(path, 70 * 1024 * 1024)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertIn({"input": "module-lock", "reason": "nonempty-recorded-environment"}, summary["blocked"])
+        self.assertNotIn(SENTINEL, json.dumps(summary))
+
     def test_archive_supports_native_arm64_metadata(self):
         seed(self.root, "archive", "arm64")
         summary, _paths, ready = self.prepare("archive", architecture="arm64")
@@ -663,7 +909,7 @@ class PublicArtifactsTest(unittest.TestCase):
         summary, paths, ready = self.prepare("source")
         self.assertFalse(ready)
         self.assertEqual(paths, [])
-        self.assertIn({"input": "module-lock", "reason": "unsafe-public-file"}, summary["blocked"])
+        self.assertIn({"input": "module-lock", "reason": "credential-json-field"}, summary["blocked"])
         self.assertNotIn(SENTINEL, json.dumps(summary))
 
     def test_recorded_environment_must_be_empty(self):
@@ -687,8 +933,103 @@ class PublicArtifactsTest(unittest.TestCase):
                 summary, paths, ready = self.prepare("source")
                 self.assertFalse(ready)
                 self.assertEqual(paths, [])
-                self.assertIn({"input": logical, "reason": "unsafe-public-file"}, summary["blocked"])
+                self.assertIn({"input": logical, "reason": "credential-pattern"}, summary["blocked"])
                 self.assertNotIn(SYNTHETIC_INSTALLATION_TOKEN, json.dumps(summary))
+
+    def test_public_file_guard_reasons_do_not_publish_rejected_dependency_data(self):
+        cases = [
+            ({}, "invalid-module-lock"),
+            ({**lock(), SENTINEL: SYNTHETIC_JOB_TOKEN}, "unknown-module-lock-field"),
+            ({**lock(), "facts": {"authorization": SENTINEL}}, "credential-json-field"),
+            ({**lock(), "facts": {"value": SYNTHETIC_JOB_TOKEN}}, "credential-pattern"),
+            ({**lock(), "facts": {"value": "/home/fixture/work/" + SENTINEL}}, "local-path"),
+            ({**lock(), "facts": {"value": "https://fixture:" + SENTINEL + "@example.invalid/file"}}, "url-credentials"),
+            ({**lock(), "facts": {"value": "https://example.invalid/file?token=" + SENTINEL}}, "sensitive-url-query"),
+            ({**lock(), "facts": {"command_line": [SENTINEL]}}, "diagnostic-json-field"),
+            ({**lock(), "facts": {"value": SENTINEL + "\x00"}}, "control-character"),
+        ]
+        environment = lock()
+        environment["moduleExtensions"]["//:extension.bzl%extension"]["general"]["envVariables"] = {"VALUE": SENTINEL}
+        cases.append((environment, "nonempty-recorded-environment"))
+        for value, reason in cases:
+            with self.subTest(reason=reason):
+                seed(self.root, "archive")
+                path = write_json(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+                original = path.read_bytes()
+                summary, paths, ready = self.prepare("archive")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": reason}])
+                self.assertEqual(path.read_bytes(), original)
+                public = json.dumps(summary)
+                for private in (SENTINEL, SYNTHETIC_JOB_TOKEN, "example.invalid", "/home/fixture", "command_line"):
+                    self.assertNotIn(private, public)
+
+    def test_public_file_json_guards_keep_the_original_size_and_parser_limits(self):
+        for value, reason in ((b'{"facts": {}, "facts": {}}', "duplicate-json-key"),
+                              (b'{"facts": NaN}', "invalid-json-number"),
+                              (b'{"facts": ' + SENTINEL.encode(), "unsafe-public-file")):
+            with self.subTest(reason=reason):
+                seed(self.root, "archive")
+                write(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+                summary, paths, ready = self.prepare("archive")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": reason}])
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+        seed(self.root, "archive")
+        path = self.root / "artifacts/archive/MODULE.bazel.lock"
+        # A sparse fixture exercises the actual stat guard without a large read.
+        with path.open("wb") as stream:
+            stream.truncate(128 * 1024 * 1024 + 1)
+        summary, paths, ready = self.prepare("archive")
+        self.assertFalse(ready)
+        self.assertEqual(paths, [])
+        self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": "oversized-json"}])
+
+    def test_unknown_public_file_exceptions_remain_generic_and_fail_closed(self):
+        original = artifacts.dependency_json
+        errors = [artifacts.PublicArtifactError(SENTINEL),
+                  artifacts.PublicArtifactError("local-path\n" + SYNTHETIC_JOB_TOKEN),
+                  artifacts.PublicArtifactError("local-path", SENTINEL),
+                  artifacts.PublicArtifactError([SENTINEL]),
+                  OSError(SENTINEL), ValueError(SENTINEL), TypeError(SENTINEL), RecursionError(SENTINEL)]
+        for error in errors:
+            with self.subTest(error_type=type(error).__name__):
+                seed(self.root, "archive")
+                def reject_lock(value, kind):
+                    if kind == "lock":
+                        raise error
+                    return original(value, kind)
+                with mock.patch.object(artifacts, "dependency_json", side_effect=reject_lock):
+                    summary, paths, ready = self.prepare("archive")
+                self.assertFalse(ready)
+                self.assertEqual(paths, [])
+                self.assertEqual(summary["blocked"], [{"input": "module-lock", "reason": "unsafe-public-file"}])
+                self.assertNotIn(SENTINEL, json.dumps(summary))
+                self.assertNotIn(SYNTHETIC_JOB_TOKEN, json.dumps(summary))
+
+    def test_cli_reports_only_fixed_rejection_and_keeps_upload_list_empty(self):
+        seed(self.root, "archive")
+        value = {**lock(), SENTINEL: SYNTHETIC_JOB_TOKEN}
+        write_json(self.root, "artifacts/archive/MODULE.bazel.lock", value)
+        output = self.root / "github-output"
+        result = subprocess.run(
+            [sys.executable, "-B", artifacts.__file__, "archive",
+             "--workspace", str(self.root), "--upload-root", str(self.root),
+             "--job-status", "success", "--revision", REVISION,
+             "--architecture", "amd64", "--github-output", str(output)],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(output.exists())
+        status = json.loads(result.stdout)
+        self.assertFalse(status["ready"])
+        self.assertEqual(status["public_file_count"], 0)
+        self.assertEqual(status["blocked"], [{"input": "module-lock", "reason": "unknown-module-lock-field"}])
+        public = result.stdout + result.stderr + (self.root / artifacts.SUMMARY["archive"]).read_text()
+        self.assertNotIn(SENTINEL, public)
+        self.assertNotIn(SYNTHETIC_JOB_TOKEN, public)
+        self.assertNotIn(str(self.root), public)
 
     def test_duplicate_json_keys_and_sensitive_urls_are_rejected(self):
         with self.assertRaises(artifacts.PublicArtifactError):

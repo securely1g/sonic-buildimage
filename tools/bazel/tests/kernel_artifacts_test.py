@@ -17,6 +17,12 @@ class KernelArtifactsTest(unittest.TestCase):
     def setUp(self):
         self.fixture = kernel_test.KernelBundleTest()
         self.fixture.setUp()
+        # Match the real writers; this shared fixture predates these fields.
+        self.fixture.manifest["build_tools"]["execution"] = "relocatable"
+        self.fixture.provenance["resolution"]["graph_inspection"] = {
+            "returncode": 0, "module_count": 3, "module_graph_complete": True,
+            "extension_inspection_complete": True,
+        }
         self.addCleanup(self.fixture.doCleanups)
         self.state = self.fixture.root / "state"
         self.state.mkdir()
@@ -44,13 +50,20 @@ class KernelArtifactsTest(unittest.TestCase):
                                         architecture=self.fixture.state["launcher"]["architecture"],
                                         debs_directory=self.fixture.bundle)
 
-    def test_retains_only_verified_artifacts_and_fixed_summary(self):
+    def expected_artifacts(self):
+        return {*self.fixture.packages, "summary.json", "kernel-packages.json", "kernel-provenance.json"}
+
+    def test_retains_verified_artifacts_and_original_metadata(self):
         (self.state / "launcher.log").write_text("private diagnostic sentinel")
         self.collect()
         self.assertEqual({p.name for p in self.output.iterdir()},
-                         {*self.fixture.packages, "summary.json"})
+                         self.expected_artifacts())
         summary = json.loads((self.output / "summary.json").read_text())
         self.assertEqual(summary["artifact_count"], 5)
+        for name in ("kernel-packages.json", "kernel-provenance.json"):
+            self.assertEqual((self.output / name).read_bytes(), (self.fixture.bundle / name).read_bytes())
+        for name in self.records:
+            self.assertFalse((self.output / Path(name).name).exists())
         for item in summary["artifacts"]:
             self.assertEqual(hashlib.sha256((self.output / item["name"]).read_bytes()).hexdigest(), item["sha256"])
 
@@ -63,7 +76,7 @@ class KernelArtifactsTest(unittest.TestCase):
         data = (self.output / "summary.json").read_text()
         self.assertNotIn("sentinel", data)
         self.assertNotIn("private-evidence", data)
-        self.assertEqual(len(list(self.output.iterdir())), 6)
+        self.assertEqual(len(list(self.output.iterdir())), len(self.expected_artifacts()))
 
     def test_rejects_changed_lock(self):
         (self.state / "consumer/MODULE.bazel.lock").write_text("{}\n")
@@ -71,18 +84,19 @@ class KernelArtifactsTest(unittest.TestCase):
             self.collect()
         self.assertFalse(self.output.exists())
 
-    def test_omits_unselected_provenance_fields(self):
+    def test_rejects_unexpected_provenance_fields(self):
         self.fixture.provenance["private_path"] = "/home/runner/private"
         self.fixture.write_manifest()
-        self.collect()
-        self.assertNotIn("/home/runner/private", (self.output / "summary.json").read_text())
+        with self.assertRaisesRegex(ValueError, "unexpected fields in public kernel metadata"):
+            self.collect()
+        self.assertFalse(self.output.exists())
 
     def test_omits_unrelated_files_in_shared_deb_directory(self):
         (self.fixture.bundle / "event.json").write_text("{}")
         (self.fixture.bundle / "unrelated.deb").write_bytes(b"unrelated package")
         self.collect()
         self.assertEqual({p.name for p in self.output.iterdir()},
-                         {*self.fixture.packages, "summary.json"})
+                         self.expected_artifacts())
         self.assertEqual((self.fixture.bundle / "unrelated.deb").read_bytes(), b"unrelated package")
 
 
