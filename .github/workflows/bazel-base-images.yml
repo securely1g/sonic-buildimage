@@ -40,6 +40,9 @@ jobs:
     timeout-minutes: 120
     container:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+    env:
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: ${{ inputs.registry_revision || '6eb6ac5c29787461e34b243f580203f3f558c87e' }}
     defaults:
       run:
         shell: bash

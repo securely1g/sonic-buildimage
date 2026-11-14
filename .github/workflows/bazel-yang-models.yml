@@ -105,6 +105,9 @@ jobs:
           printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
       - name: Build and verify the installed source distribution
+        env:
+          # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+          SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
         working-directory: src/sonic-yang-models
         shell: bash
         run: |
@@ -115,7 +118,7 @@ jobs:
           registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module and image root use the same maintained registry.
+          # Only the image-root query uses the Draft catalog; the standalone module stays on main.
           (cd ../.. && tools/bazel/ci/libteam_draft_bazel.sh cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt

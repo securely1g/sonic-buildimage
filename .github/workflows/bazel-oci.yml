@@ -225,7 +225,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.architecture == 'amd64' && 300 || 60 }}
+    timeout-minutes: ${{ matrix.architecture == 'amd64' && 360 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -245,8 +245,10 @@ jobs:
     container:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     env:
-      # Shared CI entry point with the canonical registry; the full Make VS job is separate.
+      # Shared CI entry point; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
     defaults:
       run:
         shell: bash
@@ -388,7 +390,8 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          # Default-catalog fixtures control their own review-registry environment.
+          env -u SONIC_BASE_REVIEW_REGISTRY python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B tools/bazel/ci/verify_make_archive.py \
             --artifacts artifacts/archive/make-export \
             --bazel "$BAZEL" \
@@ -1076,6 +1079,131 @@ jobs:
           retention-days: 14
           compression-level: 1
 
+      - name: Preserve completed Orchagent evidence before MACsec acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            umask 077
+            preserved="$(mktemp -d "$RUNNER_TEMP/pre-macsec-artifacts.XXXXXXXX")"
+            mv artifacts "$preserved/artifacts"
+            printf 'Completed Orchagent evidence preserved at %s/artifacts\n' "$preserved"
+          fi
+
+      - name: Build MACsec runtime and debug images from source owners
+        id: macsec_build
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+          BAZELISK_GITHUB_TOKEN: ""
+        run: python3 -B tools/bazel/ci/macsec_image.py build --bazel "$BAZEL" --artifacts artifacts/macsec
+      - name: Validate MACsec installed payloads and matching symbols
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: python3 -B tools/bazel/ci/macsec_image.py validate --artifacts artifacts/macsec
+      - name: Verify MACsec no-op, configuration edit and restored archives
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          python3 -B tools/bazel/ci/macsec_image.py incremental --bazel "$BAZEL" --artifacts artifacts/macsec
+          git diff --exit-code
+      - name: Review public MACsec evidence
+        id: macsec_public
+        if: always() && matrix.architecture == 'amd64' && (steps.macsec_build.outcome == 'success' || steps.macsec_build.outcome == 'failure')
+        run: |
+          python3 - <<'PYMACSEC'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/macsec')
+          root.mkdir(parents=True, exist_ok=True)
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json', 'runtime-apt.json', 'debug-apt.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*.packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYMACSEC
+      - name: Retain MACsec archives and reviewed evidence
+        if: always() && matrix.architecture == 'amd64' && steps.macsec_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macsec-image-amd64-${{ github.sha }}
+          path: |
+            artifacts/macsec/*.gz
+            artifacts/macsec/*.tar
+            artifacts/macsec/*.status
+            artifacts/macsec/*.packages.json
+            artifacts/macsec/*.validation.json
+            artifacts/macsec/validation.json
+            artifacts/macsec/public-receipt.json
+            artifacts/macsec/runtime-apt.json
+            artifacts/macsec/debug-apt.json
+            artifacts/macsec/action-audit.json
+            artifacts/macsec/incremental.json
+            artifacts/macsec/build-summary.json
+            artifacts/macsec/MODULE.bazel.lock
+            artifacts/macsec/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  macsec_runtime:
+    name: Run installed MACsec images (AMD64)
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: macsec-image-amd64-${{ github.sha }}
+          path: artifacts/macsec
+      - name: Exercise installed MACsec manager and actual WPA child
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: python3 -B tools/bazel/ci/macsec_loaded.py --artifacts artifacts/macsec
+      - name: Retain installed MACsec evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: macsec-runtime-amd64-${{ github.sha }}
+          path: artifacts/macsec/*.runtime.json
+          if-no-files-found: error
+          retention-days: 14
+
   eventd_runtime:
     # Keep the required status on the job that actually loads and tests both archives.
     name: Container archive (AMD64)
@@ -1298,6 +1426,8 @@ jobs:
     env:
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
     defaults:
       run:
         shell: bash
@@ -1347,7 +1477,8 @@ jobs:
 
       - name: Check Make handoff and archive validation
         run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          # Default-catalog fixtures control their own review-registry environment.
+          env -u SONIC_BASE_REVIEW_REGISTRY python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
@@ -1851,7 +1982,7 @@ jobs:
         working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
-      BAZEL: bazel
+      BAZEL: artifacts/vs/bazel-prerequisites
       # Use the explicitly selected gRPC service, not the legacy HTTPS override.
       BAZEL_REMOTE_AUTH: ""
       SONIC_BAZEL_KERNEL_REMOTE_CACHE: grpc://172.16.0.4:9092
@@ -1869,7 +2000,10 @@ jobs:
       SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
       BAZEL_CONTAINER_ARGS: >-
+        --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/6eb6ac5c29787461e34b243f580203f3f558c87e
+        --registry=https://bcr.bazel.build
         --jobs=4 --local_resources=memory=12288
         --remote_cache=grpc://172.16.0.4:9092
         --experimental_remote_downloader=grpc://172.16.0.4:9092
@@ -1986,6 +2120,13 @@ jobs:
         id: native_build
         run: |
           set -euo pipefail
+          mkdir -p artifacts/vs
+          cat > "$BAZEL" <<'BAZEL'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec bazel --noworkspace_rc --bazelrc="$PWD/tools/bazel/common.bazelrc" "$@"
+          BAZEL
+          chmod 700 "$BAZEL"
           bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
           test -s target/sonic-vs.bin
           test -s target/sonic-vs.bin.dockers
@@ -2140,7 +2281,9 @@ jobs:
       run:
         shell: bash
     env:
-      BAZEL: bazel
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
@@ -2157,6 +2300,8 @@ jobs:
           repository-cache: true
           disk-cache: gnmi-image-amd64
           cache-version: "8.5.1"
+      - name: Preserve setup-bazel caches
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
       - name: Validate Make handoff and version inputs
         run: |
           python3 -B tools/bazel/tests/gnmi_make_test.py
@@ -2289,7 +2434,9 @@ jobs:
       run:
         shell: bash
     env:
-      BAZEL: bazel
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Draft MACsec prerequisites; remove after native WPA and infrastructure are published.
+      SONIC_BASE_REVIEW_REGISTRY: "6eb6ac5c29787461e34b243f580203f3f558c87e"
       BAZELISK_GITHUB_TOKEN: ""
     steps:
       - name: Install execution and inspection tools
