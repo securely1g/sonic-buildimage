@@ -227,7 +227,8 @@ elif name == "stat":
                 self.assertLess(steps.index(cleanup), steps.index(preflight))
                 self.assertEqual(cleanup["run"],
                                  "python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache"
-                                 ' --runner-workspace "${{ runner.workspace }}"')
+                                 ' --runner-workspace "${{ runner.workspace }}"' +
+                                 (" --remove-package-cache" if job is self.consumer else ""))
                 self.assertNotIn("continue-on-error", cleanup)
 
     def test_nfs_validation_precedes_local_cleanup_and_build(self):
