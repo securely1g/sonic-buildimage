@@ -1,7 +1,6 @@
 """Common flags used througout the project."""
 
-CFLAGS_COMMON = [
-    "-std=c++14",
+_COMPILE_OPTIONS = [
     "-Wall",
     "-fPIC",
     "-Wno-write-strings",
@@ -42,6 +41,10 @@ CFLAGS_COMMON = [
     "-Wno-long-long",
     "-Wno-redundant-decls",
 ]
+
+CFLAGS_COMMON = ["-std=c++14"] + _COMPILE_OPTIONS
+# The test binary includes GoogleTest headers, which require C++17 from 1.17.
+CFLAGS_GTEST = ["-std=c++17"] + _COMPILE_OPTIONS
 
 # TODO(bazel-ready): Enable debug flags
 DBGFLAGS = []
