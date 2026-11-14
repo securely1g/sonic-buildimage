@@ -16,6 +16,8 @@ ARTIFACTS = (
     "target/docker-database-dbg.gz",
     "target/docker-fpm-frr.gz",
     "target/docker-fpm-frr-dbg.gz",
+    "target/docker-teamd.gz",
+    "target/docker-teamd-dbg.gz",
     "target/sonic-vs.bin",
     "target/sonic-vs.img.gz",
     "target/sonic-vs.raw",

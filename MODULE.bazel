@@ -230,6 +230,22 @@ apt_inputs(
     root_packages = ["iputils-ping", "libjemalloc2", "libyaml-cpp0.8"],
 )
 
+# Teamd consumes owner TARs; its external runtime candidates are already in
+# the parent. The standard selector checks their identities against that parent.
+use_repo(apt, "libteam_deps")
+apt_inputs(
+    name = "teamd_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
+apt_inputs(
+    name = "teamd_runtime_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+    dependency_set = "libteam_deps",
+    architecture = "amd64",
+    root_packages = ["libdaemon0", "libdbus-1-3", "libjansson4", "libzmq5"],
+)
+
 # FRR runtime, debug tools and private test Redis share the production lock.
 use_repo(apt, "frr_image_debian", "frr_image_debug_debian", "frr_image_test_debian")
 
