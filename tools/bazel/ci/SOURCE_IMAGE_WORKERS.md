@@ -191,35 +191,20 @@ to run the same image checks on an idle native AMD64 worker. Select an immutable
 source commit and retain the source/catalog and all four phase receipts; adding
 the selector alone does not establish image acceptance.
 
-The `database`, `eventd`, `lldp`, `radv`, `macsec` and `mux` selectors reuse
-those images' existing `*_image.py` build, content validation and incremental
-commands, then their `*_loaded.py` runtime probes. Their dedicated workflow's
-Make/identity checks run before the build and a failure stops the image driver.
-The worker retains each image's runtime receipt and `loaded-validation.json`
-when the existing driver produces that aggregate. Native owner tests remain
-with their existing owner workflows.
+Database, Eventd, FRR, LLDP, MACsec, MUX and Router Advertiser use the source checkout's
+image build, static validation and incremental checks. The merged sources use
+the maintained SONiC registry and the shared Bazel entrypoint. An empty catalog
+selection follows registry `main`. The worker records the endpoint and the tip
+observed during preparation. An optional immutable catalog selects that commit
+for the whole run. The bounded launcher and worker-local caches apply in both
+modes. Source checks bind to the selected image revision, and the worker records
+its controller revision separately.
 
-For example, `source_image=database` validates the selected source's runtime
-and debug archives, original Redis entrypoint and DASH conversion fixture using
-`database_image.py` and `database_loaded.py`, as in
-[database image PR #142](https://github.com/securely1g/sonic-buildimage/pull/142).
-It uses the source checkout's immutable review catalog, private Docker daemon
-and per-worker `database/output-base` cache. The same four phases, AMD64/Trixie
-preflight, source checks, no-DEB action audit and artifact hash checks apply.
-
-The `frr` selector uses the selected source's existing `frr_image.py` build,
-validation and incremental phases through `review_bazel.sh`, followed by the
-source-owned `frr_loaded.py` extracted from the dedicated FRR workflow. The helper
-and its pure checks are reviewed with this controller; execution uses the selected
-source checkout's identical helper. Select a
-reviewed source revision containing that helper and a compatible common OCI
-workflow catalog; older checkouts without the helper fail preparation. The
-existing driver retains its 18 outputs, 21 no-DEB audit roots, SNMP/tcmalloc
-settings and template edit/restore checks. The loaded phase verifies both image
-archives/configurations/layers and the Redis fixture, then runs the unchanged
-private BGPD/VTY, installed Python and debug probes as UID/GID 300 with group 102.
-It uses no network peers, Zebra, kernel routing or full SONiC startup. Adding the
-selector does not establish FRR acceptance for a new source revision.
+The installed phase runs the selected checkout's helper for Database, Eventd,
+LLDP, MACsec, MUX and Router Advertiser. The merged FRR workflow runs its probe inline.
+The dispatcher invokes its reviewed FRR adapter against the selected checkout,
+verifies source parents, both archives, image configurations, layers and Redis,
+then checks both installed probe results. Earlier reviewed sources retain their own wrapper and catalog requirements.
 
 SNMP and the shared base/config-engine/SWSS layers are not selectable here.
 Their existing workflows need an explicit adapter preserving all checks and

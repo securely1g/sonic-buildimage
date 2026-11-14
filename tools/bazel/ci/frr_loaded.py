@@ -14,13 +14,17 @@ from tools.bazel.ci.artifact_validation import require
 from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
 
 
-def run_loaded(directory):
+def run_loaded(directory, source=ROOT):
     directory = directory.resolve()
     receipt = json.loads((directory / "validation.json").read_text())
     require(receipt["status"] == "passed" and receipt["architecture"] == "amd64",
             "FRR static validation did not pass")
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
     require(receipt["revision"] == revision, "FRR runtime checkout differs from built source")
+    if source != ROOT:
+        headers = subprocess.check_output(["git", "cat-file", "-p", "HEAD"], cwd=source, text=True)
+        parents = [line.split()[1] for line in headers.split("\n\n", 1)[0].splitlines() if line.startswith("parent ")]
+        require(receipt["tested_revision_parents"] == parents, "FRR runtime checkout parents differ")
     images = ("docker-fpm-frr", "docker-fpm-frr-dbg")
     for name in images:
         path = directory / (name + ".gz")
@@ -42,7 +46,7 @@ def run_loaded(directory):
         command = ["docker", "run", "--rm", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges",
                    "--read-only", "--user=300:300", "--group-add=102", "--pids-limit=128", "--memory=4g", "--cpus=2",
                    "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
-                   "--mount", "type=bind,src=" + str(ROOT / "dockers/docker-fpm-frr/bazel/runtime_probe.py") + ",dst=/probe/runtime_probe.py,readonly",
+                   "--mount", "type=bind,src=" + str(source / "dockers/docker-fpm-frr/bazel/runtime_probe.py") + ",dst=/probe/runtime_probe.py,readonly",
                    "--mount", "type=bind,src=" + str(fixture) + ",dst=/probe/redis,readonly",
                    "--mount", "type=bind,src=" + str(directory / "validation.json") + ",dst=/probe/validation.json,readonly",
                    "--entrypoint", "/usr/bin/python3", "sonic-frr-validation-" + name + ":latest",
@@ -56,12 +60,15 @@ def run_loaded(directory):
             finally:
                 stream.flush()
                 print(report.read_text(), end="")
+        require(json.loads(report.read_text()).get("status") == "passed", "Installed FRR probe did not pass")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True)
-    run_loaded(parser.parse_args().artifacts)
+    parser.add_argument("--source", type=Path, default=ROOT)
+    args = parser.parse_args()
+    run_loaded(args.artifacts, args.source.resolve())
 
 
 if __name__ == "__main__":

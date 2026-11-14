@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-SHARED_CONFIG_FIXTURE = (Path(__file__).parent / "fixtures/source-mirrors-97cc5025.cfg").read_text()
+SHARED_CONFIG_FIXTURE = (Path(__file__).parent / "fixtures/source-mirrors-4952d79f.cfg").read_text()
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location("source_image_worker", ROOT / "tools/bazel/ci/source_image_worker.py")
@@ -759,28 +759,16 @@ class ImageWorkerTest(unittest.TestCase):
                     patch.object(worker, 'run'), self.assertRaisesRegex(ValueError, 'Missing image validation tool'):
                 worker.prepare_validation_tools(artifacts)
 
-    def test_gawk_mirror_changes_only_three_exact_source_urls(self):
-        # Bind the actual immutable base while preserving the existing suffix rules.
+    def test_reuses_landed_registry_downloader_rules_verbatim(self):
         actual = SHARED_CONFIG_FIXTURE.encode()
-        self.assertEqual(worker.MIRROR_URL,
-                         "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg")
-        self.assertEqual(hashlib.sha256(actual).hexdigest(), worker.MIRROR_SHA)
-        self.assertTrue(worker.mirror_configuration(actual).startswith(actual))
+        self.assertEqual(worker.mirror_configuration(actual), actual)
         with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
             worker.mirror_configuration(actual + b'changed')
-        original = b"verified existing mirror fixture\n"
-        with patch.object(worker, 'MIRROR_SHA', hashlib.sha256(original).hexdigest()):
-            config = worker.mirror_configuration(original).decode()
-            with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
-                worker.mirror_configuration(original + b'changed')
-        rewrites = [line.split() for line in config.splitlines()
-                    if line.startswith('rewrite ') and 'gawk' in line]
-        self.assertEqual(len(rewrites), 3)
-        for host, (_, expression, destination) in zip(
-                ('mirrors.kernel.org', 'ftp.gnu.org', 'ftpmirror.gnu.org'), rewrites):
-            self.assertTrue(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.2.tar.xz'))
-            self.assertFalse(re.fullmatch(expression, host + '/gnu/gawk/gawk-5.3.3.tar.xz'))
-            self.assertEqual(destination, 'https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz')
+        destinations = [line.split() for line in SHARED_CONFIG_FIXTURE.splitlines() if line.startswith('rewrite ')]
+        for host in ('mirrors.kernel.org', 'ftp.gnu.org', 'ftpmirror.gnu.org'):
+            matching = [destination for _, pattern, destination in destinations
+                        if re.fullmatch(pattern, host + '/gnu/gawk/gawk-5.3.2.tar.xz')]
+            self.assertIn('https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz', matching)
 
     def test_selected_profile_overrides_driver_defaults_in_actual_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1027,7 +1015,7 @@ class ImageWorkerTest(unittest.TestCase):
         guards = [step["env"]["SOURCE_ONLY_NO_DEBS"] for job in workflow["jobs"].values()
                   for step in job.get("steps", []) if "SOURCE_ONLY_NO_DEBS" in step.get("env", {})]
         self.assertEqual(len(guards), 2)
-        for branch in ("codex/orchagent-source-worker-current", "codex/source-image-worker-families"):
+        for branch in ("codex/orchagent-source-worker-current",):
             for guard in guards:
                 self.assertTrue(condition(guard, event="pull_request", branch=branch))
                 for changes in ({"branch": branch + "-suffix"}, {"branch": "unrelated"},
@@ -1065,6 +1053,29 @@ class ImageWorkerTest(unittest.TestCase):
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "b" * 40 + "\n")
             with self.assertRaises(ValueError):
                 worker.catalog_for("dash-ha", root)
+
+    def test_merged_drivers_use_the_maintained_registry_and_keep_explicit_review_pairs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools/bazel/ci").mkdir(parents=True)
+            (root / ".github/workflows").mkdir(parents=True)
+            rc = root / ".bazelrc"
+            rc.write_text("common --registry=" + worker.REGISTRY_URL + "main\ncommon --registry=https://bcr.bazel.build\n")
+            wrapper = root / "tools/bazel/ci" / worker.CANONICAL_WRAPPER
+            wrapper.write_text("registry=" + worker.REGISTRY_URL + "main\n" + 'review="${SONIC_BASE_REVIEW_REGISTRY:-}"\n')
+            (root / ".github/workflows/bazel-oci.yml").write_text("\n".join(
+                f'python3 -B tools/bazel/ci/{name}_image.py build --bazel "$BAZEL" --artifacts artifacts/{name}'
+                for name in worker.CANONICAL_IMAGES))
+            for name in worker.CANONICAL_IMAGES:
+                self.assertEqual(worker.catalog_for(name, root), "")
+                self.assertEqual(worker.catalog_for(name, root, "a" * 40), "a" * 40)
+                self.assertEqual(worker.phase_command(name, "build", root, root)[-1], str(wrapper))
+            loaded = worker.phase_command("frr", "loaded", root, root)
+            self.assertIn(str(ROOT / "tools/bazel/ci/frr_loaded.py"), loaded)
+            self.assertEqual(loaded[loaded.index("--source") + 1], str(root))
+            rc.write_text(rc.read_text() + "common --registry=" + worker.REGISTRY_URL + "a" * 40 + "\n")
+            with self.assertRaisesRegex(ValueError, "one maintained"):
+                worker.catalog_for("eventd", root)
 
     def test_macsec_catalog_comes_from_its_driver_workflow(self):
         with tempfile.TemporaryDirectory() as directory:

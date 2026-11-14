@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from tools.bazel.ci import image_worker_receipt as receipt
+from tools.bazel.ci import image_worker_receipt as receipt, syncd_receipt_semantics
 
 
 DPOOL = 'sonic-slave-container-dpool'
@@ -143,6 +143,19 @@ class WorkerPoolReceiptTest(unittest.TestCase):
             changed = copy.deepcopy(preflight); changed['build_profile']['jobs'] = 3
             with self.assertRaises(ValueError):
                 receipt.verify_worker_profile(worker, changed, job, pool)
+
+    def test_syncd_and_gearbox_capacity_matches_the_authenticated_pool(self):
+        for family in ('syncd', 'gearbox'):
+            for pool in (DPOOL, K3S):
+                value, contract, job, _, _ = selected_case(family, pool)
+                verified = receipt.reviewed_worker_pool(value, contract)
+                worker, preflight = resource_case(job, pool)
+                receipt.verify_worker_profile(worker, preflight, job, verified)
+                cpus = receipt.expected_worker_cpus(verified)
+                syncd_receipt_semantics.verify_pool_resources(preflight['facts'], cpus)
+                other = 4 if pool == K3S else 6
+                with self.assertRaises(AssertionError):
+                    syncd_receipt_semantics.verify_pool_resources({**preflight['facts'], 'cpu_limit': other}, cpus)
 
     def test_k3s_cache_directory_cannot_claim_other_storage_or_cross_pod_reuse(self):
         _, _, job, _, _ = selected_case(); worker, preflight = resource_case(job)

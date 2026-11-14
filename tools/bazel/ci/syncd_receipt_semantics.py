@@ -69,7 +69,11 @@ def module_versions(value):
     return result
 
 
-def verify(read, raw, *, source, outputs, image='syncd'):
+def verify_pool_resources(facts, expected_cpus):
+    assert facts['memory_limit_bytes'] == 20 * 1024**3 and facts['cpu_limit'] == expected_cpus
+
+
+def verify(read, raw, *, source, outputs, image='syncd', expected_cpus=4):
     """Return observations after the selected fixed image receipt checks pass."""
     image_names, owner, runtime_target, debug_target = image_profile(image)
     json_names = public_json_names(image)
@@ -107,7 +111,7 @@ def verify(read, raw, *, source, outputs, image='syncd'):
     assert profile == preflight['build_profile'] and all(profile[k] == v for k, v in BUILD_PROFILE.items())
     assert preflight['status'] == 'passed' and preflight['checks'] and all(v is True for v in preflight['checks'].values())
     assert preflight['image_build_executed'] is False and preflight['deb_generation_executed'] is False
-    assert preflight['facts']['memory_limit_bytes'] == 20 * 1024**3 and preflight['facts']['cpu_limit'] == 4
+    verify_pool_resources(preflight['facts'], expected_cpus)
     for phase in PHASES:
         record = read('worker-' + phase + '.json')
         assert record['phase'] == phase and record['status'] == 'passed' and record['exit_code'] == 0

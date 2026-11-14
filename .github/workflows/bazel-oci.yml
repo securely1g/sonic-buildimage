@@ -282,7 +282,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: c41c7baf15307ad1c8f94d5dca511ef952d28729
+          ref: cb8fd897f3e20d53f9dab2f9e633b717b0c3229a
           path: ${{ steps.worker_paths.outputs.control }}/.source-mirror-registry
           sparse-checkout: ci
           persist-credentials: false
@@ -593,10 +593,10 @@ jobs:
           import os
           from pathlib import Path
           from urllib.request import urlopen
-          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
+          url = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4952d79f02632d44676e4947adb4338b13bf5f0b/ci/source_mirrors.cfg"
           with urlopen(url, timeout=60) as response:
               data = response.read()
-          if hashlib.sha256(data).hexdigest() != "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720":
+          if hashlib.sha256(data).hexdigest() != "2e01494e18c47475b29309b9f6ac1506665b3331498996d24f69d6dfc77eacc8":
               raise SystemExit("Source mirror configuration checksum mismatch")
           config = Path(os.environ["RUNNER_TEMP"]) / "base-source-mirrors.cfg"
           config.write_bytes(data)
@@ -680,7 +680,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current' || github.head_ref == 'codex/source-image-worker-families') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -888,7 +888,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         env:
-          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current' || github.head_ref == 'codex/source-image-worker-families') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
+          SOURCE_ONLY_NO_DEBS: ${{ (github.event_name == 'pull_request' && (github.head_ref == 'codex/registry-native-workers' || github.head_ref == 'codex/framework-native-worker' || github.head_ref == 'codex/orchagent-source-worker-current') && github.event.pull_request.head.repo.full_name == github.repository) || github.head_ref == 'codex/image-environment' || github.head_ref == 'codex/source-image-worker-dispatch' }}
         run: |
           if [[ "${SOURCE_ONLY_NO_DEBS:-false}" == true ]]; then
             # This CI-only change does not authorize Debian package generation.
@@ -1351,7 +1351,6 @@ jobs:
       github.head_ref != 'codex/registry-native-workers' &&
       github.head_ref != 'codex/framework-native-worker' &&
       github.head_ref != 'codex/orchagent-source-worker-current' &&
-      github.head_ref != 'codex/source-image-worker-families' &&
       github.head_ref != 'codex/image-environment' &&
       github.head_ref != 'codex/source-image-worker-dispatch' &&
       (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&

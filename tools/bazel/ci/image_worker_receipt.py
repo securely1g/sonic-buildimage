@@ -397,13 +397,17 @@ def verify_k3s_preflight(preflight, job):
             storage['free_bytes'] >= 50 * 1024**3, 'K3s cache storage admission differs')
 
 
+def expected_worker_cpus(pool):
+    return {'sonic-slave-container-dpool': 4, 'sonic-slave-container-k3s': 6}[pool]
+
+
 def verify_worker_profile(worker, preflight, job, pool):
     profile = worker['build_profile']
     require(profile == preflight['build_profile'] and profile['jobs'] == profile['cpu'] == 2 and
             profile['jvm_heap_gib'] == 3 and profile['scheduler_memory_mb'] == 8000 and
             profile['loaded_container_memory_gib'] == 4 and
             preflight['facts']['memory_limit_bytes'] == 20 * 1024**3 and
-            preflight['facts']['cpu_limit'] == (6 if pool == 'sonic-slave-container-k3s' else 4),
+            preflight['facts']['cpu_limit'] == expected_worker_cpus(pool),
             'Reviewed resource profile changed')
     if pool == 'sonic-slave-container-k3s':
         verify_k3s_preflight(preflight, job)
@@ -619,7 +623,7 @@ def verify_evidence(directory, request, provenance, contract):
     else:
         from tools.bazel.ci import syncd_receipt_semantics
         observed = syncd_receipt_semantics.verify(load, raw, source=request['merge'],
-            outputs=contract['outputs'], image=image(request))
+            outputs=contract['outputs'], image=image(request), expected_cpus=expected_worker_cpus(pool))
         require(observed['fixture_sources'] == contract['fixture_sources'], 'Installed-service fixture sources changed')
         require(observed['tested_revision_parents'] == [request['base'], request['head']],
                 'Installed-service validation tested another merge')
