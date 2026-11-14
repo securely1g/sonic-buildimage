@@ -1,5 +1,7 @@
 """Check source download policy on the P4Runtime package's actual Make recipe."""
 
+import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -18,6 +20,46 @@ FEDORA = (
 
 
 class P4rtMakeTest(unittest.TestCase):
+    def test_nested_bazel_commands_and_package_export_are_timed_on_a_cache_miss(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tools").symlink_to(SOURCE.parents[1] / "tools")
+            source = root / "src/sonic-p4rt"
+            (source / "sonic-pins").mkdir(parents=True)
+            (source / "Makefile").symlink_to(SOURCE / "Makefile")
+            dest = root / "debs"
+            dest.mkdir()
+            bazel = root / "bazel"
+            bazel.write_text("""#!/bin/bash
+set -eu
+[[ $1 == --output_user_root=* ]]
+echo "fixture Bazel $2"
+if [[ $2 != shutdown ]]; then
+    [[ $3 == --profile=* && $4 == --noslim_profile ]]
+    touch "${3#--profile=}"
+fi
+if [[ $2 == build ]]; then
+    mkdir -p bazel-bin/p4rt_app
+    touch bazel-bin/p4rt_app/{p4rt,p4rt-dbg}.deb
+fi
+""")
+            bazel.chmod(0o755)
+            command = ["make", "--no-print-directory", f"DEST={dest}", f"BAZEL_CACHE={root}",
+                       "SONIC_P4RT=p4rt.deb", "SONIC_P4RT_DBG=p4rt-dbg.deb", str(dest / "p4rt.deb")]
+            env = dict(os.environ, SONIC_VS_IMAGE_TIMINGS="1", PATH=f"{root}:{os.environ['PATH']}")
+            for _ in range(2):  # The second call reuses the packages and must leave no new rows.
+                subprocess.run(command, env=env, cwd=source, check=True, capture_output=True)
+            directory, = (root / "artifacts/vs/image-timings/sonic-p4rt").iterdir()
+            self.assertEqual(json.loads((directory / "recipe.json").read_text()),
+                             {"bazel": ["build", "test", "shutdown"], "profiles": ["build", "test"],
+                              "exports": ["stage-debs"]})
+            for phase in ("build", "test", "shutdown", "stage-debs"):
+                self.assertEqual(json.loads((directory / f"{phase}.timing.json").read_text())["exit_code"], 0)
+            self.assertCountEqual([p.name for p in directory.glob("*.profile.json.gz")],
+                                  ["build.profile.json.gz", "test.profile.json.gz"])
+            self.assertIn("fixture Bazel test", (directory / "make.log").read_text())
+            self.assertTrue((dest / "p4rt-dbg.deb").is_file())
+
     def test_mirror_policy_is_passed_to_both_nested_bazel_commands(self):
         with tempfile.TemporaryDirectory() as dest:
             result = subprocess.check_output([

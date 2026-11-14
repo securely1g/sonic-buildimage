@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Execute VS installer dependency selection and the real grouped Bazel bridge."""
 
+import json
 import pathlib
 import sys
 import unittest
@@ -95,6 +96,58 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
     def test_normal_vs_builds_both_pairs_and_installs_only_runtime(self):
         self.assertEqual(self.installer(), list(self.archives[::2]))
         self.assert_pairs()
+        self.assertFalse((self.root / "artifacts/vs/image-timings").exists())
+
+    def test_timed_pair_profiles_each_bazel_command_and_times_both_exports(self):
+        self.installer(SONIC_VS_IMAGE_TIMINGS="1")
+        self.assert_pairs()
+        timings = self.root / "artifacts/vs/image-timings"
+        self.assertEqual({path.name for path in timings.iterdir()}, set(self.archives[::2]))
+        expected_profiles = []
+        for owner, debug in (self.archives[:2], self.archives[2:]):
+            directory, = (timings / owner).iterdir()
+            commands = ["build", "cquery-" + owner, "cquery-" + debug]
+            exports = ["export-" + owner, "export-" + debug]
+            self.assertEqual(json.loads((directory / "recipe.json").read_text()),
+                             {"bazel": commands, "profiles": commands, "exports": exports})
+            for phase in commands + exports:
+                record = json.loads((directory / (phase + ".timing.json")).read_text())
+                self.assertEqual((record["phase"], record["exit_code"]), (phase, 0))
+                self.assertGreater(record["elapsed_seconds"], 0)
+            self.assertIn("fixture query diagnostic", (directory / "make.log").read_text())
+            expected_profiles.extend(f"--profile={directory}/{phase}.profile.json.gz" for phase in commands)
+        profiles = []
+        for call in self.recorded_calls():
+            args = call["arguments"]
+            self.assertIn("--noslim_profile", args)
+            profiles.extend(arg for arg in args if arg.startswith("--profile="))
+        self.assertCountEqual(profiles, expected_profiles)
+
+    def test_timed_standalone_archive_preserves_every_invocation(self):
+        owner = self.archives[0]
+        for _ in range(2):
+            self.assert_success(self.run_make(owner, environment={"SONIC_VS_IMAGE_TIMINGS": "1"}))
+        instances = list((self.root / "artifacts/vs/image-timings" / owner).iterdir())
+        self.assertEqual(len(instances), 2)
+        for directory in instances:
+            recipe = json.loads((directory / "recipe.json").read_text())
+            self.assertEqual(recipe["bazel"], ["build", "cquery-" + owner])
+            self.assertEqual(recipe["exports"], ["export-" + owner])
+            self.assertTrue((directory / "build.timing.json").is_file())
+
+    def test_timing_preserves_failed_query_and_preceding_build(self):
+        result = self.run_make(goals=["target/" + self.archives[2]], environment={
+            "SONIC_BUILD_TARGET": "target/sonic-vs.bin",
+            "SONIC_VS_IMAGE_TIMINGS": "1", "FAKE_BAZEL_MODE": "query_failure"})
+        self.assertNotEqual(result.returncode, 0)
+        owner = self.archives[2]
+        records, = (self.root / "artifacts/vs/image-timings" / owner).iterdir()
+        self.assertIn("fixture query failure", (records / "make.log").read_text())
+        self.assertEqual(json.loads((records / "build.timing.json").read_text())["exit_code"], 0)
+        failed = json.loads((records / f"cquery-{owner}.timing.json").read_text())
+        self.assertNotEqual(failed["exit_code"], 0)
+        self.assertFalse(list(records.glob("export-*.timing.json")))
+        self.assertEqual((self.target / owner).read_bytes(), b"previous image")
 
     def test_debug_vs_builds_both_pairs_and_installs_only_debug(self):
         self.assertEqual(self.installer(INSTALL_DEBUG_TOOLS="y"), list(self.archives[1::2]))
