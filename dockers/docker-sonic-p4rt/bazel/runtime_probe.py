@@ -173,7 +173,11 @@ def main():
                 "original start.sh did not create its configuration marker")
         pid = before["p4rt"]["pid"]
         argv = Path("/proc") / str(pid) / "cmdline"
-        command = argv.read_bytes().split(b"\0")
+        def p4rt_executed():
+            command = argv.read_bytes().split(b"\0")
+            return command if command[:1] == [b"/usr/local/bin/p4rt"] else None
+
+        command = wait_for(p4rt_executed)
         for value in (b"/usr/local/bin/p4rt", b"--p4rt_grpc_port=9559", b"--use_genetlink=false",
                       b"--p4rt_unix_socket=/run/p4rt.sock", b"--use_insecure_server_credentials"):
             require(value in command, "p4rt.sh did not render the ConfigDB setting: " + value.decode())
