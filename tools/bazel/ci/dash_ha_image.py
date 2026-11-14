@@ -112,12 +112,23 @@ def build_images(args, directory):
         (directory / "build-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
 
 
+def verify_image_boundary(name, layout, parent, files, selection):
+    """Preserve the exact parent layers and keep the test service outside both images."""
+    parent_layers = parent.manifest["layers"]
+    parent_ids = parent.config["rootfs"]["diff_ids"]
+    check.require(layout.manifest["layers"][:len(parent_layers)] == parent_layers and
+                  layout.config["rootfs"]["diff_ids"][:len(parent_ids)] == parent_ids,
+                  name + " does not extend its exact OCI parent")
+    check.require("usr/bin/redis-server" not in files and
+                  all(item["package"] != "redis-server" for item in selection["selected"]),
+                  name + " includes the test-only Redis server")
+
+
 def validate_images(directory):
     clean_source(directory)
     receipt = json.loads((directory / "build-receipt.json").read_text())
     check.require(receipt["status"] == "built", "DASH HA image build did not finish")
     check.require(source_identity()["revision"] == receipt["revision"], "validation checkout differs from built source")
-    selection = json.loads((directory / "runtime-apt.json").read_text())
     for name, artifact in receipt["artifacts"].items():
         check.require(check.sha(directory / name) == artifact["sha256"], "artifact changed: " + name)
     parent = oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64")
@@ -145,10 +156,13 @@ def validate_images(directory):
     expected = source | configuration
     debug_tools = check.payload(directory / "dash_ha.debug-tools.tar", require_root=False)
     inventories = {}
-    for name in IMAGES:
+    image_parent = parent
+    for name, apt_receipt in zip(IMAGES, ("runtime-apt.json", "debug-apt.json"), strict=True):
         layout = oci_layout.validate_layout(ROOT / receipt["layouts"][name], "linux/amd64")
         base_images.verify_unique_layer_paths(layout)
         files = base_images.installed_inventory(layout)
+        verify_image_boundary(name, layout, image_parent, files, json.loads((directory / apt_receipt).read_bytes()))
+        image_parent = layout
         base_images.verify_directory_aliases(files)
         for path, item in expected.items():
             if item["kind"] == "directory" and path not in configuration:
@@ -235,10 +249,7 @@ def validate_images(directory):
     pairs = base_images.verify_symbols(native, runtimes, directory / "dash_ha.debug.tar", directory)
     check.require(debug["usr/bin/ssh-agent"]["gid"] == 104 and debug["usr/bin/ssh-agent"]["mode"] == 0o2755,
                   "debug FIPS OpenSSH client permissions differ")
-    debug_layout = oci_layout.validate_layout(ROOT / receipt["layouts"][IMAGES[1]], "linux/amd64")
-    runtime_layout = oci_layout.validate_layout(ROOT / receipt["layouts"][IMAGES[0]], "linux/amd64")
-    check.require(debug_layout.manifest["layers"][:len(runtime_layout.manifest["layers"])] == runtime_layout.manifest["layers"],
-                  "debug image does not extend the exact runtime layers")
+    debug_layout = image_parent
     elfs = []
     selected, origins = source_base_validation.inventory(debug_layout)
     with tempfile.TemporaryDirectory(prefix="dash_ha-native-") as temporary:

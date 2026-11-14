@@ -23,10 +23,11 @@ debug tool set, the source-built FIPS OpenSSH client, the `_ssh` group used by
 The owner metadata and the actual selected source MODULE files are inputs to
 the installed package records. No DEB package producer is added or invoked.
 
-The APT lock uses the same immutable Debian snapshots as the source parent.
+Until the three DASH HA package sets are published in `sonic-build-infra`,
+this draft uses its image-local lock against the same Debian snapshots as the source parent.
 Its runtime roots are the HA ELF dependencies `libc6` and `libgcc-s1`, which
 the parent normally already satisfies. The debug and private Redis roots reuse
-the reviewed MACsec image selection; all original package hashes and dependency
+the same Debian packages as the corresponding MACsec inputs; all original hashes and dependency
 edges are retained. `refresh/MODULE.bazel` and `refresh/export_lock.py` describe
 the standard Distroless regeneration. The test Redis archive never enters the
 production image.
@@ -35,10 +36,10 @@ production image.
 
 While prerequisites are under review, the existing shared review launcher uses
 one complete immutable SONiC registry catalog plus BCR. The ordinary `.bazelrc`
-continues to use maintained main. The review catalog selects HA source PR #1 and
-registry #203, shared Rust #198, API #202, Common #201, infra #195, FIPS #197,
-Distroless #200 and the existing native parent dependencies. It does not change
-previously published version directories.
+continues to use maintained main. This checkout still selects the pre-merge
+HA source revision and its matching parent dependencies. To consume the
+landed HA source, the matching registry entry and its dependency versions must
+resolve together before updating the image pins.
 
 Run these commands from the repository in a native AMD64/Trixie environment:
 
@@ -52,7 +53,9 @@ python3 -B tools/bazel/ci/dash_ha_image.py incremental \
 
 The build audits the complete configured action graph before execution. The
 separate validation compares source/configuration bytes, inherited files,
-package records, AMD64 ELFs, debug IDs, tags and OCI/archive contents. The
+package records, AMD64 ELFs, debug IDs, tags and OCI/archive contents. It checks
+both the SWSS-to-runtime and runtime-to-debug layer chains and rejects a
+production image containing the test Redis server. The
 incremental check verifies unchanged output bytes, edits the real Supervisor
 input, checks that both images change while source/parent outputs stay fixed,
 and restores the exact original archives.
