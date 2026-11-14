@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Execute VS installer dependency selection and the real grouped Bazel bridge."""
 
+import json
 import pathlib
 import sys
 import unittest
@@ -95,6 +96,46 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
     def test_normal_vs_builds_both_pairs_and_installs_only_runtime(self):
         self.assertEqual(self.installer(), list(self.archives[::2]))
         self.assert_pairs()
+        self.assertFalse((self.root / "artifacts/vs/image-timings").exists())
+
+    def test_timed_pair_profiles_each_bazel_command_and_times_both_exports(self):
+        self.installer(SONIC_VS_IMAGE_TIMINGS="1")
+        self.assert_pairs()
+        timings = self.root / "artifacts/vs/image-timings"
+        owner, debug = self.archives[2:]
+        self.assertEqual(list(timings.iterdir()), [timings / owner])
+        phases = ["build", "cquery-" + owner, "export-" + owner,
+                  "cquery-" + debug, "export-" + debug]
+        records = [json.loads((timings / owner / (phase + ".timing.json")).read_text())
+                   for phase in phases]
+        self.assertEqual([record["phase"] for record in records], phases)
+        self.assertTrue(all(record["exit_code"] == 0 and record["elapsed_seconds"] > 0
+                            for record in records))
+        profiles = []
+        for call in self.recorded_calls():
+            args = call["arguments"]
+            flags = [arg for arg in args if arg.startswith("--profile=")]
+            if "syncd" in args[-1]:
+                self.assertIn("--noslim_profile", args)
+                phase = "build" if args[0] == "build" else "cquery-" + args[-1].split(":")[-1]
+                self.assertEqual(flags, [f"--profile={timings / owner}/{phase}.profile.json.gz"])
+                profiles.extend(flags)
+            else:
+                self.assertEqual(flags, [])
+        self.assertEqual(len(set(profiles)), 3)
+
+    def test_timing_preserves_failed_query_and_preceding_build(self):
+        result = self.run_make(goals=["target/" + self.archives[2]], environment={
+            "SONIC_BUILD_TARGET": "target/sonic-vs.bin",
+            "SONIC_VS_IMAGE_TIMINGS": "1", "FAKE_BAZEL_MODE": "query_failure"})
+        self.assertNotEqual(result.returncode, 0)
+        owner = self.archives[2]
+        records = self.root / "artifacts/vs/image-timings" / owner
+        self.assertEqual(json.loads((records / "build.timing.json").read_text())["exit_code"], 0)
+        failed = json.loads((records / f"cquery-{owner}.timing.json").read_text())
+        self.assertNotEqual(failed["exit_code"], 0)
+        self.assertFalse(list(records.glob("export-*.timing.json")))
+        self.assertEqual((self.target / owner).read_bytes(), b"previous image")
 
     def test_debug_vs_builds_both_pairs_and_installs_only_debug(self):
         self.assertEqual(self.installer(INSTALL_DEBUG_TOOLS="y"), list(self.archives[1::2]))

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -83,7 +84,8 @@ else:
         )
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",
                      "FORBID_VALIDATION", "CHANGE_REVISION_ACTION", "NOBOOKWORM", "NOTRIXIE",
-                     "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL"):
+                     "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL",
+                     "SONIC_VS_IMAGE_TIMINGS"):
             self.environment.pop(name, None)
 
     def run_script(self, name, *args, **environment):
@@ -129,6 +131,11 @@ else:
         self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
         self.assertEqual([call["action"] for call in self.calls()], ["make"])
         self.assertEqual([path.name for path in (self.root / "artifacts/vs").iterdir()], ["build-revision.txt"])
+
+    def test_profile_opt_in_reaches_the_builder(self):
+        result = self.run_script("build_vs.sh", SONIC_VS_IMAGE_TIMINGS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS", self.calls()[0]["args"])
 
     def test_extra_arguments_and_old_calibration_are_rejected_before_make(self):
         for name in ("build_vs.sh", "validate_vs.sh"):
@@ -279,6 +286,28 @@ else:
         validation_log = (self.root / "artifacts/vs/validation.log").read_text()
         self.assertIn("controlled capture-pairs", validation_log)
         self.assertIn("controlled verify-pairs", validation_log)
+
+    def test_vs_installer_retains_the_selected_image_diagnostics_before_validation(self):
+        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
+        build = next(step for step in job["steps"] if step.get("id") == "native_build")
+        self.assertEqual(build["env"]["SONIC_VS_IMAGE_TIMINGS"], "1")
+        self.assertNotIn("SONIC_VS_IMAGE_TIMINGS", job["env"])
+
+        upload = next(step for step in job["steps"] if step.get("id") == "vs_image_timings_upload")
+        self.assertEqual(upload["if"], "always()")
+        self.assertTrue(upload["continue-on-error"])
+        self.assertEqual(upload["with"]["name"], "sonic-vs-image-timings-amd64")
+        checkout = job["defaults"]["run"]["working-directory"] + "/"
+        paths = {checkout + "artifacts/vs/image-timings/"}
+        for stem in ("docker-teamd", "docker-syncd-vs", "docker-fpm-frr", "docker-mux"):
+            paths.update(checkout + "target/" + stem + suffix for suffix in (".gz.log", "-dbg.gz.log"))
+        self.assertEqual(set(upload["with"]["path"].splitlines()), paths)
+        summary = next(step for step in job["steps"] if "summarize_vs_image_timings.py" in step.get("run", ""))
+        validation = next(step for step in job["steps"] if "tools/bazel/ci/validate_vs.sh" in step.get("run", ""))
+        self.assertLess(job["steps"].index(build), job["steps"].index(summary))
+        self.assertLess(job["steps"].index(summary), job["steps"].index(upload))
+        self.assertLess(job["steps"].index(upload), job["steps"].index(validation))
+        self.assertIn("steps.vs_image_timings_upload.outcome == 'success'", job["steps"][-1]["if"])
 
     def test_workflow_publishes_onie_installer_and_its_selection_manifest(self):
         selected, _, _ = self.workflow_steps()

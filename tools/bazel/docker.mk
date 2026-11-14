@@ -58,6 +58,13 @@ endif
 endif
 SONIC_BAZEL_VS_PAIR_OUTPUTS := $(foreach image,$(SONIC_BAZEL_VS_PAIRED_IMAGES),$(image) $(image:.gz=-$(DBG_IMAGE_MARK).gz))
 
+# The installer runs owners concurrently. Keep each owner's build, two queries
+# and two exports separate so a later Bazel invocation cannot replace its trace.
+ifeq ($(SONIC_VS_IMAGE_TIMINGS),1)
+vs_timed_images := $(filter docker-teamd.gz docker-syncd-vs.gz docker-fpm-frr.gz docker-mux.gz,$(SONIC_BAZEL_VS_PAIRED_IMAGES))
+vs_time_phase = $(if $(filter $(1),$(vs_timed_images)),python3 -B tools/bazel/ci/time_vs_image.py $(1) $(2))
+endif
+
 # One invocation per owner keeps its runtime/debug configuration identical.
 # Query and export both standalone archives; unchanged exports retain timestamps.
 define build_bazel_docker_images
@@ -78,10 +85,10 @@ define build_bazel_docker_images
 		if [ -n "$$bazel_option_lines" ]; then mapfile -t bazel_options <<< "$$bazel_option_lines"; fi
 		bazel_options+=("--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
-		"$${BAZEL:-bazel}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
+		$(call vs_time_phase,$(firstword $(1)),build) "$${BAZEL:-bazel}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
 		$(foreach image,$(1),
-		bazel_output="$$("$${BAZEL:-bazel}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
-		python3 tools/bazel/build_helpers.py export --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
+		bazel_output="$$($(call vs_time_phase,$(firstword $(1)),cquery-$(image)) "$${BAZEL:-bazel}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
+		$(call vs_time_phase,$(firstword $(1)),export-$(image)) python3 tools/bazel/build_helpers.py export --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
 		)
 	} $(LOG)
 	$(foreach image,$(1),$(call sbom_emit_fragment,$(TARGET_PATH)/$(image),DOCKER_IMAGE,$($(image)_PATH),,,,)

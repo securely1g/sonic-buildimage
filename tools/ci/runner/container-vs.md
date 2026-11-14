@@ -296,3 +296,12 @@ selection and both runtime/debug archive pairs, runs the P4/debug checks in the
 same slave, and publishes `sonic-vs-slave-amd64` with the installer, matching
 container archives, and SHA256 checksums. `sonic-vs-slave-evidence-amd64` retains
 the configuration and validation receipts.
+
+For TeamD, Syncd VS, FRR and mux, the VS job summary shows seconds spent
+in Bazel, including recorded command-lock waits, compiler subprocesses, foreign
+builds and cache fetches. Make times the runtime and debug archive exports
+separately. The `sonic-vs-image-timings-amd64` artifact holds the Make logs,
+the individual phase timings and compressed Bazel JSON traces for the build
+and both output queries. Open a trace in Perfetto to inspect an interval.
+The cache measurement includes disk and remote reads. Concurrent work can
+appear in several columns or image recipes.

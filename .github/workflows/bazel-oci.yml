@@ -2658,12 +2658,46 @@ jobs:
 
       - name: Build sonic-vs.bin through the host Make wrapper
         id: native_build
+        env:
+          SONIC_VS_IMAGE_TIMINGS: "1"
         run: |
           set -euo pipefail
+          mkdir -p artifacts/vs/image-timings
           bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
           test -s target/sonic-vs.bin
           test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+
+      - name: Summarize VS image build timings
+        if: always() && steps.native_build.outcome != 'skipped'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          timings=artifacts/vs/image-timings
+          if [[ -d "$timings" ]]; then
+            python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" \
+              | tee "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Preserve VS image build profiles, timings and Make logs
+        id: vs_image_timings_upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-image-timings-amd64
+          path: |
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings/
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-teamd.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-teamd-dbg.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-fpm-frr.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-fpm-frr-dbg.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-mux.gz.log
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-mux-dbg.gz.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Validate the installer and retained container pairs
         run: |
@@ -2785,6 +2819,7 @@ jobs:
       - name: Remove only this run's checkout
         if: >-
           always() && steps.vs_container_cleanup.outcome == 'success' &&
+          steps.vs_image_timings_upload.outcome == 'success' &&
           steps.vs_receipts_upload.outcome == 'success' &&
           steps.vs_validation_upload.outcome == 'success' &&
           (steps.vs_installer_upload.outcome == 'success' ||
