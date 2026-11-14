@@ -206,6 +206,27 @@ class NativeFamilyJobsTest(unittest.TestCase):
 
         def split_uploads(family, kind):
             uploads = artifacts(workflow[family + "_" + kind], "upload")
+            # Context is a separate JSON sidecar, never image/request evidence.
+            context_name = ("source-context-${{ github.job }}-"
+                            "${{ strategy.job-index || 0 }}-${{ github.run_attempt }}")
+            contexts = [block for block in uploads
+                        if step_value(block, "name", 10) == context_name]
+            self.assertEqual(len(contexts), 0 if family in ("swss_layer", "teamd") else 1)
+            for block in contexts:
+                self.assertIn("        uses: actions/upload-artifact@"
+                              "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a\n", block)
+                outcomes = "steps.source_context.outcome == 'success'"
+                if family in self.receipt_families:
+                    outcomes += " || steps.source_context_fallback.outcome == 'success'"
+                self.assertEqual(step_value(block, "if"),
+                                 "always() && github.event_name == 'pull_request' && (" + outcomes + ")")
+                context_path = "artifacts/source-context/context.json"
+                if family in self.receipt_families and kind == "native":
+                    context_path = "${{ env.SONIC_RECEIPT_WORKSPACE || github.workspace }}/" + context_path
+                self.assertEqual(step_value(block, "path", 10), context_path)
+                self.assertEqual(step_value(block, "if-no-files-found", 10), "error")
+                self.assertEqual(step_value(block, "retention-days", 10), "14")
+            uploads = [block for block in uploads if block not in contexts]
             if family not in self.receipt_families:
                 return uploads
             flag = "env." + family.upper() + "_WORKER_RECEIPT"
@@ -280,6 +301,190 @@ class NativeFamilyJobsTest(unittest.TestCase):
                     name = step_value(block, "name", 10)
                     self.assertNotIn(name, evidence_names, "Runtime jobs must not overwrite each other's evidence")
                     evidence_names.add(name)
+
+
+
+class ScopedWorkflowRoutingTest(unittest.TestCase):
+    @staticmethod
+    def evaluate(expression, values):
+        expression = re.sub(r"(?:github|inputs)\.[A-Za-z0-9_.]+",
+                            lambda item: repr(values[item[0]]), expression)
+        expression = expression.replace("&&", " and ").replace("||", " or ")
+        expression = re.sub(r"!(?!=)", " not ", expression)
+        return eval(" ".join(expression.split()), {"__builtins__": {}, "fromJSON": json.loads})
+
+
+    def test_source_context_upload_follows_the_selected_checkout(self):
+        with tempfile.TemporaryDirectory(prefix="receipt workspace ") as temporary:
+            workspace = Path(temporary)
+            for receipt_checkout in (str(workspace / "fresh-child"), str(workspace), ""):
+                expected_root = Path(receipt_checkout or str(workspace))
+                expected = expected_root / "artifacts/source-context/context.json"
+                expected.parent.mkdir(parents=True, exist_ok=True)
+                expected.write_text('{"retained":"original-context"}\n')
+
+                def expand(value):
+                    return re.sub(r"\$\{\{ (.*?) \}\}", lambda match: self.evaluate(
+                        match[1].replace("env.SONIC_RECEIPT_WORKSPACE", repr(receipt_checkout)),
+                        {"github.workspace": str(workspace)}), value)
+
+                for family in NativeFamilyJobsTest.receipt_families:
+                    blocks = step_blocks(jobs()[family + "_native"])
+                    upload = next(block for block in blocks if block.startswith(
+                        "      - name: Retain the tested PR source context\n"))
+                    context_id = "source_context" if receipt_checkout else "source_context_fallback"
+                    source = next(block for block in blocks if step_value(block, "id") == context_id)
+                    writer = Path(expand(step_value(source, "working-directory") or str(workspace)))
+                    directory = re.search(r"--directory ([^\s]+)", shell(source))[1]
+                    produced = writer / directory / "context.json"
+                    retained = Path(expand(step_value(upload, "path", 10)))
+                    with self.subTest(family=family, receipt_checkout=receipt_checkout):
+                        self.assertEqual(produced, expected)
+                        self.assertEqual(retained, produced)
+                        self.assertEqual(retained.read_text(), '{"retained":"original-context"}\n')
+
+    def test_pr206_and_parent_pr196_narrow_the_eight_shared_matrices(self):
+        seen = 0
+        for filename in ("bazel-oci.yml", "bazel-base-images.yml", "runtime-image-validation.yml", "bazel-eventd.yml", "bazel-supervisor-rust.yml", "bazel-yang-models.yml", "bazel-libteam.yml"):
+            for job in jobs(ROOT / ".github/workflows" / filename).values():
+                header = job.split("    steps:\n", 1)[0]
+                if "include: >-" not in header or "github.event.pull_request.number == 206" not in header:
+                    continue
+                expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
+                both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
+                amd64 = [row for row in both if row.get("architecture", row.get("debian_arch", row.get("arch"))).lower() == "amd64"]
+                self.assertEqual(len(both), 2)
+                self.assertEqual(len(amd64), 1)
+                for event, repo, number, expected in (
+                    ("pull_request", "securely1g/sonic-buildimage", 206, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 196, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 201, both),
+                    ("pull_request", "example/sonic-buildimage", 206, both),
+                    ("workflow_dispatch", "securely1g/sonic-buildimage", 206, both),
+                    ("push", "securely1g/sonic-buildimage", 206, both),
+                ):
+                    with self.subTest(workflow=filename, event=event, repository=repo, number=number):
+                        self.assertEqual(self.evaluate(expression, {
+                            "github.event_name": event, "github.repository": repo,
+                            "github.event.pull_request.number": number,
+                        }), expected)
+                seen += 1
+        self.assertEqual(seen, 8)
+
+    def test_only_trusted_hub_requests_use_k3s_without_a_job_container(self):
+        workflow = WORKFLOW.read_text()
+        expressions = {key: re.search(r"^    " + key + r": &receipt_metadata_\w+ \$\{\{ (.*?) \}\}",
+                                     workflow, re.MULTILINE)[1]
+                       for key in ("runs-on", "container")}
+        for family in NativeFamilyJobsTest.receipt_families:
+            header = jobs()[family + "_native"].split("    steps:\n", 1)[0]
+            for key in expressions:
+                self.assertRegex(header, re.escape(key) + r": (?:\*receipt_metadata_|&receipt_metadata_)")
+        original_container = json.loads(re.search(r"fromJSON\('([^']+)'\)", expressions["container"])[1])
+        for number, branch in ((196, "codex/dash-engine-review-catalog"),
+                               (206, "codex/final23-integration-staging")):
+            original = {
+                "github.event_name": "pull_request", "github.repository": "securely1g/sonic-buildimage",
+                "github.event.pull_request.head.repo.full_name": "securely1g/sonic-buildimage",
+                "github.actor": "securely1g", "github.triggering_actor": "securely1g",
+                "github.event.pull_request.number": number, "github.head_ref": branch,
+            }
+            variations = ({}, {"github.event_name": "workflow_dispatch"},
+                          {"github.event.pull_request.head.repo.full_name": "example/sonic-buildimage"},
+                          {"github.actor": "example"}, {"github.triggering_actor": "example"},
+                          {"github.event.pull_request.number": 999}, {"github.head_ref": branch + "-extra"})
+            for variation in variations:
+                values = dict(original, **variation)
+                with self.subTest(number=number, variation=variation):
+                    self.assertEqual(self.evaluate(expressions["runs-on"], values),
+                                     ["ubuntu-24.04"] if variation else ["sonic-slave-container-k3s"])
+                    self.assertEqual(self.evaluate(expressions["container"], values),
+                                     original_container if variation else "")
+
+    def test_only_pr196_narrows_existing_architecture_matrices(self):
+        seen = 0
+        for filename in ('bazel-oci.yml', 'bazel-base-images.yml', 'runtime-image-validation.yml', 'bazel-eventd.yml', 'bazel-supervisor-rust.yml', 'bazel-yang-models.yml', 'bazel-libteam.yml'):
+            for job in jobs(ROOT / ".github/workflows" / filename).values():
+                header = job.split("    steps:\n", 1)[0]
+                if "include: >-" not in header or "github.event.pull_request.number == 196" not in header:
+                    continue
+                expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
+                both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
+                amd64 = [row for row in both if row.get("architecture", row.get("debian_arch", row.get("arch"))).lower() == "amd64"]
+                self.assertEqual(len(both), 2)
+                self.assertEqual(len(amd64), 1)
+                for event, repo, number, expected in (
+                    ("pull_request", "securely1g/sonic-buildimage", 196, amd64),
+                    ("pull_request", "securely1g/sonic-buildimage", 201, both),
+                    ("pull_request", "example/sonic-buildimage", 196, both),
+                    ("workflow_dispatch", "securely1g/sonic-buildimage", 196, both),
+                    ("push", "securely1g/sonic-buildimage", 196, both),
+                ):
+                    with self.subTest(workflow=filename, event=event, repository=repo, number=number):
+                        self.assertEqual(self.evaluate(expression, {
+                            "github.event_name": event, "github.repository": repo,
+                            "github.event.pull_request.number": number,
+                        }), expected)
+                seen += 1
+        self.assertEqual(seen, 8)
+
+    def test_receipt_metadata_writer_and_uploader_share_the_selected_paths(self):
+        with tempfile.TemporaryDirectory(prefix="receipt request workspace ") as temporary:
+            root = Path(temporary)
+            for layout in ("fresh-child", "hosted"):
+                workspace = root / layout / "source"
+                scratch = root / layout / "scratch"
+                values = {"env.SONIC_RECEIPT_WORKSPACE": str(workspace),
+                          "env.SONIC_RECEIPT_SCRATCH": str(scratch)}
+
+                def scalar(block, key, indent=8):
+                    match = re.search(r"^" + " " * indent + re.escape(key) +
+                                      r": ([^\n]*)$", block, re.MULTILINE)
+                    self.assertIsNotNone(match, (key, block.splitlines()[0]))
+                    return match[1]
+
+                def expand(value):
+                    return re.sub(r"\$\{\{ (.*?) \}\}",
+                                  lambda match: values[match[1]], value)
+
+                def argument(block, option):
+                    command = shell(block)
+                    if command.startswith('"'):
+                        command = json.loads(command)
+                    value = re.search(r"--" + option + r' "([^"\n]+)"', command)[1]
+                    return Path(value.replace("$SONIC_RECEIPT_SCRATCH", str(scratch)))
+
+                for family in NativeFamilyJobsTest.receipt_families:
+                    blocks = step_blocks(jobs()[family + "_native"])
+                    boundary = next(i for i, block in enumerate(blocks) if block.startswith(
+                        "      - name: Allocate source-build space on this disposable runner"))
+                    self.assertGreaterEqual(boundary, 9)
+                    blocks = blocks[:boundary]
+                    request = next(x for x in blocks if re.search(r"(?m)^        id: " + family + "_request$", x))
+                    discover = next(x for x in blocks if re.search(r"(?m)^        id: " + family + "_acceptance$", x))
+                    verify = next(x for x in blocks if x.startswith("      - name: Verify all original "))
+                    uploads = [x for x in blocks if "uses: actions/upload-artifact@" in x and
+                               scalar(x, "if").startswith("env." + family.upper() + "_WORKER_RECEIPT == 'true'")]
+                    downloads = [x for x in blocks if "uses: actions/download-artifact@" in x and
+                                 scalar(x, "if").startswith("env." + family.upper() + "_WORKER_RECEIPT == 'true'")]
+                    with self.subTest(family=family, layout=layout):
+                        for step in (request, discover, verify):
+                            self.assertEqual(Path(expand(scalar(step, "working-directory"))), workspace)
+                        request_dir = argument(request, "directory")
+                        self.assertEqual(request_dir, argument(discover, "directory"))
+                        self.assertEqual(request_dir, argument(verify, "directory"))
+                        output = argument(verify, "output")
+                        produced = (request_dir / "request.json", output)
+                        for target in produced:
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            target.write_text('{"fixture":"original-metadata"}\n')
+                        retained = {Path(expand(scalar(x, "path", 10))) for x in uploads}
+                        self.assertEqual(retained, set(produced))
+                        for target in retained:
+                            self.assertEqual(target.read_text(), '{"fixture":"original-metadata"}\n')
+                        self.assertEqual({Path(expand(scalar(x, "path", 10))) for x in downloads},
+                                         {request_dir, argument(verify, "public")})
+
 
 
 class BazeliskBootstrapTest(unittest.TestCase):
@@ -1053,128 +1258,6 @@ class RootLockFailureEvidenceTest(unittest.TestCase):
                     self.rejected(code, workspace, destination)
 
 
-class ScopedWorkflowRoutingTest(unittest.TestCase):
-    @staticmethod
-    def evaluate(expression, values):
-        expression = re.sub(r"(?:github|inputs)\.[A-Za-z0-9_.]+",
-                            lambda item: repr(values[item[0]]), expression)
-        expression = expression.replace("&&", " and ").replace("||", " or ")
-        expression = re.sub(r"!(?!=)", " not ", expression)
-        return eval(" ".join(expression.split()), {"__builtins__": {}, "fromJSON": json.loads})
-
-
-    def test_only_pr196_narrows_existing_architecture_matrices(self):
-        seen = 0
-        for filename in ('bazel-oci.yml', 'bazel-base-images.yml', 'runtime-image-validation.yml', 'bazel-eventd.yml', 'bazel-supervisor-rust.yml', 'bazel-yang-models.yml', 'bazel-libteam.yml'):
-            for job in jobs(ROOT / ".github/workflows" / filename).values():
-                header = job.split("    steps:\n", 1)[0]
-                if "include: >-" not in header or "github.event.pull_request.number == 196" not in header:
-                    continue
-                expression = re.search(r"include: >-\n\s*\$\{\{ (.*?) \}\}", header, re.DOTALL)[1]
-                both = json.loads(re.findall(r"'(\[\{.*?\}\])'", expression)[1])
-                amd64 = [row for row in both if row.get("architecture", row.get("debian_arch", row.get("arch"))).lower() == "amd64"]
-                self.assertEqual(len(both), 2)
-                self.assertEqual(len(amd64), 1)
-                for event, repo, number, expected in (
-                    ("pull_request", "securely1g/sonic-buildimage", 196, amd64),
-                    ("pull_request", "securely1g/sonic-buildimage", 201, both),
-                    ("pull_request", "example/sonic-buildimage", 196, both),
-                    ("workflow_dispatch", "securely1g/sonic-buildimage", 196, both),
-                    ("push", "securely1g/sonic-buildimage", 196, both),
-                ):
-                    with self.subTest(workflow=filename, event=event, repository=repo, number=number):
-                        self.assertEqual(self.evaluate(expression, {
-                            "github.event_name": event, "github.repository": repo,
-                            "github.event.pull_request.number": number,
-                        }), expected)
-                seen += 1
-        self.assertEqual(seen, 8)
-
-    def test_only_trusted_hub_requests_use_k3s_without_a_job_container(self):
-        workflow = WORKFLOW.read_text()
-        expressions = {key: re.search(r"^    " + key + r": &receipt_metadata_\w+ \$\{\{ (.*?) \}\}",
-                                     workflow, re.MULTILINE)[1]
-                       for key in ("runs-on", "container")}
-        for family in NativeFamilyJobsTest.receipt_families:
-            header = jobs()[family + "_native"].split("    steps:\n", 1)[0]
-            for key in expressions:
-                self.assertRegex(header, re.escape(key) + r": (?:\*receipt_metadata_|&receipt_metadata_)")
-        original_container = json.loads(re.search(r"fromJSON\('([^']+)'\)", expressions["container"])[1])
-        for number, branch in ((196, "codex/dash-engine-review-catalog"),
-                               (206, "codex/final23-integration-staging")):
-            original = {
-                "github.event_name": "pull_request", "github.repository": "securely1g/sonic-buildimage",
-                "github.event.pull_request.head.repo.full_name": "securely1g/sonic-buildimage",
-                "github.actor": "securely1g", "github.triggering_actor": "securely1g",
-                "github.event.pull_request.number": number, "github.head_ref": branch,
-            }
-            variations = ({}, {"github.event_name": "workflow_dispatch"},
-                          {"github.event.pull_request.head.repo.full_name": "example/sonic-buildimage"},
-                          {"github.actor": "example"}, {"github.triggering_actor": "example"},
-                          {"github.event.pull_request.number": 999}, {"github.head_ref": branch + "-extra"})
-            for variation in variations:
-                values = dict(original, **variation)
-                with self.subTest(number=number, variation=variation):
-                    self.assertEqual(self.evaluate(expressions["runs-on"], values),
-                                     ["ubuntu-24.04"] if variation else ["sonic-slave-container-k3s"])
-                    self.assertEqual(self.evaluate(expressions["container"], values),
-                                     original_container if variation else "")
-
-    def test_receipt_metadata_writer_and_uploader_share_the_selected_paths(self):
-        with tempfile.TemporaryDirectory(prefix="receipt request workspace ") as temporary:
-            root = Path(temporary)
-            for layout in ("fresh-child", "hosted"):
-                workspace = root / layout / "source"
-                scratch = root / layout / "scratch"
-                values = {"env.SONIC_RECEIPT_WORKSPACE": str(workspace),
-                          "env.SONIC_RECEIPT_SCRATCH": str(scratch)}
-
-                def scalar(block, key, indent=8):
-                    match = re.search(r"^" + " " * indent + re.escape(key) +
-                                      r": ([^\n]*)$", block, re.MULTILINE)
-                    self.assertIsNotNone(match, (key, block.splitlines()[0]))
-                    return match[1]
-
-                def expand(value):
-                    return re.sub(r"\$\{\{ (.*?) \}\}",
-                                  lambda match: values[match[1]], value)
-
-                def argument(block, option):
-                    command = shell(block)
-                    if command.startswith('"'):
-                        command = json.loads(command)
-                    value = re.search(r"--" + option + r' "([^"\n]+)"', command)[1]
-                    return Path(value.replace("$SONIC_RECEIPT_SCRATCH", str(scratch)))
-
-                for family in NativeFamilyJobsTest.receipt_families:
-                    blocks = step_blocks(jobs()[family + "_native"])
-                    self.assertTrue(blocks[9].startswith(
-                        "      - name: Allocate source-build space on this disposable runner"))
-                    blocks = blocks[:9]
-                    request = next(x for x in blocks if re.search(r"(?m)^        id: " + family + "_request$", x))
-                    discover = next(x for x in blocks if re.search(r"(?m)^        id: " + family + "_acceptance$", x))
-                    verify = next(x for x in blocks if x.startswith("      - name: Verify all original "))
-                    uploads = [x for x in blocks if "uses: actions/upload-artifact@" in x and
-                               scalar(x, "if").startswith("env." + family.upper() + "_WORKER_RECEIPT == 'true'")]
-                    downloads = [x for x in blocks if "uses: actions/download-artifact@" in x and
-                                 scalar(x, "if").startswith("env." + family.upper() + "_WORKER_RECEIPT == 'true'")]
-                    with self.subTest(family=family, layout=layout):
-                        for step in (request, discover, verify):
-                            self.assertEqual(Path(expand(scalar(step, "working-directory"))), workspace)
-                        request_dir = argument(request, "directory")
-                        self.assertEqual(request_dir, argument(discover, "directory"))
-                        self.assertEqual(request_dir, argument(verify, "directory"))
-                        output = argument(verify, "output")
-                        produced = (request_dir / "request.json", output)
-                        for target in produced:
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            target.write_text('{"fixture":"original-metadata"}\n')
-                        retained = {Path(expand(scalar(x, "path", 10))) for x in uploads}
-                        self.assertEqual(retained, set(produced))
-                        for target in retained:
-                            self.assertEqual(target.read_text(), '{"fixture":"original-metadata"}\n')
-                        self.assertEqual({Path(expand(scalar(x, "path", 10))) for x in downloads},
-                                         {request_dir, argument(verify, "public")})
 
 
 

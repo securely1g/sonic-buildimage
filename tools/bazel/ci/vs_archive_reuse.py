@@ -70,7 +70,8 @@ def file_identity(stat):
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def archive_snapshot(path, expected_tag, make_manifest, *, entrypoint=None):
+def archive_snapshot(path, expected_tag, make_manifest, *, entrypoint=None,
+                     config_check=None, empty_parent=False):
     """Hash every member, inspect only JSON, and never extract layer files.
 
     rules_oci's Docker export copies layer blobs unchanged and names both raw
@@ -127,17 +128,20 @@ def archive_snapshot(path, expected_tag, make_manifest, *, entrypoint=None):
     require(config.get("os") == "linux" and config.get("architecture") == "amd64",
             "Docker archive must target linux/amd64")
     settings = config.get("config", {})
-    require(settings.get("Entrypoint") == (entrypoint or ENTRYPOINTS[RUNTIME]),
+    require(settings.get("Entrypoint") == (ENTRYPOINTS[RUNTIME] if entrypoint is None else entrypoint),
             "Docker archive entrypoint differs")
-    require(settings.get("Cmd") is None, "Docker archive command differs")
+    require(settings.get("Cmd") is None or (empty_parent and settings.get("Cmd") == []),
+            "Docker archive command differs")
     environment = settings.get("Env", [])
     require(isinstance(environment, list) and all(isinstance(value, str) and "=" in value for value in environment),
             "Docker archive environment is invalid")
-    require([value for value in environment if value.startswith("DEBIAN_FRONTEND=")] ==
+    require(empty_parent or [value for value in environment if value.startswith("DEBIAN_FRONTEND=")] ==
             ["DEBIAN_FRONTEND=noninteractive"], "Docker archive environment differs")
     label = settings.get("Labels", {}).get(LABEL)
     require(isinstance(label, str) and json.loads(label) == make_manifest,
             "Docker archive manifest label differs from Make")
+    if config_check is not None:
+        config_check(copy.deepcopy(settings))
     layer_names = entry.get("Layers")
     require(isinstance(layer_names, list) and layer_names, "Docker archive layers are missing")
     layer_names = [path_name(name) for name in layer_names]
@@ -264,13 +268,23 @@ def main():
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--orchagent-receipt", type=Path)
+    parser.add_argument("--profile", choices=("pairs", "final23"), default="pairs")
     parser.add_argument("--debug-installer", action="store_true")
     parser.add_argument("--installer", choices=INSTALLERS,
                         help="capture-pairs installer (default: sonic-vs.bin); verify-pairs uses the receipt")
     args = parser.parse_args()
     if args.installer is not None and args.action != "capture-pairs":
         parser.error("--installer is only supported by capture-pairs")
-    if args.action == "capture-pairs":
+    if args.profile == "final23":
+        from tools.bazel.ci import vs_final23
+        require(args.action in ("capture-pairs", "verify-pairs") and not args.orchagent_receipt,
+                "final23 requires a pair action and its own receipt")
+        if args.action == "capture-pairs":
+            receipt = vs_final23.capture(args.workspace, installer=args.installer or "sonic-vs.bin",
+                                         debug=args.debug_installer)
+        else:
+            receipt = vs_final23.verify(args.workspace, json.loads(args.receipt.read_bytes()))
+    elif args.action == "capture-pairs":
         receipt = capture_pairs(args.workspace, debug=args.debug_installer,
                                 installer=args.installer or "sonic-vs.bin")
     elif args.action == "verify-pairs":

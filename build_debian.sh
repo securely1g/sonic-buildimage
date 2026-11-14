@@ -36,6 +36,10 @@ ORGANIZATION_BUILD_HOOK=files/build_templates/build_debian.organization.sh
 run_organization_build_hook()
 {
     if [ -f "$ORGANIZATION_BUILD_HOOK" ]; then
+        if [[ "${SONIC_DEB_BUILD_POLICY:-build}" == reuse-only ]]; then
+            echo "Cannot source $ORGANIZATION_BUILD_HOOK: SONIC_DEB_BUILD_POLICY=reuse-only does not admit optional organization hooks" >&2
+            exit 1
+        fi
         . "$ORGANIZATION_BUILD_HOOK" "$1"
     fi
 }
@@ -756,6 +760,10 @@ sudo LANG=C chroot $FILESYSTEM_ROOT /bin/bash -c "echo 0 > /etc/fips/fips_enable
 #   secure boot
 # #################
 if [[ $SECURE_UPGRADE_MODE == 'dev' || $SECURE_UPGRADE_MODE == "prod" ]]; then
+    if [[ "${SONIC_DEB_BUILD_POLICY:-build}" == reuse-only ]]; then
+        echo "Cannot prepare secure boot signing in mode $SECURE_UPGRADE_MODE: SONIC_DEB_BUILD_POLICY=reuse-only does not admit package repacking or vendor signing tools" >&2
+        exit 1
+    fi
     echo "Secure Boot support build stage: Starting .."
 
     # debian secure boot dependencies

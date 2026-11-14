@@ -66,15 +66,46 @@ clean_sys() {
 trap_push clean_sys
 sudo LANG=C chroot $FILESYSTEM_ROOT mount sysfs /sys -t sysfs
 
-sudo bash -c "echo \"DOCKER_OPTS=\"--storage-driver=overlay2\"\" >> $FILESYSTEM_ROOT/etc/default/docker"
+# Configure the build-only daemon. The opt-in "none" mode preserves the
+# worker's bridge/firewall settings; chroot downloads still use worker networking.
+case "${SONIC_ROOTFS_DOCKER_NETWORK:-default}" in
+    default)
+        rootfs_docker_opts="--storage-driver=overlay2"
+        ;;
+    none)
+        rootfs_docker_opts="--storage-driver=overlay2 --bridge=none --iptables=false --ip6tables=false --ip-forward=false --ip-masq=false"
+        ;;
+    *)
+        echo "Unsupported SONIC_ROOTFS_DOCKER_NETWORK" >&2
+        exit 1
+        ;;
+esac
+printf 'DOCKER_OPTS="%s"\n' "$rootfs_docker_opts" | sudo tee -a "$FILESYSTEM_ROOT/etc/default/docker" >/dev/null
+
 # Copy docker start script to be able to start docker in chroot
 sudo mkdir -p "$FILESYSTEM_ROOT/$DOCKER_CTL_DIR"
 sudo cp $DOCKER_SCRIPTS_DIR/docker "$FILESYSTEM_ROOT/$DOCKER_CTL_SCRIPT"
+rootfs_docker_started=n
+stop_rootfs_docker() {
+    if [[ $rootfs_docker_started == y ]]; then
+        sudo chroot "$FILESYSTEM_ROOT" "$DOCKER_CTL_SCRIPT" stop || return "$?"
+        rootfs_docker_started=n
+    fi
+}
+stop_rootfs_docker_on_exit() {
+    if ! stop_rootfs_docker; then
+        echo "Failed to stop the rootfs Docker daemon during cleanup" >&2
+    fi
+}
 if [[ $MULTIARCH_QEMU_ENVIRON == y  || $CROSS_BUILD_ENVIRON == y ]]; then
     DOCKER_HOST="unix:///dockerfs/var/run/docker.sock"
     SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID="cat `pwd`/dockerfs/var/run/docker.pid"
 else
-    sudo chroot $FILESYSTEM_ROOT $DOCKER_CTL_SCRIPT start
+    # An unsuccessful init call may still have started its background daemon.
+    # Stop it before the previously registered sysfs cleanup, including on error.
+    rootfs_docker_started=y
+    trap_push stop_rootfs_docker_on_exit
+    sudo chroot "$FILESYSTEM_ROOT" "$DOCKER_CTL_SCRIPT" start
 fi
 
 install_pip_package() {
@@ -1150,7 +1181,7 @@ if [[ $MULTIARCH_QEMU_ENVIRON == y || $CROSS_BUILD_ENVIRON == y ]]; then
     sudo rm -fr $FILESYSTEM_ROOT/dockerfs
     sudo kill -9 `sudo $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID` || true
 else
-    sudo chroot $FILESYSTEM_ROOT $DOCKER_CTL_SCRIPT stop
+    stop_rootfs_docker
 fi
 
 sudo bash -c "echo { > $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/ctr_image_names.json"

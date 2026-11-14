@@ -43,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"arch":"AMD64","runner":"ubuntu-24.04","machine":"x86_64","debian_arch":"amd64"}]' || '[{"arch":"AMD64","runner":"ubuntu-24.04","machine":"x86_64","debian_arch":"amd64"},{"arch":"ARM64","runner":"ubuntu-24.04-arm","machine":"aarch64","debian_arch":"arm64"}]') }}
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && (github.event.pull_request.number == 206 || github.event.pull_request.number == 196) && '[{"arch":"AMD64","runner":"ubuntu-24.04","machine":"x86_64","debian_arch":"amd64"}]' || '[{"arch":"AMD64","runner":"ubuntu-24.04","machine":"x86_64","debian_arch":"amd64"},{"arch":"ARM64","runner":"ubuntu-24.04-arm","machine":"aarch64","debian_arch":"arm64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c

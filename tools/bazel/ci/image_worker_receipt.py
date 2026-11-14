@@ -46,7 +46,8 @@ K3S_REMOTE_CACHE_POLICY = {
     'working_state': 'run_attempt',
 }
 
-
+# The installed owner selects each public origin; receipts bind that selection.
+# Qualification separately binds the public origin observed for that invocation.
 K3S_MANAGED_REMOTE_CACHE_POLICY = {
     'credential_helper_path': '/opt/sonic-native-runtime/cache_credentials.py',
     'credential_helper_sha256': '32ea5af5245984f9fac59f5507bc1a1b6d3272968d3b2edd52b0a03f82b1dc49',
@@ -154,14 +155,76 @@ def read_evidence(path, request):
 
 
 def git(workspace, *args):
-    return subprocess.check_output(['git', '-C', str(workspace), *args], text=True,
-                                   env={**os.environ, 'GIT_NO_LAZY_FETCH': '1'}).strip()
+    return subprocess.check_output(['git', '-c', 'protocol.allow=never', '-C', str(workspace), *args],
+        text=True, timeout=30, env={**os.environ, 'GIT_NO_LAZY_FETCH': '1',
+            'GIT_NO_REPLACE_OBJECTS': '1', 'GIT_OPTIONAL_LOCKS': '0'}).strip()
 
 
 def commit_parents(workspace, commit):
     # Read the commit object itself: checkout's shallow boundary hides %P.
     header = git(workspace, 'cat-file', 'commit', commit).split('\n\n', 1)[0]
     return [line.removeprefix('parent ') for line in header.splitlines() if line.startswith('parent ')]
+
+
+def normal_pr_context(workspace, event, *, environ=None):
+    """Authenticate the tested merge without treating a PR snapshot as its base.
+
+    Hosted fork PRs remain eligible here. Worker requests separately require a
+    same-repository head. The caller provisions bounded history; this function
+    neither fetches missing objects nor reads a mutable remote base tip.
+    """
+    env = os.environ if environ is None else environ
+    require(env.get('GITHUB_EVENT_NAME') == 'pull_request', 'Expected normal PR source context')
+    pull = event['pull_request']
+    repository = env['GITHUB_REPOSITORY']
+    require(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) and
+            event['repository']['full_name'] == pull['base']['repo']['full_name'] == repository,
+            'PR base repository differs from the workflow repository')
+    head_repository = pull['head']['repo']['full_name']
+    require(isinstance(head_repository, str) and
+            re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', head_repository),
+            'Invalid PR head repository')
+    pr = number(pull['number'])
+    require(number(event['number']) == pr and env['GITHUB_REF'] == 'refs/pull/' + str(pr) + '/merge',
+            'Workflow ref is not the requested PR merge')
+    require(pull['base']['ref'] == env['GITHUB_BASE_REF'] and
+            pull['head']['ref'] == env['GITHUB_HEAD_REF'] and
+            all(isinstance(pull[side]['ref'], str) and pull[side]['ref'] for side in ('base', 'head')),
+            'PR branch names differ from the workflow context')
+    head = revision(pull['head']['sha'])
+    snapshot_base = revision(pull['base']['sha'])
+    merge = revision(git(workspace, 'rev-parse', 'HEAD'))
+    require(merge == revision(env['GITHUB_SHA']), 'Checkout differs from the workflow merge SHA')
+    require(not env.get('CI_HEAD_SHA') or env['CI_HEAD_SHA'] == head,
+            'CI head setting differs from the requested PR head')
+    parents = [revision(parent) for parent in commit_parents(workspace, merge)]
+    require(len(parents) == 2 and parents[1] == head and parents[0] != head,
+            'Checkout is not an ordered merge of the requested PR head')
+    tested_base = parents[0]
+    if snapshot_base != tested_base:
+        try:
+            git(workspace, 'merge-base', '--is-ancestor', snapshot_base, tested_base)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise ValueError('PR base snapshot is not a verified ancestor of the tested base; '
+                             'history may be missing or shallow') from error
+    require(not env.get('CI_BASE_SHA') or env['CI_BASE_SHA'] in (snapshot_base, tested_base),
+            'CI base setting differs from the verified PR context')
+    tree = revision(git(workspace, 'rev-parse', merge + '^{tree}'))
+    require(git(workspace, 'rev-parse', 'HEAD') == merge, 'Checkout changed during source verification')
+    return {'schema': 1, 'repository': repository, 'pr': pr, 'head_repository': head_repository,
+        'base_ref': pull['base']['ref'], 'head_ref': pull['head']['ref'],
+        'workflow_ref': env['GITHUB_REF'], 'github_sha': env['GITHUB_SHA'],
+        'requested_head': head, 'pr_base_snapshot': snapshot_base, 'tested_base': tested_base,
+        'tested_merge': merge, 'tested_tree': tree, 'tested_parents': parents,
+        'snapshot_relation': 'identical' if snapshot_base == tested_base else 'ancestor'}
+
+
+def source_context(args):
+    context = normal_pr_context(args.workspace, read(os.environ['GITHUB_EVENT_PATH'], public=False))
+    write(args.directory / 'context.json', context)
+    output(tested_base=context['tested_base'], snapshot_base=context['pr_base_snapshot'],
+           tested_head=context['requested_head'], tested_merge=context['tested_merge'],
+           tested_tree=context['tested_tree'])
 
 
 def api(endpoint):
@@ -243,10 +306,8 @@ def checkout_request(workspace, contract, *, event, run, attempt):
     pull = event['pull_request']
     require(pull['head']['repo']['full_name'] == pull['base']['repo']['full_name'] == REPOSITORY,
             'Fork source requires a separate reviewed validation')
-    merge = revision(git(workspace, 'rev-parse', 'HEAD'))
-    head, base = revision(pull['head']['sha']), revision(pull['base']['sha'])
-    require(commit_parents(workspace, merge) == [base, head],
-            'CI checkout is not the exact PR merge')
+    context = normal_pr_context(workspace, event)
+    merge, head, base = context['tested_merge'], context['requested_head'], context['tested_base']
     selected = image(contract)
     if selected == 'p4rt':
         require(git(workspace, 'ls-tree', merge, 'src/sonic-p4rt/sonic-pins').split()[:3] ==
@@ -254,7 +315,7 @@ def checkout_request(workspace, contract, *, event, run, attempt):
     request = {'schema': 1 if selected == 'p4rt' else 2, 'repository': REPOSITORY, 'workflow': WORKFLOW,
         'normal_run': number(run), 'request_attempt': number(attempt), 'pr': number(pull['number']),
         'head': head, 'base': base, 'merge': merge,
-        'tree': git(workspace, 'rev-parse', 'HEAD^{tree}'), 'catalog': contract['catalog'],
+        'tree': context['tested_tree'], 'catalog': contract['catalog'],
         'controller': contract['controller'],
         'contract_sha256': sha(json.dumps(contract, sort_keys=True, separators=(',', ':')).encode())}
     request.update({'owner': contract['owner']} if selected == 'p4rt' else {'image': selected})
@@ -457,9 +518,19 @@ def bind_worker(args):
     require(os.environ['GITHUB_ACTOR'] == os.environ['GITHUB_TRIGGERING_ACTOR'] == 'securely1g',
             'Untrusted worker dispatch actor')
     pull = api('/pulls/' + str(request['pr']))
-    require(pull['state'] == 'open' and pull['head']['sha'] == request['head'] and pull['base']['sha'] == request['base']
+    require(pull['state'] == 'open' and pull['head']['sha'] == request['head']
             and pull['head']['repo']['full_name'] == pull['base']['repo']['full_name'] == REPOSITORY,
             'PR head/base changed before worker admission')
+    # REST base.sha can retain an older PR snapshot; resolve the live base ref.
+    base_ref = pull['base'].get('ref')
+    require(isinstance(base_ref, str) and re.fullmatch(r'[^\x00-\x20\x7f]+', base_ref),
+            'Missing or invalid PR base branch')
+    live_base = api('/git/ref/heads/' + urllib.parse.quote(base_ref, safe=''))
+    require(isinstance(live_base, dict) and live_base.get('ref') == 'refs/heads/' + base_ref
+            and isinstance(live_base.get('object'), dict)
+            and live_base['object'].get('type') == 'commit'
+            and live_base['object'].get('sha') == request['base'],
+            'PR base ref changed before worker admission')
     worker_run, worker_attempt = int(os.environ['GITHUB_RUN_ID']), int(os.environ['GITHUB_RUN_ATTEMPT'])
     jobs = inventory(api('/actions/runs/' + str(number(worker_run)) + '/jobs?filter=latest&per_page=100'), 'jobs')
     job = assigned_worker_job(request, pool, jobs, run=worker_run, attempt=worker_attempt, completed=False)
@@ -521,6 +592,7 @@ def verify_managed_cache_policy(value):
         valid = False
     require(valid, "Invalid managed cache public origin")
     safe_json(value)
+
 
 def verify_worker_cache(worker, pool):
     """Return the exact owner-cache profile for a supported worker-record schema."""
@@ -666,7 +738,7 @@ def verify(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('origin', 'discover', 'worker-origin', 'bind-worker', 'bundle', 'verify'))
+    parser.add_argument('mode', choices=('source-context', 'origin', 'discover', 'worker-origin', 'bind-worker', 'bundle', 'verify'))
     parser.add_argument('--image', choices=('p4rt', 'syncd', 'gearbox'), default='p4rt')
     parser.add_argument('--workspace', type=Path, default=Path.cwd())
     parser.add_argument('--directory', type=Path, required=True)
@@ -676,7 +748,7 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--existing-only', action='store_true')
     args = parser.parse_args()
-    {'origin': normal_origin, 'discover': discover, 'worker-origin': worker_origin,
+    {'source-context': source_context, 'origin': normal_origin, 'discover': discover, 'worker-origin': worker_origin,
      'bind-worker': bind_worker, 'bundle': bundle, 'verify': verify}[args.mode](args)
 
 

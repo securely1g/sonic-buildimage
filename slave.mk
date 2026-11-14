@@ -118,9 +118,39 @@ export PTF_ENV_PY_VER
 ## Define configuration, help etc.
 ###############################################################################
 
+# Inventory evaluates the configured Make definitions without preparing the host.
+# It is never a build, installer, cache-reuse or kernel-acceptance mode.
+SONIC_VS_INPUT_INVENTORY ?= n
+ifneq ($(SONIC_VS_INPUT_INVENTORY),n)
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
+$(error SONIC_VS_INPUT_INVENTORY must be n or y)
+endif
+endif
+ifneq ($(filter vs-input-inventory,$(MAKECMDGOALS)),)
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
+$(error vs-input-inventory requires SONIC_VS_INPUT_INVENTORY=y)
+endif
+endif
+ifeq ($(SONIC_VS_INPUT_INVENTORY),y)
+ifneq ($(strip $(MAKECMDGOALS)),vs-input-inventory)
+$(error Inventory mode permits only the vs-input-inventory metadata goal)
+endif
+ifneq ($(SONIC_DEB_BUILD_POLICY),reuse-only)
+$(error Inventory requires SONIC_DEB_BUILD_POLICY=reuse-only)
+endif
+ifneq ($(SONIC_BAZEL_KERNEL_PREPARE),verify)
+$(error Inventory requires SONIC_BAZEL_KERNEL_PREPARE=verify)
+endif
+ifneq ($(SONIC_BAZEL_VS_ARCHIVE_PROFILE),final23)
+$(error Inventory requires the final23 profile)
+endif
+endif
+
 # Install the updated build hooks if INSHOOKS flag is set
 export INSHOOKS=y
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
 $(if $(INSHOOKS),$(shell sudo dpkg -i /usr/local/share/buildinfo/sonic-build-hooks_1.0_all.deb &>/dev/null))
+endif
 
 .platform :
 ifneq ($(CONFIGURED_PLATFORM),generic)
@@ -355,7 +385,9 @@ $(error SONIC_CONFIG_USE_CCACHE=y but 'ccache' is not installed in the build env
 endif
 CCACHE_DIR := $(abspath $(TARGET_PATH)/ccache/$(BLDENV))
 CCACHE_ENV = PATH=/usr/lib/ccache:$$PATH CCACHE_DIR=$(CCACHE_DIR) CCACHE_BASEDIR=$(BUILD_WORKDIR) CCACHE_COMPILERCHECK=content CCACHE_UMASK=022
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
 $(shell mkdir -p $(CCACHE_DIR))
+endif
 endif
 
 ifeq ($(SONIC_BUILD_JOBS),)
@@ -596,8 +628,10 @@ $(foreach installer, $(SONIC_INSTALLERS), $(eval $(installer)_RFS_DEPENDS=$(call
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS))
 
 # Overwrite the buildinfo in slave container
+ifneq ($(SONIC_VS_INPUT_INVENTORY),y)
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 $(shell DBGOPT='$(DBGOPT)' scripts/prepare_slave_container_buildinfo.sh $(SLAVE_DIR) $(CONFIGURED_ARCH) $(BLDENV))
+endif
 endif
 include Makefile.cache
 
@@ -948,6 +982,21 @@ define ARCHIVE_PATCHED_SOURCE
 	fi
 endef
 
+# Invocation policy for the three generic DEB producers below. Custom producers
+# and the kernel preparation selector require separate admission checks.
+SONIC_DEB_BUILD_POLICY ?= build
+ifneq ($(SONIC_DEB_BUILD_POLICY),build)
+ifneq ($(SONIC_DEB_BUILD_POLICY),reuse-only)
+$(error SONIC_DEB_BUILD_POLICY must be build or reuse-only)
+endif
+endif
+ifeq ($(SONIC_DEB_BUILD_POLICY),reuse-only)
+export SONIC_DEB_BUILD_POLICY
+ifneq ($(SONIC_BAZEL_KERNEL_PREPARE),verify)
+$(error SONIC_DEB_BUILD_POLICY=reuse-only requires SONIC_BAZEL_KERNEL_PREPARE=verify)
+endif
+endif
+
 $(addprefix $(DEBS_PATH)/, $(SONIC_MAKE_DEBS)) : $(DEBS_PATH)/% : .platform $$(addsuffix -install,$$(addprefix $(DEBS_PATH)/,$$($$*_DEPENDS))) \
 			$$(addsuffix -install,$$(addprefix $(PYTHON_WHEELS_PATH)/,$$($$*_WHEEL_DEPENDS))) \
 			$$(addprefix $(DEBS_PATH)/,$$($$*_AFTER)) \
@@ -961,6 +1010,10 @@ $(addprefix $(DEBS_PATH)/, $(SONIC_MAKE_DEBS)) : $(DEBS_PATH)/% : .platform $$(a
 
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing cache entry" >&2
+			exit 1
+		fi
 
 		# Remove target to force rebuild
 		rm -f $(addprefix $(DEBS_PATH)/, $* $($*_DERIVED_DEBS) $($*_EXTRA_DEBS))
@@ -1009,6 +1062,10 @@ $(addprefix $(DEBS_PATH)/, $(SONIC_DPKG_DEBS)) : $(DEBS_PATH)/% : .platform $$(a
 
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing cache entry" >&2
+			exit 1
+		fi
 
 		# Remove old build logs if they exist
 		rm -f $($*_SRC_PATH)/debian/*.debhelper.log
@@ -1134,6 +1191,10 @@ $(addprefix $(PYTHON_DEBS_PATH)/, $(SONIC_PYTHON_STDEB_DEBS)) : $(PYTHON_DEBS_PA
 
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			echo "Cannot generate $@: SONIC_DEB_BUILD_POLICY=reuse-only requires an existing cache entry" >&2
+			exit 1
+		fi
 
 		# Apply series of patches if exist
 		if [ -f $($*_SRC_PATH).patch/series ]; then pushd $($*_SRC_PATH) && ( quilt pop -a -f 1>/dev/null 2>&1 || true ) && QUILT_PATCHES=../$(notdir $($*_SRC_PATH)).patch quilt push -a; popd; fi $(LOG)
@@ -1669,8 +1730,28 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 	$(FOOTER)
 
+# The final23 archive contract is opt-in. Export the three existing shared
+# parents so validation can bind their exact bytes and child layer ancestry.
+# This adds export work only; their existing Bazel producer graphs are reused.
+SONIC_BAZEL_VS_CONTRACT_DEPENDS :=
+ifeq ($(SONIC_BAZEL_VS_ARCHIVE_PROFILE),final23)
+SONIC_BAZEL_VS_CONTRACT_DEPENDS := $(addprefix $(TARGET_PATH)/,docker-base-trixie.gz docker-config-engine-trixie.gz docker-swss-layer-trixie.gz)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export SONIC_IMAGE_VERSION := $(SONIC_IMAGE_VERSION)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_ARCHITECTURE := $(CONFIGURED_ARCH)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_PLATFORM := $(CONFIGURED_PLATFORM)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_DISTRIBUTION := $(BLDENV)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_BUILDER := $(BUILD_WITH_BAZEL_WHEN_AVAILABLE)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_FIPS := $(INCLUDE_FIPS)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_DASH := $(INCLUDE_VS_DASH_SAI)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_ASAN := $(ENABLE_ASAN)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_SYNCD_RPC := $(ENABLE_SYNCD_RPC)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_CROSS_BUILD := $(CROSS_BUILD_ENVIRON)
+$(addprefix $(TARGET_PATH)/,sonic-vs.bin sonic-vs.img.gz): private export VS_MULTIARCH_QEMU := $(MULTIARCH_QEMU_ENVIRON)
+endif
+
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
+$(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export SONIC_ROOTFS_DOCKER_NETWORK := $(SONIC_ROOTFS_DOCKER_NETWORK)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         .platform \
@@ -1726,6 +1807,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
                 $(SYSLOG_COUNTER) \
                 $(SEDUTIL)) \
         $$(addprefix $(TARGET_PATH)/,$$($$*_DOCKERS)) \
+        $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),$$(SONIC_BAZEL_VS_CONTRACT_DEPENDS)) \
         $$(addprefix $(TARGET_PATH)/,$$(SONIC_PACKAGES_LOCAL)) \
         $$(addprefix $(FILES_PATH)/,$$($$*_FILES)) \
         $(if $(findstring y,$(ENABLE_ZTP)),$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(SONIC_ZTP))) \
@@ -1928,6 +2010,14 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	j2 -f env files/initramfs-tools/arista-convertfs.j2 onie-image.conf > files/initramfs-tools/arista-convertfs
 
 	$(if $($*_DOCKERS),
+		if [ "$(SONIC_DEB_BUILD_POLICY)" = "reuse-only" ]; then
+			for organization_template in files/build_templates/sonic_debian_extension_organization_packages.j2 files/build_templates/sonic_debian_extension_organization_docker_images.j2; do
+				if [ -e "$$organization_template" ] || [ -L "$$organization_template" ]; then
+					echo "Cannot include $$organization_template: SONIC_DEB_BUILD_POLICY=reuse-only does not admit optional organization templates" >&2
+					exit 1
+				fi
+			done
+		fi
 		j2 files/build_templates/sonic_debian_extension.j2 > sonic_debian_extension.sh
 		chmod +x sonic_debian_extension.sh,
 	)
@@ -1999,6 +2089,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 			awk -F'|' -v machine="$(dep_machine)" \
 				'$$3 == "" || $$3 == machine { image = $$4; sub(/:[^:]*$$/, "", image); print image }' \
 				> "$(TARGET_PATH)/$(subst $($*_MACHINE),$(dep_machine),$*).dockers"
+		$(if $(and $(filter final23,$(SONIC_BAZEL_VS_ARCHIVE_PROFILE)),$(filter sonic-vs.bin sonic-vs.img.gz,$*)),python3 -B tools/bazel/ci/vs_final23.py --workspace "$(CURDIR)" --installer "$(subst $($*_MACHINE),$(dep_machine),$*)" --machine "$(dep_machine)",:)
 
 		# SBOM emit runs AFTER build_image.sh so the artifact (.bin /
 		# .swi / .img.gz) already exists on disk: sbom_emit_provenance.py
@@ -2198,3 +2289,8 @@ ccache-clear :
 ## It is used in component pipelines. For example: swss needs libnl, libyang
 
 lib-packages: $(addprefix $(DEBS_PATH)/,$(LIBNL3) $(LIBYANG3) $(LIBYANG3_PY3) $(PROTOBUF) $(LIB_SONIC_DASH_API) $(LIBFIB))
+
+# Reuse the existing inventory-only mode for the current configured-input capture.
+ifeq ($(SONIC_VS_INPUT_INVENTORY),y)
+include tools/bazel/ci/vs_configured_inputs.mk
+endif
