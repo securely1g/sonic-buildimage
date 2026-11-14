@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci.summarize_vs_image_timings import markdown_row, read_owner, summarize_profile
+from tools.bazel.ci.summarize_vs_image_timings import markdown_row, read_owner, report, summarize_profile
 
 
 def event(category, name, start, duration, tid=1, mnemonic=None):
@@ -55,8 +55,8 @@ class ImageTimingSummaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root) / "docker-teamd.gz"
             row, issues = read_owner(directory)
-            self.assertEqual(markdown_row(row)[1:], ["unavailable"] * 6)
-            self.assertTrue(issues)
+            self.assertIsNone(row)
+            self.assertFalse(issues)
             directory.mkdir()
             for phase in ("build", "cquery-docker-teamd.gz", "cquery-docker-teamd-dbg.gz",
                           "export-docker-teamd.gz", "export-docker-teamd-dbg.gz"):
@@ -85,15 +85,39 @@ class ImageTimingSummaryTest(unittest.TestCase):
                                  text=True, capture_output=True, check=True)
             self.assertIn("2.00 (partial)", run.stdout)
             receipt = json.loads(output.read_text())
-            self.assertEqual(receipt["version"], 1)
-            self.assertEqual(len(receipt["images"]), 4)
-            records = {image["owner"]: image for image in receipt["images"]}
-            self.assertEqual(records["docker-teamd.gz"], {
+            self.assertEqual(receipt["version"], 2)
+            self.assertEqual(receipt["recipes"], [{
                 "owner": "docker-teamd.gz", "bazel_seconds": 6, "lock_seconds": 2,
                 "compile_seconds": 0, "foreign_seconds": 0, "fetch_seconds": 0, "export_seconds": 2,
-                "bazel_phases": 3, "profiles": 2, "exports": 1, "failed": True,
-            })
-            self.assertIsNone(records["docker-mux.gz"]["compile_seconds"])
+                "bazel_phases": 3, "bazel_expected": 3, "profiles": 2, "profiles_expected": 3,
+                "exports": 1, "exports_expected": 2, "failed": True,
+            }])
+
+    def test_read_discovered_packages_and_repeated_independent_invocations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(2):
+                instance = root / "linux-kernel" / f"instance-{index}"
+                instance.mkdir(parents=True)
+                (instance / "recipe.json").write_text(json.dumps({
+                    "bazel": ["launcher"], "profiles": ["build", "cquery", "mod"], "exports": ["stage-debs"]}))
+                (instance / "launcher.timing.json").write_text(json.dumps({
+                    "phase": "launcher", "elapsed_seconds": 12.25, "exit_code": 0}))
+                with gzip.open(instance / "build.profile.json.gz", "wt") as stream:
+                    json.dump({"traceEvents": [
+                        event("Local execution process wall time", "SonicKernelBuild", 0, 8)]}, stream)
+            instance = root / "example-package" / "another-invocation"
+            instance.mkdir(parents=True)
+            (instance / "recipe.json").write_text('{"bazel":["build"],"profiles":["build"],"exports":[]}')
+            receipt, markdown = report(root)
+            kernel, package = receipt["recipes"]
+            self.assertEqual((kernel["owner"], kernel["bazel_seconds"], kernel["bazel_expected"]),
+                             ("linux-kernel", 24.5, 2))
+            self.assertEqual((kernel["foreign_seconds"], kernel["profiles"], kernel["profiles_expected"]),
+                             (16, 2, 6))
+            self.assertEqual(package["exports_expected"], 0)
+            self.assertIsNone(package["bazel_seconds"])
+            self.assertIn("n/a", markdown)
 
 
 if __name__ == "__main__":

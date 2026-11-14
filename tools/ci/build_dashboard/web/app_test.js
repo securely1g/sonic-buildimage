@@ -532,27 +532,58 @@ test("the host Make installer has a consistent and separate chart boundary", () 
   assert.match(imageMeasurement(first.job).label, /through host Make/);
 });
 
-test("host Make displays elapsed seconds and individual evidence coverage", () => withDocument(() => {
+test("previous four-image receipts retain measured and partial coverage", () => withDocument(() => {
   const job = recipeJob(), [frr, mux, teamd] = job.image_recipe_timings.images;
   Object.assign(frr, {failed: true, bazel_phases: 1, profiles: 1, exports: 0, export_seconds: null});
   Object.assign(mux, {profiles: 0, lock_seconds: null, compile_seconds: null, foreign_seconds: null, fetch_seconds: null});
   Object.assign(teamd, {lock_seconds: 0.0001});
   const view = renderRecipeTimings(job);
-  const rows = descendants(view, item => item.tagName === "tr").map(row => row.children.map(cell => cell.textContent));
-  assert.deepEqual(rows[0], ["Wall seconds", "TeamD", "Syncd VS", "FRRPhase failed", "Mux"]);
-  assert.deepEqual(rows[1], ["Bazel build + queries", "12.5", "12.5", "12.5 (1/3)", "12.5"]);
-  assert.deepEqual(rows[2], ["Bazel lock wait", "<0.001", "2.25", "2.25 (1/3)", "—"]);
-  assert.deepEqual(rows[4], ["Foreign build subprocesses", "0", "0", "0 (1/3)", "—"]);
-  assert.deepEqual(rows[6], ["Archive export", "1.5", "1.5", "—", "1.5"]);
+  const rows = descendants(view, item => item.tagName === "details");
+  assert.equal(rows.length, 4);
+  assert.match(view.textContent, /four image recipes/);
+  assert.match(rows.at(-1).textContent, /docker-fpm-frr.gzCommand failed12.5sPartial/);
+  assert.match(rows.at(-1).textContent, /Bazel lock wait2.25s \(1\/3\)/);
+  assert.match(rows.at(-1).textContent, /Export— \(0\/2\)/);
+  assert.match(view.textContent, /Bazel lock wait<0.001s/);
   assert.match(view.textContent, /can overlap/);
   assert.match(view.textContent, /disk and remote reads/);
+}));
+
+test("all build recipes are ordered by recorded commands and exports with separate profile coverage", () => withDocument(() => {
+  const job = recipeJob();
+  const image = {...job.image_recipe_timings.images[0], owner: "docker-orchagent.gz",
+    bazel_expected: 3, profiles_expected: 3, exports_expected: 2};
+  const kernel = {...image, owner: "linux-headers-amd64", bazel_seconds: 120, bazel_expected: 1, bazel_phases: 1,
+    profiles_expected: 3, profiles: 2, exports_expected: 0, exports: 0, export_seconds: null};
+  const unknown = {...kernel, owner: "sonic-swss", bazel_seconds: null, bazel_phases: 0,
+    profiles: 0, fetch_seconds: null, compile_seconds: null, lock_seconds: null, foreign_seconds: null};
+  const packages = Array.from({length: 36}, (_, n) => ({...image, owner: `package-${n}.deb`, bazel_seconds: n}));
+  job.image_recipe_timings = {version: 2, status: "available", recipes: [unknown, image, ...packages, kernel]};
+  const view = renderRecipeTimings(job), rows = descendants(view, el => el.tagName === "details");
+  assert.equal(rows.length, 39);
+  assert.match(rows[0].textContent, /linux-headers-amd64120sBazel \/ launcher120sBazel lock wait2.25s \(2\/3\)/);
+  assert.match(rows[0].textContent, /ExportN\/A/);
+  assert.equal(rows[0].open, true);
+  assert.equal(rows[1].open, false);
+  assert.match(rows[1].textContent, /package-35.deb/);
+  assert.match(rows.at(-1).textContent, /sonic-swss—Bazel \/ launcher— \(0\/1\)/);
+  assert.equal(job.image_recipe_timings.recipes[0], unknown);
+  job.image_recipe_timings.recipes = [];
+  assert.match(renderRecipeTimings(job).textContent, /No Bazel activity was recorded/);
+  for (const change of [{owner: "bad/../path"}, {owner: "<script>"}, {owner: "a".repeat(193)},
+                        {bazel_expected: 65536}, {profiles_expected: 1}, {exports_expected: 1}, {compile_seconds: NaN}]) {
+    job.image_recipe_timings.recipes = [{...image, ...change}];
+    const invalid = renderRecipeTimings(job);
+    assert.match(invalid.textContent, /could not be verified/);
+    assert.doesNotMatch(invalid.textContent, /\.\.\/path|<script>/);
+  }
 }));
 
 test("unavailable or unverifiable profiles do not appear as measured recipes", () => withDocument(() => {
   const job = recipeJob();
   assert.equal(renderRecipeTimings({...job, kind: "container"}), null);
   assert.equal(renderRecipeTimings({...job, steps: [{name: "Build the VS image"}]}), null);
-  assert.match(renderRecipeTimings({...job, image_recipe_timings: undefined}).textContent, /No image recipe timings/);
+  assert.match(renderRecipeTimings({...job, image_recipe_timings: undefined}).textContent, /No Bazel timing breakdown/);
   const unavailable = {version: 1, status: "unavailable", images: [], reason: "pending-collection"};
   assert.match(renderRecipeTimings({...job, image_recipe_timings: unavailable}).textContent, /pending collection/);
   for (const change of [{profiles: 0}, {bazel_seconds: "0"}, {compile_seconds: -1}, {exports: 3}, {failed: 0},
@@ -561,7 +592,7 @@ test("unavailable or unverifiable profiles do not appear as measured recipes", (
     Object.assign(candidate.image_recipe_timings.images[0], change);
     const view = renderRecipeTimings(candidate);
     assert.match(view.textContent, /could not be verified/);
-    assert.equal(descendants(view, el => el.tagName === "table").length, 0);
+    assert.equal(descendants(view, el => el.tagName === "details").length, 0);
     assert.doesNotMatch(view.textContent, /<img>/);
   }
 }));
@@ -574,6 +605,8 @@ test("the recipe evidence link opens this job's successful timing artifact uploa
   const links = () => descendants(renderRecipeTimings(job, repository), node => node.tagName === "a");
   assert.equal(links()[0].href, job.url + "#step:16:1");
   assert.match(links()[0].textContent, /Profiles and Make logs/);
+  job.steps[1] = {...upload, name: "Preserve VS Bazel profiles, timings and Make logs"};
+  assert.equal(links()[0].href, job.url + "#step:16:1");
   for (const change of [{number: 0}, {number: "16"}, {name: "A different artifact"}, {conclusion: "failure"}]) {
     job.steps[1] = {...upload, ...change};
     assert.equal(links().length, 0);

@@ -74,18 +74,27 @@ environment variables, machine names, and build artifacts are not published.
 
 ## Expand an image build
 
-Select a run and the **VS installer in SONiC slave (AMD64)** job. Builds with
-image profiling show wall times for FRR, mux, TeamD and Syncd VS in the job
-details. Compare compiler work, foreign builds, Bazel lock waits, cache fetches
-and archive exports. The Bazel total includes the build and its two output
-queries. Cache fetches can use disk or remote storage, and timing categories
-can overlap. A partial measurement uses only the phases that completed
-recording. A measured zero means Bazel recorded no matching span.
+Select a run and the **VS installer in SONiC slave (AMD64)** job. Its Bazel
+breakdown lists the Make targets that invoked Bazel during installer
+construction, ordered by measured command and export time. Expand a target
+to inspect lock waits, compiler subprocesses, nested builds, cache fetches
+and exports. A Docker row can cover one archive or a runtime/debug pair.
+The Linux kernel row times the entire pinned launcher and reports its build,
+output query and module-graph profiles. When Make rebuilds the P4RT package,
+its row covers the nested Bazel build, tests, server shutdown and Debian package
+staging. If Make restores a package without invoking Bazel, it only appears in
+the Make breakdown.
 
-The dashboard keeps the numeric summary in its build history. For the raw
-traces and Make logs, open the timing artifact upload step for that run and
-download `sonic-vs-image-timings-amd64` during its 14-day retention period.
-Runs from before profiling retain their original measurements.
+Partial measurements show how many expected records are present. A measured
+zero means Bazel recorded no matching span. Concurrent work can contribute to
+more than one category, and cache fetches include both disk and remote reads.
+
+Open the upload log linked from the timings to download
+`sonic-vs-bazel-timings-amd64` during its 14-day retention period. Open a
+Bazel profile in Perfetto to inspect individual actions within a recipe. The
+dashboard keeps the numeric breakdown in build history. Earlier instrumented
+runs keep their four-image reports, and pre-profiling runs keep their original
+Make timings.
 
 Open **Step timings**, then expand the Make VS image-build step marked
 **Measured breakdown**. Each section covers one sequential Make target, including its

@@ -2668,35 +2668,25 @@ jobs:
           test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
 
-      - name: Summarize VS image build timings
+      - name: Summarize VS Bazel build timings
         if: always() && steps.native_build.outcome != 'skipped'
         continue-on-error: true
         run: |
           set -euo pipefail
           timings=artifacts/vs/image-timings
           if [[ -d "$timings" ]]; then
-            python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" --dashboard-json "$timings/summary.json" \
-              | tee "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
-            printf 'SONIC_VS_IMAGE_TIMINGS_V1 %s\n' "$(<"$timings/summary.json")"
+            python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" --github-actions
+            cat "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Preserve VS image build profiles, timings and Make logs
+      - name: Preserve VS Bazel profiles, timings and Make logs
         id: vs_image_timings_upload
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: sonic-vs-image-timings-amd64
-          path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings/
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-teamd.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-teamd-dbg.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-fpm-frr.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-fpm-frr-dbg.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-mux.gz.log
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-mux-dbg.gz.log
+          name: sonic-vs-bazel-timings-amd64
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings/
           if-no-files-found: warn
           retention-days: 14
 

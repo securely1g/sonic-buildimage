@@ -37,7 +37,6 @@ IMAGE_JOBS = {
     "Unprivileged sonic-vs.bin assembly (AMD64)": "bazel-vs",
 }
 HOST_VS_BUILD = "Build sonic-vs.bin through the host Make wrapper"
-VS_TIMING_SUMMARY = "Summarize VS image build timings"
 IMAGE_STEPS = {
     "Build the VS installer (.bin)",
     "Build the VS image",
@@ -111,6 +110,7 @@ def phase(name, job_name=None):
             "Publish the installer and matching container archives",
             "Preserve build receipts",
             "Preserve VS image build profiles, timings and Make logs",
+            "Preserve VS Bazel profiles, timings and Make logs",
         )
     ):
         return "upload"
@@ -489,6 +489,7 @@ def load_history(path, repo):
                 steps = recipe_steps(job)
                 if (run.get("workflow_path") != ".github/workflows/bazel-oci.yml" or not steps
                         or not breakdown.valid_recipes(value)
+                        or value["version"] != breakdown.RECIPE_STEP_VERSIONS[steps[1]["name"]]
                         or value["status"] == "available" and
                         (job.get("status") != "completed" or steps[1].get("status") != "completed"
                          or steps[1].get("conclusion") == "skipped")):
@@ -510,7 +511,8 @@ def recipe_steps(job):
     if job.get("name") != "VS installer in SONiC slave (AMD64)" or job.get("kind") != "make-vs":
         return None
     builds = [s for s in job["steps"] if s.get("name") == HOST_VS_BUILD]
-    summaries = [s for s in job["steps"] if s.get("name") == VS_TIMING_SUMMARY]
+    summaries = [s for s in job["steps"] if isinstance(s.get("name"), str)
+                 and s["name"] in breakdown.RECIPE_STEP_VERSIONS]
     numbers = [s.get("number") for s in job["steps"]]
     if (len(builds) == len(summaries) == 1 and integer(builds[0].get("number"))
             and integer(summaries[0].get("number")) and builds[0]["number"] < summaries[0]["number"]
@@ -557,11 +559,12 @@ def enrich_breakdowns(api, repo, runs, limit):
             summary = steps[1] if steps else None
             need_recipes = summary and breakdown.retry_needed(job.get("image_recipe_timings"))
             if need_recipes:
+                version = breakdown.RECIPE_STEP_VERSIONS[summary["name"]]
                 if summary["conclusion"] == "skipped":
-                    job["image_recipe_timings"] = breakdown.recipe_unavailable("step-not-successful")
+                    job["image_recipe_timings"] = breakdown.recipe_unavailable("step-not-successful", version)
                     need_recipes = False
                 else:
-                    job["image_recipe_timings"] = breakdown.recipe_unavailable("pending-collection")
+                    job["image_recipe_timings"] = breakdown.recipe_unavailable("pending-collection", version)
                     need_recipes = summary["status"] == "completed"
             if (not pending and not need_recipes) or job["status"] != "completed" or fetched >= limit:
                 continue
@@ -572,7 +575,7 @@ def enrich_breakdowns(api, repo, runs, limit):
                 for step in pending:
                     step["breakdown"] = breakdown.unavailable(error.reason)
                 if need_recipes:
-                    job["image_recipe_timings"] = breakdown.recipe_unavailable(error.reason)
+                    job["image_recipe_timings"] = breakdown.recipe_unavailable(error.reason, version)
                 continue
             for step in pending:
                 step["breakdown"] = breakdown.parse_log(log, step)

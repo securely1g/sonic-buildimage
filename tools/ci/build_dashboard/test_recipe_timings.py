@@ -35,10 +35,10 @@ def log(lines):
     return "".join(f"2026-10-10T00:10:00.{ms}0000Z {line}\n" for ms, line in events).encode()
 
 
-def host_job(build_conclusion="success"):
+def host_job(build_conclusion="success", summary_step="Summarize VS image build timings"):
     raw = dict(job(), name="VS installer in SONiC slave (AMD64)")
     build = dict(raw["steps"][0], name=collector.HOST_VS_BUILD, conclusion=build_conclusion)
-    summary = dict(build, name=collector.VS_TIMING_SUMMARY, number=2, started_at=END, conclusion="success")
+    summary = dict(build, name=summary_step, number=2, started_at=END, conclusion="success")
     return dict(raw, steps=[build, summary], conclusion=build_conclusion)
 
 
@@ -141,3 +141,66 @@ class RecipeTimingsTest(unittest.TestCase):
         updated = collector.collect(api, REPO, saved, backfill=True)["runs"][0]["jobs"][0]
         self.assertEqual(api.log_calls, [(REPO, 99)])
         self.assertEqual(updated["image_recipe_timings"]["reason"], "logs-expired")
+
+
+class BazelRecipeTimingsTest(unittest.TestCase):
+    summary_step = "Summarize VS Bazel build timings"
+
+    def row(self, owner):
+        return dict(payload()["images"][0], owner=owner, bazel_expected=3, profiles_expected=3, exports_expected=2)
+
+    def line(self, obj):
+        return "SONIC_VS_BAZEL_TIMINGS_V2 " + json.dumps(obj, separators=(",", ":"))
+
+    def parse(self, lines):
+        return collector.breakdown.parse_recipe_log(log(lines), host_job(summary_step=self.summary_step)["steps"][1])
+
+    def test_dynamic_targets_and_variable_command_counts_survive_collection_and_history(self):
+        # The kernel launcher has one elapsed measurement but three independent profiles.
+        rows = [dict(self.row("linux-kernel"), bazel_phases=1, bazel_expected=1, exports=0,
+                     exports_expected=0, export_seconds=None)]
+        rows += [self.row(owner) for owner in ("docker-database.gz", "docker-sysmgr.gz", "docker-gnmi.gz",
+                                               "docker-snmp.gz", "docker-base-trixie.gz")]
+        lines = [self.line({"recipe": row}) for row in rows] + [self.line({"count": len(rows)})]
+        raw = host_job("failure", self.summary_step)
+        api = api_with(raw, log(lines))
+        saved = collector.collect(api, REPO, empty())
+        self.assertEqual(api.log_calls, [(REPO, 99)])
+        job_data = saved["runs"][0]["jobs"][0]
+        self.assertEqual(job_data["image_recipe_timings"], {"version": 2, "status": "available", "recipes": rows})
+        self.assertIsNone(job_data["image_build_seconds"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.json"
+            collector.write_atomic(path, saved)
+            self.assertEqual(collector.load_history(path, REPO), saved)
+            job_data["steps"][1]["name"] = "Summarize VS image build timings"
+            collector.write_atomic(path, saved)
+            with self.assertRaises(collector.CollectionError):
+                collector.load_history(path, REPO)
+
+    def test_multiple_lines_exceeding_one_marker_size_and_empty_completed_report(self):
+        rows = [self.row(f"docker-owner-{index}.gz") for index in range(48)]
+        lines = [self.line({"recipe": row}) for row in rows]
+        self.assertGreater(sum(map(len, lines)), 4096)
+        self.assertEqual(self.parse(lines + [self.line({"count": len(rows)})])["recipes"], rows)
+        self.assertEqual(self.parse([self.line({"count": 0})]), {"version": 2, "status": "available", "recipes": []})
+        self.assertEqual(self.parse([]), {"version": 2, "status": "unavailable", "reason": "not-recorded", "recipes": []})
+
+    def test_rejects_partial_duplicate_and_mixed_transports_and_untrusted_rows(self):
+        row = self.row("docker-eventd.gz")
+        item = self.line({"recipe": row})
+        end = self.line({"count": 1})
+        for lines in ([item], [end], [item, item, self.line({"count": 2})], [item, end, end],
+                      [item, end, item], [item, self.line({"count": True})], [marker(payload()), end]):
+            with self.subTest(lines=lines):
+                self.assertEqual(self.parse(lines)["reason"], "invalid-timing")
+        for edits in ({"owner": "/home/build"}, {"owner": "https://elsewhere.invalid"},
+                      {"owner": "foo --remote_header=bar"}, {"owner": "é"}, {"owner": "a" * 193},
+                      {"exports_expected": 1}, {"profiles_expected": -1}, {"bazel_expected": 65536},
+                      {"bazel_expected": True}, {"profiles": 0}, {"lock_seconds": None},
+                      {"bazel_expected": 1}, {"argv": ["--unpublished-argument"]}):
+            with self.subTest(edits=edits):
+                self.assertEqual(self.parse([self.line({"recipe": dict(row, **edits)}), end])["reason"], "invalid-timing")
+        over_limit = [{"recipe": self.row(f"recipe-{n}")} for n in range(collector.breakdown.MAX_RECIPES + 1)]
+        self.assertEqual(self.parse([self.line(obj) for obj in [*over_limit, {"count": len(over_limit)}]])["reason"],
+                         "invalid-timing")

@@ -288,7 +288,7 @@ else:
         self.assertIn("controlled capture-pairs", validation_log)
         self.assertIn("controlled verify-pairs", validation_log)
 
-    def test_vs_installer_retains_the_selected_image_diagnostics_before_validation(self):
+    def test_vs_installer_retains_all_bazel_recipe_diagnostics_before_validation(self):
         job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
         build = next(step for step in job["steps"] if step.get("id") == "native_build")
         self.assertEqual(build["env"]["SONIC_VS_IMAGE_TIMINGS"], "1")
@@ -297,12 +297,9 @@ else:
         upload = next(step for step in job["steps"] if step.get("id") == "vs_image_timings_upload")
         self.assertEqual(upload["if"], "always()")
         self.assertTrue(upload["continue-on-error"])
-        self.assertEqual(upload["with"]["name"], "sonic-vs-image-timings-amd64")
+        self.assertEqual(upload["with"]["name"], "sonic-vs-bazel-timings-amd64")
         checkout = job["defaults"]["run"]["working-directory"] + "/"
-        paths = {checkout + "artifacts/vs/image-timings/"}
-        for stem in ("docker-teamd", "docker-syncd-vs", "docker-fpm-frr", "docker-mux"):
-            paths.update(checkout + "target/" + stem + suffix for suffix in (".gz.log", "-dbg.gz.log"))
-        self.assertEqual(set(upload["with"]["path"].splitlines()), paths)
+        self.assertEqual(upload["with"]["path"], checkout + "artifacts/vs/image-timings/")
         summary = next(step for step in job["steps"] if "summarize_vs_image_timings.py" in step.get("run", ""))
         validation = next(step for step in job["steps"] if "tools/bazel/ci/validate_vs.sh" in step.get("run", ""))
         self.assertLess(job["steps"].index(build), job["steps"].index(summary))
@@ -312,29 +309,36 @@ else:
 
     def test_dashboard_reads_measurements_from_the_real_summary_step(self):
         job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
-        command = next(step["run"] for step in job["steps"] if step["name"] == "Summarize VS image build timings")
+        command = next(step["run"] for step in job["steps"] if step["name"] == "Summarize VS Bazel build timings")
         name = "summarize_vs_image_timings.py"
         (self.scripts / name).symlink_to(ROOT / "tools/bazel/ci" / name)
-        directory = self.root / "artifacts/vs/image-timings/docker-teamd.gz"
+        timings = self.root / "artifacts/vs/image-timings"
+        directory = timings / "docker-database.gz/run1"
         directory.mkdir(parents=True)
-        phase = "export-docker-teamd.gz"
+        phase = "export-docker-database.gz"
+        (directory / "recipe.json").write_text(json.dumps({
+            "bazel": ["build", "cquery-runtime", "cquery-debug"],
+            "profiles": ["build", "cquery-runtime", "cquery-debug"], "exports": [phase, "export-debug"]}))
         (directory / (phase + ".timing.json")).write_text(json.dumps({
             "phase": phase, "elapsed_seconds": 1.25, "exit_code": 0,
         }))
         summary = self.root / "step_summary"
         result = subprocess.run(["bash", "-c", command], cwd=self.root, text=True, capture_output=True,
                                 env=dict(os.environ, GITHUB_STEP_SUMMARY=str(summary)), check=True)
-        self.assertEqual(summary.read_text(), (directory.parent / "summary.md").read_text())
+        self.assertEqual(summary.read_text(), (timings / "summary.md").read_text())
         self.assertIn("1.25 (partial)", summary.read_text())
         stamp = "2026-11-14T17:05:00Z"
         lines = ["##[group]Run set -euo pipefail", *command.splitlines(), "##[endgroup]",
                  *result.stdout.splitlines()]
         log = "".join(f"{stamp} {line}\n" for line in lines).encode()
-        detail = parse_recipe_log(log, {"started_at": stamp, "completed_at": stamp})
-        receipt = json.loads((directory.parent / "summary.json").read_text())
+        detail = parse_recipe_log(log, {"started_at": stamp, "completed_at": stamp,
+                                        "name": "Summarize VS Bazel build timings"})
+        receipt = json.loads((timings / "summary.json").read_text())
         self.assertEqual(detail, dict(receipt, status="available"))
-        teamd = next(row for row in detail["images"] if row["owner"] == "docker-teamd.gz")
-        self.assertEqual((teamd["exports"], teamd["export_seconds"], teamd["compile_seconds"]), (1, 1.25, None))
+        database, = detail["recipes"]
+        self.assertEqual(database["owner"], "docker-database.gz")
+        self.assertEqual((database["exports"], database["export_seconds"], database["compile_seconds"]),
+                         (1, 1.25, None))
 
     def test_workflow_publishes_onie_installer_and_its_selection_manifest(self):
         selected, _, _ = self.workflow_steps()

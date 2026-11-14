@@ -102,27 +102,38 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.installer(SONIC_VS_IMAGE_TIMINGS="1")
         self.assert_pairs()
         timings = self.root / "artifacts/vs/image-timings"
-        owner, debug = self.archives[2:]
-        self.assertEqual(list(timings.iterdir()), [timings / owner])
-        phases = ["build", "cquery-" + owner, "export-" + owner,
-                  "cquery-" + debug, "export-" + debug]
-        records = [json.loads((timings / owner / (phase + ".timing.json")).read_text())
-                   for phase in phases]
-        self.assertEqual([record["phase"] for record in records], phases)
-        self.assertTrue(all(record["exit_code"] == 0 and record["elapsed_seconds"] > 0
-                            for record in records))
+        self.assertEqual({path.name for path in timings.iterdir()}, set(self.archives[::2]))
+        expected_profiles = []
+        for owner, debug in (self.archives[:2], self.archives[2:]):
+            directory, = (timings / owner).iterdir()
+            commands = ["build", "cquery-" + owner, "cquery-" + debug]
+            exports = ["export-" + owner, "export-" + debug]
+            self.assertEqual(json.loads((directory / "recipe.json").read_text()),
+                             {"bazel": commands, "profiles": commands, "exports": exports})
+            for phase in commands + exports:
+                record = json.loads((directory / (phase + ".timing.json")).read_text())
+                self.assertEqual((record["phase"], record["exit_code"]), (phase, 0))
+                self.assertGreater(record["elapsed_seconds"], 0)
+            self.assertIn("fixture query diagnostic", (directory / "make.log").read_text())
+            expected_profiles.extend(f"--profile={directory}/{phase}.profile.json.gz" for phase in commands)
         profiles = []
         for call in self.recorded_calls():
             args = call["arguments"]
-            flags = [arg for arg in args if arg.startswith("--profile=")]
-            if "syncd" in args[-1]:
-                self.assertIn("--noslim_profile", args)
-                phase = "build" if args[0] == "build" else "cquery-" + args[-1].split(":")[-1]
-                self.assertEqual(flags, [f"--profile={timings / owner}/{phase}.profile.json.gz"])
-                profiles.extend(flags)
-            else:
-                self.assertEqual(flags, [])
-        self.assertEqual(len(set(profiles)), 3)
+            self.assertIn("--noslim_profile", args)
+            profiles.extend(arg for arg in args if arg.startswith("--profile="))
+        self.assertCountEqual(profiles, expected_profiles)
+
+    def test_timed_standalone_archive_preserves_every_invocation(self):
+        owner = self.archives[0]
+        for _ in range(2):
+            self.assert_success(self.run_make(owner, environment={"SONIC_VS_IMAGE_TIMINGS": "1"}))
+        instances = list((self.root / "artifacts/vs/image-timings" / owner).iterdir())
+        self.assertEqual(len(instances), 2)
+        for directory in instances:
+            recipe = json.loads((directory / "recipe.json").read_text())
+            self.assertEqual(recipe["bazel"], ["build", "cquery-" + owner])
+            self.assertEqual(recipe["exports"], ["export-" + owner])
+            self.assertTrue((directory / "build.timing.json").is_file())
 
     def test_timing_preserves_failed_query_and_preceding_build(self):
         result = self.run_make(goals=["target/" + self.archives[2]], environment={
@@ -130,7 +141,8 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
             "SONIC_VS_IMAGE_TIMINGS": "1", "FAKE_BAZEL_MODE": "query_failure"})
         self.assertNotEqual(result.returncode, 0)
         owner = self.archives[2]
-        records = self.root / "artifacts/vs/image-timings" / owner
+        records, = (self.root / "artifacts/vs/image-timings" / owner).iterdir()
+        self.assertIn("fixture query failure", (records / "make.log").read_text())
         self.assertEqual(json.loads((records / "build.timing.json").read_text())["exit_code"], 0)
         failed = json.loads((records / f"cquery-{owner}.timing.json").read_text())
         self.assertNotEqual(failed["exit_code"], 0)
