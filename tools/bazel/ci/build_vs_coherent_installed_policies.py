@@ -598,7 +598,9 @@ def component_proxy_text(source, scratch):
         text += '      if [ "$cohort_argument" = ' + shlex.quote(option) + ' ]; then\n'
         text += '        ' + variable + '=true\n      fi\n    done\n'
         text += '    if [ "$' + variable + '" = false ]; then set -- "$@" ' + shlex.quote(option) + '; fi\n'
-    return text + '    ;;\nesac\nexec ' + command + ' "$@"\n'
+    # Preserve every JSON record while avoiding Bazel's whole-log dependency sort.
+    text += '    ;;\nesac\ncase "${1-}" in\n  build) set -- "$@" --execution_log_sort=false ;;\nesac\n'
+    return text + 'exec ' + command + ' "$@"\n'
 
 
 def prepare_component_proxy(source, scratch):
@@ -1442,6 +1444,68 @@ def prepare_component_heap(plan, source, scratch, worker, preflight):
     os.replace(pending[0], resources_path)
 
 
+def observe_component_heap(plan, source, scratch, directory, receipt, logs):
+    """Observe the final launcher's JVM limit; do not infer peak memory use."""
+    allocation = {'jvm_heap_gib': 6, 'scheduler_memory_mb': 4000}
+    require(plan.get('component_refresh') is True and
+            plan.get('component_heap_recovery') == allocation,
+            'Different fixed component heap observation')
+    observation = scratch / 'jvm-heap-observation.json'
+    require(not os.path.lexists(observation), 'Heap observation must be fresh')
+    proxy, launcher = scratch / 'review-bazel', scratch / 'native-bazel'
+    paths = (proxy, launcher, scratch / 'native-bazel.original',
+             scratch / 'resources.json', scratch / 'resources.original.json')
+    require(all(path.is_file() and not path.is_symlink() and
+                0 < path.stat().st_size <= 128 * 1024 for path in paths),
+            'Heap observation inputs must be the prepared regular files')
+    require(proxy.read_text() == component_proxy_text(source, scratch) and
+            os.environ.get('BAZEL_REAL') == str(launcher) and
+            os.environ.get('USE_BAZEL_VERSION') == '8.5.1',
+            'Heap observation must use the final component launcher')
+    resources = json.loads((scratch / 'resources.json').read_bytes())
+    selected, recovery = resources['selected_profile'], resources['component_heap_recovery']
+    require(all(selected.get(key) == value for key, value in
+                dict(allocation, jobs=2, cpu=2).items()) and
+            recovery['allocation'] == allocation,
+            'Different selected heap observation profile')
+    launcher_sha = hashlib.sha256(launcher.read_bytes()).hexdigest()
+    original_sha = hashlib.sha256((scratch / 'native-bazel.original').read_bytes()).hexdigest()
+    require(launcher_sha == recovery['selected_launcher_sha256'] and
+            original_sha == recovery['original_launcher_sha256'] and
+            hashlib.sha256((scratch / 'resources.original.json').read_bytes()).hexdigest()
+            == recovery['original_resources_sha256'],
+            'Heap observation launcher or original resource seal differs')
+    raw = logs.execute([str(proxy), 'info', 'max-heap-size'], directory, receipt,
+                       'cohort.max-heap', cwd=source)
+    require(isinstance(raw, str), 'Different max-heap-size output type')
+    text = raw.strip()
+    observed = text if re.fullmatch(r'(0|[1-9][0-9]{0,8})MB', text) else None
+    requested = allocation['jvm_heap_gib'] * 1024**3
+    # Bazel8.5.1 StringUtilities.prettyPrintBytes truncates decimal MB here.
+    expected = str(requested // 1000000) + 'MB'
+    units = int(observed[:-2]) if observed is not None else None
+    result = {'status': 'passed' if observed == expected else 'failed',
+              'source_revision': plan['source_revision'],
+              'requested_heap_bytes': requested, 'expected_max_heap_size': expected,
+              'observed_max_heap_size': observed,
+              'observed_bytes_lower_bound': None if units is None else units * 1000000,
+              'observed_bytes_upper_bound_exclusive': None if units is None else (units + 1) * 1000000,
+              'original_output_bytes': len(raw.encode()),
+              'original_output_sha256': hashlib.sha256(raw.encode()).hexdigest(),
+              'selected_launcher_sha256': launcher_sha,
+              'original_launcher_sha256': original_sha,
+              'proxy_sha256': hashlib.sha256(proxy.read_bytes()).hexdigest(),
+              'bazel_version': '8.5.1', 'measured_peak_guarantee': False,
+              'scope': 'Same final launcher JVM limit; decimal-rounded info value, not peak usage.'}
+    with observation.open('x') as stream:
+        json.dump(result, stream, sort_keys=True)
+        stream.write('\n')
+    observation.chmod(0o600)
+    require(observed == expected,
+            'Effective JVM heap differs: expected ' + expected + ', observed ' + str(observed))
+    return result
+
+
 def prepare_component_gnoi(source, directory, receipt, logs):
     """Initialize only the source checkout's pinned Sysmgr proto submodule."""
     relative = 'src/sonic-sysmgr/gnoi'
@@ -1508,6 +1572,8 @@ def build_cohort(plan, source, scratch, output, owners, components=None):
         require(identity['revision'] == plan['source_revision'], 'Syncd source revision differs')
         if components is not None:
             receipt['gnoi_source'] = prepare_component_gnoi(source, private, receipt, logs)
+            receipt['effective_heap'] = observe_component_heap(
+                plan, source, scratch, private, receipt, logs)
         logs.execute(setup.MAKE_ARGUMENTS, private, receipt, 'swss.manifests', cwd=source)
         manifests = manifest_snapshot(source)
         logs.execute(syncd.manifest_command(), private, receipt, 'syncd.manifests', cwd=source)

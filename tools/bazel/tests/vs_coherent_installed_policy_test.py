@@ -163,6 +163,23 @@ class CohortTests(unittest.TestCase):
     def run_cohort(self):
         return caller.build_cohort(self.plan, self.source, self.scratch, self.output, self.owners)
 
+    def test_component_heap_observation_precedes_manifests_and_bazel_gates(self):
+        (self.scratch / 'review-bazel').write_text(caller.component_proxy_text(self.source, self.scratch))
+        with mock.patch.object(caller, 'declarations', return_value=({}, [])), \
+                mock.patch.object(caller, 'prepare_component_gnoi', return_value={'status':'passed'}) as initialize, \
+                mock.patch.object(caller, 'observe_component_heap',
+                                  side_effect=ValueError('fixture heap observation stopped')) as observe, \
+                mock.patch.object(caller, 'check_base_parent') as base:
+            with self.assertRaisesRegex(ValueError, 'fixture heap observation stopped'):
+                caller.build_cohort(self.plan, self.source, self.scratch, self.output,
+                                    self.owners, components={})
+        initialize.assert_called_once()
+        observe.assert_called_once()
+        self.assertEqual(observe.call_args.args[:4],
+                         (self.plan,self.source,self.scratch,self.scratch/'cohort-build'))
+        base.assert_not_called()
+        self.assertEqual(self.events, [])
+
     def test_component_source_setup_precedes_manifests_and_bazel_gates(self):
         (self.scratch / 'review-bazel').write_text(caller.component_proxy_text(self.source, self.scratch))
         with mock.patch.object(caller, 'declarations', return_value=({}, [])), \
@@ -477,9 +494,29 @@ class CohortTests(unittest.TestCase):
                                 *arguments]
                     if action != 'info':
                         expected.extend(option for option in caller.COMPONENT_PROFILE if option not in supplied)
+                    if action == 'build':
+                        expected.append('--execution_log_sort=false')
                     self.assertEqual(argv, expected)
                     self.assertEqual(child_home, self.start_home)
         self.assertEqual(os.environ.get('HOME'), self.start_home)
+
+    def test_component_proxy_streams_json_and_preserves_bep_and_all_inputs(self):
+        owner = self.source / 'tools/bazel/ci/review_bazel.sh'
+        owner.parent.mkdir(parents=True)
+        owner.write_text('#!' + sys.executable + '\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n')
+        owner.chmod(0o700)
+        proxy = self.scratch / 'logged-build-proxy'
+        proxy.write_text(caller.component_proxy_text(self.source, self.scratch))
+        proxy.chmod(0o700)
+        supplied = ['build', '--execution_log_json_file=logs with spaces/full.json',
+                    '--build_event_json_file=logs with spaces/full.events.jsonl',
+                    '--execution_log_sort=true', '//fixed:archive']
+        result = subprocess.run([str(proxy), *supplied], check=True, text=True, capture_output=True)
+        argv = json.loads(result.stdout)
+        self.assertEqual(argv[2:], [*supplied, *caller.COMPONENT_PROFILE, '--execution_log_sort=false'])
+        self.assertEqual(argv.count('--execution_log_sort=false'), 1)
+        self.assertIn('--batch', argv)
+        self.assertIn('--output_user_root=' + str(self.scratch / 'output-user-root'), argv)
 
     def test_component_proxy_rejects_unreviewed_prepared_command(self):
         proxy = self.scratch / 'review-bazel'
@@ -1373,6 +1410,242 @@ class ComponentHeapTests(unittest.TestCase):
                 with self.assertRaises(ValueError): self.invoke(fixture)
                 self.assertEqual({p.name: p.read_bytes() for p in scratch.iterdir()}, before)
                 worker.remote_cache_configuration.assert_not_called()
+
+
+
+
+class ExecutionLogOrderTests(unittest.TestCase):
+    """Exercise actual maintained JSON reader/projection ASTs with reordered records."""
+
+    @classmethod
+    def setUpClass(cls):
+        import ast
+        from collections import Counter
+        import re
+        source = Path(os.environ.get('COMPONENT_RUNTIME_TEST_SOURCE', ROOT / 'current-source'))
+        expected = {
+            'cache_reuse.py': '7671c8d6f5a7bd5dc8426deccb3762e2b667731f4e5852fb858961791002468f',
+            'dash_engine_image.py': '14dc108777c81c6718e69a06e018aa81f7e614472016379e744eb36122598dad',
+            'public_artifacts.py': '69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4',
+        }
+        bodies = {}
+        for name, digest in expected.items():
+            path = source / 'tools/bazel/ci' / name
+            if path.is_symlink() or not path.is_file():
+                raise AssertionError('Missing exact maintained order-test owner')
+            body = path.read_bytes()
+            if hashlib.sha256(body).hexdigest() != digest:
+                raise AssertionError('Different maintained order-test owner')
+            bodies[name] = body
+        public_path = source / 'tools/bazel/ci/public_artifacts.py'
+        spec = importlib.util.spec_from_file_location('cohort_order_public', public_path)
+        cls.public = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.public)
+
+        def selected(name, functions, constants, namespace):
+            tree = ast.parse(bodies[name], filename=name)
+            nodes = [node for node in tree.body if
+                     isinstance(node, ast.FunctionDef) and node.name in functions or
+                     isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and
+                         target.id in constants for target in node.targets)]
+            actual = {node.name for node in nodes if isinstance(node, ast.FunctionDef)}
+            if actual != set(functions):
+                raise AssertionError('Different selected maintained order functions')
+            exec(compile(ast.Module(body=nodes, type_ignores=[]), name, 'exec'), namespace)
+            return namespace
+
+        # Reuse the caller's real condition guard; no production module is stubbed/imported.
+        cls.cache = selected('cache_reuse.py', {'_object', '_constant', 'json_records', 'collect'},
+            {'_CHUNK_SIZE', '_MAX_RECORD_SIZE'}, {'json':json, 're':re, 'Counter':Counter,
+            'public_artifacts':cls.public, 'require':caller.require})
+        cls.foreign = selected('dash_engine_image.py',
+            {'_fingerprint', '_spawn_digest', '_private_files', '_private_pairs',
+             'foreign_diagnostics', 'validate_foreign_diagnostics', 'compare_foreign_diagnostics',
+             '_foreign_inputs'},
+            {'FOREIGN_TARGETS', 'FOREIGN_PAYLOADS', 'FOREIGN_INSTANCE_LIMIT', 'DIAGNOSTIC_LIMIT'},
+            {'json':json, 're':re, 'hashlib':hashlib, 'public_artifacts':cls.public,
+             'check':SimpleNamespace(require=caller.require),
+             'cache_reuse':SimpleNamespace(json_records=cls.cache['json_records'])})
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.execution = self.root / 'execution.json'
+        self.events = self.root / 'events.jsonl'
+        self.artifact = '//platform/vs/docker-dash-engine:docker-dash-engine.gz'
+        events = [
+            {'id':{'started':{}},'started':{'command':'build','buildToolVersion':'8.5.1'}},
+            {'id':{'targetCompleted':{'label':self.artifact}},'completed':{'success':True}},
+            {'id':{'buildFinished':{}},'finished':{'overallSuccess':True,'exitCode':{'code':0}},'lastMessage':True},
+        ]
+        self.events.write_text(''.join(json.dumps(row)+'\n' for row in events))
+        targets = sorted(self.foreign['FOREIGN_TARGETS'])
+        self.records = [
+            {'targetLabel':target,'mnemonic':'CcConfigureMakeRule','runner':'remote cache hit',
+             'cacheHit':True,'cacheable':True,'remoteCacheable':True,'commandArgs':['tool',str(i)],
+             'listedOutputs':['out/'+str(i)],'actualOutputs':[{'path':'out/'+str(i)}],
+             'inputs':[{'path':'external/source/input'+str(i)}]}
+            for i,target in enumerate(targets)]
+        self.records.append({'targetLabel':'//fixed:compile','mnemonic':'CppCompile',
+                             'runner':'linux-sandbox','cacheHit':False})
+        self.payloads = {name:'a'*64 for name in self.foreign['FOREIGN_PAYLOADS']}
+
+    def collect(self, records):
+        self.execution.write_text(''.join(json.dumps(row)+'\n' for row in records))
+        counts = self.cache['collect'](self.execution,self.events,self.artifact)
+        self.public.cache_reuse_summary(counts)
+        return counts
+
+    def test_record_permutations_preserve_actual_counts_and_foreign_matches(self):
+        import itertools
+        expected = None
+        for records in itertools.permutations(self.records):
+            counts = self.collect(records)
+            diagnostic = self.foreign['foreign_diagnostics'](self.execution,counts,self.payloads)
+            inputs = self.foreign['_foreign_inputs'](self.execution)
+            if expected is None:
+                expected = counts, diagnostic, inputs
+            self.assertEqual((counts,diagnostic,inputs),expected)
+            comparison = self.foreign['compare_foreign_diagnostics'](expected[1],diagnostic)
+            self.assertTrue(all(row['status']=='matched' and not row['changed_recorded_fields']
+                                for row in comparison['instances']))
+        self.assertEqual(expected[0]['action_count'],3)
+        self.assertEqual(expected[0]['cache_hit_count'],2)
+
+    def test_equal_key_foreign_rows_stay_complete_and_ambiguous(self):
+        first = self.records[0]
+        second = copy.deepcopy(first)
+        second['commandArgs'] = ['different','arguments']
+        second['inputs'] = [{'path':'external/source/other'}]
+        results = []
+        for records in ([first,second],[second,first]):
+            counts = self.collect(records)
+            results.append(self.foreign['foreign_diagnostics'](self.execution,counts,self.payloads))
+            groups = self.foreign['_foreign_inputs'](self.execution)
+            self.assertEqual([len(rows) for rows in groups.values()],[2])
+        # Equal-key rows keep genuine input order; do not normalize or promise equal JSON bytes.
+        self.assertNotEqual(results[0]['observations'],results[1]['observations'])
+        self.assertCountEqual(results[0]['observations'],results[1]['observations'])
+        comparison = self.foreign['compare_foreign_diagnostics'](*results)
+        self.assertEqual(len(comparison['instances']),1)
+        self.assertEqual(comparison['instances'][0]['status'],'ambiguous')
+        self.assertEqual(comparison['instances'][0]['initial_instances'],2)
+        self.assertEqual(comparison['instances'][0]['baseline_instances'],2)
+
+    def test_reordered_bad_or_incomplete_records_are_still_rejected(self):
+        bad = dict(self.records[-1],exitCode=1)
+        for records in ([bad,*self.records],[*self.records,bad]):
+            with self.assertRaisesRegex(ValueError,'unsuccessful execution-log record'):
+                self.collect(records)
+        self.execution.write_text('{"mnemonic":"CppCompile","mnemonic":"Other"}\n')
+        with self.assertRaisesRegex(ValueError,'duplicate execution-log field'):
+            list(self.cache['json_records'](self.execution))
+        self.execution.write_text('{"mnemonic":')
+        with self.assertRaisesRegex(ValueError,'truncated or malformed execution log'):
+            list(self.cache['json_records'](self.execution))
+        events = [json.loads(line) for line in self.events.read_text().splitlines()]
+        events[-1].pop('lastMessage')
+        self.events.write_text(''.join(json.dumps(row)+'\n' for row in events))
+        with self.assertRaisesRegex(ValueError,'incomplete production artifact build evidence'):
+            self.collect(self.records)
+
+
+class EffectiveHeapObservationTests(unittest.TestCase):
+    def fixture(self, output='6442MB\n'):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source, scratch, private = root / 'source', root / 'scratch', root / 'private'
+        for path in (source, scratch, private):
+            path.mkdir()
+        plan = {'component_refresh': True, 'source_revision': 'c' * 40,
+                'component_heap_recovery': {'jvm_heap_gib': 6, 'scheduler_memory_mb': 4000}}
+        (scratch / 'review-bazel').write_text(caller.component_proxy_text(source, scratch))
+        (scratch / 'native-bazel').write_bytes(b'prepared selected launcher')
+        (scratch / 'native-bazel.original').write_bytes(b'preserved original launcher')
+        (scratch / 'resources.original.json').write_bytes(b'{"original":true}\n')
+        resources = {'selected_profile': dict(plan['component_heap_recovery'], jobs=2, cpu=2),
+                     'component_heap_recovery': {
+                         'allocation': plan['component_heap_recovery'],
+                         'selected_launcher_sha256': sha(scratch / 'native-bazel'),
+                         'original_launcher_sha256': sha(scratch / 'native-bazel.original'),
+                         'original_resources_sha256': sha(scratch / 'resources.original.json')}}
+        (scratch / 'resources.json').write_text(json.dumps(resources))
+        self.enterContext(mock.patch.dict(os.environ, {
+            'BAZEL_REAL': str(scratch / 'native-bazel'), 'USE_BAZEL_VERSION': '8.5.1'}))
+        receipt = {'commands': []}
+        logs = SimpleNamespace(execute=mock.Mock(return_value=output))
+        return plan, source, scratch, private, receipt, logs
+
+    def test_same_final_launcher_observation_records_decimal_interval_without_mutating_inputs(self):
+        fixture = self.fixture()
+        plan, source, scratch, private, receipt, logs = fixture
+        before = {path.name: path.read_bytes() for path in scratch.iterdir()}
+        home = os.environ.get('HOME')
+        result = caller.observe_component_heap(*fixture)
+        logs.execute.assert_called_once_with(
+            [str(scratch / 'review-bazel'), 'info', 'max-heap-size'], private, receipt,
+            'cohort.max-heap', cwd=source)
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['observed_max_heap_size'], '6442MB')
+        self.assertEqual(result['requested_heap_bytes'], 6 * 1024**3)
+        self.assertEqual(result['observed_bytes_lower_bound'], 6442000000)
+        self.assertEqual(result['observed_bytes_upper_bound_exclusive'], 6443000000)
+        self.assertFalse(result['measured_peak_guarantee'])
+        self.assertEqual(json.loads((scratch / 'jvm-heap-observation.json').read_bytes()), result)
+        self.assertEqual((scratch / 'jvm-heap-observation.json').stat().st_mode & 0o777, 0o600)
+        self.assertEqual({name: (scratch / name).read_bytes() for name in before}, before)
+        self.assertEqual(os.environ.get('HOME'), home)
+
+    def test_wrong_or_malformed_heap_preserves_failed_observation(self):
+        for output in ('3221MB\n', '6144MB\n', '6442MB\nextra', '6GiB\n'):
+            with self.subTest(output=output):
+                fixture = self.fixture(output)
+                with self.assertRaisesRegex(ValueError, 'Effective JVM heap differs'):
+                    caller.observe_component_heap(*fixture)
+                scratch, logs = fixture[2], fixture[5]
+                result = json.loads((scratch / 'jvm-heap-observation.json').read_bytes())
+                self.assertEqual(result['status'], 'failed')
+                self.assertEqual(result['original_output_sha256'], hashlib.sha256(output.encode()).hexdigest())
+                self.assertEqual(result['observed_max_heap_size'], output.strip() if output.strip() in ('3221MB', '6144MB') else None)
+                self.assertEqual(logs.execute.call_count, 1)
+                self.assertEqual(logs.execute.call_args.args[0][1:], ['info', 'max-heap-size'])
+
+    def test_changed_route_profile_or_launcher_seals_stop_before_command(self):
+        for problem in ('proxy', 'environment', 'version', 'selected', 'original', 'original-resources', 'profile'):
+            with self.subTest(problem=problem):
+                fixture = self.fixture()
+                plan, source, scratch, private, receipt, logs = fixture
+                if problem == 'proxy': (scratch / 'review-bazel').write_text('different route')
+                elif problem == 'environment': os.environ['BAZEL_REAL'] = '/different/launcher'
+                elif problem == 'version': os.environ['USE_BAZEL_VERSION'] = '6.4.0'
+                elif problem == 'selected': (scratch / 'native-bazel').write_bytes(b'changed')
+                elif problem == 'original': (scratch / 'native-bazel.original').write_bytes(b'changed')
+                elif problem == 'original-resources': (scratch / 'resources.original.json').write_bytes(b'{}')
+                else: plan['component_heap_recovery']['jvm_heap_gib'] = 3
+                with self.assertRaises(ValueError): caller.observe_component_heap(*fixture)
+                logs.execute.assert_not_called()
+                self.assertFalse((scratch / 'jvm-heap-observation.json').exists())
+
+    def test_existing_observation_is_never_replaced(self):
+        fixture = self.fixture()
+        scratch, logs = fixture[2], fixture[5]
+        original = b'preserved prior observation'
+        (scratch / 'jvm-heap-observation.json').write_bytes(original)
+        with self.assertRaisesRegex(ValueError, 'Heap observation must be fresh'):
+            caller.observe_component_heap(*fixture)
+        logs.execute.assert_not_called()
+        self.assertEqual((scratch / 'jvm-heap-observation.json').read_bytes(), original)
+
+    def test_failed_info_command_cannot_write_passed_evidence(self):
+        fixture = self.fixture()
+        scratch, logs = fixture[2], fixture[5]
+        logs.execute.side_effect = RuntimeError('original command failed')
+        with self.assertRaisesRegex(RuntimeError, 'original command failed'):
+            caller.observe_component_heap(*fixture)
+        self.assertFalse((scratch / 'jvm-heap-observation.json').exists())
+        self.assertEqual(logs.execute.call_count, 1)
 
 
 if __name__ == '__main__':
