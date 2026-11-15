@@ -916,6 +916,28 @@ def batch_completed_groups(events, labels):
     return list(groups.values())
 
 
+def batch_label_description(value):
+    """Bound diagnostics to label syntax; never print arbitrary response content."""
+    if isinstance(value, str):
+        if len(value) <= 256 and re.fullmatch(
+                r'(?:@@?[A-Za-z0-9_.+-]*)?//[A-Za-z0-9_./+-]+:[A-Za-z0-9_./+-]+', value):
+            return repr(value)
+        return '[str length=' + str(len(value)) + ' sha256=' + hashlib.sha256(
+            value.encode('utf-8', errors='surrogatepass')).hexdigest() + ']'
+    return '[' + type(value).__name__ + ']'
+
+
+def batch_main_label(value, labels):
+    """Map only the pinned main-repository spellings, never repository aliases."""
+    detail = batch_label_description(value)
+    require(isinstance(value, str) and
+            (value.startswith('//') or value.startswith('@@//')),
+            'Unsupported main-repository cquery label: ' + detail)
+    label = value[2:] if value.startswith('@@//') else value
+    require(label in labels, 'Unexpected cquery label: ' + detail)
+    return label
+
+
 def batch_configuration(value, labels):
     """Read genuine 8.5.1 jsonproto metadata; never fingerprint build_options."""
     require(isinstance(value, dict) and isinstance(value.get('results'), list) and
@@ -933,12 +955,23 @@ def batch_configuration(value, labels):
     for row in value['results']:
         require(isinstance(row, dict), 'Different cquery target metadata')
         target = row.get('target', {})
+        require(isinstance(target, dict), 'Different cquery target structure')
+        if target.get('type') != 'RULE':
+            name = next((target[key].get('name') for key in
+                         ('sourceFile', 'generatedFile', 'packageGroup', 'environmentGroup', 'rule')
+                         if isinstance(target.get(key), dict)), None)
+            require(False, 'Cquery target is not a rule: ' + batch_label_description(name))
         rule = target.get('rule', {})
-        label = rule.get('name')
-        require(target.get('type') == 'RULE' and isinstance(rule.get('ruleClass'), str) and
-                rule['ruleClass'] not in ('', 'alias') and label in labels and label not in found,
-                'Different or repeated cquery rule label')
-        checksum = row.get('configuration', {}).get('checksum')
+        require(isinstance(rule, dict), 'Different cquery rule structure')
+        detail = batch_label_description(rule.get('name'))
+        require(isinstance(rule.get('ruleClass'), str) and rule['ruleClass'],
+                'Missing cquery rule class: ' + detail)
+        require(rule['ruleClass'] != 'alias', 'Cquery alias is not allowed: ' + detail)
+        label = batch_main_label(rule.get('name'), labels)
+        require(label not in found, 'Repeated cquery rule label after main mapping: ' + detail)
+        configuration = row.get('configuration', {})
+        require(isinstance(configuration, dict), 'Different cquery target configuration: ' + detail)
+        checksum = configuration.get('checksum')
         identifier = row.get('configurationId')
         require(type(identifier) is int and identifier in configurations and
                 checksum == configurations[identifier], 'Different cquery target configuration')
@@ -955,9 +988,9 @@ def batch_output_paths(text, labels):
         row = batch_json(line)
         require(isinstance(row, dict) and set(row) == {'label', 'files'},
                 'Different cquery file row')
-        label = row['label']
-        require(isinstance(label, str) and label in labels and label not in paths,
-                'Different or repeated cquery file label')
+        label = batch_main_label(row['label'], labels)
+        require(label not in paths, 'Repeated cquery file label after main mapping: ' +
+                batch_label_description(row['label']))
         files = row['files']
         require(isinstance(files, list) and len(files) == 1 and
                 isinstance(files[0], str) and files[0] and

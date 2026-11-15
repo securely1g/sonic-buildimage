@@ -1648,5 +1648,119 @@ class EffectiveHeapObservationTests(unittest.TestCase):
         self.assertEqual(logs.execute.call_count, 1)
 
 
+class CanonicalMainLabelTests(unittest.TestCase):
+    """Pinned8.5.1 Label.str and ProtoOutputFormatter emit @@// with Bzlmod."""
+
+    def setUp(self):
+        self.labels = sorted(caller.BATCH_MAIN_LABELS)[:2]
+
+    def metadata(self, labels):
+        return BatchedDiscoveryTests.metadata(self, labels)
+
+    def files(self, labels):
+        return '\n'.join(json.dumps({'label': label, 'files': ['bazel-out/file-' + str(i)]})
+                         for i, label in enumerate(labels))
+
+    def test_actual_canonical_rule_names_keep_full_configuration_binding(self):
+        canonical = ['@@' + label for label in self.labels]
+        self.assertEqual(caller.batch_configuration(self.metadata(canonical), self.labels), '1' * 64)
+        value = self.metadata(canonical)
+        value['configurations'].append({'id': 2, 'checksum': '2' * 64})
+        value['results'][1]['configurationId'] = 2
+        value['results'][1]['configuration']['checksum'] = '2' * 64
+        with self.assertRaisesRegex(ValueError, 'Ambiguous cquery batch configuration'):
+            caller.batch_configuration(value, self.labels)
+
+    def test_actual_starlark_canonical_names_map_to_exact_declared_targets(self):
+        canonical = ['@@' + label for label in self.labels]
+        self.assertEqual(caller.batch_output_paths(self.files(canonical), self.labels),
+                         {label: 'bazel-out/file-' + str(i) for i, label in enumerate(self.labels)})
+        with self.assertRaisesRegex(ValueError, 'Incomplete cquery file labels'):
+            caller.batch_output_paths(self.files(canonical[:1]), self.labels)
+
+    def test_representation_collisions_are_rejected_in_both_parsers(self):
+        label = self.labels[0]
+        for names in ([label, '@@' + label], ['@@' + label, label], ['@@' + label] * 2):
+            with self.subTest(names=names):
+                with self.assertRaisesRegex(ValueError, 'Repeated cquery rule label after main mapping'):
+                    caller.batch_configuration(self.metadata(names), [label])
+                with self.assertRaisesRegex(ValueError, 'Repeated cquery file label after main mapping'):
+                    caller.batch_output_paths(self.files(names), [label])
+
+    def test_external_legacy_unknown_and_malformed_labels_never_map(self):
+        label = self.labels[0]
+        for value in ('@other' + label, '@@other+' + label, '@' + label,
+                      '@@@' + label, '@@//unknown:target', label + '/different', None, {},
+                      '@@' + label + '\nprivate-value', '@@//' + 'x' * 10000 + ':target'):
+            with self.subTest(kind=type(value).__name__):
+                with self.assertRaises(ValueError):
+                    caller.batch_configuration(self.metadata([value]), [label])
+                with self.assertRaises(ValueError):
+                    caller.batch_output_paths(self.files([value]), [label])
+
+    def test_diagnostics_identify_guard_and_safe_label_without_response_dump(self):
+        label = '@@' + self.labels[0]
+        for kind, message in (('alias', 'Cquery alias is not allowed'),
+                              ('missing-class', 'Missing cquery rule class'),
+                              ('source-file', 'Cquery target is not a rule')):
+            value = self.metadata([label])
+            if kind == 'alias': value['results'][0]['target']['rule']['ruleClass'] = 'alias'
+            if kind == 'missing-class': value['results'][0]['target']['rule'].pop('ruleClass')
+            if kind == 'source-file': value['results'][0]['target'] = {
+                'type': 'SOURCE_FILE', 'sourceFile': {'name': label}}
+            with self.assertRaisesRegex(ValueError, message) as caught:
+                caller.batch_configuration(value, self.labels[:1])
+            self.assertIn(label, str(caught.exception))
+        huge = 'private-value\n' * 1000
+        with self.assertRaises(ValueError) as caught:
+            caller.batch_configuration(self.metadata([huge]), self.labels[:1])
+        message = str(caught.exception)
+        self.assertNotIn('private-value', message)
+        self.assertIn(hashlib.sha256(huge.encode()).hexdigest(), message)
+        self.assertLess(len(message), 160)
+
+    def test_canonical_rows_still_require_one_safe_relative_output(self):
+        label = '@@' + self.labels[0]
+        for files in ([], ['a', 'b'], ['/absolute'], ['../escape'], ['a/../escape'], ['a//b']):
+            with self.subTest(files=files), self.assertRaisesRegex(ValueError, 'single relative'):
+                caller.batch_output_paths(json.dumps({'label': label, 'files': files}), self.labels[:1])
+
+    def test_complete_mapping_uses_real_query_records_and_original_canonical_hashes(self):
+        fixture = BatchedDiscoveryTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        directory, targets, receipt, calls, builder = fixture.fixture()
+        original = builder.command_log.execute
+        def execute(argv, output, record, name, *, cwd, output_path):
+            original(argv, output, record, name, cwd=cwd, output_path=output_path)
+            if '--output=jsonproto' in argv:
+                value = json.loads(output_path.read_text())
+                for row in value['results']:
+                    row['target']['rule']['name'] = '@@' + row['target']['rule']['name']
+                text = json.dumps(value)
+            else:
+                rows = [json.loads(line) for line in output_path.read_text().splitlines()]
+                for row in rows: row['label'] = '@@' + row['label']
+                text = '\n'.join(json.dumps(row) for row in rows)
+            output_path.write_text(text)
+        builder.command_log.execute = execute
+        paths = caller.collect_batched_component_exports(fixture.root, directory, receipt, targets,
+            builder=builder, check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=[],
+            additional_targets=[], execution_log=directory / 'execution.json')
+        self.assertEqual(set(paths), set(targets))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(receipt['commands']), 6)
+        self.assertEqual(receipt['archive_discovery']['query_count'], 4)
+        for group in receipt['archive_discovery']['groups']:
+            for query in group['queries']:
+                output = directory / (query['name'] + '.json')
+                self.assertIn('@@//', output.read_text())
+                self.assertEqual(query['sha256'], sha(output))
+                self.assertEqual(query['bytes'], output.stat().st_size)
+        for name, target in targets.items():
+            self.assertEqual(receipt['artifacts'][name]['target'], target)
+            self.assertEqual(receipt['artifacts'][name]['sha256'], sha(paths[name]))
+
+
 if __name__ == '__main__':
     unittest.main()
