@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, vs-bitarray-abi-debug, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt, vs-configured-source-diagnostic]
+        options: [none, vs-bitarray-abi-debug, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt, vs-configured-source-diagnostic, vs-kernel-preserve]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -4798,7 +4798,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":143315,"sha256":"f26e175b339c02066c70ee7543ab2c9284f96406842bc4135e7a8f71fa036531"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":20703,"sha256":"eff09671afe46e50812551c21e9aa71fd965409d4ac9f2f625d5c55e1d895523"}}')
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":148701,"sha256":"6f3fbed8992917dea3b0003a1f48405f1bded94fbacedf60206c07dbea5714c9"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":21314,"sha256":"1ede9fe34763907665b13fd3b03abcfb1965661f22eed266d073b6f7de657920"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -6284,7 +6284,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":143315,"sha256":"f26e175b339c02066c70ee7543ab2c9284f96406842bc4135e7a8f71fa036531"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":20703,"sha256":"eff09671afe46e50812551c21e9aa71fd965409d4ac9f2f625d5c55e1d895523"},"tools/bazel/ci/diagnose_vs_configured_sources.py":{"bytes":14387,"sha256":"f993687cb2793fb8c78ba23a3699400fc0e62cdc8eae5fd32ec96da585f51f67"}}')
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":148701,"sha256":"6f3fbed8992917dea3b0003a1f48405f1bded94fbacedf60206c07dbea5714c9"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":21314,"sha256":"1ede9fe34763907665b13fd3b03abcfb1965661f22eed266d073b6f7de657920"},"tools/bazel/ci/diagnose_vs_configured_sources.py":{"bytes":14559,"sha256":"4da71c8364378fe4ef87f72f7cba0a9625bc02dddd674a64b252915229828a58"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -6430,3 +6430,211 @@ jobs:
           if-no-files-found: warn
           compression-level: 0
           retention-days: 14
+
+  vs_kernel_preserve:
+    name: Preserve original kernel package bytes without rebuilding (AMD64)
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-kernel-preserve' &&
+      inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs &&
+      github.repository == 'securely1g/sonic-buildimage' &&
+      github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 90
+    concurrency:
+      group: vs-kernel-preserve-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    permissions:
+      actions: read
+      contents: read
+    env:
+      COPY_PLAN_SHA256: b89f1f81a7fc14afed05290b9ec45e16f394a60bb9b5d98fda615fbaf189658e
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Allocate fresh paths for the exact kernel preservation scope
+        id: paths
+        timeout-minutes: 1
+        env:
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PY_PATHS'
+          import os,re,time
+          from pathlib import Path
+          assert not any(os.environ[k] for k in ('SOURCE_REVISION','REGISTRY_REVISION','SOURCE_CI_REQUEST','SOURCE_INPUTS_RUN'))
+          assert os.environ['REGISTRY_CONSUMER'] == 'none'
+          assert os.getuid() == os.geteuid() == 1000 and os.getgid() == os.getegid()
+          run,attempt,worker = (os.environ[k] for k in ('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','RUNNER_NAME'))
+          assert all(re.fullmatch('[1-9][0-9]*',x) for x in (run,attempt))
+          assert re.fullmatch('ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?',worker)
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          assert workspace.resolve(strict=True) == workspace and workspace.is_relative_to('/actions/_work')
+          relative = 'kernel-preserve-'+run+'-'+attempt+'-'+worker
+          root = workspace/relative
+          assert not root.exists() and not root.is_symlink()
+          root.mkdir(mode=0o700)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream: stream.write('relative='+relative+'\n')
+          with Path(os.environ['GITHUB_ENV']).open('a') as stream: stream.write('COPY_ROOT='+str(root)+'\nCOPY_DEADLINE='+str(int(time.time())+80*60)+'\n')
+          PY_PATHS
+      - name: Check out the frozen kernel preservation input plan
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.relative }}/control
+          sparse-checkout: tools/bazel/ci/vs_kernel_preservation_inputs.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Check out unchanged current admission and exact-copy owners
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c02d93956919e4ea6886f347be4ac0ab6e3e36f0
+          path: ${{ steps.paths.outputs.relative }}/source
+          sparse-checkout: tools/bazel/ci
+          persist-credentials: false
+      - name: Check out the pinned upstream artifact transfer
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: actions/download-artifact
+          ref: 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+          path: ${{ steps.paths.outputs.relative }}/download-action
+          sparse-checkout: |
+            dist
+            action.yml
+            package.json
+          persist-credentials: false
+      - name: Verify the original producer and reserve exact-copy storage
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I -S -B - <<'PY_ADMIT'
+          import hashlib,json,os,subprocess,sys,time
+          from pathlib import Path
+          root = Path(os.environ['COPY_ROOT']).resolve(strict=True)
+          assert time.time() < int(os.environ['COPY_DEADLINE'])
+          control = root/'control'
+          source = root/'source'
+          assert subprocess.check_output(['git','-C',str(control),'rev-parse','HEAD'],text=True).strip() == os.environ['GITHUB_SHA']
+          assert not subprocess.check_output(['git','-C',str(control),'status','--porcelain','--untracked-files=all'],text=True).strip()
+          raw = (control/'tools/bazel/ci/vs_kernel_preservation_inputs.json').read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == os.environ['COPY_PLAN_SHA256']
+          value = json.loads(raw)
+          assert value['status'] == 'READY_ORIGINAL_KERNEL_PRESERVATION_INPUTS'
+          assert value['source'] == {'helper_revision':'c02d93956919e4ea6886f347be4ac0ab6e3e36f0','helper_tree':'df5f59d6b75ab53d7a9fc47d3a86bf1256d112ec'}
+          assert subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip() == value['source']['helper_revision']
+          assert subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD^{tree}'],text=True).strip() == value['source']['helper_tree']
+          assert not subprocess.check_output(['git','-C',str(source),'status','--porcelain','--untracked-files=all'],text=True).strip()
+          for name, expected in value['owner_files'].items():
+              path = source/name
+              assert path.is_file() and not path.is_symlink()
+              body = path.read_bytes()
+              assert {'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest()} == expected
+          assert len(value['files']) == 6 and len(value['transfer']) == 1 and value['groups'] == {'source':[]}
+          assert value['transfer'][0]['artifact_id'] == 13683449185 and value['original_source_producer'] == '1ea1efba4f9c4c1db52d557f476c79aafaa42991'
+          assert sum(x['bytes'] for x in value['files'].values()) == 1056477281
+          assert all(value[k] is False for k in ('VS_admission','build_performed','new_DEB_generation','kernel_acceptance','inventory_mutation'))
+          sys.path.insert(0,str(source))
+          from tools.bazel.ci import vs_reuse_stage as stage
+          from tools.bazel.ci.public_artifacts import safe_json
+          assert Path(stage.__file__).resolve() == source/'tools/bazel/ci/vs_reuse_stage.py'
+          import shutil
+          from datetime import datetime,timezone
+          download = root/'download-action'
+          assert subprocess.check_output(['git','-C',str(download),'rev-parse','HEAD'],text=True).strip() == '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
+          assert not subprocess.check_output(['git','-C',str(download),'status','--porcelain','--untracked-files=all'],text=True).strip()
+          assert hashlib.sha256((download/'dist/index.js').read_bytes()).hexdigest() == 'f2b9b31a73b1952584858e152e912c3825ad8ae061f280edab14b842f40893c7'
+          for name in ('inbox','subset','receipts'):
+              (root/name).mkdir(mode=0o700)
+          assert root.stat().st_dev == (root/'inbox').stat().st_dev == Path(os.environ['RUNNER_TEMP']).stat().st_dev
+          budget = stage.storage_budget(value)
+          assert shutil.disk_usage(root).free >= budget['required_free_bytes']
+          producers = stage.admit(value)
+          assert stage.timestamp(producers['13683449185']['artifact']['expires_at']) > datetime.now(timezone.utc)
+          result = {'status':'ORIGINAL_ARTIFACT_METADATA_ADMITTED_ONLY','producers':producers,'download_groups':stage.download_groups(value),'storage':budget}
+          with (root/'receipts/admission.private.json').open('x') as stream:
+              json.dump(result,stream,sort_keys=True)
+          PY_ADMIT
+      - name: Download the one original kernel artifact through the pinned upstream action
+        timeout-minutes: 60
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const {spawnSync} = require('node:child_process');
+            const root = process.env.COPY_ROOT;
+            const admitted = JSON.parse(fs.readFileSync(path.join(root,'receipts/admission.private.json'),'utf8'));
+            if (admitted.status !== 'ORIGINAL_ARTIFACT_METADATA_ADMITTED_ONLY' || admitted.download_groups.length !== 1) throw new Error('Original metadata not admitted');
+            const group = admitted.download_groups[0];
+            if (group.run_id !== 42620140520 || group.artifact_ids.length !== 1 || group.artifact_ids[0] !== 13683449185 || group.directory !== 'kernel-source-packages-amd64') throw new Error('Kernel original changed');
+            const available = Number(process.env.COPY_DEADLINE)*1000 - Date.now() - 20*60*1000;
+            if (!Number.isFinite(available) || available < 1) throw new Error('Transfer exhausted copy/upload reserve');
+            const child = spawnSync(process.execPath,[path.join(root,'download-action/dist/index.js')],{
+              stdio:'inherit',timeout:Math.min(60*60*1000,Math.floor(available)),
+              env:{...process.env,
+                'INPUT_GITHUB-TOKEN':core.getInput('github-token',{required:true}),
+                'INPUT_REPOSITORY':'securely1g/sonic-buildimage',
+                'INPUT_RUN-ID':String(group.run_id),'INPUT_ARTIFACT-IDS':group.artifact_ids.join(','),
+                'INPUT_NAME':'','INPUT_PATTERN':'','INPUT_PATH':path.join(root,'inbox',group.directory),
+                'INPUT_MERGE-MULTIPLE':'false','INPUT_SKIP-DECOMPRESS':'false','INPUT_DIGEST-MISMATCH':'error'}
+            });
+            if (child.error || child.status !== 0) throw new Error('Pinned original artifact download failed');
+      - name: Copy the six unchanged original kernel members and record transport lineage
+        timeout-minutes: 10
+        run: |
+          python3 -I -S -B - <<'PY_COPY'
+          import hashlib,json,os,subprocess,sys,time
+          from pathlib import Path
+          root = Path(os.environ['COPY_ROOT']).resolve(strict=True)
+          assert time.time() < int(os.environ['COPY_DEADLINE'])
+          control = root/'control'
+          source = root/'source'
+          assert subprocess.check_output(['git','-C',str(control),'rev-parse','HEAD'],text=True).strip() == os.environ['GITHUB_SHA']
+          assert not subprocess.check_output(['git','-C',str(control),'status','--porcelain','--untracked-files=all'],text=True).strip()
+          raw = (control/'tools/bazel/ci/vs_kernel_preservation_inputs.json').read_bytes()
+          assert hashlib.sha256(raw).hexdigest() == os.environ['COPY_PLAN_SHA256']
+          value = json.loads(raw)
+          assert value['status'] == 'READY_ORIGINAL_KERNEL_PRESERVATION_INPUTS'
+          assert value['source'] == {'helper_revision':'c02d93956919e4ea6886f347be4ac0ab6e3e36f0','helper_tree':'df5f59d6b75ab53d7a9fc47d3a86bf1256d112ec'}
+          assert subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip() == value['source']['helper_revision']
+          assert subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD^{tree}'],text=True).strip() == value['source']['helper_tree']
+          assert not subprocess.check_output(['git','-C',str(source),'status','--porcelain','--untracked-files=all'],text=True).strip()
+          for name, expected in value['owner_files'].items():
+              path = source/name
+              assert path.is_file() and not path.is_symlink()
+              body = path.read_bytes()
+              assert {'bytes':len(body),'sha256':hashlib.sha256(body).hexdigest()} == expected
+          assert len(value['files']) == 6 and len(value['transfer']) == 1 and value['groups'] == {'source':[]}
+          assert value['transfer'][0]['artifact_id'] == 13683449185 and value['original_source_producer'] == '1ea1efba4f9c4c1db52d557f476c79aafaa42991'
+          assert sum(x['bytes'] for x in value['files'].values()) == 1056477281
+          assert all(value[k] is False for k in ('VS_admission','build_performed','new_DEB_generation','kernel_acceptance','inventory_mutation'))
+          sys.path.insert(0,str(source))
+          from tools.bazel.ci import vs_reuse_stage as stage
+          from tools.bazel.ci.public_artifacts import safe_json
+          assert Path(stage.__file__).resolve() == source/'tools/bazel/ci/vs_reuse_stage.py'
+          result = stage.stage(root/'subset',root/'inbox',value)
+          assert result == {'status':'ORIGINAL_FILE_BYTES_STAGED_ONLY','files':6,'kernel_native_package_acceptance':False,'VS_qualified':False}
+          subset = root/'subset'
+          assert set(p.name for p in subset.iterdir()) == set(value['files'])
+          summary = json.loads((subset/'summary.json').read_bytes())
+          safe_json(summary)
+          record = {'schema':1,'status':'ORIGINAL_KERNEL_MEMBER_BYTES_PRESERVED_ONLY','original_producer':value['original_source_producer'],'original_transfer':value['transfer'][0],'original_files':value['files'],'original_metadata_transport':value['original_metadata_transport'],'copy_plan_sha256':os.environ['COPY_PLAN_SHA256'],'copy_helper_source':value['source'],'copy_operator':{'repository':os.environ['GITHUB_REPOSITORY'],'head':os.environ['GITHUB_SHA'],'run_id':int(os.environ['GITHUB_RUN_ID']),'attempt':int(os.environ['GITHUB_RUN_ATTEMPT']),'job':os.environ['GITHUB_JOB']},'staging':result,'outer_artifact_is_new_transport':True,'original_ZIP_container_reproduced':False,'build_performed':False,'new_DEB_generation':False,'kernel_acceptance':False,'VS_admission':False,'inventory_mutation':False}
+          safe_json(record)
+          with (subset/'transport-binding.json').open('x') as stream:
+              json.dump(record,stream,indent=2,sort_keys=True);stream.write('\n')
+          PY_COPY
+      - name: Retain original kernel member bytes and separate copy provenance
+        timeout-minutes: 15
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-original-kernel-preserved-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.COPY_ROOT }}/subset
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30

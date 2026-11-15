@@ -15,7 +15,7 @@ import sys
 
 OLD_REVISION = 'ecf71beb27adbb14962070bed85ee41b3626d40e'
 OLD_SHA = 'c20ef5bc44334c9d369467f4ada216a6135ebc5d63be20a7ea3d0f2844539dc4'
-NEW_SHA = 'eff09671afe46e50812551c21e9aa71fd965409d4ac9f2f625d5c55e1d895523'
+NEW_SHA = '1ede9fe34763907665b13fd3b03abcfb1965661f22eed266d073b6f7de657920'
 HELPER_SHA = '90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8'
 PUBLIC_SHA = '69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4'
 MAX_METADATA = 128 * 1024**2
@@ -193,6 +193,7 @@ def run(root):
         helper.require(raw_old.stat().st_size <= MAX_METADATA, 'Original metadata exceeds bounded retention')
         result['original_rows'] = classify_rows(raw_old.read_bytes(), public)
         stage = 'structured-source-query'
+        result['structured_discovery']['status'] = 'running'
         capture_paths.extend([
             ('structured-targets.raw.json', new_directory / 'source-configured-targets.raw.json', True),
             ('structured-query.stderr.log', new_directory / 'source-configured-targets.log', False),
@@ -209,6 +210,8 @@ def run(root):
     except Exception as error:
         result['status'] = 'failed'
         result['failure_stage'] = stage
+        if stage == 'structured-source-query':
+            result['structured_discovery']['status'] = 'failed'
         result['failure_type'] = type(error).__name__
         message = str(error)[:512]
         try:

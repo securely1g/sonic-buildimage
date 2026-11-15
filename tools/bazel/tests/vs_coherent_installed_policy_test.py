@@ -2077,7 +2077,7 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
         spec.loader.exec_module(cls.public)
         cls.owner_path = ROOT / 'tools/bazel/ci/container.py'
         parsed = ast.parse(cls.owner_path.read_text())
-        names = {'source_workspace_argument', 'configured_source_labels', 'declared_sources'}
+        names = {'source_workspace_argument', 'configured_source_label', 'configured_source_labels', 'declared_sources'}
         nodes = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in names]
         constants = {node.targets[0].id: ast.literal_eval(node.value) for node in parsed.body
                      if isinstance(node, ast.Assign) and len(node.targets) == 1 and
@@ -2381,6 +2381,48 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.collect(rows=json.dumps(bad))
                 self.assertEqual(len(self.calls), 1)
+
+
+    def test_all_genuine_external_name_occurrences_are_retained_and_quoted(self):
+        # Names/occurrences come from original diagnostic.json15c9e78f. These
+        # synthetic typed wrappers make no claim about each original row's kind.
+        observed = ('@@rules_python++pip+scapy_test_pip_313_setuptools//:site-packages/setuptools/_vendor/jaraco/text/Lorem ipsum.txt', '@@rules_python++pip+scapy_test_pip_313_setuptools//:site-packages/setuptools/command/launcher manifest.xml', '@@rules_python++pip+scapy_test_pip_313_setuptools//:site-packages/setuptools/script (dev).tmpl', '@@rules_python++pip+config_engine_pip_313_setuptools//:site-packages/setuptools/script (dev).tmpl', '@@rules_python++pip+config_engine_pip_313_setuptools//:site-packages/setuptools/_vendor/jaraco/text/Lorem ipsum.txt', '@@rules_python++pip+config_engine_pip_313_setuptools//:site-packages/setuptools/command/launcher manifest.xml', '@@rules_python++python+python_3_11_x86_64-unknown-linux-gnu//:lib/python3.11/site-packages/setuptools/command/launcher manifest.xml', '@@rules_python++python+python_3_11_x86_64-unknown-linux-gnu//:lib/python3.11/site-packages/setuptools/_vendor/jaraco/text/Lorem ipsum.txt', '@@rules_python++python+python_3_11_x86_64-unknown-linux-gnu//:lib/python3.11/site-packages/setuptools/script (dev).tmpl', '@@libyang+//:models/ietf-yang-library@2019-01-04.yang', '@@libyang+//:models/ietf-yang-schema-mount@2019-01-14.yang', '@@libyang+//:models/yang@2025-01-29.yang', '@@libyang+//:models/ietf-yang-metadata@2016-08-05.yang', '@@libyang+//:models/ietf-datastores@2018-02-14.yang', '@@libyang+//:models/ietf-inet-types@2013-07-15.yang', '@@libyang+//:models/ietf-yang-types@2013-07-15.yang', '@@libyang+//:models/ietf-yang-structure-ext@2020-06-17.yang', '@@rules_python++pip+sonic_yang_models_pip_313_setuptools//:site-packages/setuptools/script (dev).tmpl', '@@rules_python++pip+sonic_yang_models_pip_313_setuptools//:site-packages/setuptools/_vendor/jaraco/text/Lorem ipsum.txt', '@@libyang+//:models/ietf-yang-library@2019-01-04.h', '@@libyang+//:models/ietf-yang-types@2013-07-15.h', '@@libyang+//:models/ietf-yang-schema-mount@2019-01-14.h', '@@libyang+//:models/ietf-yang-metadata@2016-08-05.h', '@@libyang+//:models/ietf-inet-types@2013-07-15.h', '@@libyang+//:models/yang@2025-01-29.h', '@@rules_python++pip+sonic_yang_models_pip_313_setuptools//:site-packages/setuptools/command/launcher manifest.xml', '@@libyang+//:models/ietf-datastores@2018-02-14.h', '@@libyang+//:models/ietf-yang-structure-ext@2020-06-17.h', '@@rules_distroless++apt+trixie_libboost1.83-dev-amd64_1.83.0-4.2//:usr/include/boost/serialization/collection_size_type copy.hpp', '@@rules_distroless++apt+trixie_libboost1.83-dev-amd64_1.83.0-4.2//:usr/include/boost/serialization/collection_size_type copy.hpp', '@@rules_distroless++apt+trixie_libboost1.83-dev-amd64_1.83.0-4.2//:usr/include/boost/serialization/collection_size_type copy.hpp')
+        self.assertEqual(len(observed), 31)
+        self.assertEqual(len(set(observed)), 29)
+        fields = {'RULE': 'rule', 'SOURCE_FILE': 'sourceFile', 'GENERATED_FILE': 'generatedFile',
+                  'PACKAGE_GROUP': 'packageGroup', 'ENVIRONMENT_GROUP': 'environmentGroup'}
+        for kind, field in fields.items():
+            with self.subTest(kind=kind):
+                self.calls.clear()
+                raw = json.dumps({'target': self.records + [
+                    {'type': kind, field: {'name': label}} for label in observed]})
+                _, artifacts = self.collect(rows=raw)
+                for label in set(observed):
+                    self.assertEqual(self.expression.count('"' + label + '"'), 2)
+                self.assertEqual(self.receipt['source_discovery']['configured_rows'], 35)
+                self.assertEqual(self.receipt['source_discovery']['configured_labels'], 33)
+                self.assertEqual((artifacts / 'source-configured-targets.raw.json').read_text(), raw)
+
+    def test_only_reviewed_canonical_external_target_punctuation_is_extended(self):
+        for label in ('@@repo+//:Lorem ipsum.txt', '@@repo+//:script (dev).tmpl',
+                      '@@libyang+//:models/ietf-yang-library@2019-01-04.yang'):
+            self.assertEqual(self.owner.configured_source_label(label), label)
+            with self.assertRaisesRegex(ValueError, 'invalid-label'):
+                self.public.label(label)
+        for label in ('//app:Lorem ipsum.txt', '@repo//:Lorem ipsum.txt', '@@//app:Lorem ipsum.txt',
+                      '@@repo//:a"b', "@@repo//:a'b", '@@repo//:a\\b', '@@repo//:a\n',
+                      '@@repo//:a\t', '@@repo//:a\x00', '@@repo//:a\x7f', '@@repo//:a[b]',
+                      '@@repo//:a;b', '@@repo//:a|b', '@@repo//:a$b', '@@repo//:a:b',
+                      '@@repo//:café'):
+            with self.subTest(label=label), self.assertRaisesRegex(ValueError, 'invalid-label'):
+                self.owner.configured_source_label(label)
+
+    def test_every_flat_query_name_is_a_single_quoted_word(self):
+        _, _ = self.collect()
+        selected = self.expression.split('set(', 1)[1].split(')', 1)[0]
+        expected = ['//app:alias', '//app:input.txt', '//lib:actual', '@@selected+//pkg:dependency']
+        self.assertEqual(selected, ' '.join('"' + label + '"' for label in sorted(expected)))
+        self.assertNotIn('deps(', self.expression)
 
 if __name__ == '__main__':
     unittest.main()

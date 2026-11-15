@@ -64,6 +64,17 @@ def query_tests(suite, bazel, artifacts, receipt, execute):
     return sorted(public_artifacts.label(target) for target in targets)
 
 
+def configured_source_label(value):
+    """Allow observed punctuation only in private canonical external target names."""
+    try:
+        return public_artifacts.label(value)
+    except public_artifacts.PublicArtifactError:
+        require(isinstance(value, str) and re.fullmatch(
+            r"@@[A-Za-z0-9_.+~-]+//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+@() -]+", value),
+            "invalid-label")
+        return value
+
+
 def configured_source_labels(targets, bazel, options, artifacts, receipt, execute):
     """Union original target names, including configured aspect and alias nodes."""
     metadata = artifacts / "source-configured-targets.raw.json"
@@ -90,7 +101,7 @@ def configured_source_labels(targets, bazel, options, artifacts, receipt, execut
         label = target[field]["name"]
         if label.startswith("@@//"):
             label = label[2:]
-        public_artifacts.label(label)
+        configured_source_label(label)
         # Every configured node remains in the raw QueryResult. Repeated names
         # from configurations or applied aspects form the same source-label union.
         labels.add(label)
@@ -114,7 +125,9 @@ def declared_sources(targets, bazel, workspace, artifacts, receipt, execute, ext
                          artifacts, receipt, "source-inputs").splitlines()
     else:
         configured = configured_source_labels(targets, bazel, options, artifacts, receipt, execute)
-        selected = "set(" + " ".join(configured) + ")"
+        # Lexer.quotedWord preserves this reviewed alphabet literally; neither
+        # accepted label alphabet contains quotes, backslashes or control bytes.
+        selected = "set(" + " ".join('"' + label + '"' for label in configured) + ")"
         # Keep every configured package, including external ones that may load
         # local .bzl files. This second query never traverses target dependencies.
         expression = 'kind("source file", ' + selected + ") union buildfiles(" + selected + ")"
