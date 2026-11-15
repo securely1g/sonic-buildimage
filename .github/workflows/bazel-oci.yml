@@ -1699,7 +1699,8 @@ jobs:
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json
           root = Path('artifacts/gbsyncd')
           for path in root.glob('*.json'):
-              if path.name not in ('build-receipt.json', 'module-graph.json'):
+              # The graph inspection command is private and is absent from the upload list.
+              if path.name not in ('build-receipt.json', 'module-graph-inspection.json', 'module-graph.json'):
                   value = json.loads(path.read_text())
                   if path.name == 'policy.json':
                       # This is checked-in image configuration, not a captured

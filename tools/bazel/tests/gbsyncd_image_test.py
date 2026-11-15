@@ -2,6 +2,9 @@
 
 import ast
 import copy
+import json
+import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -130,6 +133,33 @@ class GearboxVimReceipt(unittest.TestCase):
         for code, stdout in ((0, "Tiny version"), (0, "Small version"), (0, ""), (1, "Huge version")):
             with self.subTest(code=code, stdout=stdout), self.assertRaises(AssertionError):
                 self.receipt({"returncode": code, "stdout": stdout})
+
+
+class GearboxEvidenceTest(unittest.TestCase):
+    def test_private_inspection_does_not_block_or_enter_the_public_upload(self):
+        import yaml
+
+        workspace = gbsyncd_image.ROOT
+        workflow = yaml.safe_load((workspace / ".github/workflows/bazel-oci.yml").read_text())
+        steps = workflow["jobs"]["gearbox_archive"]["steps"]
+        review = next(s["run"] for s in steps if s.get("name") == "Review public gearbox evidence")
+        upload = next(s["with"]["path"] for s in steps if s.get("name") == "Retain gearbox archives and source evidence")
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary)
+            artifacts = destination / "artifacts/gbsyncd"
+            artifacts.mkdir(parents=True)
+            private = artifacts / "module-graph-inspection.json"
+            private.write_text(json.dumps({"argv": ["bazel", "mod", "graph"], "returncode": 0}))
+            self.assertFalse(any(private in destination.glob(pattern) for pattern in upload.splitlines()))
+            env = {**os.environ, "PYTHONPATH": str(workspace)}
+            subprocess.run(["bash", "-eu", "-c", review], cwd=destination, env=env, check=True)
+            public = artifacts / "validation.json"
+            public.write_text(json.dumps({"argv": ["private"]}))
+            self.assertTrue(any(public in destination.glob(pattern) for pattern in upload.splitlines()))
+            rejected = subprocess.run(["bash", "-eu", "-c", review], cwd=destination, env=env,
+                                      capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("diagnostic-json-field", rejected.stderr)
 
 
 if __name__ == "__main__":
