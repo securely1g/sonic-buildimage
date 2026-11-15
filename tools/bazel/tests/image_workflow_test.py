@@ -473,7 +473,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         for step in native["steps"]:
             self.assertNotIn("/runner-unused/", step.get("run", ""))
 
-    def test_self_hosted_archives_do_not_mount_or_delete_host_sdks(self):
+    def test_archive_container_reaps_child_processes_and_preserves_host_sdks(self):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         )
@@ -486,6 +486,7 @@ class VerificationWorkflowTest(unittest.TestCase):
              "arm64": ["self-hosted", "linux", "bazel-arm64"]},
         )
         self.assertFalse(archive["container"].get("volumes"))
+        self.assertIn("--init", archive["container"]["options"].split())
         self.assertNotIn(
             "Allocate source-build space on this disposable runner",
             [step.get("name") for step in archive["steps"]],
