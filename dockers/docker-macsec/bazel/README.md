@@ -35,8 +35,8 @@ The runtime adds its `netdev` group while preserving the parent's accounts.
 `SONIC_PACKAGES_LOCAL` still selects the enabled runtime/debug package; the
 installer accepts the exported `latest` tag and adds `SONIC_IMAGE_VERSION`.
 
-From a clean, committed checkout on native AMD64/Trixie, select the review
-catalog listed in the PR through `SONIC_BASE_REVIEW_REGISTRY`, then run:
+From a clean, committed checkout on native AMD64/Trixie, run the build and
+validation commands with the registries configured in the root `.bazelrc`.
 
 ```sh
 python3 -B tools/bazel/ci/macsec_image.py build --artifacts artifacts/macsec
@@ -49,8 +49,5 @@ The shared `bazel-oci.yml` workflow builds the AMD64 archives once, checks their
 contents and incremental reuse, then passes those same archives to the installed
 service test. Output lookup uses each build's recorded execution root, and
 incremental receipts retain action/cache counters when Bazel reports them.
-Review builds use `tools/bazel/ci/libteam_draft_bazel.sh` and one
-complete catalog selected by `SONIC_BASE_REVIEW_REGISTRY`; the default remains
-registry `main` plus BCR. The receipt records the actual selection. This PR stays
-Draft until its required source and registry entries land. Make/Bazel image
-equivalence remains a separate pre-merge requirement.
+Both local and CI builds resolve the WPA and build-infra modules from the SONiC
+registry on `main`. The build also uses the Bazel Central Registry.

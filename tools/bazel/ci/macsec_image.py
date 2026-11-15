@@ -78,8 +78,7 @@ def build_images(args, directory):
                   platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                   "MACsec image acceptance requires native AMD64/Trixie")
     receipt = {"status": "building", "architecture": "amd64", "commands": [],
-               "invocation": {"bazel": args.bazel,
-                              "review_registry_revision": os.environ.get("SONIC_BASE_REVIEW_REGISTRY")}}
+               "invocation": {"bazel": args.bazel}}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
         clean_source(directory)
@@ -378,7 +377,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("build", "validate", "incremental"))
     parser.add_argument("--artifacts", type=Path, required=True)
-    parser.add_argument("--bazel", default="tools/bazel/ci/libteam_draft_bazel.sh")
+    parser.add_argument("--bazel", default="bazel")
     args = parser.parse_args()
     directory = args.artifacts.resolve(); directory.mkdir(parents=True, exist_ok=True)
     if args.phase == "build": build_images(args, directory)
