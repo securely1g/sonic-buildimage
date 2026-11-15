@@ -65,26 +65,36 @@ def query_tests(suite, bazel, artifacts, receipt, execute):
 
 
 def configured_source_labels(targets, bazel, options, artifacts, receipt, execute):
-    """Keep original labels from the selected configured graph, including aliases."""
-    metadata = artifacts / "source-configured-targets.raw.txt"
+    """Union original target names, including configured aspect and alias nodes."""
+    metadata = artifacts / "source-configured-targets.raw.json"
     metadata.touch(mode=0o600, exist_ok=False)
     execute([bazel, "cquery", *options, "--implicit_deps", "--tool_deps", "--include_aspects",
-             "--consistent_labels", "--output=label", "--show_config_fragments=off",
+             "--consistent_labels", "--output=jsonproto", "--noproto:include_configurations",
+             "--proto:output_rule_attrs=", "--noproto:rule_inputs_and_outputs",
+             "--noproto:locations", "--transitions=none",
              "deps(set(" + " ".join(targets) + "))"],
             artifacts, receipt, "source-configured-targets", output_path=metadata)
+    value = public_artifacts.load_json(metadata.read_text())
+    require(isinstance(value, dict) and set(value) == {"target"} and
+            isinstance(value["target"], list), "invalid configured source QueryResult")
+    fields = {"RULE": "rule", "SOURCE_FILE": "sourceFile", "GENERATED_FILE": "generatedFile",
+              "PACKAGE_GROUP": "packageGroup", "ENVIRONMENT_GROUP": "environmentGroup"}
     labels, rows = set(), 0
-    with metadata.open() as stream:
-        for number, line in enumerate(stream, 1):
-            match = re.fullmatch(r"([^\s()]+) \((?:[0-9a-f]+|null)\)\n", line)
-            require(match is not None, "invalid configured source label row " + str(number))
-            label = match[1]
-            if label.startswith("@@//"):
-                label = label[2:]
-            public_artifacts.label(label)
-            # These suffixes are display IDs, never configuration identities.
-            # Retain every raw row and union labels reached in several configs.
-            labels.add(label)
-            rows += 1
+    for number, target in enumerate(value["target"], 1):
+        require(isinstance(target, dict) and isinstance(target.get("type"), str) and
+                target["type"] in fields, "invalid configured source target kind at row " + str(number))
+        field = fields[target["type"]]
+        require(set(target) == {"type", field} and isinstance(target[field], dict) and
+                isinstance(target[field].get("name"), str),
+                "invalid configured source target shape at row " + str(number))
+        label = target[field]["name"]
+        if label.startswith("@@//"):
+            label = label[2:]
+        public_artifacts.label(label)
+        # Every configured node remains in the raw QueryResult. Repeated names
+        # from configurations or applied aspects form the same source-label union.
+        labels.add(label)
+        rows += 1
     require(rows > 0 and all(target in labels for target in targets if target.startswith("//")),
             "configured source query omitted a selected local target")
     receipt["source_discovery"] = {

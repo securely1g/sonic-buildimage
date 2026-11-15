@@ -2102,8 +2102,13 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('retained source input\n')
-        self.rows = ('@@//app:alias (abc1234)\n@@//lib:actual (abc1234)\n'
-                     '@@//app:input.txt (null)\n@@selected+//pkg:dependency (def4321)\n')
+        self.records = [
+            {'type': 'RULE', 'rule': {'name': '@@//app:alias', 'ruleClass': 'alias'}},
+            {'type': 'RULE', 'rule': {'name': '@@//lib:actual', 'ruleClass': 'filegroup'}},
+            {'type': 'SOURCE_FILE', 'sourceFile': {'name': '@@//app:input.txt'}},
+            {'type': 'RULE', 'rule': {'name': '@@selected+//pkg:dependency', 'ruleClass': 'filegroup'}},
+        ]
+        self.rows = json.dumps({'target': self.records})
         self.input_rows = ('@@//app:input.txt\n@@//app:BUILD.bazel\n'
                            '@@//defs:transitive.bzl\n@@selected+//pkg:BUILD.bazel\n')
         self.options = ['--config=syncd-dash', '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
@@ -2135,26 +2140,27 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
         self.assertEqual(command[:2], ['fixed-proxy', 'cquery'])
         self.assertEqual(command[2:2 + len(self.options)], self.options)
         for option in ('--implicit_deps', '--tool_deps', '--include_aspects',
-                       '--consistent_labels', '--output=label', '--show_config_fragments=off'):
+                       '--consistent_labels', '--output=jsonproto', '--noproto:include_configurations',
+                       '--proto:output_rule_attrs=', '--noproto:rule_inputs_and_outputs',
+                       '--noproto:locations', '--transitions=none'):
             self.assertIn(option, command)
         self.assertEqual(command[-1], 'deps(set(//app:alias))')
         for label in ('//app:alias', '//lib:actual', '@@selected+//pkg:dependency'):
             self.assertIn(label, self.expression)
         self.assertIn('defs/transitive.bzl', names)
-        self.assertEqual((artifacts / 'source-configured-targets.raw.txt').read_text(), self.rows)
+        self.assertEqual((artifacts / 'source-configured-targets.raw.json').read_text(), self.rows)
 
     def test_multiple_configurations_and_duplicate_rows_form_one_source_union(self):
-        rows = self.rows + '@@//app:alias (fedcba9)\n@@//app:alias (abc1234)\n'
+        rows = json.dumps({'target': self.records + [self.records[0], self.records[0]]})
         _, artifacts = self.collect(rows=rows)
         self.assertEqual(self.receipt['source_discovery']['configured_rows'], 6)
         self.assertEqual(self.receipt['source_discovery']['configured_labels'], 4)
-        self.assertEqual((artifacts / 'source-configured-targets.raw.txt').read_text(), rows)
+        self.assertEqual((artifacts / 'source-configured-targets.raw.json').read_text(), rows)
         self.assertEqual(self.expression.count('//app:alias'), 2)
 
     def test_malformed_or_injected_rows_fail_before_buildfiles(self):
-        for bad in ('@@//app:alias (abc1234)', '@@//app:alias (HOST)\n',
-                    '@@//app:alias (abc1234) extra\n', '@@//app:alias (abc 123)\n',
-                    '@@//app:alias) union //other:target (abc1234)\n'):
+        for bad in ('@@//app:alias (abc1234)\n', '{', '[',
+                    '{"target": [{"type": "RULE", "rule": {"name": "@@//app:alias) union //other:target"}}]}'):
             with self.subTest(row=bad):
                 self.calls.clear()
                 with self.assertRaises(ValueError):
@@ -2163,7 +2169,7 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
 
     def test_missing_selected_local_root_fails_closed(self):
         with self.assertRaisesRegex(ValueError, 'omitted a selected local target'):
-            self.collect(rows='@@//lib:actual (abc1234)\n')
+            self.collect(rows=json.dumps({'target': [self.records[1]]}))
         self.assertEqual(len(self.calls), 1)
 
     def test_configured_query_failure_preserves_original_and_stops(self):
@@ -2214,8 +2220,8 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
         record = self.receipt['source_discovery']
         self.assertEqual(record['controller_sha256'], sha(self.owner_path))
         self.assertEqual(record['configured_metadata'], {
-            'bytes': (artifacts / 'source-configured-targets.raw.txt').stat().st_size,
-            'sha256': sha(artifacts / 'source-configured-targets.raw.txt')})
+            'bytes': (artifacts / 'source-configured-targets.raw.json').stat().st_size,
+            'sha256': sha(artifacts / 'source-configured-targets.raw.json')})
         self.assertEqual(record['buildfiles_query']['sha256'], sha(artifacts / 'source-buildfiles.query'))
         self.public.safe_json({'source_discovery': record})
         self.assertNotIn(str(self.source), json.dumps(record))
@@ -2310,6 +2316,71 @@ class ConfiguredOwnerSourcesTests(unittest.TestCase):
     def test_cohort_rejects_controller_mutation_during_owner_execution(self):
         with self.assertRaisesRegex(ValueError, 'controller owner changed'):
             self.check_controller_record('configured-dependencies-and-buildfiles', 'expected', change=True)
+
+    def test_all_five_target_variants_preserve_original_names(self):
+        additions = [
+            {'type': 'GENERATED_FILE', 'generatedFile': {'name': '@@//gen:output', 'generatingRule': '@@//gen:producer'}},
+            {'type': 'PACKAGE_GROUP', 'packageGroup': {'name': '@@//visibility:group'}},
+            {'type': 'ENVIRONMENT_GROUP', 'environmentGroup': {'name': '@@//env:group'}},
+        ]
+        self.collect(rows=json.dumps({'target': self.records + additions}))
+        for label in ('//gen:output', '//visibility:group', '//env:group', '//app:input.txt'):
+            self.assertEqual(self.expression.count(label), 2)
+        self.assertEqual(self.receipt['source_discovery']['configured_rows'], 7)
+
+    def test_target_discriminator_and_exclusive_body_must_match(self):
+        for bad in ({'type': 'OTHER', 'rule': {'name': '@@//app:alias'}},
+                    {'type': 'RULE', 'sourceFile': {'name': '@@//app:alias'}},
+                    {'type': 'RULE', 'rule': {'name': '@@//app:alias'}, 'sourceFile': {'name': '@@//x:y'}},
+                    {'type': 'RULE', 'rule': {'name': 123}},
+                    {'type': 'RULE', 'rule': None}):
+            with self.subTest(row=bad):
+                self.calls.clear()
+                with self.assertRaisesRegex(ValueError, 'configured source target'):
+                    self.collect(rows=json.dumps({'target': [bad]}))
+                self.assertEqual(len(self.calls), 1)
+
+    def test_strict_json_duplicate_keys_and_nonfinite_numbers_reject(self):
+        for bad in ('{"target": [], "target": []}',
+                    '{"target": [{"type": "RULE", "rule": {"name": "@@//app:alias", "name": "@@//other:alias"}}]}',
+                    '{"target": [], "extra": NaN}'):
+            with self.subTest(data=bad):
+                self.calls.clear()
+                with self.assertRaises(ValueError):
+                    self.collect(rows=bad)
+                self.assertEqual(len(self.calls), 1)
+
+    def test_structured_names_still_use_the_unchanged_label_guard(self):
+        for bad in ('@@//app:alias) union //other:target', '@@//app:alias\n',
+                    'not-a-label', '@//app:alias'):
+            with self.subTest(label=bad):
+                self.calls.clear()
+                with self.assertRaisesRegex(ValueError, 'invalid-label'):
+                    self.collect(rows=json.dumps({'target': [{'type': 'RULE', 'rule': {'name': bad}}]}))
+                self.assertEqual(len(self.calls), 1)
+
+    def test_aspect_base_rows_and_implicit_inputs_preserve_raw_evidence(self):
+        aspect_base = {'type': 'RULE', 'rule': {'name': '@@//app:alias', 'ruleClass': 'alias',
+            'attribute': [{'name': '_marker', 'type': 'LABEL', 'stringValue': '@@//aspect_inputs:marker'}]}}
+        implicit = {'type': 'SOURCE_FILE', 'sourceFile': {'name': '@@//aspect_inputs:marker.txt'}}
+        raw = json.dumps({'target': self.records + [aspect_base, implicit]})
+        _, artifacts = self.collect(rows=raw)
+        self.assertEqual(self.expression.count('//app:alias'), 2)
+        self.assertEqual(self.expression.count('//aspect_inputs:marker.txt'), 2)
+        self.assertEqual(self.receipt['source_discovery']['configured_rows'], 6)
+        self.assertEqual(self.receipt['source_discovery']['configured_labels'], 5)
+        self.assertEqual((artifacts / 'source-configured-targets.raw.json').read_text(), raw)
+        self.assertNotIn('attribute', json.dumps(self.receipt['source_discovery']))
+        self.public.safe_json(self.receipt['source_discovery'])
+
+    def test_empty_and_wrong_query_result_shapes_reject_before_buildfiles(self):
+        for bad in ({}, {'target': []}, {'target': {}}, [], {'results': self.records},
+                    {'target': self.records, 'extra': []}):
+            with self.subTest(value=bad):
+                self.calls.clear()
+                with self.assertRaises(ValueError):
+                    self.collect(rows=json.dumps(bad))
+                self.assertEqual(len(self.calls), 1)
 
 if __name__ == '__main__':
     unittest.main()
