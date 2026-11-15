@@ -1,11 +1,19 @@
 # Source inside one build's shell. Related build, query and export commands use
-# the same server. Its writable state lives outside the shared checkout/cache.
+# the same server. Independent recipes always have different writable state.
 start_private_bazel() {
     local owner=${1##*/}
     shift
     local parent
     parent=$(realpath -- "${TMPDIR:-/tmp}") || return
-    bazel_output_base=$(mktemp -d -- "$parent/sonic-bazel.$owner.XXXXXXXX") || return
+    local base
+    base=$(mktemp -d -- "$parent/sonic-bazel.$owner.XXXXXXXX") || return
+    open_private_bazel "$base" "$@"
+}
+
+open_private_bazel() {
+    bazel_output_base=$1
+    shift
+    private_bazel_keep_output=0
     private_bazel_workspace=$PWD
     private_bazel=("${BAZEL:-bazel}" "$@" "--output_base=$bazel_output_base")
     private_bazel_shutdown_prefix=()
@@ -13,6 +21,21 @@ start_private_bazel() {
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
+}
+
+# /sonic is the job checkout in both disposable Trixie containers. Preserve
+# these two producers' on-disk outputs for the separate VS validation step.
+start_image_bazel() {
+    local owner=$1
+    if [[ ${SONIC_VS_REUSE_BAZEL_PRODUCERS:-} == 1 &&
+          ( $owner == docker-orchagent.gz || $owner == docker-syncd-vs.gz ) ]]; then
+        local base="$PWD/target/.vs-bazel/$owner"
+        mkdir -p -- "$base" || return
+        open_private_bazel "$base"
+        private_bazel_keep_output=1
+    else
+        start_private_bazel "$owner"
+    fi
 }
 
 # Each new output base belongs to one workspace. After the build, read its
@@ -30,7 +53,7 @@ finish_private_bazel() {
     local status=$1 cleanup_status=0
     cd -- "$private_bazel_workspace" &&
         "${private_bazel_shutdown_prefix[@]}" "${private_bazel[@]}" shutdown || cleanup_status=$?
-    if (( cleanup_status == 0 )); then
+    if (( cleanup_status == 0 && private_bazel_keep_output == 0 )); then
         # Some Bazel actions leave read-only directories inside the output tree.
         # Writable directory entries suffice to unlink its files, including cache hardlinks.
         if ! rm -rf -- "$bazel_output_base" 2>/dev/null; then

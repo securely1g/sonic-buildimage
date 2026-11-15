@@ -41,6 +41,12 @@ with pathlib.Path('bazel-arguments.jsonl').open('a') as output:
     output.write(json.dumps(args) + '\\n')
 base = pathlib.Path(next(arg.split('=', 1)[1] for arg in args if arg.startswith('--output_base=')))
 command = next(arg for arg in args if arg in ('test', 'build', 'info', 'cquery', 'shutdown'))
+if command in ('test', 'build') and os.environ.get('VERIFY_ORIGINAL_ARCHIVE'):
+    label = next(arg for arg in args if arg.startswith('//'))
+    owner = 'docker-syncd-vs.gz' if 'syncd' in label else 'docker-orchagent.gz'
+    produced = base / 'original-archive'
+    if not produced.exists() or produced.read_bytes() != (pathlib.Path('target') / owner).read_bytes():
+        sys.exit('runtime Make archive differs from the Bazel output')
 execroot = base / 'execroot/main repo'
 testlogs = execroot / 'bazel-out/chosen-config/testlogs'
 if command == 'info':
@@ -125,6 +131,42 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
     def make_calls(self):
         path = self.directory / "make-calls.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_separate_validation_uses_the_published_images_and_their_own_bazel_outputs(self):
+        switch = {"SONIC_VS_REUSE_BAZEL_PRODUCERS": "1"}
+        for owner in ARCHIVES[::2]:
+            result = subprocess.run(["bash", "-ec", """
+                source tools/bazel/private_server.sh
+                start_image_bazel "$1"
+                mkdir -p "$bazel_output_base/execroot/main repo/bazel-out"
+                printf '%s' "$bazel_output_base" > "$bazel_output_base/original-archive"
+                cp "$bazel_output_base/original-archive" "target/$1"
+            """, "--", owner], cwd=self.directory, env=dict(self.environment, **switch),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        base = self.directory / BASE_ARCHIVE
+        base.write_bytes(b"base used by the installer")
+        result = self.run_verifier(VERIFY_ORIGINAL_ARCHIVE="1", **switch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.producers(), DEB_PATHS)
+        self.assertEqual(base.read_bytes(), b"base used by the installer")
+        self.assertTrue((self.directory / "artifacts/vs/syncd-installed-images-policy.json").is_file())
+        self.assertTrue((self.directory / "artifacts/vs/swss-installed-images-policy.json").is_file())
+
+        # A Bazel test or policy output copied during the first attempt is read-only.
+        for name in ("swss-images/test.log", "syncd-installed-images-policy.json"):
+            (self.directory / "artifacts/vs" / name).chmod(0o444)
+        result = self.run_verifier(VERIFY_ORIGINAL_ARCHIVE="1", **switch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        (self.directory / "target/docker-orchagent.gz").write_bytes(b"replacement")
+        result = self.run_verifier(VERIFY_ORIGINAL_ARCHIVE="1", **switch)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("runtime Make archive differs", result.stdout)
+        shutil.rmtree(self.directory / "target/.vs-bazel/docker-orchagent.gz")
+        result = self.run_verifier(**switch)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing VS producer output base", result.stderr)
 
     def test_verification_keeps_archive_options_logs_and_deb_inputs(self):
         cache = self.directory / "cache with spaces"

@@ -89,7 +89,7 @@ define build_bazel_docker_images
 		bazel_options+=("--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
 		source tools/bazel/private_server.sh
-		start_private_bazel "$(firstword $(1))"
+		start_image_bazel "$(firstword $(1))"
 		private_bazel_shutdown_prefix=($(call vs_time_phase,shutdown))
 		bazel_options+=("--symlink_prefix=/")
 		$(call vs_time_phase,build) "$${private_bazel[@]}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)") || {

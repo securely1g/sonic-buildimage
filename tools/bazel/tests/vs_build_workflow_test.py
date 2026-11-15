@@ -138,6 +138,14 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS", self.calls()[0]["args"])
 
+    def test_native_handoff_is_forwarded_to_the_build_and_separate_validation_container(self):
+        option = self.profile_options()[-1] + " -e SONIC_VS_REUSE_BAZEL_PRODUCERS"
+        for script, goal in (("build_vs.sh", "target/sonic-vs.bin"), ("validate_vs.sh", "sonic-slave-run")):
+            result = self.run_script(script, SONIC_VS_REUSE_BAZEL_PRODUCERS="1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            call = next(call for call in self.calls() if call["goal"] == goal)
+            self.assertIn(option, call["args"])
+
     def test_extra_arguments_and_old_calibration_are_rejected_before_make(self):
         for name in ("build_vs.sh", "validate_vs.sh"):
             for argument in ("--measure-redundant-request", "target/docker-orchagent.gz"):
@@ -293,6 +301,7 @@ else:
         build = next(step for step in job["steps"] if step.get("id") == "native_build")
         self.assertEqual(build["env"]["SONIC_VS_IMAGE_TIMINGS"], "1")
         self.assertNotIn("SONIC_VS_IMAGE_TIMINGS", job["env"])
+        self.assertEqual(job["env"]["SONIC_VS_REUSE_BAZEL_PRODUCERS"], "1")
 
         upload = next(step for step in job["steps"] if step.get("id") == "vs_image_timings_upload")
         self.assertEqual(upload["if"], "always()")
