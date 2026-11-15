@@ -54,6 +54,12 @@ if not record['prerequisites_ready']:
 mode = os.environ.get('FAKE_BAZEL_MODE', '')
 relative_dir = pathlib.Path('bazel-out/archive outputs')
 if operation == 'build':
+    if mode == 'server_startup_failure':
+        log = pathlib.Path(bases[0]) / 'server/jvm.out'
+        log.parent.mkdir()
+        log.write_text('SIGABRT\n' + 'x' * 20000 + '\nPicked up JAVA_TOOL_OPTIONS: synthetic-private-value\n'
+                       + 'java.lang.OutOfMemoryError: unable to create native thread; synthetic-private-value\n')
+        raise SystemExit(37)
     if mode == 'build_failure':
         raise SystemExit('fixture build failure')
     if mode == 'missing_execroot':

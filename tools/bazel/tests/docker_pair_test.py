@@ -10,6 +10,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from tools.bazel.tests.docker_test import ArchiveRecipeFixture
+from tools.bazel.ci.private_server_diagnostics import snapshot
+from tools.bazel.ci.summarize_vs_image_timings import read_owner
 
 
 class VSDockerPairTest(ArchiveRecipeFixture, unittest.TestCase):
@@ -116,6 +118,7 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
                 self.assertEqual((record["phase"], record["exit_code"]), (phase, 0))
                 self.assertGreater(record["elapsed_seconds"], 0)
             self.assertIn("fixture query diagnostic", (directory / "make.log").read_text())
+            self.assertFalse((directory / "startup-diagnostics.json").exists())
             expected_profiles.extend(f"--profile={directory}/{phase}.profile.json.gz" for phase in profiles)
         profiles = []
         for call in self.recorded_calls():
@@ -135,6 +138,49 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
             self.assertEqual(recipe["bazel"], ["build", "cquery-" + owner, "shutdown"])
             self.assertEqual(recipe["exports"], ["export-" + owner])
             self.assertTrue((directory / "build.timing.json").is_file())
+
+    def test_failed_server_retains_sanitized_snapshot_before_cleanup(self):
+        owner = self.archives[0]
+        result = self.run_make(owner, environment={"SONIC_VS_IMAGE_TIMINGS": "1",
+                                                   "FAKE_BAZEL_MODE": "server_startup_failure"})
+        self.assertNotEqual(result.returncode, 0)
+        build, shutdown = self.recorded_calls(("build", "shutdown"))
+        self.assertEqual(build["output_base"], shutdown["output_base"])
+        self.assertFalse(pathlib.Path(build["output_base"]).exists())
+
+        owner_dir = self.root / "artifacts/vs/image-timings" / owner
+        recipe, = owner_dir.iterdir()
+        self.assertEqual(json.loads((recipe / "build.timing.json").read_text())["exit_code"], 37)
+        receipt = recipe / "startup-diagnostics.json"
+        data = json.loads(receipt.read_text())
+        self.assertEqual(data["jvm"], {"available": True, "bytes_scanned": 16384,
+                                       "error_phrases": ["OutOfMemoryError", "unable to create native thread"]})
+        self.assertNotIn("synthetic-private-value", receipt.read_text())
+        self.assertEqual(len(data["load_average_1_5_15_min"]), 3)
+        self.assertGreaterEqual(data["output_base_disk"]["available_bytes"], 0)
+        self.assertLess(receipt.stat().st_size, 8192)
+        # Older receipts have no snapshot. Both formats must give the same dashboard row.
+        summary = read_owner(owner_dir)
+        self.assertTrue(summary[0]["failed"])
+        receipt.unlink()
+        self.assertEqual(read_owner(owner_dir), summary)
+
+    def test_failure_snapshot_reads_the_process_and_enclosing_container_limits(self):
+        proc = self.root / "proc"
+        (proc / "self").mkdir(parents=True)
+        (proc / "self/cgroup").write_text("0::/leaf\n")
+        mount = self.root / "cgroup"
+        leaf = mount / "leaf"
+        leaf.mkdir(parents=True)
+        (leaf / "memory.events").write_text("oom_kill 2\n")
+        (leaf / "pids.current").write_text("91\n")
+        (mount / "pids.max").write_text("128\n")
+        (mount / "memory.max").write_text("4294967296\n")
+        info = snapshot(self.root, proc, mount)
+        self.assertFalse(info["jvm"]["available"])
+        self.assertEqual(info["cgroup_v2"], {
+            "process": {"memory.events": "oom_kill 2", "pids.current": "91"},
+            "mount_root": {"memory.max": "4294967296", "pids.max": "128"}})
 
     def test_timing_preserves_failed_query_and_preceding_build(self):
         result = self.run_make(goals=["target/" + self.archives[2]], environment={

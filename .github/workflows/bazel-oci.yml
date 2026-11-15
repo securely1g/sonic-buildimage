@@ -2630,6 +2630,10 @@ jobs:
               fi
             fi
           done
+          # Four image builds can start JVMs on this eight-CPU runner at once.
+          # Match each JVM to its two-CPU action budget and allow a busy start.
+          printf '\n%s\n%s\n' 'startup --host_jvm_args=-XX:ActiveProcessorCount=2' \
+            'startup --local_startup_timeout_secs=300' >> .bazelrc.user
           python3 -B tools/bazel/gzip/source_archive.py \
             --archives-dir artifacts/vs/repository-inputs \
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json

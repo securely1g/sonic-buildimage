@@ -74,6 +74,8 @@ class ArchiveCachePolicyTest(unittest.TestCase):
             expected = {name: value.replace("${{ runner.workspace }}", temporary)
                         for name, value in configure["env"].items()}
             expected["SONIC_DPKG_CACHE_SOURCE"] = str(shared_cache)
+            rc = directory / ".bazelrc.user"
+            rc.write_text("common --color=no")
             environment_file = directory / "github-env"
             result = subprocess.run(
                 ["bash", "-c", configure["run"]], cwd=directory,
@@ -81,6 +83,13 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                          PATH=str(commands) + os.pathsep + os.environ["PATH"]),
                 text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(rc.read_text().splitlines(), [
+                "common --color=no",
+                "startup --host_jvm_args=-XX:ActiveProcessorCount=2",
+                "startup --local_startup_timeout_secs=300",
+            ])
+            self.assertNotIn("--host_jvm_args", job["env"]["BAZEL_CONTAINER_ARGS"])
+            self.assertNotIn("--local_startup_timeout_secs", job["env"]["BAZEL_CONTAINER_ARGS"])
             exported = dict(line.split("=", 1) for line in environment_file.read_text().splitlines())
             self.assertEqual(exported, expected)
             self.assertTrue(Path(exported["SONIC_BAZEL_CACHE_SOURCE"]).is_dir())

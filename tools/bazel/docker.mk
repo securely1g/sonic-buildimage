@@ -92,7 +92,11 @@ define build_bazel_docker_images
 		start_private_bazel "$(firstword $(1))"
 		private_bazel_shutdown_prefix=($(call vs_time_phase,shutdown))
 		bazel_options+=("--symlink_prefix=/")
-		$(call vs_time_phase,build) "$${private_bazel[@]}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
+		$(call vs_time_phase,build) "$${private_bazel[@]}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)") || {
+			build_status=$$?
+			$(if $(filter 1,$(SONIC_VS_IMAGE_TIMINGS)),python3 -B tools/bazel/ci/private_server_diagnostics.py "$$bazel_output_base" "$$timing_directory" || true)
+			exit "$$build_status"
+		}
 		execution_root="$$(private_bazel_execution_root)"
 		$(foreach image,$(1),
 		bazel_output="$$($(call vs_time_phase,cquery-$(image)) "$${private_bazel[@]}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
