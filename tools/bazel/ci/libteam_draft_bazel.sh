@@ -12,9 +12,11 @@ while [[ $# -gt 0 ]]; do
     *) break ;;
   esac
 done
+startup_options+=(--nosystem_rc --nohome_rc --noworkspace_rc "--bazelrc=$PWD/tools/bazel/common.bazelrc")
 bazel_command="${1:?expected a Bazel command}"
 shift
 case "$bazel_command" in
+  shutdown) exec bazel "${startup_options[@]}" shutdown "$@" ;;
   aquery|build|cquery|fetch|info|mod|query|test) ;;
   *) printf 'Unsupported CI Bazel command: %s\n' "$bazel_command" >&2; exit 2 ;;
 esac
@@ -36,8 +38,6 @@ if [[ -n "${SONIC_BASE_REVIEW_REGISTRY:-}" ]]; then
   done
 fi
 # The cache-reuse verifier runs this wrapper from fresh source snapshots too.
-exec bazel "${startup_options[@]}" --nosystem_rc --nohome_rc --noworkspace_rc \
-  --bazelrc="$PWD/tools/bazel/common.bazelrc" \
-  "$bazel_command" \
+exec bazel "${startup_options[@]}" "$bazel_command" \
   --registry="$registry" \
   --registry=https://bcr.bazel.build --lockfile_mode=update "$@" "${review_options[@]}"

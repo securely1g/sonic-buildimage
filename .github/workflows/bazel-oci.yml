@@ -2528,8 +2528,8 @@ jobs:
       BAZEL: bazel
       # Use the explicitly selected gRPC service, not the legacy HTTPS override.
       BAZEL_REMOTE_AUTH: ""
-      SONIC_BAZEL_KERNEL_REMOTE_CACHE: grpc://172.16.0.4:9092
-      SONIC_BAZEL_KERNEL_REMOTE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}
+      SONIC_BAZEL_REMOTE_CACHE: grpc://172.16.0.4:9092
+      SONIC_BAZEL_REMOTE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}
       SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       SONIC_DPKG_CACHE_METHOD: rwcache
       ENABLE_DOCKER_BASE_PULL: "y"
@@ -2544,8 +2544,7 @@ jobs:
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
       BAZEL_CONTAINER_ARGS: >-
-        --jobs=4 --local_resources=memory=12288
-        --remote_cache=grpc://172.16.0.4:9092
+        --jobs=4 --local_resources=cpu=4 --local_resources=memory=6144
         --experimental_remote_downloader=grpc://172.16.0.4:9092
         --experimental_remote_downloader_local_fallback
         --distdir=/bazel_cache/distdir/ape-1.0.1
@@ -2553,7 +2552,6 @@ jobs:
         --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
         --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
         --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
-        --remote_upload_local_results=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     steps:
       - name: Checkout repository and pinned submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

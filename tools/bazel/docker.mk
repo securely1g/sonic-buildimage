@@ -73,7 +73,7 @@ define build_bazel_docker_images
 	$(HEADER)
 	$(call vs_start_image_timing,$(1))
 	$(if $(word 2,$(1)),printf '%s\n' '[ bazel image pair ] [ $@ ] [ $(TARGET_PATH)/$(firstword $(1)) ]')
-	{
+	(
 		# These image builds are native. Keep both target and execution tools on
 		# Make's configured architecture instead of the root RC's AMD64 default.
 		case "$(CONFIGURED_ARCH)" in
@@ -88,12 +88,17 @@ define build_bazel_docker_images
 		if [ -n "$$bazel_option_lines" ]; then mapfile -t bazel_options <<< "$$bazel_option_lines"; fi
 		bazel_options+=("--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
-		$(call vs_time_phase,build) "$${BAZEL:-bazel}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
+		source tools/bazel/private_server.sh
+		start_private_bazel "$(firstword $(1))"
+		private_bazel_shutdown_prefix=($(call vs_time_phase,shutdown))
+		bazel_options+=("--symlink_prefix=/")
+		$(call vs_time_phase,build) "$${private_bazel[@]}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
+		execution_root="$$($(call vs_time_phase,info) "$${private_bazel[@]}" info "$${bazel_options[@]}" execution_root)"
 		$(foreach image,$(1),
-		bazel_output="$$($(call vs_time_phase,cquery-$(image)) "$${BAZEL:-bazel}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
-		$(call vs_time_phase,export-$(image)) python3 tools/bazel/build_helpers.py export --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
+		bazel_output="$$($(call vs_time_phase,cquery-$(image)) "$${private_bazel[@]}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
+		$(call vs_time_phase,export-$(image)) python3 tools/bazel/build_helpers.py export --execution-root="$$execution_root" --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
 		)
-	} $(LOG)
+	) $(LOG)
 	$(foreach image,$(1),$(call sbom_emit_fragment,$(TARGET_PATH)/$(image),DOCKER_IMAGE,$($(image)_PATH),,,,)
 	)
 	$(FOOTER)

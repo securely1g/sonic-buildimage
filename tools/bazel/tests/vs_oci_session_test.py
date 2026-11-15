@@ -24,7 +24,7 @@ class VsOciSessionTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/build_helpers.py",
-                       "tools/bazel/cache/credentials.py"):
+                       "tools/bazel/cache/credentials.py", "tools/bazel/private_server.sh"):
             destination = self.directory / source
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / source, destination)
@@ -39,19 +39,27 @@ import json, os, pathlib, sys
 args = sys.argv[1:]
 with pathlib.Path('bazel-arguments.jsonl').open('a') as output:
     output.write(json.dumps(args) + '\\n')
-if args[0] == 'test':
+base = pathlib.Path(next(arg.split('=', 1)[1] for arg in args if arg.startswith('--output_base=')))
+command = next(arg for arg in args if arg in ('test', 'build', 'info', 'cquery', 'shutdown'))
+execroot = base / 'execroot/main repo'
+testlogs = execroot / 'bazel-out/chosen-config/testlogs'
+if command == 'info':
+    print(testlogs if args[-1] == 'bazel-testlogs' else execroot)
+if command == 'test':
     target = next(arg.split(':')[1] for arg in args if arg.startswith('//'))
-    output = pathlib.Path('bazel-testlogs/tools/bazel/tests') / target
+    output = testlogs / 'tools/bazel/tests' / target
     for name in ('test.log', 'test.xml', 'test.outputs/validation.json'):
         path = output / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(name)
     print('image verification output')
     sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
-if args[0] == 'cquery':
-    policy = pathlib.Path('policy.json')
-    policy.write_text('{}')
-    print(policy)
+if command == 'build':
+    label = next(arg for arg in args if arg.startswith('//'))
+    execroot.mkdir(parents=True, exist_ok=True)
+    (execroot / 'policy.json').write_text(label)
+if command == 'cquery':
+    print('policy.json')
 """)
         self.bazel.chmod(0o755)
         self.make = self.directory / "make command"
@@ -122,20 +130,25 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
                                    BAZEL_CONTAINER_ARGS="--distdir='/input with spaces' --jobs=3")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         arguments = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
-        self.assertEqual(len(arguments), 6)
+        target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
+        self.assertEqual(len(target_calls), 6)
+        self.assertEqual(len({next(arg for arg in args if arg.startswith("--output_base="))
+                              for args in target_calls}), 4)
+        test_calls = [args[args.index("test"):] for args in target_calls if "test" in args]
         common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
                   "--distdir=/input with spaces", "--jobs=3",
                   "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
-                  "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
+                  "--host_platform=@sonic_build_infra//platforms:x86_64_trixie", "--symlink_prefix=/"]
         for index, (target, flags) in enumerate((("swss_images_test", []),
                                                ("syncd_p4_images_test", ["--config=syncd-dash"]))):
-            self.assertEqual(arguments[index], ["test", *common, *flags, "//tools/bazel/tests:" + target,
+            self.assertEqual(test_calls[index], ["test", *common, *flags, "//tools/bazel/tests:" + target,
                 "--nocache_test_results", "--nozip_undeclared_test_outputs"])
         for family in ("swss-images", "syncd-p4-images"):
             for name in ("test.log", "test.xml", "validation.json"):
                 self.assertTrue((self.directory / "artifacts/vs" / family / name).is_file())
         for family in ("swss", "syncd"):
-            self.assertTrue((self.directory / "artifacts/vs" / (family + "-installed-images-policy.json")).is_file())
+            policy = self.directory / "artifacts/vs" / (family + "-installed-images-policy.json")
+            self.assertEqual(policy.read_text(), "//tools/bazel/tests:" + family + "_installed_images_policy")
         self.assertIn("image verification output", (self.directory / "artifacts/vs/syncd-p4-images.log").read_text())
         debug = json.loads((self.directory / "debug-arguments.json").read_text())
         self.assertEqual(debug[:4], ["--runtime-deb", DEB_PATHS[0], "--debug-deb", DEB_PATHS[1]])

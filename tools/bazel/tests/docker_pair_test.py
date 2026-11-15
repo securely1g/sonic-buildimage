@@ -106,16 +106,17 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         expected_profiles = []
         for owner, debug in (self.archives[:2], self.archives[2:]):
             directory, = (timings / owner).iterdir()
-            commands = ["build", "cquery-" + owner, "cquery-" + debug]
+            profiles = ["build", "cquery-" + owner, "cquery-" + debug]
+            commands = ["build", "info", *profiles[1:], "shutdown"]
             exports = ["export-" + owner, "export-" + debug]
             self.assertEqual(json.loads((directory / "recipe.json").read_text()),
-                             {"bazel": commands, "profiles": commands, "exports": exports})
+                             {"bazel": commands, "profiles": profiles, "exports": exports})
             for phase in commands + exports:
                 record = json.loads((directory / (phase + ".timing.json")).read_text())
                 self.assertEqual((record["phase"], record["exit_code"]), (phase, 0))
                 self.assertGreater(record["elapsed_seconds"], 0)
             self.assertIn("fixture query diagnostic", (directory / "make.log").read_text())
-            expected_profiles.extend(f"--profile={directory}/{phase}.profile.json.gz" for phase in commands)
+            expected_profiles.extend(f"--profile={directory}/{phase}.profile.json.gz" for phase in profiles)
         profiles = []
         for call in self.recorded_calls():
             args = call["arguments"]
@@ -131,7 +132,7 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assertEqual(len(instances), 2)
         for directory in instances:
             recipe = json.loads((directory / "recipe.json").read_text())
-            self.assertEqual(recipe["bazel"], ["build", "cquery-" + owner])
+            self.assertEqual(recipe["bazel"], ["build", "info", "cquery-" + owner, "shutdown"])
             self.assertEqual(recipe["exports"], ["export-" + owner])
             self.assertTrue((directory / "build.timing.json").is_file())
 
@@ -170,10 +171,33 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
                     self.assert_pairs()
 
     def test_parallel_installer_and_explicit_variants_execute_once_per_pair(self):
+        # Another Bazel caller can own the workspace convenience symlink.
+        other_outputs = self.root / "other-server/bazel-out"
+        (other_outputs / "archive outputs").mkdir(parents=True)
+        (self.root / "bazel-out").symlink_to(other_outputs, target_is_directory=True)
+        for name in self.archives:
+            (other_outputs / "archive outputs" / name).write_bytes(b"other server's archive")
+
+        cache = "--remote_cache=grpc://fixture:9092"
         result = self.run_make(goals=["target/sonic-vs.img.gz"] +
-                               ["target/" + name for name in reversed(self.archives)], parallel=True)
+                               ["target/" + name for name in reversed(self.archives)],
+                               parallel=True, environment={"BAZEL_CONTAINER_ARGS": cache})
         self.assert_success(result)
         self.assert_pairs()
+        builds = self.recorded_calls(("build",))
+        self.assertEqual(len({call["output_base"] for call in builds}), 2)
+        for build in builds:
+            labels = build["arguments"][-2:]
+            queries = [call for call in self.recorded_calls(("cquery",))
+                       if call["arguments"][-1] in labels]
+            self.assertEqual(len(queries), 2)
+            for call in [build, *queries]:
+                self.assertEqual(call["output_base"], build["output_base"])
+                self.assertIn(cache, call["arguments"])
+                self.assertIn("--symlink_prefix=/", call["arguments"])
+        self.assertCountEqual([call["output_base"] for call in self.recorded_calls(("shutdown",))],
+                              [call["output_base"] for call in builds])
+        self.assertTrue(all(not pathlib.Path(call["output_base"]).exists() for call in builds))
 
     def test_missing_debug_outputs_are_recreated_without_changing_runtime(self):
         self.installer()

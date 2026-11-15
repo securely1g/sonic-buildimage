@@ -79,44 +79,56 @@ for package in "$runtime_deb" "$debug_deb" "$base_archive"; do
 done
 
 # Match the archive recipes, including the caller's cache and distdir settings.
-# Keep one output base and server; only Syncd selects its DASH configuration.
+source tools/bazel/private_server.sh
 option_lines=$(python3 tools/bazel/build_helpers.py options \
     --cache-directory="${BAZEL_CONTAINER_CACHE_DIR-${BAZEL_SWSS_CACHE_DIR:-}}" \
     --arguments="${BAZEL_CONTAINER_ARGS-${BAZEL_SWSS_ARGS:-}}")
 bazel_options=()
 if test -n "$option_lines"; then mapfile -t bazel_options <<< "$option_lines"; fi
 bazel_options+=(--platforms=@sonic_build_infra//platforms:x86_64_trixie
-    --host_platform=@sonic_build_infra//platforms:x86_64_trixie)
+    --host_platform=@sonic_build_infra//platforms:x86_64_trixie --symlink_prefix=/)
 
-collect_test_results() {
-    local test_name="$1" output="artifacts/vs/$2" file path
-    mkdir -p "$output"
+check_images() (
+    set -e
+    local test_name=$1 report_name=$2 status=0 testlogs file path
+    shift 2
+    start_private_bazel "$test_name"
+    "${private_bazel[@]}" test "${bazel_options[@]}" "$@" "//tools/bazel/tests:$test_name" \
+        --nocache_test_results --nozip_undeclared_test_outputs \
+        2>&1 | tee "artifacts/vs/$report_name.log" || status=$?
+
+    testlogs=$("${private_bazel[@]}" info "${bazel_options[@]}" "$@" bazel-testlogs)
+    mkdir -p "artifacts/vs/$report_name"
     for file in test.log test.xml test.outputs/validation.json; do
-        path="bazel-testlogs/tools/bazel/tests/$test_name/$file"
-        if test -f "$path"; then
-            cp "$path" "$output/$(basename "$file")"
+        path="$testlogs/tools/bazel/tests/$test_name/$file"
+        if [[ -f $path ]]; then
+            cp -- "$path" "artifacts/vs/$report_name/${file##*/}"
         fi
     done
-}
-# Retain each result before another Bazel invocation changes bazel-testlogs.
-test_status=0
-"${BAZEL:-bazel}" test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
-    --nocache_test_results --nozip_undeclared_test_outputs \
-    2>&1 | tee artifacts/vs/swss-images.log || test_status=$?
-collect_test_results swss_images_test swss-images
-"${BAZEL:-bazel}" test "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
-    --nocache_test_results --nozip_undeclared_test_outputs \
-    2>&1 | tee artifacts/vs/syncd-p4-images.log || test_status=$?
-collect_test_results syncd_p4_images_test syncd-p4-images
-if test "$test_status" -ne 0; then exit "$test_status"; fi
+    exit "$status"
+)
 
-# cquery alone does not materialize cached policy outputs.
-"${BAZEL:-bazel}" build "${bazel_options[@]}" //tools/bazel/tests:swss_installed_images_policy
-policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --output=files //tools/bazel/tests:swss_installed_images_policy)
-cp "$policy" artifacts/vs/swss-installed-images-policy.json
-"${BAZEL:-bazel}" build "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_installed_images_policy
-policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --config=syncd-dash --output=files //tools/bazel/tests:syncd_installed_images_policy)
-cp "$policy" artifacts/vs/syncd-installed-images-policy.json
+# Retain both suites' diagnostics, including when the first test fails.
+set +e
+check_images swss_images_test swss-images
+swss_status=$?
+check_images syncd_p4_images_test syncd-p4-images --config=syncd-dash
+syncd_status=$?
+set -e
+if (( syncd_status )); then exit "$syncd_status"; fi
+if (( swss_status )); then exit "$swss_status"; fi
+
+materialize_policy() (
+    local family=$1 label="//tools/bazel/tests:${1}_installed_images_policy" policy execution_root
+    shift
+    start_private_bazel "${family}_installed_images_policy"
+    "${private_bazel[@]}" build "${bazel_options[@]}" "$@" "$label"
+    policy=$("${private_bazel[@]}" cquery "${bazel_options[@]}" "$@" --output=files "$label")
+    execution_root=$("${private_bazel[@]}" info "${bazel_options[@]}" "$@" execution_root)
+    cp -- "$execution_root/$policy" "artifacts/vs/$family-installed-images-policy.json"
+)
+materialize_policy swss
+materialize_policy syncd --config=syncd-dash
 
 python3 -B tools/bazel/ci/verify_p4rt_debug.py \
     --runtime-deb "$runtime_deb" --debug-deb "$debug_deb" \

@@ -89,9 +89,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         workflow_jobs = jobs()
         flag = ("--remote_upload_local_results=${{ github.event_name == 'push'"
                 " && github.ref == 'refs/heads/master' }}")
-        for name in ("vs", "vs_container"):
-            with self.subTest(job=name):
-                self.assertIn(flag, workflow_jobs[name])
+        self.assertIn(flag, workflow_jobs["vs"])
         self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
         self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]",
                       workflow_jobs["vs_container"])
@@ -102,12 +100,12 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertNotIn("container", job)
         self.assertNotIn("EXPECTED_MANAGER_REVISION", job["env"])
         self.assertEqual(job["env"]["BAZEL_REMOTE_AUTH"], "")
-        self.assertEqual(job["env"]["SONIC_BAZEL_KERNEL_REMOTE_CACHE"], "grpc://172.16.0.4:9092")
+        self.assertEqual(job["env"]["SONIC_BAZEL_REMOTE_CACHE"], "grpc://172.16.0.4:9092")
         self.assertEqual(
-            job["env"]["SONIC_BAZEL_KERNEL_REMOTE_UPLOAD"],
+            job["env"]["SONIC_BAZEL_REMOTE_UPLOAD"],
             "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}")
         for flag in (
-            "--remote_cache=grpc://172.16.0.4:9092",
+            "--local_resources=memory=6144",
             "--experimental_remote_downloader=grpc://172.16.0.4:9092",
             "--experimental_remote_downloader_local_fallback",
         ):
