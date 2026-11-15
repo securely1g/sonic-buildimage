@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, vs-bitarray-abi-debug, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt, vs-configured-source-diagnostic, vs-kernel-preserve]
+        options: [none, vs-bitarray-abi-debug, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt, vs-configured-source-diagnostic, vs-kernel-preserve, vs-owner-test-diagnostic]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
@@ -6638,3 +6638,245 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 30
+
+  vs_owner_test_diagnostic:
+    name: Diagnose four owner-test failures (AMD64)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-owner-test-diagnostic' && inputs.source_worker_pool == 'sonic-slave-container-k3s' && inputs.skip_vs && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && github.triggering_actor == 'securely1g'
+    runs-on: [self-hosted, linux, x64, sonic-slave-container-k3s]
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: vs-owner-test-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+      cancel-in-progress: false
+    steps:
+      - name: Allocate fresh policy build scratch
+        id: paths
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKER: ${{ runner.name }}
+          INPUT_SOURCE_REVISION: ${{ inputs.source_revision }}
+          INPUT_REGISTRY_REVISION: ${{ inputs.registry_revision }}
+          INPUT_SOURCE_CI_REQUEST: ${{ inputs.source_ci_request }}
+          INPUT_SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+          INPUT_REGISTRY_CONSUMER: ${{ inputs.registry_consumer }}
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import os, re, shutil
+          from pathlib import Path
+          if any(os.environ.get(key) for key in ('INPUT_SOURCE_REVISION', 'INPUT_REGISTRY_REVISION',
+                  'INPUT_SOURCE_CI_REQUEST', 'INPUT_SOURCE_INPUTS_RUN')):
+              raise SystemExit('This fixed policy job does not accept revision or source-input overrides')
+          if os.environ.get('INPUT_REGISTRY_CONSUMER') != 'none':
+              raise SystemExit('This job does not select a registry consumer')
+          run, attempt, worker = (os.environ[key] for key in ('RUN_ID', 'RUN_ATTEMPT', 'WORKER'))
+          if not all(re.fullmatch(r'[1-9][0-9]*', value) for value in (run, attempt)):
+              raise SystemExit('Invalid run identity')
+          if worker != os.environ.get('RUNNER_NAME') or not re.fullmatch(r'ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?', worker):
+              raise SystemExit('Unexpected K3s worker identity')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          if workspace.resolve(strict=True) != workspace or not workspace.is_relative_to('/actions/_work') or os.getuid() != 1000:
+              raise SystemExit('Unexpected worker workspace or user')
+          if shutil.disk_usage(workspace).free < 360 * 1024**3:
+              raise SystemExit('The policy build needs 360 GiB of free scratch')
+          root = workspace / ('vs-coherent-installed-policies-' + run + '-' + attempt + '-' + worker)
+          if os.path.lexists(root):
+              raise SystemExit('Policy scratch already exists')
+          root.mkdir(mode=0o700)
+          for name in ('scratch', 'scratch/home', 'scratch/bazelisk', 'scratch/temporary', 'inputs', 'evidence'):
+              (root / name).mkdir(mode=0o700)
+          values = {'root': str(root)}
+          values.update({name: str((root / name).relative_to(workspace)) for name in ('control', 'source', 'native', 'catalog')})
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              for name, value in values.items():
+                  stream.write(name + '=' + value + '\n')
+          PYTHON
+      - name: Check out the reviewed policy caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ${{ steps.paths.outputs.control }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/bazel/ci/build_vs_swss_installed_policy.py
+            /tools/bazel/ci/build_vs_coherent_installed_policies.py
+            /tools/bazel/ci/container.py
+            /tools/bazel/ci/diagnose_vs_owner_tests.py
+            /tools/bazel/ci/auxiliary_installed_wheel_diagnostic.py
+            /tools/bazel/ci/vs_coherent_installed_policy_inputs.json
+            /tools/bazel/tests/vs_coherent_installed_policy_test.py
+            /tools/bazel/ci/vs_component_runtime_owner.py
+            /tools/bazel/tests/vs_component_runtime_test.py
+            /tools/bazel/tests/vs_component_runtime_callback_test.py
+            /tools/bazel/ci/vs_original_metadata/kernel-context-744d.json
+      - name: Check out the final VS source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: c02d93956919e4ea6886f347be4ac0ab6e3e36f0
+          path: ${{ steps.paths.outputs.source }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          submodules: false
+      - name: Verify the fixed diagnostic and source owners
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+          COMPONENT_RUNTIME_TEST_SOURCE: ${{ steps.paths.outputs.root }}/source
+          COHORT_REVIEW_RC_OWNER: ${{ steps.paths.outputs.root }}/source/tools/bazel/ci/review_bazel_rc.py
+        run: |
+          python3 -I -S -B - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['POLICY_ROOT']) / 'control'
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":148701,"sha256":"6f3fbed8992917dea3b0003a1f48405f1bded94fbacedf60206c07dbea5714c9"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":21314,"sha256":"1ede9fe34763907665b13fd3b03abcfb1965661f22eed266d073b6f7de657920"},"tools/bazel/ci/diagnose_vs_owner_tests.py":{"bytes":21982,"sha256":"28fee4c54f4a49ae9d4849ef0e71f199f4dfd426844f91ed67304882f5501178"},"tools/bazel/ci/auxiliary_installed_wheel_diagnostic.py":{"bytes":16984,"sha256":"c9346693da1be654cf7f19e3781d1cdda7b59f4618e03425fb69f91e9a25af34"}}')
+          for name, identity in expected.items():
+              path = root / name
+              if path.is_symlink() or not path.is_file():
+                  raise SystemExit('Unexpected policy caller file type')
+              raw = path.read_bytes()
+              if len(raw) != identity['bytes'] or hashlib.sha256(raw).hexdigest() != identity['sha256']:
+                  raise SystemExit('Reviewed policy caller seal differs')
+          PYTHON
+      - name: Check out the existing native cache and source-input helpers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 1e423956afe2cb706c239c8be93c1000bbc7a479
+          path: ${{ steps.paths.outputs.native }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/bazel/ci/image_worker_receipt.py
+            /tools/bazel/ci/native_apt_cache_policy.py
+            /tools/bazel/ci/p4rt_receipt_semantics.py
+            /tools/bazel/ci/p4rt_sdk_receipt_semantics.py
+            /tools/bazel/ci/public_artifacts.py
+            /tools/bazel/ci/source_image_worker.py
+            /tools/bazel/ci/source_worker_preflight.py
+            /tools/bazel/gzip/source_archive.py
+      - name: Check out the existing verified source-download configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: securely1g/sonic-bazel-registry
+          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
+          path: ${{ steps.paths.outputs.catalog }}
+          persist-credentials: false
+          clean: false
+          fetch-depth: 1
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /ci/source_mirrors.cfg
+      - name: Authenticate the original verified source inputs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const root = process.env.POLICY_ROOT;
+            const plan = JSON.parse(fs.readFileSync(root + '/control/tools/bazel/ci/vs_coherent_installed_policy_inputs.json', 'utf8'));
+            const expected = plan.source_inputs;
+            const owner = 'securely1g', repo = 'sonic-buildimage';
+            const {data: artifact} = await github.rest.actions.getArtifact({owner, repo, artifact_id: expected.artifact_id});
+            const {data: run} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: expected.run_id});
+            const {data: jobs} = await github.rest.actions.listJobsForWorkflowRun({owner, repo, run_id: expected.run_id, per_page: 100});
+            const sourceHead = 'df17080469e74093c373e55522bf5c029d3451fc';
+            if (artifact.id !== expected.artifact_id || artifact.name !== 'bazel-repository-inputs' ||
+                artifact.digest !== expected.digest || artifact.size_in_bytes !== expected.zip_bytes || artifact.expired ||
+                artifact.workflow_run.id !== expected.run_id || artifact.workflow_run.head_sha !== sourceHead ||
+                run.id !== expected.run_id || run.head_sha !== sourceHead || run.repository.full_name !== owner + '/' + repo ||
+                run.path !== '.github/workflows/bazel-oci.yml' || run.name !== 'Bazel OCI' ||
+                artifact.workflow_run.repository_id !== run.repository.id || jobs.total_count > 100) {
+              throw new Error('Original verified source-input identity differs');
+            }
+            const producers = jobs.jobs.filter(job => job.name === 'OCI regression checks (AMD64)' && job.conclusion === 'success');
+            const requiredSteps = ['Retain the verified GitLab source downloads', 'Upload the source downloads for the VS job'];
+            if (producers.length !== 1 || !requiredSteps.every(name =>
+                producers[0].steps.some(step => step.name === name && step.conclusion === 'success'))) {
+              throw new Error('The original source-input producer has not succeeded');
+            }
+            const retained = {repository: owner + '/' + repo, source_revision: sourceHead, run: run.id,
+              run_attempt: run.run_attempt, producer_job: producers[0].id, artifact: artifact.id,
+              artifact_name: artifact.name, artifact_bytes: artifact.size_in_bytes, artifact_digest: artifact.digest,
+              verified_producer_steps: requiredSteps};
+            fs.writeFileSync(root + '/evidence/original-source-input.json', JSON.stringify(retained, null, 2) + '\n', {flag: 'wx'});
+      - name: Download only the original source-input artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          repository: securely1g/sonic-buildimage
+          github-token: ${{ github.token }}
+          run-id: 43428792950
+          artifact-ids: '14039465053'
+          merge-multiple: true
+          path: ${{ steps.paths.outputs.root }}/inputs
+          digest-mismatch: error
+      - name: Prepare the managed remote Bazel cache and existing source inputs
+        timeout-minutes: 10
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+          SOURCE_INPUTS_RUN: '43428792950'
+          BAZEL_REAL: ${{ steps.paths.outputs.root }}/scratch/native-bazel
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
+          USE_BAZEL_VERSION: '8.5.1'
+          BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
+          TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
+          PYTHONDONTWRITEBYTECODE: '1'
+          SONIC_CONTAINER_BAZEL_OPTIONS: ''
+          SONIC_CONTAINER_BAZEL_CACHE_DIR: ''
+          SONIC_SWSS_BAZEL_OPTIONS: ''
+          SONIC_SWSS_BAZEL_CACHE_DIR: ''
+        run: |
+          command -v readelf >/dev/null
+          command -v objcopy >/dev/null
+          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/ci/build_vs_coherent_installed_policies.py" cache \
+            --plan "$POLICY_ROOT/control/tools/bazel/ci/vs_coherent_installed_policy_inputs.json" \
+            --source "$POLICY_ROOT/source" --native "$POLICY_ROOT/native" \
+            --scratch "$POLICY_ROOT/scratch" --output "$POLICY_ROOT/outputs" \
+            --archives "$POLICY_ROOT/inputs" --mirrors "$POLICY_ROOT/catalog/ci/source_mirrors.cfg"
+      - name: Run four original tests and retain separate auxiliary evidence
+        id: diagnostic
+        timeout-minutes: 60
+        env:
+          POLICY_ROOT: ${{ steps.paths.outputs.root }}
+          SOURCE_INPUTS_RUN: '43428792950'
+          BAZEL_REAL: ${{ steps.paths.outputs.root }}/scratch/native-bazel
+          SONIC_BAZEL_REGISTRY_REVISION: e6ef022c94dd2fdeeac364dfd591f9701cd37c29
+          USE_BAZEL_VERSION: '8.5.1'
+          BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
+          TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
+          PYTHONDONTWRITEBYTECODE: '1'
+          SONIC_CONTAINER_BAZEL_OPTIONS: ''
+          SONIC_CONTAINER_BAZEL_CACHE_DIR: ''
+          SONIC_SWSS_BAZEL_OPTIONS: ''
+          SONIC_SWSS_BAZEL_CACHE_DIR: ''
+        run: |
+          python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/ci/diagnose_vs_owner_tests.py" \
+            --root "$POLICY_ROOT"
+      - name: Retain original test evidence and separate auxiliary installation
+        if: always() && steps.paths.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-owner-test-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.root }}/owner-diagnostic-output
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Retain source-input and resource observations
+        if: always() && steps.paths.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-owner-test-resources-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.paths.outputs.root }}/evidence/original-source-input.json
+            ${{ steps.paths.outputs.root }}/scratch/resources.json
+            ${{ steps.paths.outputs.root }}/scratch/jvm-heap-observation.json
+          if-no-files-found: warn
+          compression-level: 0
+          retention-days: 14
+
