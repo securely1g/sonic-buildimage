@@ -163,6 +163,19 @@ class CohortTests(unittest.TestCase):
     def run_cohort(self):
         return caller.build_cohort(self.plan, self.source, self.scratch, self.output, self.owners)
 
+    def test_component_source_setup_precedes_manifests_and_bazel_gates(self):
+        (self.scratch / 'review-bazel').write_text(caller.component_proxy_text(self.source, self.scratch))
+        with mock.patch.object(caller, 'declarations', return_value=({}, [])), \
+                mock.patch.object(caller, 'prepare_component_gnoi',
+                                  side_effect=ValueError('fixture setup stopped')) as initialize, \
+                mock.patch.object(caller, 'check_base_parent') as base:
+            with self.assertRaisesRegex(ValueError, 'fixture setup stopped'):
+                caller.build_cohort(self.plan, self.source, self.scratch, self.output,
+                                    self.owners, components={})
+        initialize.assert_called_once()
+        base.assert_not_called()
+        self.assertEqual(self.events, [])
+
     def test_one_graph_uses_both_existing_validators_and_preserves_native_hashes(self):
         result = self.run_cohort()
         self.assertEqual(self.events, ['swss.manifests', 'syncd.manifests', 'audit', 'build', 'merge',
@@ -505,7 +518,8 @@ class CohortTests(unittest.TestCase):
             return {'genuine-native': True}, {'genuine-policies': True}
         receipt = {}
         exports = {**caller.PRIMARY, 'additional.tar': '//component:archive'}
-        with mock.patch.object(caller, 'bind_policies', side_effect=accept):
+        with mock.patch.object(caller, 'bind_policies', side_effect=accept), \
+                mock.patch.object(caller, 'collect_batched_component_exports', side_effect=collect):
             paths = caller.collect_with_native_anchor(self.plan, self.source, private, receipt,
                 exports, [], 'fixed-proxy', audit, builder, self.owners[0].check, self.owners[-2])
         self.assertEqual(calls, ['audit', ('collect', set(caller.PRIMARY)), 'native-equality',
@@ -805,6 +819,561 @@ class RuntimeWiringTests(unittest.TestCase):
                     'sha256': hashlib.sha256(raw).hexdigest()}}}
             staged = caller.stage_component_runtime(plan, source, native, scratch, control)
             self.assertEqual((staged / name).read_bytes(), raw)
+
+class ExportAliasTests(unittest.TestCase):
+    def test_exact_label_aliases_keep_all_files_and_fresh_receipts(self):
+        targets = {'first--source.tar': '//first:source.tar',
+                   'second--source.tar': '//first:source.tar',
+                   'third--source.tar': '//third:source.tar'}
+        original_targets = dict(targets)
+        options = ['--config=syncd-dash', '--keep_going']
+        layouts = ['//parent:image']
+        previous = None
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for phase in range(2):
+                directory = root / str(phase)
+                directory.mkdir()
+                calls, copies = [], []
+                receipt = {'artifacts': {'native.gz': {'untouched': True}}}
+                execution_log = directory / 'build.execution.json'
+
+                def collect(source, output, record, selected, **kwargs):
+                    calls.append((dict(selected), kwargs))
+                    paths = {}
+                    for name, target in selected.items():
+                        path = output / name
+                        path.write_bytes((str(phase) + ':' + target).encode())
+                        record['artifacts'][name] = {
+                            'target': target, 'bytes': path.stat().st_size,
+                            'sha256': sha(path)}
+                        paths[name] = path
+                    return paths
+
+                def export(source, destination):
+                    copies.append((source.name, destination.name))
+                    shutil.copyfile(source, destination)
+
+                builder = SimpleNamespace(collect_archives=collect, export_archive=export)
+                paths = caller.collect_component_exports(
+                    root, directory, receipt, targets, builder=builder,
+                    check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=options,
+                    additional_targets=layouts, execution_log=execution_log)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0], {name: targets[name] for name in
+                                              ('first--source.tar', 'third--source.tar')})
+                self.assertEqual(calls[0][1], {'bazel': 'fixed-proxy', 'options': options,
+                    'additional_targets': layouts, 'execution_log': execution_log})
+                self.assertEqual(copies, [('first--source.tar', 'second--source.tar')])
+                self.assertEqual(list(paths), list(targets))
+                self.assertEqual(targets, original_targets)
+                self.assertEqual(receipt['artifacts']['native.gz'], {'untouched': True})
+                for name, target in targets.items():
+                    self.assertEqual(receipt['artifacts'][name], {
+                        'target': target, 'bytes': paths[name].stat().st_size,
+                        'sha256': sha(paths[name])})
+                self.assertEqual(sha(paths['first--source.tar']), sha(paths['second--source.tar']))
+                self.assertNotEqual(sha(paths['first--source.tar']), sha(paths['third--source.tar']))
+                if previous is not None:
+                    self.assertNotEqual(previous, sha(paths['first--source.tar']))
+                previous = sha(paths['first--source.tar'])
+
+    def test_missing_outputs_and_changed_alias_copies_fail_closed(self):
+        for problem, message in (
+                ('missing-output', 'collector outputs differ'),
+                ('missing-file', 'representative file differs'),
+                ('changed-copy', 'alias copy differs'),
+                ('invalid-alias', 'plain output filenames')):
+            with self.subTest(problem=problem), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                targets = {'first.tar': '//same:source', 'alias.tar': '//same:source'}
+                if problem == 'invalid-alias':
+                    targets['../outside.tar'] = targets.pop('alias.tar')
+                receipt = {'artifacts': {'native.gz': {'untouched': True}}}
+                calls, copies = [], []
+
+                def collect(source, directory, record, selected, **kwargs):
+                    calls.append(dict(selected))
+                    if problem == 'missing-output':
+                        return {}
+                    path = directory / 'first.tar'
+                    raw = b'original payload'
+                    record['artifacts']['first.tar'] = {
+                        'target': '//same:source', 'bytes': len(raw),
+                        'sha256': hashlib.sha256(raw).hexdigest()}
+                    if problem != 'missing-file':
+                        path.write_bytes(raw)
+                    return {'first.tar': path}
+
+                def export(source, destination):
+                    copies.append(destination)
+                    destination.write_bytes(b'changed payload')
+
+                builder = SimpleNamespace(collect_archives=collect, export_archive=export)
+                with self.assertRaisesRegex(ValueError, message):
+                    caller.collect_component_exports(
+                        root, root, receipt, targets, builder=builder,
+                        check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=[],
+                        additional_targets=[], execution_log=root / 'build.execution.json')
+                self.assertEqual(receipt['artifacts']['native.gz'], {'untouched': True})
+                self.assertNotIn('alias.tar', receipt['artifacts'])
+                if problem != 'changed-copy':
+                    self.assertEqual(copies, [])
+                if problem == 'invalid-alias':
+                    self.assertEqual(calls, [])
+
+
+class BatchedDiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.labels = sorted(caller.BATCH_MAIN_LABELS)
+        self.a, self.b = self.labels[:2]
+
+    def event(self, label, configuration='opaque-build-id', **changes):
+        value = {'id': {'targetCompleted': {'label': label,
+                 'configuration': {'id': configuration}}}, 'completed': {'success': True}}
+        value.update(changes)
+        return value
+
+    def events(self, rows):
+        path = self.root / 'build-events.jsonl'
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        return path
+
+    def metadata(self, labels, checksum='1' * 64):
+        # Pinned8.5.1 analysis_v2.proto184-209/249-271 and build.proto285-296/470-497:
+        # uint32 IDs are numbers; required RULE/name/ruleClass are present.
+        # Default false isTool and empty repeated fields may be omitted.
+        return {'results': [{'target': {'type': 'RULE', 'rule': {
+            'name': label, 'ruleClass': 'pkg_tar'}},
+            'configuration': {'checksum': checksum}, 'configurationId': 1}
+            for label in labels], 'configurations': [{'id': 1, 'checksum': checksum}]}
+
+    def test_completed_groups_use_only_same_stream_success_without_aspects(self):
+        aspect = self.event(self.a, 'other')
+        aspect['id']['targetCompleted']['aspect'] = 'actual-aspect'
+        rows = [self.event(self.b, 'opaque-B'), aspect, self.event(self.a, 'opaque-A')]
+        self.assertEqual(caller.batch_completed_groups(self.events(rows), [self.a, self.b]),
+                         [[self.a], [self.b]])
+        # No arbitrary four-configuration performance gate.
+        rows = [self.event(label, 'opaque-' + str(i)) for i, label in enumerate(self.labels[:5])]
+        self.assertEqual(len(caller.batch_completed_groups(self.events(rows), self.labels[:5])), 5)
+
+    def test_missing_duplicate_failed_and_unconfigured_build_labels_are_rejected(self):
+        failed = self.event(self.a, completed={'success': False})
+        missing_config = self.event(self.a)
+        missing_config['id']['targetCompleted'].pop('configuration')
+        cases = [([], 'Incomplete'), ([self.event(self.a), self.event(self.a)], 'Repeated'),
+                 ([failed], 'successfully'), ([missing_config], 'configuration')]
+        for rows, error in cases:
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                caller.batch_completed_groups(self.events(rows), [self.a])
+
+    def test_metadata_uses_full_actual_checksum_and_exact_labels(self):
+        value = self.metadata([self.b, self.a], 'abcdef0123456789' * 4)
+        self.assertEqual(caller.batch_configuration(value, [self.a, self.b]),
+                         'abcdef0123456789' * 4)
+        for checksum in ('a' * 7, 'a' * 32, 'a' * 63, 'a' * 65, 'a' * 128, 'A' * 64, 'g' * 64):
+            with self.subTest(checksum=checksum), self.assertRaisesRegex(ValueError, 'configuration identity'):
+                caller.batch_configuration(self.metadata([self.a, self.b], checksum), [self.a, self.b])
+        for problem in ('missing', 'duplicate', 'alias', 'non-rule', 'changed-label',
+                        'missing-config', 'duplicate-config', 'ambiguous-config', 'null-config', 'error-row'):
+            value = self.metadata([self.a, self.b])
+            if problem == 'missing': value['results'].pop()
+            if problem == 'duplicate': value['results'].append(copy.deepcopy(value['results'][0]))
+            if problem == 'alias': value['results'][0]['target']['rule']['ruleClass'] = 'alias'
+            if problem == 'non-rule': value['results'][0] = {'target': {'type': 'SOURCE_FILE', 'sourceFile': {'name': self.a}}, 'configuration': {'checksum': 'null'}}
+            if problem == 'changed-label': value['results'][0]['target']['rule']['name'] = '//other:actual'
+            if problem == 'missing-config': value['results'][0]['configurationId'] = 99
+            if problem == 'null-config':
+                value['results'][0].pop('configurationId')
+                value['results'][0]['configuration'] = {'checksum': 'null'}
+            if problem == 'error-row': value['results'][0] = {'error': 'original query error'}
+            if problem == 'duplicate-config': value['configurations'].append(value['configurations'][0])
+            if problem == 'ambiguous-config':
+                value['configurations'].append({'id': 2, 'checksum': '2' * 64})
+                value['results'][1]['configurationId'] = 2
+                value['results'][1]['configuration']['checksum'] = '2' * 64
+            with self.subTest(problem=problem), self.assertRaises(ValueError):
+                caller.batch_configuration(value, [self.a, self.b])
+
+    def test_file_rows_are_labeled_complete_unique_and_single_relative_outputs(self):
+        rows = [{'label': self.b, 'files': ['bazel-out/b']},
+                {'label': self.a, 'files': ['bazel-out/a']}]
+        encode = lambda values: '\n'.join(json.dumps(x) for x in values)
+        self.assertEqual(caller.batch_output_paths(encode(rows), [self.a, self.b]),
+                         {self.a: 'bazel-out/a', self.b: 'bazel-out/b'})
+        for problem in ('missing', 'duplicate', 'unknown', 'empty', 'multiple', 'absolute', 'parent'):
+            changed = copy.deepcopy(rows)
+            if problem == 'missing': changed.pop()
+            if problem == 'duplicate': changed.append(changed[0])
+            if problem == 'unknown': changed[0]['label'] = '//unknown:target'
+            if problem == 'empty': changed[0]['files'] = []
+            if problem == 'multiple': changed[0]['files'].append('bazel-out/c')
+            if problem == 'absolute': changed[0]['files'] = ['/outside']
+            if problem == 'parent': changed[0]['files'] = ['../outside']
+            with self.subTest(problem=problem), self.assertRaises(ValueError):
+                caller.batch_output_paths(encode(changed), [self.a, self.b])
+        with self.assertRaisesRegex(ValueError, 'Repeated discovery JSON key'):
+            caller.batch_json('{"results":[],"results":[]}')
+
+    def fixture(self, problem=None):
+        directory = self.root / 'private'
+        directory.mkdir()
+        execution = self.root / 'execroot'
+        execution.mkdir()
+        targets = {f'item-{i}.tar': label for i, label in enumerate(self.labels)}
+        targets.update({'external.tar': '@existing//:runtime', 'external-alias.tar': '@existing//:runtime'})
+        receipt = {'commands': [], 'artifacts': {'native.gz': {'original': True}}}
+        calls = []
+        groups = {label: i % 2 for i, label in enumerate(self.labels)}
+        filenames = {label: 'file-' + str(i) for i, label in enumerate(self.labels)}
+        for label, filename in filenames.items():
+            (execution / filename).write_bytes(label.encode())
+        if problem == 'missing-file': (execution / filenames[self.a]).unlink()
+        if problem == 'empty-file': (execution / filenames[self.a]).write_bytes(b'')
+
+        def collect(source, output, record, selected, **kwargs):
+            calls.append((dict(selected), kwargs))
+            record['commands'].append({'argv': ['fixed-proxy', 'build'], 'returncode': 0})
+            rows = [self.event(label, 'opaque-' + str(groups[label])) for label in self.labels]
+            (output / 'build-events.jsonl').write_text(''.join(json.dumps(x) + '\n' for x in rows))
+            paths = {}
+            for name, label in selected.items():
+                path = output / name
+                path.write_bytes(b'original external payload')
+                paths[name] = path
+                record['artifacts'][name] = {'target': label, 'bytes': path.stat().st_size, 'sha256': sha(path)}
+                record['commands'].append({'argv': ['fixed-proxy', 'cquery', label], 'returncode': 0})
+            return paths
+
+        def execute(argv, output, record, name, *, cwd, output_path):
+            # Only the execution boundary is mocked: actual mapping/guards/export
+            # calls in the production helper run over the complete174 allowlist.
+            expression = argv[-1]
+            labels = [x for x in self.labels if x in expression.split('set(', 1)[1].split(')', 1)[0].split()]
+            checksum = str(groups[labels[0]] + 1) * 64
+            if '--output=jsonproto' in argv:
+                raw = json.dumps(self.metadata(labels, checksum))
+            else:
+                self.assertTrue(expression.endswith(', ' + checksum + ')'))
+                self.assertNotIn('opaque-', expression)
+                rows = [{'label': label, 'files': [filenames[label]]} for label in reversed(labels)]
+                if problem == 'missing-row': rows.pop()
+                raw = '\n'.join(json.dumps(x) for x in rows)
+            output_path.write_text(raw)
+            record['commands'].append({'argv': argv, 'returncode': 1 if problem == 'query-failure' else 0,
+                                        'log': name + '.log'})
+            if problem == 'query-failure':
+                raise subprocess.CalledProcessError(1, argv)
+
+        def export(source, destination):
+            if problem == 'changed-copy' and destination.name.startswith('item-'):
+                destination.write_bytes(b'changed')
+            else:
+                shutil.copyfile(source, destination)
+
+        builder = SimpleNamespace(collect_archives=collect, export_archive=export,
+            execution_root=lambda events: execution, command_log=SimpleNamespace(execute=execute))
+        return directory, targets, receipt, calls, builder
+
+    def test_one_original_build_and_real_group_queries_preserve_all_receipts_and_aliases(self):
+        directory, targets, receipt, calls, builder = self.fixture()
+        options = ['--config=syncd-dash', '--keep_going']
+        layouts = ['//existing:image']
+        paths = caller.collect_batched_component_exports(self.root, directory, receipt, targets,
+            builder=builder, check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=options,
+            additional_targets=layouts, execution_log=directory / 'execution.json')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], {'external.tar': '@existing//:runtime'})
+        self.assertEqual(set(calls[0][1]['additional_targets']), set(self.labels + layouts))
+        self.assertEqual(calls[0][1]['options'], options)
+        self.assertEqual(set(paths), set(targets))
+        self.assertEqual(receipt['artifacts']['native.gz'], {'original': True})
+        self.assertEqual(receipt['archive_discovery']['group_count'], 2)
+        self.assertEqual(receipt['archive_discovery']['query_count'], 4)
+        self.assertEqual(len(receipt['commands']), 6)  # one build, one fallback, four actual group queries
+        self.assertEqual(receipt['artifacts']['external.tar'], receipt['artifacts']['external-alias.tar'])
+        for name, target in targets.items():
+            self.assertEqual(receipt['artifacts'][name], {'target': target,
+                'bytes': paths[name].stat().st_size, 'sha256': sha(paths[name])})
+        for row in receipt['archive_discovery']['groups']:
+            for query in row['queries']:
+                original = directory / (query['name'] + '.json')
+                self.assertEqual(query['sha256'], sha(original))
+                self.assertEqual(query['bytes'], original.stat().st_size)
+                self.assertEqual(original.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(receipt['commands'][query['command_index']]['log'], query['name'] + '.log')
+
+    def test_missing_changed_or_ambiguous_outputs_preserve_prior_export_records(self):
+        for problem in ('missing-file', 'empty-file', 'missing-row', 'changed-copy'):
+            with self.subTest(problem=problem):
+                directory, targets, receipt, calls, builder = self.fixture(problem)
+                with self.assertRaises(ValueError):
+                    caller.collect_batched_component_exports(self.root, directory, receipt, targets,
+                        builder=builder, check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=[],
+                        additional_targets=[], execution_log=directory / 'execution.json')
+                self.assertEqual(receipt['artifacts']['native.gz'], {'original': True})
+                self.assertEqual((directory / 'external.tar').read_bytes(), b'original external payload')
+                self.assertNotIn('item-0.tar', receipt['artifacts'])
+                shutil.rmtree(directory)
+                shutil.rmtree(self.root / 'execroot')
+
+    def test_failed_genuine_query_is_recorded_without_export_or_retry(self):
+        directory, targets, receipt, calls, builder = self.fixture('query-failure')
+        with self.assertRaises(subprocess.CalledProcessError):
+            caller.collect_batched_component_exports(self.root, directory, receipt, targets,
+                builder=builder, check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=[],
+                additional_targets=[], execution_log=directory / 'execution.json')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(receipt['archive_discovery']['query_count'], 1)
+        self.assertEqual(len(receipt['commands']), 3)
+        self.assertEqual(receipt['commands'][-1]['returncode'], 1)
+        self.assertNotIn('item-0.tar', receipt['artifacts'])
+        self.assertEqual(receipt['artifacts']['native.gz'], {'original': True})
+
+    def test_changed_scope_or_export_names_stop_before_build(self):
+        for problem in ('missing-scope', 'invalid-name'):
+            with self.subTest(problem=problem):
+                directory, targets, receipt, calls, builder = self.fixture()
+                if problem == 'missing-scope': targets.pop('item-0.tar')
+                else: targets['../outside.tar'] = targets.pop('item-0.tar')
+                with self.assertRaises(ValueError):
+                    caller.collect_batched_component_exports(self.root, directory, receipt, targets,
+                        builder=builder, check=SimpleNamespace(sha=sha), bazel='fixed-proxy', options=[],
+                        additional_targets=[], execution_log=directory / 'execution.json')
+                self.assertEqual(calls, [])
+                shutil.rmtree(directory)
+                shutil.rmtree(self.root / 'execroot')
+
+
+
+class GnoiSetupTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.source = Path(temporary.name) / 'source'
+        self.source.mkdir()
+        self.directory = Path(temporary.name) / 'private'
+        self.directory.mkdir()
+        self.relative = 'src/sonic-sysmgr/gnoi'
+        self.submodule = self.source / self.relative
+        self.revision = '2' * 40
+        self.payloads = {name: ('pinned fixture ' + name).encode() for name in
+                         ('types/types.proto', 'common/common.proto', 'system/system.proto')}
+        self.events = []
+        self.problem = None
+        self.receipt = {'commands': []}
+        self.logs = SimpleNamespace(execute=self.execute)
+
+    def execute(self, argv, directory, receipt, name, *, cwd):
+        self.assertEqual((directory, cwd), (self.directory, self.source))
+        self.assertIs(receipt, self.receipt)
+        self.events.append(name)
+        receipt['commands'].append({'name': name, 'argv': argv})
+        if name == 'gnoi.gitlink':
+            mode = '100644 blob' if self.problem == 'not-gitlink' else '160000 commit'
+            return mode + ' ' + self.revision + '\t' + self.relative + '\n'
+        if name == 'gnoi.initialize':
+            self.assertEqual(argv, ['git', '-c', 'safe.directory=' + str(self.source),
+                                   'submodule', 'update', '--init', '--', self.relative])
+            self.assertFalse(self.submodule.exists())
+            for key, data in self.payloads.items():
+                p = self.submodule / key
+                p.parent.mkdir(parents=True, exist_ok=True)
+                if not (self.problem == 'missing' and key == 'types/types.proto'):
+                    p.write_bytes(data + (b'changed' if self.problem == 'changed' and
+                                         key == 'types/types.proto' else b''))
+            return ''
+        if name == 'gnoi.revision':
+            return ('3' * 40 if self.problem == 'wrong-head' else self.revision) + '\n'
+        if name == 'gnoi.proto-tree':
+            return ''.join('100644 blob ' + hashlib.sha1(b'blob ' + str(len(data)).encode() +
+                           b'\0' + data).hexdigest() + '\t' + key + '\n'
+                           for key, data in self.payloads.items())
+        if name == 'gnoi.clean':
+            self.assertIn('--no-ext-diff', argv)
+            self.assertIn('--no-textconv', argv)
+            if self.problem == 'dirty':
+                raise subprocess.CalledProcessError(1, argv)
+            return ''
+        self.fail('Unexpected command boundary: ' + name)
+
+    def run_setup(self):
+        return caller.prepare_component_gnoi(self.source, self.directory, self.receipt, self.logs)
+
+    def test_missing_checkout_is_initialized_at_its_actual_gitlink(self):
+        self.assertFalse(self.submodule.exists())
+        result = self.run_setup()
+        self.assertEqual(result['revision'], self.revision)
+        self.assertEqual(result['path'], self.relative)
+        self.assertEqual(set(result['files']), set(self.payloads))
+        self.assertEqual(self.events, ['gnoi.gitlink', 'gnoi.initialize', 'gnoi.revision',
+                                       'gnoi.proto-tree', 'gnoi.clean'])
+        for key, data in self.payloads.items():
+            self.assertEqual(result['files'][key]['sha256'], hashlib.sha256(data).hexdigest())
+
+    def test_non_gitlink_rejects_before_initialization(self):
+        self.problem = 'not-gitlink'
+        with self.assertRaisesRegex(ValueError, 'unique pinned gitlink'):
+            self.run_setup()
+        self.assertEqual(self.events, ['gnoi.gitlink'])
+
+    def test_different_nested_head_rejects(self):
+        self.problem = 'wrong-head'
+        with self.assertRaisesRegex(ValueError, 'differs from its source gitlink'):
+            self.run_setup()
+        self.assertNotIn('gnoi.proto-tree', self.events)
+
+    def test_missing_or_changed_proto_and_dirty_checkout_reject(self):
+        for problem in ('missing', 'changed', 'dirty'):
+            with self.subTest(problem=problem):
+                if self.submodule.exists():
+                    shutil.rmtree(self.submodule)
+                self.problem = problem
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    self.run_setup()
+
+
+class ComponentHeapTests(unittest.TestCase):
+    def fixture(self, memory_gib=20):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source, scratch = root / 'source', root / 'scratch'
+        source.mkdir()
+        scratch.mkdir()
+        binary = root / 'qualified-bazel'
+        binary.write_bytes(b'qualified installed launcher')
+        profile = {'name': 'two_actions', 'status': 'pilot', 'minimum_memory_bytes': 20 * 1024**3,
+                   'minimum_cpu': 4, 'measured_memory_limit_bytes': memory_gib * 1024**3,
+                   'measured_cpu_limit': 6.0, 'jvm_heap_gib': 3, 'jobs': 2, 'cpu': 2,
+                   'scheduler_memory_mb': 8000, 'loaded_container_memory_gib': 4}
+        resources = {'architecture': 'amd64', 'memory_max': memory_gib * 1024**3,
+                     'memory_current': 1024**3, 'cpu_limit': 6.0,
+                     'owner_profile': copy.deepcopy(profile), 'selected_profile': copy.deepcopy(profile),
+                     'scratch_free': 560 * 1024**3, 'disk_cache': False, 'repository_cache': False,
+                     'source_inputs': [{'sha256': 'a' * 64, 'bytes': 17}]}
+        configuration = {'provider': 'fixture_remote_only', 'endpoint': 'fixture-endpoint'}
+
+        def render(executable, base, selected, cache):
+            return json.dumps({'binary': executable, 'base': str(base),
+                               'profile': selected, 'cache': cache}, sort_keys=True) + '\n'
+
+        worker = SimpleNamespace(remote_cache_configuration=mock.Mock(return_value=configuration),
+                                 launcher_text=mock.Mock(side_effect=render))
+        preflight = SimpleNamespace(select_build_profile=mock.Mock(return_value=profile))
+        plan = {'component_refresh': True,
+                'component_heap_recovery': {'jvm_heap_gib': 6, 'scheduler_memory_mb': 4000},
+                'bazel_launcher_sha256': sha(binary)}
+        (scratch / 'resources.json').write_text(json.dumps(resources) + '\n')
+        (scratch / 'native-bazel').write_text(render(str(binary), scratch / 'output-base', profile, configuration))
+        return source, scratch, binary, profile, resources, worker, preflight, plan
+
+    def invoke(self, fixture):
+        source, scratch, binary, profile, resources, worker, preflight, plan = fixture
+        with mock.patch.object(caller.shutil, 'which', return_value=str(binary)):
+            caller.prepare_component_heap(plan, source, scratch, worker, preflight)
+
+    def test_reallocation_preserves_owner_bytes_home_and_larger_worker_capacity(self):
+        for memory_gib in (20, 24):
+            with self.subTest(memory_gib=memory_gib):
+                fixture = self.fixture(memory_gib)
+                source, scratch, binary, profile, resources, worker, preflight, plan = fixture
+                old_resources = (scratch / 'resources.json').read_bytes()
+                old_launcher = (scratch / 'native-bazel').read_bytes()
+                original_home = os.environ.get('HOME')
+                self.invoke(fixture)
+                actual = json.loads((scratch / 'resources.json').read_bytes())
+                selected = dict(profile, jvm_heap_gib=6, scheduler_memory_mb=4000)
+                self.assertEqual(actual['owner_profile'], profile)
+                self.assertEqual(actual['selected_profile'], selected)
+                self.assertEqual(selected['measured_memory_limit_bytes'], memory_gib * 1024**3)
+                self.assertEqual((selected['jobs'], selected['cpu']), (2, 2))
+                self.assertEqual((scratch / 'resources.original.json').read_bytes(), old_resources)
+                self.assertEqual((scratch / 'native-bazel.original').read_bytes(), old_launcher)
+                self.assertEqual(actual['component_heap_recovery']['original_resources_sha256'],
+                                 hashlib.sha256(old_resources).hexdigest())
+                self.assertEqual(actual['component_heap_recovery']['selected_launcher_sha256'],
+                                 sha(scratch / 'native-bazel'))
+                self.assertFalse(actual['component_heap_recovery']['measured_peak_guarantee'])
+                self.assertEqual({key: value for key, value in actual.items()
+                                  if key not in ('selected_profile', 'component_heap_recovery')},
+                                 {key: value for key, value in resources.items() if key != 'selected_profile'})
+                worker.remote_cache_configuration.assert_called_once_with(source)
+                self.assertEqual(worker.launcher_text.call_count, 2)
+                first, second = worker.launcher_text.call_args_list
+                self.assertEqual(first.args[:2], second.args[:2])
+                self.assertEqual(first.args[3], second.args[3])
+                self.assertEqual(first.args[2], profile)
+                self.assertEqual(second.args[2], selected)
+                preflight.select_build_profile.assert_called_once_with(memory_gib * 1024**3, 6.0)
+                self.assertEqual(os.environ.get('HOME'), original_home)
+                self.assertEqual((scratch / 'native-bazel').stat().st_mode & 0o777, 0o700)
+                self.assertEqual((scratch / 'resources.json').stat().st_mode & 0o777, 0o600)
+
+    def test_different_allocation_or_scope_stops_without_cache_or_file_changes(self):
+        for problem in ('heap', 'memory', 'extra', 'scope'):
+            with self.subTest(problem=problem):
+                fixture = self.fixture()
+                source, scratch, binary, profile, resources, worker, preflight, plan = fixture
+                if problem == 'heap': plan['component_heap_recovery']['jvm_heap_gib'] = 7
+                elif problem == 'memory': plan['component_heap_recovery']['scheduler_memory_mb'] = 8000
+                elif problem == 'extra': plan['component_heap_recovery']['jobs'] = 3
+                else: plan['component_refresh'] = False
+                before = {p.name: p.read_bytes() for p in scratch.iterdir()}
+                with self.assertRaisesRegex(ValueError, 'Different fixed component heap recovery'):
+                    self.invoke(fixture)
+                self.assertEqual({p.name: p.read_bytes() for p in scratch.iterdir()}, before)
+                worker.remote_cache_configuration.assert_not_called()
+                worker.launcher_text.assert_not_called()
+
+    def test_unadmitted_or_changed_original_profile_stops_before_rendering(self):
+        for problem in ('small', 'owner', 'already-selected', 'local-cache'):
+            with self.subTest(problem=problem):
+                fixture = self.fixture(19 if problem == 'small' else 20)
+                source, scratch, binary, profile, resources, worker, preflight, plan = fixture
+                if problem == 'owner': resources['owner_profile']['cpu'] = 1
+                elif problem == 'already-selected': resources['selected_profile']['jvm_heap_gib'] = 6
+                elif problem == 'local-cache': resources['disk_cache'] = True
+                (scratch / 'resources.json').write_text(json.dumps(resources) + '\n')
+                before = {p.name: p.read_bytes() for p in scratch.iterdir()}
+                with self.assertRaises(ValueError): self.invoke(fixture)
+                self.assertEqual({p.name: p.read_bytes() for p in scratch.iterdir()}, before)
+                worker.remote_cache_configuration.assert_not_called()
+                worker.launcher_text.assert_not_called()
+
+    def test_different_binary_or_complete_launcher_stops_before_writes(self):
+        for problem in ('binary', 'launcher'):
+            with self.subTest(problem=problem):
+                fixture = self.fixture()
+                source, scratch, binary, profile, resources, worker, preflight, plan = fixture
+                if problem == 'binary': binary.write_bytes(b'changed installed launcher')
+                else: (scratch / 'native-bazel').write_text('changed cache or output base\n')
+                before = {p.name: p.read_bytes() for p in scratch.iterdir()}
+                with self.assertRaises(ValueError): self.invoke(fixture)
+                self.assertEqual({p.name: p.read_bytes() for p in scratch.iterdir()}, before)
+                self.assertLessEqual(worker.launcher_text.call_count, 1)
+
+    def test_existing_recovery_outputs_and_symlink_inputs_are_preserved(self):
+        for problem in ('existing-backup', 'symlink-input'):
+            with self.subTest(problem=problem):
+                fixture = self.fixture()
+                source, scratch, binary, profile, resources, worker, preflight, plan = fixture
+                if problem == 'existing-backup':
+                    (scratch / 'native-bazel.original').write_bytes(b'preserve prior evidence')
+                else:
+                    launcher = scratch / 'native-bazel'
+                    moved = source / 'outside-launcher'
+                    launcher.rename(moved)
+                    launcher.symlink_to(moved)
+                before = {p.name: p.read_bytes() for p in scratch.iterdir()}
+                with self.assertRaises(ValueError): self.invoke(fixture)
+                self.assertEqual({p.name: p.read_bytes() for p in scratch.iterdir()}, before)
+                worker.remote_cache_configuration.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

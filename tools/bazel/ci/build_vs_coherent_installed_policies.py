@@ -659,6 +659,391 @@ def check_base_parent(plan, source, private, receipt, bazel, audit, builder, log
     return result
 
 
+def collect_component_exports(source, directory, receipt, targets, *, builder,
+                              check, bazel, options, additional_targets,
+                              execution_log):
+    """Query each exact label once, retaining every declared export identity."""
+    if not targets or any(not name or Path(name).name != name or name in ('.', '..')
+                          for name in targets):
+        raise ValueError('archive declarations need nonempty, plain output filenames')
+    representatives = {}
+    selected = {}
+    for name, target in targets.items():
+        if target not in representatives:
+            representatives[target] = name
+            selected[name] = target
+    paths = builder.collect_archives(
+        source, directory, receipt, selected, bazel=bazel, options=options,
+        additional_targets=additional_targets, execution_log=execution_log)
+    require(set(paths) == set(selected), 'Component collector outputs differ')
+    for name, target in targets.items():
+        representative = representatives[target]
+        if name == representative:
+            continue
+        original = paths[representative]
+        row = receipt.get('artifacts', {}).get(representative)
+        require(isinstance(row, dict) and row.get('target') == target,
+                'Component representative receipt differs')
+        require(original.is_file() and not original.is_symlink() and
+                original.stat().st_size > 0 and
+                original.stat().st_size == row.get('bytes') and
+                check.sha(original) == row.get('sha256'),
+                'Component representative file differs')
+        destination = directory / name
+        builder.export_archive(original, destination)
+        require(destination.is_file() and not destination.is_symlink() and
+                destination.stat().st_size == row['bytes'] and
+                check.sha(destination) == row['sha256'],
+                'Component alias copy differs')
+        paths[name] = destination
+        receipt['artifacts'][name] = dict(row)
+    return {name: paths[name] for name in targets}
+
+
+BATCH_MAIN_LABELS = frozenset(('//dockers/docker-dash-ha:all_debug_symbols',
+ '//dockers/docker-dash-ha:debug_apt_selection',
+ '//dockers/docker-dash-ha:debug_client',
+ '//dockers/docker-dash-ha:debug_installed_packages',
+ '//dockers/docker-dash-ha:debug_package_metadata',
+ '//dockers/docker-dash-ha:debug_tools',
+ '//dockers/docker-dash-ha:files',
+ '//dockers/docker-dash-ha:installed_packages',
+ '//dockers/docker-dash-ha:runtime_apt_selection',
+ '//dockers/docker-dash-ha:runtime_package_metadata',
+ '//dockers/docker-dash-ha:source_runtime',
+ '//dockers/docker-dash-ha:test_redis',
+ '//dockers/docker-database:all_debug_symbols',
+ '//dockers/docker-database:debug_client',
+ '//dockers/docker-database:debug_installed_packages',
+ '//dockers/docker-database:debug_package_metadata',
+ '//dockers/docker-database:debug_tools',
+ '//dockers/docker-database:installed_packages',
+ '//dockers/docker-database:runtime_package_metadata',
+ '//dockers/docker-database:source_debug_symbols',
+ '//dockers/docker-database:source_runtime',
+ '//dockers/docker-eventd:all_debug_symbols',
+ '//dockers/docker-eventd:debug_client',
+ '//dockers/docker-eventd:debug_installed_packages',
+ '//dockers/docker-eventd:debug_package_metadata',
+ '//dockers/docker-eventd:debug_tools',
+ '//dockers/docker-eventd:test_redis',
+ '//dockers/docker-fpm-frr:all_debug_symbols',
+ '//dockers/docker-fpm-frr:debug_client',
+ '//dockers/docker-fpm-frr:debug_installed_packages',
+ '//dockers/docker-fpm-frr:debug_package_metadata',
+ '//dockers/docker-fpm-frr:debug_tools',
+ '//dockers/docker-fpm-frr:files',
+ '//dockers/docker-fpm-frr:installed_packages',
+ '//dockers/docker-fpm-frr:python_runtime',
+ '//dockers/docker-fpm-frr:runtime_package_metadata',
+ '//dockers/docker-fpm-frr:source_runtime',
+ '//dockers/docker-fpm-frr:test_redis',
+ '//dockers/docker-lldp:all_debug_symbols',
+ '//dockers/docker-lldp:debug_client',
+ '//dockers/docker-lldp:debug_installed_packages',
+ '//dockers/docker-lldp:debug_package_metadata',
+ '//dockers/docker-lldp:debug_tools',
+ '//dockers/docker-lldp:installed_packages',
+ '//dockers/docker-lldp:runtime_package_metadata',
+ '//dockers/docker-lldp:source_runtime',
+ '//dockers/docker-lldp:test_redis',
+ '//dockers/docker-macsec:all_debug_symbols',
+ '//dockers/docker-macsec:debug_apt_selection',
+ '//dockers/docker-macsec:debug_client',
+ '//dockers/docker-macsec:debug_installed_packages',
+ '//dockers/docker-macsec:debug_package_metadata',
+ '//dockers/docker-macsec:debug_tools',
+ '//dockers/docker-macsec:files',
+ '//dockers/docker-macsec:installed_packages',
+ '//dockers/docker-macsec:runtime_apt_selection',
+ '//dockers/docker-macsec:runtime_package_metadata',
+ '//dockers/docker-macsec:source_runtime',
+ '//dockers/docker-macsec:test_redis',
+ '//dockers/docker-mux:all_debug_symbols',
+ '//dockers/docker-mux:debug_client',
+ '//dockers/docker-mux:debug_installed_packages',
+ '//dockers/docker-mux:debug_package_metadata',
+ '//dockers/docker-mux:debug_tools',
+ '//dockers/docker-mux:installed_packages',
+ '//dockers/docker-mux:runtime_package_metadata',
+ '//dockers/docker-mux:source_runtime',
+ '//dockers/docker-mux:test_redis',
+ '//dockers/docker-orchagent:all_debug_symbols',
+ '//dockers/docker-orchagent:debug_accounts',
+ '//dockers/docker-orchagent:debug_apt_selection',
+ '//dockers/docker-orchagent:debug_installed_packages',
+ '//dockers/docker-orchagent:debug_package_metadata',
+ '//dockers/docker-orchagent:debug_tools',
+ '//dockers/docker-orchagent:package_policy',
+ '//dockers/docker-orchagent:rdeps_debug_symbols',
+ '//dockers/docker-orchagent:runtime_apt_selection',
+ '//dockers/docker-router-advertiser:all_debug_symbols',
+ '//dockers/docker-router-advertiser:debug_client',
+ '//dockers/docker-router-advertiser:debug_installed_packages',
+ '//dockers/docker-router-advertiser:debug_package_metadata',
+ '//dockers/docker-router-advertiser:debug_tools',
+ '//dockers/docker-router-advertiser:installed_packages',
+ '//dockers/docker-router-advertiser:runtime_package_metadata',
+ '//dockers/docker-router-advertiser:test_redis',
+ '//dockers/docker-sflow:all_debug_symbols',
+ '//dockers/docker-sflow:debug_apt_selection',
+ '//dockers/docker-sflow:debug_client',
+ '//dockers/docker-sflow:debug_installed_packages',
+ '//dockers/docker-sflow:debug_package_metadata',
+ '//dockers/docker-sflow:debug_tools',
+ '//dockers/docker-sflow:files',
+ '//dockers/docker-sflow:installed_packages',
+ '//dockers/docker-sflow:runtime_apt_selection',
+ '//dockers/docker-sflow:runtime_package_metadata',
+ '//dockers/docker-sflow:source_runtime',
+ '//dockers/docker-sflow:test_redis',
+ '//dockers/docker-snmp:all_debug_symbols',
+ '//dockers/docker-snmp:debug_client',
+ '//dockers/docker-snmp:debug_installed_packages',
+ '//dockers/docker-snmp:debug_package_metadata',
+ '//dockers/docker-snmp:installed_packages',
+ '//dockers/docker-snmp:runtime_package_metadata',
+ '//dockers/docker-snmp:test_redis',
+ '//dockers/docker-sonic-gnmi:all_debug_symbols',
+ '//dockers/docker-sonic-gnmi:debug_apt_selection',
+ '//dockers/docker-sonic-gnmi:debug_client',
+ '//dockers/docker-sonic-gnmi:debug_installed_packages',
+ '//dockers/docker-sonic-gnmi:debug_package_metadata',
+ '//dockers/docker-sonic-gnmi:debug_tools',
+ '//dockers/docker-sonic-gnmi:installed_packages',
+ '//dockers/docker-sonic-gnmi:installed_probe',
+ '//dockers/docker-sonic-gnmi:runtime_apt_selection',
+ '//dockers/docker-sonic-gnmi:runtime_package_metadata',
+ '//dockers/docker-sonic-gnmi:source_runtime',
+ '//dockers/docker-sonic-gnmi:test_redis',
+ '//dockers/docker-sonic-mgmt-framework:all_debug_symbols',
+ '//dockers/docker-sonic-mgmt-framework:debug_client',
+ '//dockers/docker-sonic-mgmt-framework:debug_installed_packages',
+ '//dockers/docker-sonic-mgmt-framework:debug_package_metadata',
+ '//dockers/docker-sonic-mgmt-framework:debug_tools',
+ '//dockers/docker-sonic-mgmt-framework:installed_packages',
+ '//dockers/docker-sonic-mgmt-framework:python_runtime',
+ '//dockers/docker-sonic-mgmt-framework:runtime_package_metadata',
+ '//dockers/docker-sonic-mgmt-framework:source_runtime',
+ '//dockers/docker-sonic-mgmt-framework:test_redis',
+ '//dockers/docker-sonic-otel:all_debug_symbols',
+ '//dockers/docker-sonic-otel:debug_apt_selection',
+ '//dockers/docker-sonic-otel:debug_client',
+ '//dockers/docker-sonic-otel:debug_installed_packages',
+ '//dockers/docker-sonic-otel:debug_package_metadata',
+ '//dockers/docker-sonic-otel:debug_tools',
+ '//dockers/docker-sonic-otel:files',
+ '//dockers/docker-sonic-otel:installed_packages',
+ '//dockers/docker-sonic-otel:runtime_apt_selection',
+ '//dockers/docker-sonic-otel:runtime_package_metadata',
+ '//dockers/docker-sonic-otel:source_runtime',
+ '//dockers/docker-sonic-otel:test_redis',
+ '//dockers/docker-sysmgr:all_debug_symbols',
+ '//dockers/docker-sysmgr:debug_apt_selection',
+ '//dockers/docker-sysmgr:debug_client',
+ '//dockers/docker-sysmgr:debug_installed_packages',
+ '//dockers/docker-sysmgr:debug_package_metadata',
+ '//dockers/docker-sysmgr:debug_tools',
+ '//dockers/docker-sysmgr:files',
+ '//dockers/docker-sysmgr:installed_packages',
+ '//dockers/docker-sysmgr:runtime_apt_selection',
+ '//dockers/docker-sysmgr:runtime_package_metadata',
+ '//dockers/docker-sysmgr:source_runtime',
+ '//dockers/docker-sysmgr:test_services',
+ '//dockers/docker-teamd:all_debug_symbols',
+ '//dockers/docker-teamd:debug_apt_selection',
+ '//dockers/docker-teamd:debug_client',
+ '//dockers/docker-teamd:debug_installed_packages',
+ '//dockers/docker-teamd:debug_package_metadata',
+ '//dockers/docker-teamd:debug_tools',
+ '//dockers/docker-teamd:files',
+ '//dockers/docker-teamd:installed_packages',
+ '//dockers/docker-teamd:runtime_apt_selection',
+ '//dockers/docker-teamd:runtime_package_metadata',
+ '//dockers/docker-teamd:source_runtime',
+ '//dockers/docker-teamd:test_redis',
+ '//platform/vs/docker-dash-engine:all_debug_symbols',
+ '//platform/vs/docker-dash-engine:debian_runtime_payload',
+ '//platform/vs/docker-dash-engine:debug_apt_selection',
+ '//platform/vs/docker-dash-engine:debug_client',
+ '//platform/vs/docker-dash-engine:debug_installed_packages',
+ '//platform/vs/docker-dash-engine:debug_package_metadata',
+ '//platform/vs/docker-dash-engine:debug_tools',
+ '//platform/vs/docker-dash-engine:files',
+ '//platform/vs/docker-dash-engine:installed_packages',
+ '//platform/vs/docker-dash-engine:runtime_apt_selection',
+ '//platform/vs/docker-dash-engine:runtime_package_metadata',
+ '//platform/vs/docker-dash-engine:source_runtime'))
+
+
+def batch_json(text):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            require(key not in value, 'Repeated discovery JSON key')
+            value[key] = item
+        return value
+    return json.loads(text, object_pairs_hook=unique)
+
+
+def batch_completed_groups(events, labels):
+    """Partition only successful top-level identities in this build's own BEP."""
+    labels = set(labels)
+    identities = {}
+    with events.open() as stream:
+        for line in stream:
+            event = batch_json(line)
+            target = event.get('id', {}).get('targetCompleted')
+            if not isinstance(target, dict) or target.get('label') not in labels:
+                continue
+            if target.get('aspect', '') != '':
+                continue
+            label = target['label']
+            require(label not in identities, 'Repeated completed batch label')
+            require(event.get('completed', {}).get('success') is True,
+                    'Batch target did not complete successfully')
+            configuration = target.get('configuration', {}).get('id')
+            require(isinstance(configuration, str) and configuration,
+                    'Missing completed batch configuration')
+            identities[label] = configuration
+    require(set(identities) == labels, 'Incomplete completed batch labels')
+    groups = {}
+    for label in sorted(labels):
+        groups.setdefault(identities[label], []).append(label)
+    # Opaque IDs group only this stream. They are never cquery config() inputs.
+    return list(groups.values())
+
+
+def batch_configuration(value, labels):
+    """Read genuine 8.5.1 jsonproto metadata; never fingerprint build_options."""
+    require(isinstance(value, dict) and isinstance(value.get('results'), list) and
+            isinstance(value.get('configurations'), list), 'Different cquery metadata shape')
+    configurations = {}
+    for row in value['configurations']:
+        require(isinstance(row, dict), 'Different cquery configuration record')
+        identifier = row.get('id')
+        checksum = row.get('checksum')
+        require(type(identifier) is int and identifier > 0 and identifier not in configurations and
+                isinstance(checksum, str) and re.fullmatch('[0-9a-f]{64}', checksum),
+                'Different cquery configuration identity')
+        configurations[identifier] = checksum
+    found = {}
+    for row in value['results']:
+        require(isinstance(row, dict), 'Different cquery target metadata')
+        target = row.get('target', {})
+        rule = target.get('rule', {})
+        label = rule.get('name')
+        require(target.get('type') == 'RULE' and isinstance(rule.get('ruleClass'), str) and
+                rule['ruleClass'] not in ('', 'alias') and label in labels and label not in found,
+                'Different or repeated cquery rule label')
+        checksum = row.get('configuration', {}).get('checksum')
+        identifier = row.get('configurationId')
+        require(type(identifier) is int and identifier in configurations and
+                checksum == configurations[identifier], 'Different cquery target configuration')
+        found[label] = checksum
+    require(set(found) == set(labels), 'Incomplete cquery metadata labels')
+    checksums = set(found.values())
+    require(len(checksums) == 1, 'Ambiguous cquery batch configuration')
+    return next(iter(checksums))
+
+
+def batch_output_paths(text, labels):
+    paths = {}
+    for line in text.splitlines():
+        row = batch_json(line)
+        require(isinstance(row, dict) and set(row) == {'label', 'files'},
+                'Different cquery file row')
+        label = row['label']
+        require(isinstance(label, str) and label in labels and label not in paths,
+                'Different or repeated cquery file label')
+        files = row['files']
+        require(isinstance(files, list) and len(files) == 1 and
+                isinstance(files[0], str) and files[0] and
+                not Path(files[0]).is_absolute() and '..' not in Path(files[0]).parts and
+                str(Path(files[0])) == files[0], 'Different single relative cquery output')
+        paths[label] = files[0]
+    require(set(paths) == set(labels), 'Incomplete cquery file labels')
+    return paths
+
+
+def collect_batched_component_exports(source, directory, receipt, targets, *, builder,
+                                      check, bazel, options, additional_targets,
+                                      execution_log):
+    """Keep difficult labels on the collector; batch the fixed main-rule subset."""
+    require(targets and all(name and Path(name).name == name and name not in ('.', '..')
+                            for name in targets), 'archive declarations need plain output filenames')
+    batch = {name: target for name, target in targets.items() if target in BATCH_MAIN_LABELS}
+    original = {name: target for name, target in targets.items() if target not in BATCH_MAIN_LABELS}
+    require(set(batch.values()) == set(BATCH_MAIN_LABELS) and original,
+            'Different fixed batched archive scope')
+    paths = collect_component_exports(
+        source, directory, receipt, original, builder=builder, check=check, bazel=bazel,
+        options=options, additional_targets=[*sorted(set(batch.values())), *additional_targets],
+        execution_log=execution_log)
+    events = directory / 'build-events.jsonl'
+    groups = batch_completed_groups(events, batch.values())
+    root = builder.execution_root(events)
+    index = {'label_count': len(set(batch.values())), 'group_count': len(groups),
+             'query_count': 0, 'groups': []}
+    receipt['archive_discovery'] = index
+    for ordinal, labels in enumerate(groups):
+        # The labels are a reviewed literal allowlist, not inferred file names.
+        require(all(re.fullmatch(r'//[A-Za-z0-9_./+-]+:[A-Za-z0-9_./+-]+', x)
+                    for x in labels), 'Different batched main label syntax')
+        expression = 'set(' + ' '.join(labels) + ')'
+        metadata_name = 'cohort.archive-config.' + str(ordinal)
+        files_name = 'cohort.archive-files.' + str(ordinal)
+        records = []
+
+        def query(name, arguments):
+            output = directory / (name + '.json')
+            with output.open('x'):
+                pass
+            output.chmod(0o600)
+            command_index = len(receipt['commands'])
+            try:
+                builder.command_log.execute([bazel, 'cquery', *options, *arguments], directory,
+                                            receipt, name, cwd=source, output_path=output)
+            finally:
+                # The maintained logger also records an executed failing command.
+                index['query_count'] += len(receipt['commands']) - command_index
+            records.append({'command_index': command_index, 'name': name,
+                            'bytes': output.stat().st_size, 'sha256': check.sha(output)})
+            return output.read_text()
+
+        metadata = query(metadata_name, ['--consistent_labels', '--output=jsonproto',
+            '--proto:include_configurations', '--noproto:locations',
+            '--proto:output_rule_attrs=', '--noproto:rule_inputs_and_outputs', expression])
+        checksum = batch_configuration(batch_json(metadata), labels)
+        files = query(files_name, ['--consistent_labels', '--output=starlark',
+            '--starlark:expr=json.encode({"label": str(target.label), '
+            '"files": [f.path for f in target.files.to_list()]})',
+            'config(' + expression + ', ' + checksum + ')'])
+        mapped = batch_output_paths(files, labels)
+        # No per-label or per-alias command is fabricated. Both real commands
+        # and their original private stdout hashes identify this shared map.
+        index['groups'].append({'labels': labels, 'configuration_checksum': checksum,
+                                'queries': records})
+        for name, target in batch.items():
+            if target not in mapped:
+                continue
+            path = root / mapped[target]
+            require(path.is_file() and path.stat().st_size > 0,
+                    'Expected exactly one nonempty archive output for ' + target)
+            expected = {'target': target, 'bytes': path.stat().st_size, 'sha256': check.sha(path)}
+            destination = directory / name
+            require(not destination.exists() and not destination.is_symlink(),
+                    'Preserve existing batch export')
+            builder.export_archive(path, destination)
+            require(destination.is_file() and not destination.is_symlink() and
+                    destination.stat().st_size == expected['bytes'] and
+                    check.sha(destination) == expected['sha256'], 'Batch export differs')
+            paths[name] = destination
+            receipt['artifacts'][name] = expected
+    require(set(paths) == set(targets), 'Incomplete batched component exports')
+    return {name: paths[name] for name in targets}
+
+
 def collect_with_native_anchor(plan, source, private, receipt, exports, layouts,
                                bazel, audit, builder, check, merge):
     # The final proxy profile is already active for both this gate and every
@@ -679,8 +1064,9 @@ def collect_with_native_anchor(plan, source, private, receipt, exports, layouts,
         bazel, OPTIONS, [*exports.values(), *layouts],
         workspace=source, output=private / 'action-audit.json')
     remainder = {name: target for name, target in exports.items() if name not in PRIMARY}
-    paths.update(builder.collect_archives(
-        source, private, receipt, remainder, bazel=bazel, options=[*OPTIONS, '--keep_going'],
+    paths.update(collect_batched_component_exports(
+        source, private, receipt, remainder, builder=builder, check=check,
+        bazel=bazel, options=[*OPTIONS, '--keep_going'],
         additional_targets=layouts, execution_log=private / 'build.execution.json'))
     return paths
 
@@ -989,6 +1375,117 @@ def validate_components(plan, source, private, receipt, paths, layouts, identity
     return validations, incremental, owner_checks
 
 
+def prepare_component_heap(plan, source, scratch, worker, preflight):
+    """Reallocate this cohort's measured profile through the original launcher."""
+    allocation = {'jvm_heap_gib': 6, 'scheduler_memory_mb': 4000}
+    require(plan.get('component_refresh') is True and
+            plan.get('component_heap_recovery') == allocation,
+            'Different fixed component heap recovery')
+    resources_path = scratch / 'resources.json'
+    launcher = scratch / 'native-bazel'
+    originals = (scratch / 'resources.original.json', scratch / 'native-bazel.original')
+    pending = (scratch / 'resources.heap-recovery.json', scratch / 'native-bazel.heap-recovery')
+    require(all(not os.path.lexists(path) for path in (*originals, *pending)),
+            'Component heap recovery outputs must be fresh')
+    require(all(path.is_file() and not path.is_symlink() and
+                0 < path.stat().st_size <= 128 * 1024
+                for path in (resources_path, launcher)),
+            'Prepared component resource or launcher file differs')
+    resource_bytes, launcher_bytes = resources_path.read_bytes(), launcher.read_bytes()
+    resources = json.loads(resource_bytes)
+    memory, used, quota = (resources[key] for key in ('memory_max', 'memory_current', 'cpu_limit'))
+    require(type(memory) is int and memory >= 20 * 1024**3 and
+            type(used) is int and 0 <= used < memory and
+            type(quota) in (int, float) and 4 <= quota <= 6 and
+            resources.get('architecture') == 'amd64' and
+            resources.get('disk_cache') is False and resources.get('repository_cache') is False,
+            'Component heap recovery requires the admitted worker resources')
+    original = preflight.select_build_profile(memory, quota)
+    require(resources.get('owner_profile') == original and
+            resources.get('selected_profile') == original and
+            original['jobs'] == 2 and original['cpu'] == 2 and
+            original['jvm_heap_gib'] == 3 and original['scheduler_memory_mb'] == 8000,
+            'Different original component resource profile')
+    selected = dict(original, **allocation)
+    # prepare_cache already verified ownership. Recheck its immutable binary
+    # seal and the complete rendered launcher before changing either input.
+    executable = shutil.which('bazel', path='/usr/local/bin:/usr/bin:/bin')
+    if executable is None:
+        executable = shutil.which('bazelisk', path='/usr/local/bin:/usr/bin:/bin')
+    require(executable is not None, 'Prepared Bazel launcher unavailable')
+    binary = Path(executable).resolve(strict=True)
+    require(binary.is_file() and binary.stat().st_size <= 128 * 1024**2 and
+            hashlib.sha256(binary.read_bytes()).hexdigest() == plan['bazel_launcher_sha256'],
+            'Prepared Bazel launcher seal differs')
+    # This existing owner reads public managed settings; it performs no probe.
+    configuration = worker.remote_cache_configuration(source)
+    expected = worker.launcher_text(str(binary), scratch / 'output-base', original, configuration).encode()
+    require(launcher_bytes == expected, 'Prepared native launcher differs')
+    replacement = worker.launcher_text(str(binary), scratch / 'output-base', selected, configuration).encode()
+    resources['selected_profile'] = selected
+    resources['component_heap_recovery'] = {
+        'allocation': allocation,
+        'original_resources_sha256': hashlib.sha256(resource_bytes).hexdigest(),
+        'original_launcher_sha256': hashlib.sha256(launcher_bytes).hexdigest(),
+        'selected_launcher_sha256': hashlib.sha256(replacement).hexdigest(),
+        'measured_peak_guarantee': False,
+    }
+    updated = (json.dumps(resources, sort_keys=True) + '\n').encode()
+    for path, raw, mode in ((originals[0], resource_bytes, 0o600),
+                            (originals[1], launcher_bytes, 0o700),
+                            (pending[0], updated, 0o600), (pending[1], replacement, 0o700)):
+        with path.open('xb') as stream:
+            stream.write(raw)
+        path.chmod(mode)
+    # No Bazel command runs until this cache-preparation phase succeeds.
+    os.replace(pending[1], launcher)
+    os.replace(pending[0], resources_path)
+
+
+def prepare_component_gnoi(source, directory, receipt, logs):
+    """Initialize only the source checkout's pinned Sysmgr proto submodule."""
+    relative = 'src/sonic-sysmgr/gnoi'
+    protos = ('types/types.proto', 'common/common.proto', 'system/system.proto')
+    tree = logs.execute(['git', '-c', 'protocol.allow=never', 'ls-tree', 'HEAD', '--', relative],
+                        directory, receipt, 'gnoi.gitlink', cwd=source).strip()
+    matched = re.fullmatch(r'160000 commit ([0-9a-f]{40})\t' + re.escape(relative), tree)
+    require(matched is not None, 'Sysmgr gNOI input is not a unique pinned gitlink')
+    revision = matched.group(1)
+    # This is the existing normal-CI setup command, scoped to its one gitlink.
+    logs.execute(['git', '-c', 'safe.directory=' + str(source), 'submodule', 'update', '--init',
+                  '--', relative], directory, receipt, 'gnoi.initialize', cwd=source)
+    submodule = source / relative
+    require(submodule.is_dir() and submodule.resolve(strict=True) == submodule,
+            'Sysmgr gNOI checkout must be a real source directory')
+    git = ['git', '-c', 'protocol.allow=never', '-C', str(submodule)]
+    head = logs.execute([*git, 'rev-parse', 'HEAD'], directory, receipt, 'gnoi.revision',
+                        cwd=source).strip()
+    require(head == revision, 'Sysmgr gNOI checkout differs from its source gitlink')
+    rows = logs.execute([*git, 'ls-tree', '-r', 'HEAD', '--', *protos], directory, receipt,
+                        'gnoi.proto-tree', cwd=source).splitlines()
+    blobs = {}
+    for row in rows:
+        item = re.fullmatch(r'100644 blob ([0-9a-f]{40})\t(.+)', row)
+        require(item is not None and item.group(2) in protos and item.group(2) not in blobs,
+                'Sysmgr gNOI proto declaration differs')
+        blobs[item.group(2)] = item.group(1)
+    require(set(blobs) == set(protos), 'Sysmgr gNOI proto declarations are incomplete')
+    logs.execute([*git, 'diff', '--no-ext-diff', '--no-textconv', '--exit-code',
+                  '--ignore-submodules=none', 'HEAD'], directory,
+                 receipt, 'gnoi.clean', cwd=source)
+    files = {}
+    for name in protos:
+        path = submodule / name
+        require(path.is_file() and not path.is_symlink() and path.resolve(strict=True) == path,
+                'Sysmgr gNOI proto is missing or has a different file type: ' + name)
+        raw = path.read_bytes()
+        require(raw and hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+                == blobs[name], 'Sysmgr gNOI proto differs from its pinned source: ' + name)
+        files[name] = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
+                       'git_blob': blobs[name]}
+    return {'path': relative, 'revision': revision, 'files': files}
+
+
 def build_cohort(plan, source, scratch, output, owners, components=None):
     orch, syncd, audit, builder, logs, exporter, resolution, merge, public_json = owners
     environment_check(plan, scratch, source)
@@ -1009,6 +1506,8 @@ def build_cohort(plan, source, scratch, output, owners, components=None):
         syncd.clean_source(private)
         identity = syncd.identity()
         require(identity['revision'] == plan['source_revision'], 'Syncd source revision differs')
+        if components is not None:
+            receipt['gnoi_source'] = prepare_component_gnoi(source, private, receipt, logs)
         logs.execute(setup.MAKE_ARGUMENTS, private, receipt, 'swss.manifests', cwd=source)
         manifests = manifest_snapshot(source)
         logs.execute(syncd.manifest_command(), private, receipt, 'syncd.manifests', cwd=source)
@@ -1934,6 +2433,9 @@ def main():
         validation_tools.mkdir(mode=0o700)
         importlib.import_module('tools.bazel.ci.source_image_worker').prepare_validation_tools(validation_tools)
         if plan.get('component_refresh'):
+            prepare_component_heap(plan, source, scratch,
+                importlib.import_module('tools.bazel.ci.source_image_worker'),
+                importlib.import_module('tools.bazel.ci.source_worker_preflight'))
             prepare_component_proxy(source, scratch)
     else:
         setup.source_check(source, plan['source_revision'])
