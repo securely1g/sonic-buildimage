@@ -591,7 +591,17 @@ def component_primary():
 def component_proxy_text(source, scratch):
     command = shlex.join([str(source / 'tools/bazel/ci/review_bazel.sh'), '--batch',
                           '--output_user_root=' + str(scratch / 'output-user-root')])
-    text = '#!/bin/sh\ncase "${1-}" in\n  build|test|aquery|cquery)\n'
+    # The original review wrapper recognizes only a singleton --version before
+    # startup parsing. Preserve its GNU output/filter/status and our batch scope.
+    native = str(scratch / 'native-bazel')
+    metadata = shlex.join([native, '--batch',
+                          '--output_user_root=' + str(scratch / 'output-user-root'),
+                          'version', '--gnu_format'])
+    text = '#!/usr/bin/env bash\nif [[ "${1-}" == --version ]]; then\n'
+    text += '    [[ $# == 1 ]] || { printf "%s\\n" "--version requires no extra arguments." >&2; exit 2; }\n'
+    text += '    [[ "${BAZEL_REAL-}" == ' + shlex.quote(native) + ' ]] || { printf "%s\\n" "Different selected metadata launcher." >&2; exit 2; }\n'
+    text += "    set -o pipefail\n    " + metadata + " | sed '1{/^Bazelisk /d;}'\n    exit\nfi\n"
+    text += 'case "${1-}" in\n  build|test|aquery|cquery)\n'
     for index, option in enumerate(COMPONENT_PROFILE):
         variable = 'cohort_option_' + str(index)
         text += '    ' + variable + '=false\n    for cohort_argument do\n'

@@ -1919,5 +1919,144 @@ class SwssOwnerReportBoundaryTests(unittest.TestCase):
         self.owner_checks.assert_not_called()
         self.assertFalse((self.private / 'swss-layer/validation.json').exists())
 
+
+class ComponentVersionMetadataTests(unittest.TestCase):
+    """Exercise the real review shell and generated proxy with a recording backend."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = Path(os.environ.get('COMPONENT_RUNTIME_TEST_SOURCE', ROOT / 'current-source'))
+        cls.original = source / 'tools/bazel/ci/review_bazel.sh'
+        if cls.original.is_symlink() or not cls.original.is_file() or sha(cls.original) != \
+                '32b3146f1ab0e7be0e56c99afbe1afacea44e93e324fcfc2436a411e2c673f16':
+            raise AssertionError('Different original review shell')
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.source = root / 'source with spaces'
+        self.scratch = root / 'scratch with spaces'
+        self.scratch.mkdir()
+        self.owner = self.source / 'tools/bazel/ci/review_bazel.sh'
+        self.owner.parent.mkdir(parents=True)
+        self.owner.write_bytes(self.original.read_bytes())
+        self.owner.chmod(0o700)
+        # Keep only the RC-file-generation and backend process boundaries fake;
+        # actual review-shell parsing, forwarding, rejection and filtering run.
+        (self.owner.parent / 'review_bazel_rc.py').write_text(
+            'from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text("# fixture rc\\n")\n')
+        self.native = self.scratch / 'native-bazel'
+        self.native.write_text('#!' + sys.executable + '\n' +
+            'import json, os, sys\n'
+            'with open(os.environ["VERSION_FIXTURE_RECORD"], "a") as stream:\n'
+            '    stream.write(json.dumps({"argv":sys.argv[1:], "home":os.environ.get("HOME")})+"\\n")\n'
+            'sys.stdout.write(os.environ["VERSION_FIXTURE_OUTPUT"])\n'
+            'sys.stderr.write(os.environ.get("VERSION_FIXTURE_ERROR", ""))\n'
+            'raise SystemExit(int(os.environ.get("VERSION_FIXTURE_EXIT", "0")))\n')
+        self.native.chmod(0o700)
+        self.record = self.scratch / 'backend.jsonl'
+        self.proxy = self.scratch / 'review-bazel'
+        self.proxy.write_text(caller.component_proxy_text(self.source, self.scratch))
+        self.proxy.chmod(0o700)
+        self.environment = dict(os.environ, BAZEL_REAL=str(self.native),
+            SONIC_BAZEL_REGISTRY_REVISION='a' * 40,
+            VERSION_FIXTURE_RECORD=str(self.record), VERSION_FIXTURE_OUTPUT='bazel 8.5.1\n')
+        self.original_home = os.environ.get('HOME')
+
+    def invoke(self, arguments, *, owner=False, output='bazel 8.5.1\n', status=0,
+               error='', overrides=None):
+        self.record.unlink(missing_ok=True)
+        environment = dict(self.environment, VERSION_FIXTURE_OUTPUT=output,
+                           VERSION_FIXTURE_EXIT=str(status), VERSION_FIXTURE_ERROR=error)
+        environment.update(overrides or {})
+        result = subprocess.run([str(self.owner if owner else self.proxy), *arguments],
+                                cwd=self.source, env=environment, text=True,
+                                capture_output=True, timeout=10)
+        records = [json.loads(line) for line in self.record.read_text().splitlines()] \
+            if self.record.exists() else []
+        self.assertEqual(os.environ.get('HOME'), self.original_home)
+        return result, records
+
+    def test_singleton_version_matches_existing_owner_output_and_keeps_batch_scope(self):
+        original, original_rows = self.invoke(['--version'], owner=True)
+        actual, rows = self.invoke(['--version'])
+        self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                         (original.returncode, original.stdout, original.stderr))
+        self.assertEqual(original_rows[0]['argv'], ['version', '--gnu_format'])
+        self.assertEqual(rows, [{'argv': ['--batch', '--output_user_root=' +
+            str(self.scratch / 'output-user-root'), 'version', '--gnu_format'],
+            'home': self.original_home}])
+        self.assertEqual(actual.stdout, 'bazel 8.5.1\n')
+
+    def test_only_initial_bazelisk_banner_is_filtered_exactly_like_original_owner(self):
+        for output in ('Bazelisk version: fixture\nbazel 8.5.1\n',
+                       'prefix\nBazelisk version: retained second line\nbazel 8.5.1\n'):
+            with self.subTest(output=output):
+                original, _ = self.invoke(['--version'], owner=True, output=output)
+                actual, _ = self.invoke(['--version'], output=output)
+                self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                                 (original.returncode, original.stdout, original.stderr))
+
+    def test_backend_failure_and_remaining_output_propagate_through_pipefail(self):
+        output = 'Bazelisk fixture\nretained failure output\n'
+        original, _ = self.invoke(['--version'], owner=True, output=output, status=17,
+                                  error='retained backend failure\n')
+        actual, _ = self.invoke(['--version'], output=output, status=17,
+                                error='retained backend failure\n')
+        self.assertEqual((actual.returncode, actual.stdout, actual.stderr),
+                         (original.returncode, original.stdout, original.stderr))
+        self.assertEqual(actual.returncode, 17)
+        self.assertEqual(actual.stdout, 'retained failure output\n')
+
+    def test_version_extra_arguments_are_rejected_without_backend_invocation(self):
+        for extra in (['build'], ['--gnu_format'], ['--output_base=other'], ['--version']):
+            with self.subTest(extra=extra):
+                result, rows = self.invoke(['--version', *extra])
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('--version requires no extra arguments.', result.stderr)
+                self.assertEqual(rows, [])
+
+    def test_metadata_requires_the_selected_native_launcher(self):
+        result, rows = self.invoke(['--version'], overrides={'BAZEL_REAL': '/not/the/selected/launcher'})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('Different selected metadata launcher.', result.stderr)
+        self.assertEqual(rows, [])
+
+    def test_ordinary_commands_keep_original_review_and_profile_forwarding(self):
+        for command in ('build', 'test', 'aquery', 'cquery', 'query', 'info', 'mod', 'shutdown'):
+            with self.subTest(command=command):
+                arguments = [command] if command == 'shutdown' else [command, 'fixed argument']
+                result, rows = self.invoke(arguments, output='')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(rows), 1)
+                argv = rows[0]['argv']
+                self.assertEqual(argv[:2], ['--batch', '--output_user_root=' +
+                                           str(self.scratch / 'output-user-root')])
+                self.assertEqual(argv[2:5], ['--nosystem_rc', '--nohome_rc', '--noworkspace_rc'])
+                self.assertTrue(argv[5].startswith('--bazelrc='))
+                expected = arguments if command == 'shutdown' else [command,
+                    '--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + 'a' * 40,
+                    '--registry=https://bcr.bazel.build', 'fixed argument']
+                if command in ('build', 'test', 'aquery', 'cquery'):
+                    expected += caller.COMPONENT_PROFILE
+                if command == 'build':
+                    expected += ['--execution_log_sort=false']
+                self.assertEqual(argv[6:], expected)
+                self.assertEqual(rows[0]['home'], self.original_home)
+
+    def test_ordinary_rejections_and_failures_remain_enforced(self):
+        for arguments in (['version'], ['unapproved-command'], ['shutdown', 'extra'],
+                          ['build', '--registry=https://example.invalid'],
+                          ['--bazelrc=other', 'build']):
+            with self.subTest(arguments=arguments):
+                result, rows = self.invoke(arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(rows, [])
+        result, rows = self.invoke(['build', 'fixed'], status=19, error='original build failure\n')
+        self.assertEqual(result.returncode, 19)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(result.stderr, 'original build failure\n')
+
 if __name__ == '__main__':
     unittest.main()
