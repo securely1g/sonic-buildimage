@@ -1762,5 +1762,162 @@ class CanonicalMainLabelTests(unittest.TestCase):
             self.assertEqual(receipt['artifacts'][name]['sha256'], sha(paths[name]))
 
 
+
+class SwssOwnerReportBoundaryTests(unittest.TestCase):
+    """Keep original validation results public and real resolution diagnostics private."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = Path(os.environ.get('COMPONENT_RUNTIME_TEST_SOURCE', ROOT / 'current-source'))
+        for filename, expected, attribute in (
+            ('public_artifacts.py', '69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4', 'public'),
+            ('resolution.py', '16598e925a24678bdc7d417f2c6239f7be9efb419214ff7a3979d9d6e74a4e70', 'resolution'),
+        ):
+            path = source / 'tools/bazel/ci' / filename
+            if path.is_symlink() or not path.is_file() or sha(path) != expected:
+                raise AssertionError('Different exact SWSS report-boundary owner')
+            spec = importlib.util.spec_from_file_location('swss_report_' + attribute, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            setattr(cls, attribute, module)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.source = self.root / 'source'
+        self.source.mkdir()
+        (self.source / 'bazel-out').mkdir()
+        self.anchor = 'external/swss/fpmsyncd/bgp_eoiu_marker.py'
+        anchor = self.source / self.anchor
+        anchor.parent.mkdir(parents=True)
+        anchor.write_text('# fixed source anchor\n')
+        self.plan = caller.load_plan(PLAN)
+        self.identity = {'revision': self.plan['source_revision']}
+        self.audit = {'deb_outputs': [], 'packaging_wrappers': []}
+        # Representative original owner fields. Exact retained aggregates are
+        # separately exercised by the original17 public-guard fixture.
+        self.owner_report = {
+            'status': 'passed', 'architecture': 'amd64',
+            'manifest_digest': 'sha256:' + '1' * 64,
+            'parent_manifest_digest': 'sha256:' + '2' * 64,
+            'config_digest': 'sha256:' + '3' * 64,
+            'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + '4' * 64]},
+            'archive': {'sha256': '5' * 64, 'bytes': 123,
+                        'tag': 'docker-swss-layer-trixie:latest',
+                        'config_digest': 'sha256:' + '3' * 64, 'layers': 1},
+            'native': {'usr/lib/example.so': {'kind': 'file', 'sha256': '6' * 64,
+                                            'mode': 493, 'elf_machine': 62}},
+            'swss_programs': ['usr/bin/fpmsyncd'], 'source_debug_pairs': [],
+            'source_runtime_sha256': '7' * 64, 'parent_payload_unchanged': True,
+            'elfs': [{'path': 'usr/lib/example.so', 'needed': [], 'sha256': '6' * 64}],
+        }
+        self.resolution_directory = self.root / 'original-resolution'
+        self.resolution_directory.mkdir()
+        (self.source / 'MODULE.bazel.lock').write_text('{"registryFileHashes": {}}\n')
+        graph = json.dumps({'key': '<root>', 'root': True,
+                            'dependencies': [{'key': 'fixture@1', 'dependencies': []}]})
+        # Execute the unchanged owner, mocking only process boundaries. The
+        # actual collect/retain functions create their own argv-bearing result.
+        with mock.patch.object(self.resolution.subprocess, 'run', return_value=
+                               subprocess.CompletedProcess([], 0, stdout=graph, stderr='')) as run, \
+             mock.patch.object(self.resolution.subprocess, 'check_output', return_value=''):
+            self.resolved = self.resolution.collect(
+                self.source, self.resolution_directory, bazel=('fixed-reviewed-proxy',))
+        self.assertEqual(self.resolved['inspection']['argv'], run.call_args.args[0])
+        self.assertIn('mod', self.resolved['inspection']['argv'])
+        self.calls = 0
+        self.verify_error = None
+
+    def run_boundary(self):
+        private = self.root / ('private-' + str(self.calls))
+        self.calls += 1
+        private.mkdir()
+        spec = copy.deepcopy(caller.COMPONENTS['swss-layer'])
+        name = 'docker-swss-layer-trixie.gz'
+        archive = private / name
+        archive.write_bytes(b'unit-test archive boundary, no image acceptance')
+        target = spec['prefix'] + name
+        receipt = {'commands': [], 'action_audit': self.audit,
+                   'artifacts': {name: {'target': target, 'bytes': archive.stat().st_size,
+                                        'sha256': sha(archive)}}}
+        for filename in ('build-events.jsonl', 'build.execution.json'):
+            (private / filename).write_text('{}\n')
+        layouts = {label: 'bazel-out/layout' for label in
+                   [caller.BASE, spec['parent'], *[spec['prefix'] + image for image in spec['images']]]}
+        verify = mock.Mock(side_effect=self.verify_error,
+                           return_value=copy.deepcopy(self.owner_report))
+        owner = SimpleNamespace(TARGETS={name: target}, IMAGE=spec['prefix'] + spec['images'][0],
+                                oci_layout=SimpleNamespace(validate_layout=mock.Mock(return_value=object())),
+                                verify=verify)
+        self.private = private
+        self.guard = mock.Mock(wraps=self.public.safe_json)
+        with mock.patch.object(caller, 'COMPONENTS', {'swss-layer': spec}), \
+             mock.patch.object(caller, 'component_owner_checks', return_value={}) as owners:
+            self.owner_checks = owners
+            result = caller.validate_components(
+                self.plan, self.source, private, receipt, {name: archive}, layouts,
+                self.identity, self.resolved, {'swss-layer': owner}, 'fixed-reviewed-proxy',
+                SimpleNamespace(execute=mock.Mock(return_value=self.anchor + '\n')),
+                shutil.copyfile, SimpleNamespace(sha=sha), self.guard, object())
+        verify.assert_called_once()
+        return result
+
+    def test_original_owner_report_and_private_resolution_are_preserved(self):
+        original = copy.deepcopy(self.owner_report)
+        validations, incremental, _ = self.run_boundary()
+        directory = self.private / 'swss-layer'
+        value = json.loads((directory / 'validation.json').read_bytes())
+        self.assertEqual(value, {**original, **self.identity})
+        self.assertEqual(self.owner_report, original)
+        private_receipt = json.loads((directory / 'build-receipt.json').read_bytes())
+        self.assertEqual(private_receipt['resolution'], self.resolved)
+        self.assertEqual(private_receipt['action_audit'], self.audit)
+        inspection = json.loads((self.resolution_directory / 'module-graph-inspection.json').read_bytes())
+        self.assertEqual(inspection, self.resolved['inspection'])
+        self.assertEqual(validations['swss-layer']['sha256'], sha(directory / 'validation.json'))
+        self.assertEqual(incremental, {})
+        public = json.loads((directory / 'public-receipt.json').read_bytes())
+        self.assertEqual(public['status'], 'passed')
+        self.public.safe_json(value)
+        self.public.safe_json(public)
+
+    def test_actual_argv_bearing_resolution_is_still_rejected(self):
+        with self.assertRaisesRegex(self.public.PublicArtifactError, 'diagnostic-json-field'):
+            self.public.safe_json(self.resolved)
+        old_adapter_value = {**self.owner_report, **self.identity,
+                             'action_audit': self.audit, 'resolution': self.resolved}
+        with self.assertRaisesRegex(self.public.PublicArtifactError, 'diagnostic-json-field'):
+            self.public.safe_json(old_adapter_value)
+
+    def test_unsafe_owner_result_is_rejected_without_filtering(self):
+        self.owner_report['unexpected'] = {'argv': ['retained diagnostic']}
+        with self.assertRaisesRegex(self.public.PublicArtifactError, 'diagnostic-json-field'):
+            self.run_boundary()
+        self.owner_checks.assert_not_called()
+        directory = self.private / 'swss-layer'
+        self.assertEqual(json.loads((directory / 'validation.json').read_bytes())['unexpected'],
+                         self.owner_report['unexpected'])
+        self.assertFalse((directory / 'public-receipt.json').exists())
+
+    def test_source_and_status_acceptance_remain_required(self):
+        for field in ('status', 'revision'):
+            with self.subTest(field=field):
+                self.owner_report['status'] = 'failed' if field == 'status' else 'passed'
+                self.identity['revision'] = 'different' if field == 'revision' else self.plan['source_revision']
+                with self.assertRaisesRegex(ValueError, 'Component source image validation did not pass'):
+                    self.run_boundary()
+                self.guard.assert_not_called()
+                self.owner_checks.assert_not_called()
+                self.assertFalse((self.private / 'swss-layer/public-receipt.json').exists())
+
+    def test_original_owner_failure_is_not_converted_to_acceptance(self):
+        self.verify_error = ValueError('original SWSS owner rejected payload')
+        with self.assertRaisesRegex(ValueError, 'original SWSS owner rejected payload'):
+            self.run_boundary()
+        self.guard.assert_not_called()
+        self.owner_checks.assert_not_called()
+        self.assertFalse((self.private / 'swss-layer/validation.json').exists())
+
 if __name__ == '__main__':
     unittest.main()

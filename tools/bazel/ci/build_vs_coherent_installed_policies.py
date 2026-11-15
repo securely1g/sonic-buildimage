@@ -1367,8 +1367,8 @@ def validate_components(plan, source, private, receipt, paths, layouts, identity
             swss_source = (execution_root / anchor[0]).resolve(strict=True).parents[1]
             layout = owner.oci_layout.validate_layout(source / layouts[owner.IMAGE], 'linux/amd64')
             parent = owner.oci_layout.validate_layout(source / layouts[BASE], 'linux/amd64')
-            value = {**owner.verify(layout, parent, copied, swss_source), **identity,
-                     'action_audit': receipt['action_audit'], 'resolution': resolved}
+            # Match the original owner report; diagnostics remain in build-receipt.json.
+            value = {**owner.verify(layout, parent, copied, swss_source), **identity}
             (directory / 'validation.json').write_text(json.dumps(value, indent=2) + '\n')
         else:
             owner.validate_images(directory)
