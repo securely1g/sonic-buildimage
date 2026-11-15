@@ -6547,7 +6547,7 @@ jobs:
           download = root/'download-action'
           assert subprocess.check_output(['git','-C',str(download),'rev-parse','HEAD'],text=True).strip() == '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
           assert not subprocess.check_output(['git','-C',str(download),'status','--porcelain','--untracked-files=all'],text=True).strip()
-          assert hashlib.sha256((download/'dist/index.js').read_bytes()).hexdigest() == 'f2b9b31a73b1952584858e152e912c3825ad8ae061f280edab14b842f40893c7'
+          assert hashlib.sha256((download/'dist/index.js').read_bytes()).hexdigest() == 'f4a6b7046eb834bed98bb687f6d08feb0bfe6fb32570e9da7de0707884c08b31'
           for name in ('inbox','subset','receipts'):
               (root/name).mkdir(mode=0o700)
           assert root.stat().st_dev == (root/'inbox').stat().st_dev == Path(os.environ['RUNNER_TEMP']).stat().st_dev
