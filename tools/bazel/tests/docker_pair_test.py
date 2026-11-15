@@ -107,7 +107,7 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         for owner, debug in (self.archives[:2], self.archives[2:]):
             directory, = (timings / owner).iterdir()
             profiles = ["build", "cquery-" + owner, "cquery-" + debug]
-            commands = ["build", "info", *profiles[1:], "shutdown"]
+            commands = [*profiles, "shutdown"]
             exports = ["export-" + owner, "export-" + debug]
             self.assertEqual(json.loads((directory / "recipe.json").read_text()),
                              {"bazel": commands, "profiles": profiles, "exports": exports})
@@ -132,7 +132,7 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assertEqual(len(instances), 2)
         for directory in instances:
             recipe = json.loads((directory / "recipe.json").read_text())
-            self.assertEqual(recipe["bazel"], ["build", "info", "cquery-" + owner, "shutdown"])
+            self.assertEqual(recipe["bazel"], ["build", "cquery-" + owner, "shutdown"])
             self.assertEqual(recipe["exports"], ["export-" + owner])
             self.assertTrue((directory / "build.timing.json").is_file())
 

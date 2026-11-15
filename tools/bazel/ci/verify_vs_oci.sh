@@ -90,17 +90,26 @@ bazel_options+=(--platforms=@sonic_build_infra//platforms:x86_64_trixie
 
 check_images() (
     set -e
-    local test_name=$1 report_name=$2 status=0 testlogs file path
+    local test_name=$1 report_name=$2 status=0 file path
+    local -a reports
     shift 2
     start_private_bazel "$test_name"
     "${private_bazel[@]}" test "${bazel_options[@]}" "$@" "//tools/bazel/tests:$test_name" \
         --nocache_test_results --nozip_undeclared_test_outputs \
         2>&1 | tee "artifacts/vs/$report_name.log" || status=$?
 
-    testlogs=$("${private_bazel[@]}" info "${bazel_options[@]}" "$@" bazel-testlogs)
+    # Each suite has a fresh private output base and runs in one configuration.
+    # Bazel 8.5.1 info bazel-testlogs fails on apparent Bzlmod platform labels.
+    shopt -s nullglob
+    reports=("$bazel_output_base"/execroot/*/bazel-out/*/testlogs/tools/bazel/tests/"$test_name")
+    if (( ${#reports[@]} != 1 )); then
+        printf 'Expected one test report directory for %s, found %s\n' "$test_name" "${#reports[@]}" >&2
+        if (( status )); then exit "$status"; fi
+        exit 1
+    fi
     mkdir -p "artifacts/vs/$report_name"
     for file in test.log test.xml test.outputs/validation.json; do
-        path="$testlogs/tools/bazel/tests/$test_name/$file"
+        path="${reports[0]}/$file"
         if [[ -f $path ]]; then
             cp -- "$path" "artifacts/vs/$report_name/${file##*/}"
         fi
@@ -124,7 +133,7 @@ materialize_policy() (
     start_private_bazel "${family}_installed_images_policy"
     "${private_bazel[@]}" build "${bazel_options[@]}" "$@" "$label"
     policy=$("${private_bazel[@]}" cquery "${bazel_options[@]}" "$@" --output=files "$label")
-    execution_root=$("${private_bazel[@]}" info "${bazel_options[@]}" "$@" execution_root)
+    execution_root=$(private_bazel_execution_root)
     cp -- "$execution_root/$policy" "artifacts/vs/$family-installed-images-policy.json"
 )
 materialize_policy swss

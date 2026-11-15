@@ -44,8 +44,10 @@ command = next(arg for arg in args if arg in ('test', 'build', 'info', 'cquery',
 execroot = base / 'execroot/main repo'
 testlogs = execroot / 'bazel-out/chosen-config/testlogs'
 if command == 'info':
-    print(testlogs if args[-1] == 'bazel-testlogs' else execroot)
+    sys.exit('info cannot resolve apparent Bzlmod platform labels')
 if command == 'test':
+    if os.environ.get('NO_TEST_REPORT'):
+        sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
     target = next(arg.split(':')[1] for arg in args if arg.startswith('//'))
     output = testlogs / 'tools/bazel/tests' / target
     for name in ('test.log', 'test.xml', 'test.outputs/validation.json'):
@@ -56,7 +58,7 @@ if command == 'test':
     sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
 if command == 'build':
     label = next(arg for arg in args if arg.startswith('//'))
-    execroot.mkdir(parents=True, exist_ok=True)
+    (execroot / 'bazel-out').mkdir(parents=True, exist_ok=True)
     (execroot / 'policy.json').write_text(label)
 if command == 'cquery':
     print('policy.json')
@@ -159,6 +161,13 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertTrue((self.directory / "artifacts/vs/syncd-p4-images/test.xml").is_file())
         self.assertFalse((self.directory / "debug-arguments.json").exists())
+
+    def test_missing_report_preserves_test_error_and_rejects_incomplete_success(self):
+        for status in ("7", "0"):
+            with self.subTest(status=status):
+                result = self.run_verifier(NO_TEST_REPORT="1", IMAGE_STATUS=status)
+                self.assertEqual(result.returncode, int(status) or 1, result.stderr)
+                self.assertIn("found 0", result.stderr)
 
     def test_debug_verification_failure_is_not_hidden_by_tee(self):
         result = self.run_verifier(DEBUG_STATUS="9")

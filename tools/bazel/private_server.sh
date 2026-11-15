@@ -15,6 +15,17 @@ start_private_bazel() {
     trap 'exit 143' TERM
 }
 
+# Each new output base belongs to one workspace. After the build, read its
+# generated execroot directly; "bazel info" can misresolve Bzlmod platform labels.
+private_bazel_execution_root() {
+    local roots=("$bazel_output_base"/execroot/*/bazel-out)
+    if (( ${#roots[@]} != 1 )) || [[ ! -d "${roots[0]}" ]]; then
+        printf 'Expected one Bazel execution root in %s/execroot\n' "$bazel_output_base" >&2
+        return 1
+    fi
+    dirname -- "${roots[0]}"
+}
+
 finish_private_bazel() {
     local status=$1 cleanup_status=0
     cd -- "$private_bazel_workspace" &&

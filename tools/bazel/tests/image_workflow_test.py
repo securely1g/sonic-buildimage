@@ -542,9 +542,9 @@ class VerificationWorkflowTest(unittest.TestCase):
                 execution_root = base / 'execroot/main'
                 logs = execution_root / 'bazel-out' / config / 'testlogs'
                 if command == 'info':
-                    print(logs if args[-1] == 'bazel-testlogs' else execution_root)
+                    sys.exit('info cannot resolve apparent Bzlmod platform labels')
                 if command == 'build':
-                    execution_root.mkdir(parents=True, exist_ok=True)
+                    (execution_root / 'bazel-out').mkdir(parents=True, exist_ok=True)
                     (execution_root / 'policy.json').write_text(config)
                 if command == 'cquery':
                     print('policy.json')

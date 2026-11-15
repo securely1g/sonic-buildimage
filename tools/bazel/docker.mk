@@ -93,7 +93,7 @@ define build_bazel_docker_images
 		private_bazel_shutdown_prefix=($(call vs_time_phase,shutdown))
 		bazel_options+=("--symlink_prefix=/")
 		$(call vs_time_phase,build) "$${private_bazel[@]}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
-		execution_root="$$($(call vs_time_phase,info) "$${private_bazel[@]}" info "$${bazel_options[@]}" execution_root)"
+		execution_root="$$(private_bazel_execution_root)"
 		$(foreach image,$(1),
 		bazel_output="$$($(call vs_time_phase,cquery-$(image)) "$${private_bazel[@]}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
 		$(call vs_time_phase,export-$(image)) python3 tools/bazel/build_helpers.py export --execution-root="$$execution_root" --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"

@@ -37,7 +37,7 @@ while arguments and arguments[0].startswith('-'):
 bases = [arg.split('=', 1)[1] for arg in startup if arg.startswith('--output_base=')]
 if len(bases) != 1 or not pathlib.Path(bases[0]).is_absolute():
     raise SystemExit('expected one absolute --output_base before the Bazel command')
-execution_root = pathlib.Path(bases[0]) / 'execroot/_main'
+execution_root = pathlib.Path(bases[0]) / 'execroot/fixture workspace'
 operation = arguments[0]
 labels = json.loads(os.environ['FAKE_BAZEL_LABELS'])
 archives = [labels[arg] for arg in arguments if arg in labels]
@@ -56,6 +56,10 @@ relative_dir = pathlib.Path('bazel-out/archive outputs')
 if operation == 'build':
     if mode == 'build_failure':
         raise SystemExit('fixture build failure')
+    if mode == 'missing_execroot':
+        raise SystemExit(0)
+    if mode == 'ambiguous_execroot':
+        (execution_root.parent / 'another workspace/bazel-out').mkdir(parents=True)
     for archive in archives:
         source = execution_root / relative_dir / archive
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -84,8 +88,6 @@ elif operation == 'cquery':
         print('../other-server-output')
     else:
         print(source)
-elif operation == 'info' and arguments[-1] == 'execution_root':
-    print(execution_root)
 elif operation != 'shutdown':
     raise SystemExit('unexpected Bazel operation: ' + operation)
 """)
@@ -406,8 +408,9 @@ selection:
         SBOM and success hooks.
         """
         archive = self.archives[0]
-        for mode in ('build_failure', 'query_failure', 'no_outputs', 'multiple_outputs',
-                     'missing_output', 'empty_output', 'directory_output', 'absolute_output', 'outside_output'):
+        for mode in ('build_failure', 'missing_execroot', 'ambiguous_execroot', 'query_failure',
+                     'no_outputs', 'multiple_outputs', 'missing_output', 'empty_output',
+                     'directory_output', 'absolute_output', 'outside_output'):
             with self.subTest(mode=mode):
                 self.calls.unlink(missing_ok=True)
                 destination = self.target / archive
@@ -415,8 +418,13 @@ selection:
                 result = self.run_make(environment={'FAKE_BAZEL_MODE': mode})
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((destination.read_bytes(), destination.stat().st_mtime_ns), previous)
-                self.assertEqual([call['arguments'][0] for call in self.recorded_calls()],
-                                 ['build'] if mode == 'build_failure' else ['build', 'cquery'])
+                expected = ['build', 'cquery']
+                if mode in ('build_failure', 'missing_execroot', 'ambiguous_execroot'):
+                    expected = ['build']
+                self.assertEqual([call['arguments'][0] for call in self.recorded_calls()], expected)
+                if mode in ('missing_execroot', 'ambiguous_execroot'):
+                    log = (self.target / (archive + '.log')).read_text()
+                    self.assertIn('Expected one Bazel execution root', log)
                 build, = self.recorded_calls(('build',))
                 shutdown, = self.recorded_calls(('shutdown',))
                 self.assertEqual(shutdown['output_base'], build['output_base'])
