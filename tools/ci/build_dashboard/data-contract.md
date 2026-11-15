@@ -56,7 +56,8 @@ does not execute a build or execute any content from a log.
   not guaranteed to partition job wall time (runner overhead is separate).
   `image_build_seconds` is populated only for successful, explicitly recognized
   image-build steps; `image_build_elapsed_seconds` also records a failed image
-  build's elapsed time. A failed job is never a successful benchmark.
+  build's elapsed time. The PR table and job details keep a completed build's timing
+  when later validation fails. The performance chart requires a successful job.
   Exact recognized step names identify the measurement scope. In particular,
   `Build the VS installer (.bin)` excludes VM generation and boot checks;
   historical `Build the VS image` measurements include them. Consumers must

@@ -59,8 +59,10 @@ The collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`,
 `bazel-vs-unprivileged.yml`, and `bazel.yml`. The unprivileged workflow's final
 `sonic-vs.bin` assembly job uses the Bazel installer path; its explicit build
 step includes installer verification. Native preparation remains a separate
-job and does not supply an image result. Cancelled jobs retain their status and
-have no successful image timing.
+job and does not supply an image result. If all image-build steps pass and a
+later check fails or the job is cancelled, the PR row and job details still show
+the completed build time. The job keeps its recorded outcome. Only successful
+image jobs enter the performance chart.
 
 The dashboard can report observed durations from earlier builds, but their
 cache state, hardware/configuration match, and historical tested base are not

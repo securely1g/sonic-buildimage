@@ -137,6 +137,23 @@ def job_kind(name):
     return "other"
 
 
+def image_step_timings(steps):
+    image_steps = [step for step in steps if step["name"] in IMAGE_STEPS]
+    elapsed = [step["duration_seconds"] for step in image_steps if step["duration_seconds"] is not None]
+    success = [step["duration_seconds"] for step in image_steps
+               if step["conclusion"] == "success" and step["duration_seconds"] is not None]
+    image_step_numbers = [step["number"] for step in image_steps]
+    if None in image_step_numbers or len(set(image_step_numbers)) != len(image_step_numbers):
+        image_step_numbers = None
+    # A partial result from one of several image-build steps is not a full build.
+    complete_image = bool(image_steps) and len(success) == len(image_steps)
+    return {
+        "image_build_seconds": sum(success) if complete_image else None,
+        "image_build_elapsed_seconds": sum(elapsed) if elapsed else None,
+        "image_build_step_numbers": image_step_numbers,
+    }
+
+
 def normalize_job(raw, repo, run_id):
     job_id = integer(raw.get("id"))
     if job_id is None:
@@ -158,23 +175,13 @@ def normalize_job(raw, repo, run_id):
         durations = [step["duration_seconds"] for step in steps
                      if step["phase"] == category and step["duration_seconds"] is not None]
         phases[category] = sum(durations) if durations else None
-    image_steps = [step for step in steps if kind in ("make-vs", "bazel-vs") and step["name"] in IMAGE_STEPS]
-    elapsed = [step["duration_seconds"] for step in image_steps if step["duration_seconds"] is not None]
-    success = [step["duration_seconds"] for step in image_steps
-               if step["conclusion"] == "success" and step["duration_seconds"] is not None]
-    image_step_numbers = [step["number"] for step in image_steps]
-    if None in image_step_numbers or len(set(image_step_numbers)) != len(image_step_numbers):
-        image_step_numbers = None
-    # A partial result from one of several image-build steps is not a full build.
-    complete_image = bool(image_steps) and len(success) == len(image_steps)
     return {
         "job_id": job_id, "name": name, "kind": kind,
         "architecture": "amd64" if "(AMD64)" in name else "arm64" if "(ARM64)" in name else None,
         "status": raw.get("status"), "conclusion": raw.get("conclusion"),
         "started_at": timestamp(raw.get("started_at")), "completed_at": timestamp(raw.get("completed_at")),
-        "duration_seconds": seconds(raw), "image_build_seconds": sum(success) if complete_image else None,
-        "image_build_elapsed_seconds": sum(elapsed) if elapsed else None,
-        "image_build_step_numbers": image_step_numbers,
+        "duration_seconds": seconds(raw),
+        **image_step_timings(steps if kind in ("make-vs", "bazel-vs") else []),
         "phases": phases, "steps": steps,
         "url": f"https://github.com/{repo}/actions/runs/{run_id}/job/{job_id}",
     }
@@ -546,6 +553,9 @@ def enrich_breakdowns(api, repo, runs, limit):
         for job in run["jobs"]:
             if job["kind"] != "make-vs":
                 continue
+            # Older collectors cached this Make step before they recognized its name.
+            if not job.get("image_build_step_numbers") and any(step["name"] == HOST_VS_BUILD for step in job["steps"]):
+                job.update(image_step_timings(job["steps"]))
             pending = []
             for step in job["steps"]:
                 if step["name"] not in IMAGE_STEPS:

@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const {duration, measured, imageMeasurement, imageTrendGroups, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, coverageRows, baseSummary, prStateLabel} = require("./app.js");
+const {duration, measured, completedImageSeconds, imageMeasurement, imageTrendGroups, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, coverageRows, baseSummary, prStateLabel} = require("./app.js");
 const pr72Fixture = require("../testdata/pr72-carried-image-execution.json");
 
 test("closed draft PRs remain closed while open drafts and merged PRs keep their states", () => {
@@ -52,6 +52,14 @@ test("unmeasured and invalid durations never look like fast builds", () => {
   assert.equal(duration(0), "0s");
   assert.equal(duration(125), "2m 5s");
   assert.equal(duration(3660), "1h 1m");
+});
+
+test("a later validation failure preserves the completed build time in the PR details", () => {
+  const job = {kind: "make-vs", conclusion: "failure", image_build_seconds: 10259};
+  assert.equal(completedImageSeconds(job), 10259);
+  assert.equal(measured(job), false);
+  assert.equal(completedImageSeconds({...job, image_build_seconds: null}), null);
+  assert.equal(completedImageSeconds({...job, kind: "source"}), null);
 });
 
 test("only successful recognized image jobs enter the performance chart", () => {

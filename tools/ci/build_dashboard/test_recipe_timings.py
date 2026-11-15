@@ -50,6 +50,20 @@ def api_with(raw, log_bytes):
 
 
 class RecipeTimingsTest(unittest.TestCase):
+    def test_cached_host_build_timing_is_recovered_even_when_later_validation_failed(self):
+        for build_outcome, expected in (("success", 600), ("failure", None)):
+            with self.subTest(build_outcome=build_outcome):
+                raw = dict(host_job(build_conclusion=build_outcome), conclusion="failure")
+                cached = collector.normalize_job(raw, REPO, 10)
+                cached.update(image_build_seconds=None, image_build_elapsed_seconds=None, image_build_step_numbers=[])
+                history_run = {"run_id": 10, "attempt": 1, "workflow_path": ".github/workflows/bazel-oci.yml",
+                               "jobs": [cached]}
+                collector.enrich_breakdowns(None, REPO, [history_run], limit=0)
+                self.assertEqual(cached["image_build_seconds"], expected)
+                self.assertEqual(cached["image_build_elapsed_seconds"], 600)
+                self.assertEqual(cached["image_build_step_numbers"], [1])
+                self.assertEqual(cached["conclusion"], "failure")
+
     def test_fences_require_command_header_and_standalone_receipt(self):
         step = host_job()["steps"][1]
         parse = collector.breakdown.parse_recipe_log

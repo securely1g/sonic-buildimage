@@ -113,7 +113,8 @@ function attemptTimeSourceLabel(run) {
   return "Attempt start unverified";
 }
 function imageJob(job) { return IMAGE_KINDS.has(job.kind); }
-function measured(job) { return imageJob(job) && job.conclusion === "success" && seconds(job.image_build_seconds) !== null; }
+function completedImageSeconds(job) { return imageJob(job) ? seconds(job.image_build_seconds) : null; }
+function measured(job) { return job.conclusion === "success" && completedImageSeconds(job) !== null; }
 function imageMeasurement(job) {
   const names = (Array.isArray(job.steps) ? job.steps : []).map(step => step?.name)
     .filter(name => typeof name === "string" && Object.hasOwn(IMAGE_STEP_LABELS, name)).sort();
@@ -537,8 +538,9 @@ function renderCoverage() {
       const item = el("div");
       item.append(badge(result(job)), el("span", "subtext", `${kindLabel(job)} · ${architecture(job)}`));
       stack.append(item);
-      const time = el("div", "", measured(job) ? duration(job.image_build_seconds) : "—");
-      time.append(el("span", "subtext", measured(job) ? "successful step" : job.conclusion === "success" ? "no step timing" : "not a successful build"));
+      const buildSeconds = completedImageSeconds(job);
+      const time = el("div", "", duration(buildSeconds));
+      time.append(el("span", "subtext", buildSeconds !== null ? "build step passed" : "no completed build timing"));
       time.append(el("span", "subtext", executionTimeLabel(execution)));
       const origin = el("span", "subtext");
       origin.append(execution.originStatus === "carried" ? link(`${executionOriginLabel(execution)} ↗`, execution.originUrl) : document.createTextNode(executionOriginLabel(execution)));
@@ -793,11 +795,11 @@ function renderDetails() {
     box.append(origin);
   }
   const values = el("div", "detail-values");
-  for (const [name, value] of [["Successful image build step", measured(job) ? job.image_build_seconds : null], ["Total job elapsed", job.duration_seconds]]) {
+  for (const [name, value] of [["Successful image build step", completedImageSeconds(job)], ["Total job elapsed", job.duration_seconds]]) {
     const valueBox = el("div", "detail-value"); valueBox.append(el("span", "", name), el("strong", "", duration(value))); values.append(valueBox);
   }
   box.append(values);
-  if (measured(job)) box.append(el("p", "stage-note", `Measured scope: ${imageMeasurement(job).label}.`));
+  if (completedImageSeconds(job) !== null) box.append(el("p", "stage-note", `Measured scope: ${imageMeasurement(job).label}.`));
   const phases = job.phases || {};
   const total = PHASES.reduce((sum, phase) => sum + (seconds(phases[phase]) || 0), 0);
   const bar = el("div", "stage-bar"); bar.setAttribute("aria-label", "Recorded step time by phase");
@@ -854,4 +856,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, imageMeasurement, imageTrendGroups, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, coverageRows, baseSummary, prStateLabel};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, completedImageSeconds, imageMeasurement, imageTrendGroups, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, coverageRows, baseSummary, prStateLabel};
