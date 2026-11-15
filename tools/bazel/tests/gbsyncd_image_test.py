@@ -8,6 +8,8 @@ import subprocess
 from pathlib import Path
 import tempfile
 import unittest
+
+import yaml
 from unittest.mock import patch
 
 from tools.bazel.ci import gbsyncd_image
@@ -137,13 +139,16 @@ class GearboxVimReceipt(unittest.TestCase):
 
 class GearboxEvidenceTest(unittest.TestCase):
     def test_private_inspection_does_not_block_or_enter_the_public_upload(self):
-        import yaml
-
         workspace = gbsyncd_image.ROOT
         workflow = yaml.safe_load((workspace / ".github/workflows/bazel-oci.yml").read_text())
         steps = workflow["jobs"]["gearbox_archive"]["steps"]
         review = next(s["run"] for s in steps if s.get("name") == "Review public gearbox evidence")
         upload = next(s["with"]["path"] for s in steps if s.get("name") == "Retain gearbox archives and source evidence")
+        program = review.partition("\n")[2].rsplit("\nPYCODE", 1)[0]
+        public_json = next(node.value for node in ast.parse(program).body if isinstance(node, ast.Assign)
+                           and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "public_json")
+        published_json = {Path(pattern).name for pattern in upload.splitlines() if pattern.endswith(".json")}
+        self.assertEqual(set(ast.literal_eval(public_json)) | {"module-graph.json", "public-receipt.json"}, published_json)
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary)
             artifacts = destination / "artifacts/gbsyncd"

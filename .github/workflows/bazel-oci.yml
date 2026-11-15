@@ -1698,13 +1698,17 @@ jobs:
           from pathlib import Path
           from tools.bazel.ci.public_artifacts import safe_json, dependency_json
           root = Path('artifacts/gbsyncd')
-          for path in root.glob('*.json'):
-              # The graph inspection command is private and is absent from the upload list.
-              if path.name not in ('build-receipt.json', 'module-graph-inspection.json', 'module-graph.json'):
+          public_json = (
+              'validation.json', 'source-contract.json', 'source-receipt.json', 'policy.json',
+              'runtime-apt.json', 'debug-apt.json', 'runtime-packages.json', 'debug-packages.json',
+              'base-packages.json', 'config-engine-packages.json', 'action-audit.json', 'incremental.json',
+          )
+          for name in public_json:
+              path = root / name
+              if path.exists():
                   value = json.loads(path.read_text())
-                  if path.name == 'policy.json':
-                      # This is checked-in image configuration, not a captured
-                      # process environment. Permit only this public constant.
+                  if name == 'policy.json':
+                      # Only this declared image setting is public.
                       assert value['image_validation'].pop('environment') == {'DEBIAN_FRONTEND': 'noninteractive'}
                   safe_json(value)
           for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
