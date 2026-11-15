@@ -4772,6 +4772,7 @@ jobs:
           sparse-checkout: |
             /tools/bazel/ci/build_vs_swss_installed_policy.py
             /tools/bazel/ci/build_vs_coherent_installed_policies.py
+            /tools/bazel/ci/container.py
             /tools/bazel/ci/vs_coherent_installed_policy_inputs.json
             /tools/bazel/tests/vs_coherent_installed_policy_test.py
             /tools/bazel/ci/vs_component_runtime_owner.py
@@ -4797,7 +4798,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":153542,"sha256":"b27fbdf2850fb31b577c6b5b2db87fa5ffccc515a481a34aeab198b8a69f874d"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":123910,"sha256":"95bc4972b4083bed721e7c97f254fe40dbb5af1148858d5846c81f06ec140685"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"}}')
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":138880,"sha256":"a3d23b35ceaafe6190256b0de9ebf093af3601f371a7b05e4ea18e12fa0bc510"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":19909,"sha256":"c20ef5bc44334c9d369467f4ada216a6135ebc5d63be20a7ea3d0f2844539dc4"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():

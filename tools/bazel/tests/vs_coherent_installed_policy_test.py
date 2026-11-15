@@ -2058,5 +2058,258 @@ class ComponentVersionMetadataTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(result.stderr, 'original build failure\n')
 
+
+class ConfiguredOwnerSourcesTests(unittest.TestCase):
+    """Exercise the real controller discovery boundary with the original public guard."""
+
+    @classmethod
+    def setUpClass(cls):
+        import argparse
+        import ast
+        import re
+        from pathlib import PurePosixPath
+        source = Path(os.environ.get('COMPONENT_RUNTIME_TEST_SOURCE', ROOT / 'current-source'))
+        public_path = source / 'tools/bazel/ci/public_artifacts.py'
+        if sha(public_path) != '69354ce956cb2d21bad917911c562092eb0dc5fd9945e10344b2dda723f562d4':
+            raise AssertionError('Different current product public-artifact owner')
+        spec = importlib.util.spec_from_file_location('configured_sources_public', public_path)
+        cls.public = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.public)
+        cls.owner_path = ROOT / 'tools/bazel/ci/container.py'
+        parsed = ast.parse(cls.owner_path.read_text())
+        names = {'source_workspace_argument', 'configured_source_labels', 'declared_sources'}
+        nodes = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in names]
+        constants = {node.targets[0].id: ast.literal_eval(node.value) for node in parsed.body
+                     if isinstance(node, ast.Assign) and len(node.targets) == 1 and
+                     isinstance(node.targets[0], ast.Name) and
+                     node.targets[0].id in {'SOURCE_FILES', 'QUERY_OPTIONS'}}
+        if len(nodes) != len(names) or len(constants) != 2:
+            raise AssertionError('Different controller discovery closure')
+        namespace = {'argparse': argparse, 'Path': Path, 'PurePosixPath': PurePosixPath, 're': re,
+                     'public_artifacts': cls.public, 'require': cls.public.require, 'sha': sha,
+                     '__file__': str(cls.owner_path), **constants}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(cls.owner_path), 'exec'), namespace)
+        cls.owner = SimpleNamespace(**namespace)
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.source = self.root / 'product'
+        self.source.mkdir()
+        for name in (*self.owner.SOURCE_FILES, 'app/BUILD.bazel', 'app/input.txt',
+                     'defs/transitive.bzl', 'extra-input.txt'):
+            path = self.source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('retained source input\n')
+        self.rows = ('@@//app:alias (abc1234)\n@@//lib:actual (abc1234)\n'
+                     '@@//app:input.txt (null)\n@@selected+//pkg:dependency (def4321)\n')
+        self.input_rows = ('@@//app:input.txt\n@@//app:BUILD.bazel\n'
+                           '@@//defs:transitive.bzl\n@@selected+//pkg:BUILD.bazel\n')
+        self.options = ['--config=syncd-dash', '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
+                        '--host_platform=@sonic_build_infra//platforms:x86_64_trixie',
+                        '--//dockers/docker-snmp:image_version=bazel-ci']
+        self.calls = []
+        self.receipt = {}
+
+    def collect(self, *, rows=None, input_rows=None, configured=True, extra=(), fail_query=False):
+        artifacts = Path(tempfile.mkdtemp(dir=self.root))
+        def execute(command, directory, receipt, name, **kwargs):
+            self.calls.append((list(command), name, kwargs))
+            if command[1] == 'cquery':
+                kwargs['output_path'].write_text(self.rows if rows is None else rows)
+                if fail_query:
+                    raise subprocess.CalledProcessError(7, command)
+                return ''
+            self.expression = (Path(command[-1].split('=', 1)[1]).read_text()
+                               if command[-1].startswith('--query_file=') else command[-1])
+            return self.input_rows if input_rows is None else input_rows
+        value = self.owner.declared_sources(
+            ['//app:alias'], 'fixed-proxy', self.source, artifacts, self.receipt, execute, extra,
+            options=self.options if configured else None)
+        return value, artifacts
+
+    def test_original_alias_external_and_null_source_labels_are_preserved(self):
+        names, artifacts = self.collect()
+        command = self.calls[0][0]
+        self.assertEqual(command[:2], ['fixed-proxy', 'cquery'])
+        self.assertEqual(command[2:2 + len(self.options)], self.options)
+        for option in ('--implicit_deps', '--tool_deps', '--include_aspects',
+                       '--consistent_labels', '--output=label', '--show_config_fragments=off'):
+            self.assertIn(option, command)
+        self.assertEqual(command[-1], 'deps(set(//app:alias))')
+        for label in ('//app:alias', '//lib:actual', '@@selected+//pkg:dependency'):
+            self.assertIn(label, self.expression)
+        self.assertIn('defs/transitive.bzl', names)
+        self.assertEqual((artifacts / 'source-configured-targets.raw.txt').read_text(), self.rows)
+
+    def test_multiple_configurations_and_duplicate_rows_form_one_source_union(self):
+        rows = self.rows + '@@//app:alias (fedcba9)\n@@//app:alias (abc1234)\n'
+        _, artifacts = self.collect(rows=rows)
+        self.assertEqual(self.receipt['source_discovery']['configured_rows'], 6)
+        self.assertEqual(self.receipt['source_discovery']['configured_labels'], 4)
+        self.assertEqual((artifacts / 'source-configured-targets.raw.txt').read_text(), rows)
+        self.assertEqual(self.expression.count('//app:alias'), 2)
+
+    def test_malformed_or_injected_rows_fail_before_buildfiles(self):
+        for bad in ('@@//app:alias (abc1234)', '@@//app:alias (HOST)\n',
+                    '@@//app:alias (abc1234) extra\n', '@@//app:alias (abc 123)\n',
+                    '@@//app:alias) union //other:target (abc1234)\n'):
+            with self.subTest(row=bad):
+                self.calls.clear()
+                with self.assertRaises(ValueError):
+                    self.collect(rows=bad)
+                self.assertEqual(len(self.calls), 1)
+
+    def test_missing_selected_local_root_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, 'omitted a selected local target'):
+            self.collect(rows='@@//lib:actual (abc1234)\n')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_configured_query_failure_preserves_original_and_stops(self):
+        with self.assertRaises(subprocess.CalledProcessError) as result:
+            self.collect(fail_query=True)
+        self.assertEqual(result.exception.returncode, 7)
+        self.assertEqual(len(self.calls), 1)
+        path = self.calls[0][2]['output_path']
+        self.assertEqual(path.read_text(), self.rows)
+        self.assertNotIn('source_discovery', self.receipt)
+
+    def test_second_query_uses_exact_configured_set_without_deps(self):
+        _, artifacts = self.collect()
+        command = self.calls[1][0]
+        self.assertEqual(command[:2], ['fixed-proxy', 'query'])
+        self.assertEqual(command[-1], '--query_file=' + str(artifacts / 'source-buildfiles.query'))
+        self.assertNotIn('deps(', self.expression)
+        self.assertTrue(self.expression.startswith('kind("source file", set('))
+        self.assertIn(' union buildfiles(set(', self.expression)
+        self.assertIn('@@selected+//pkg:dependency', self.expression)
+        self.assertNotIn('@@unselected', self.expression)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_missing_and_escaping_local_sources_are_rejected(self):
+        for labels in ('@@//app:absent.txt\n', '@@//app:../escape\n', ''):
+            with self.subTest(labels=labels):
+                with self.assertRaises(ValueError):
+                    self.collect(input_rows=labels)
+
+    def test_fixed_owner_inputs_and_explicit_extra_inputs_are_retained(self):
+        names, _ = self.collect(extra=('extra-input.txt',))
+        self.assertTrue(set(self.owner.SOURCE_FILES).issubset(names))
+        self.assertIn('extra-input.txt', names)
+        self.assertIn('tools/bazel/ci/container.py', names)
+        self.assertNotIn('selected+/pkg/BUILD.bazel', names)
+        self.assertEqual(names, sorted(set(names)))
+
+    def test_legacy_source_discovery_remains_the_original_single_query(self):
+        names, _ = self.collect(configured=False)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][0], ['fixed-proxy', 'query', *self.owner.QUERY_OPTIONS,
+            '--output=label', 'kind("source file", deps(set(//app:alias))) union buildfiles(deps(set(//app:alias)))'])
+        self.assertNotIn('source_discovery', self.receipt)
+        self.assertIn('defs/transitive.bzl', names)
+
+    def test_public_discovery_record_contains_actual_code_and_raw_evidence_hashes(self):
+        _, artifacts = self.collect()
+        record = self.receipt['source_discovery']
+        self.assertEqual(record['controller_sha256'], sha(self.owner_path))
+        self.assertEqual(record['configured_metadata'], {
+            'bytes': (artifacts / 'source-configured-targets.raw.txt').stat().st_size,
+            'sha256': sha(artifacts / 'source-configured-targets.raw.txt')})
+        self.assertEqual(record['buildfiles_query']['sha256'], sha(artifacts / 'source-buildfiles.query'))
+        self.public.safe_json({'source_discovery': record})
+        self.assertNotIn(str(self.source), json.dumps(record))
+
+    def test_workspace_selection_rejects_relative_missing_and_symlink_paths(self):
+        link = self.root / 'source-link'
+        link.symlink_to(self.source, target_is_directory=True)
+        for path in ('relative', str(self.root / 'missing'), str(link)):
+            with self.subTest(path=path), mock.patch('sys.stderr'):
+                with self.assertRaises(SystemExit) as result:
+                    self.owner.source_workspace_argument(['--source-workspace', path])
+                self.assertEqual(result.exception.code, 2)
+        self.assertEqual(self.owner.source_workspace_argument(['--source-workspace', str(self.source)]),
+                         self.source.resolve())
+        self.assertIsNone(self.owner.source_workspace_argument(['--container', '//app']))
+
+    def test_controller_bootstrap_imports_product_helpers_before_main(self):
+        import_log = self.root / 'imported.jsonl'
+        fake = self.root / 'fake-product'
+        modules = {'build': '', 'cache_reuse': '', 'command_log': '', 'public_artifacts': '',
+                   'resolution': '', 'artifact_validation': 'require = lambda *args: None\nsha = lambda p: "unused"\n',
+                   'bazel_commands': 'inspect_actions = lambda p: None\n'}
+        for prefix in ('tools', 'tools/bazel', 'tools/bazel/ci', 'tools/bazel/gzip'):
+            directory = fake / prefix
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / '__init__.py').write_text('')
+        marker = 'from pathlib import Path\nwith Path(' + repr(str(import_log)) + ').open("a") as f: f.write(__file__ + "\\n")\n'
+        for name, body in modules.items():
+            (fake / 'tools/bazel/ci' / (name + '.py')).write_text(marker + body)
+        (fake / 'tools/bazel/gzip/source_archive.py').write_text(marker + 'check_versions = lambda p: None\n')
+        result = subprocess.run([sys.executable, '-I', '-S', '-B', str(self.owner_path),
+                                 '--source-workspace', str(fake), '--help'],
+                                text=True, capture_output=True, check=False, timeout=10,
+                                env=os.environ.copy())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--source-workspace', result.stdout)
+        imported = import_log.read_text().splitlines()
+        self.assertEqual(len(imported), 8)
+        self.assertTrue(all(Path(name).is_relative_to(fake) for name in imported))
+
+    def test_cohort_calls_controller_owner_with_explicit_product_workspace(self):
+        calls = []
+        def execute(command, *args, **kwargs):
+            calls.append(command)
+            if '--container' in command:
+                raise RuntimeError('fixed owner boundary')
+            return ''
+        private = self.root / 'private'
+        private.mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'fixed owner boundary'):
+            caller.component_owner_checks(self.source, private, {}, 'fixed-proxy',
+                SimpleNamespace(execute=execute), None, None, SimpleNamespace(sha=sha), None, {})
+        command = calls[-1]
+        self.assertEqual(command[2], str(Path(caller.__file__).with_name('container.py')))
+        self.assertEqual(command[3:5], ['--source-workspace', str(self.source)])
+        self.assertIn('--reuse-build', command)
+        self.assertIn('--bazel-arg=--config=syncd-dash', command)
+
+
+    def check_controller_record(self, mode, digest, *, change=False):
+        directory = Path(tempfile.mkdtemp(dir=self.root))
+        controller = directory / 'container.py'
+        controller.write_text('original controller bytes\n')
+        expected = sha(controller)
+        private = directory / 'private'
+        private.mkdir()
+        def execute(command, *args, **kwargs):
+            if '--container' in command:
+                output = Path(command[command.index('--artifacts') + 1])
+                output.mkdir()
+                (output / 'report.json').write_text(json.dumps({
+                    'status': 'passed', 'source_discovery': {'mode': mode,
+                    'controller_sha256': expected if digest == 'expected' else digest}}))
+                if change:
+                    controller.write_text('changed controller bytes\n')
+            elif command[1:2] == ['query']:
+                raise RuntimeError('provenance gate passed')
+            return ''
+        with mock.patch.object(caller, '__file__', str(directory / 'helper.py')):
+            caller.component_owner_checks(self.source, private, {}, 'fixed-proxy',
+                SimpleNamespace(execute=execute), None, None, SimpleNamespace(sha=sha), lambda value: None, {})
+
+    def test_cohort_requires_actual_controller_digest_and_configured_mode(self):
+        for mode, digest in (('legacy', 'expected'),
+                             ('configured-dependencies-and-buildfiles', '0' * 64)):
+            with self.subTest(mode=mode, digest=digest):
+                with self.assertRaisesRegex(ValueError, 'controller owner identity or source discovery'):
+                    self.check_controller_record(mode, digest)
+        with self.assertRaisesRegex(RuntimeError, 'provenance gate passed'):
+            self.check_controller_record('configured-dependencies-and-buildfiles', 'expected')
+
+    def test_cohort_rejects_controller_mutation_during_owner_execution(self):
+        with self.assertRaisesRegex(ValueError, 'controller owner changed'):
+            self.check_controller_record('configured-dependencies-and-buildfiles', 'expected', change=True)
+
 if __name__ == '__main__':
     unittest.main()

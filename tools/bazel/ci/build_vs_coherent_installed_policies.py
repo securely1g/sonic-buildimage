@@ -1211,15 +1211,22 @@ def component_owner_checks(source, private, receipt, bazel, logs, audit, exporte
     # ci_artifacts owns five distinct copy actions. This is the original
     # reuse-build collector and full owner-declared/Scapy suite, unchanged.
     owner_directory = directory / 'orchagent'
-    logs.execute([sys.executable, '-B', str(source / 'tools/bazel/ci/container.py'),
-                  '--container', '//dockers/docker-orchagent', '--artifacts', str(owner_directory),
+    controller_owner = Path(__file__).with_name('container.py')
+    controller_sha256 = check.sha(controller_owner)
+    logs.execute([sys.executable, '-B', str(controller_owner),
+                  '--source-workspace', str(source), '--container', '//dockers/docker-orchagent', '--artifacts', str(owner_directory),
                   '--bazel', bazel, '--reuse-build',
                   *['--bazel-arg=' + option for option in [*OPTIONS,
                     '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
                     '--host_platform=@sonic_build_infra//platforms:x86_64_trixie']]],
                  directory, receipt, 'orchagent-owner', cwd=source)
+    require(check.sha(controller_owner) == controller_sha256, 'Configured controller owner changed')
     owner_report = json.loads((owner_directory / 'report.json').read_bytes())
     require(owner_report.get('status') == 'passed', 'Existing Orchagent owner checks failed')
+    discovery = owner_report.get('source_discovery', {})
+    require(discovery.get('mode') == 'configured-dependencies-and-buildfiles' and
+            discovery.get('controller_sha256') == controller_sha256,
+            'Different configured controller owner identity or source discovery')
     public_json(owner_report)
     original_sflow = logs.execute([bazel, 'query', 'kind(".*_test rule", @hsflowd//src/json:*)'],
                                    directory, receipt, 'sflow-original-test-targets', cwd=source).splitlines()
