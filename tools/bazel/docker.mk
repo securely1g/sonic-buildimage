@@ -58,6 +58,19 @@ endif
 endif
 SONIC_BAZEL_VS_PAIR_OUTPUTS := $(foreach image,$(SONIC_BAZEL_VS_PAIRED_IMAGES),$(image) $(image:.gz=-$(DBG_IMAGE_MARK).gz))
 
+# Pilot only flag-compatible service owners, and only when selected for the installer.
+SONIC_BAZEL_VS_GROUP_IMAGES :=
+ifeq ($(SONIC_VS_GROUP_BAZEL_IMAGES),1)
+SONIC_BAZEL_VS_GROUP_IMAGES := $(filter $(SONIC_INSTALL_DOCKER_IMAGES),$(filter \
+    docker-eventd.gz docker-sysmgr.gz docker-sonic-mgmt-framework.gz,$(SONIC_BAZEL_VS_PAIRED_IMAGES)))
+ifeq ($(word 2,$(SONIC_BAZEL_VS_GROUP_IMAGES)),)
+SONIC_BAZEL_VS_GROUP_IMAGES :=
+endif
+endif
+SONIC_BAZEL_VS_GROUP_OUTPUTS := $(foreach image,$(SONIC_BAZEL_VS_GROUP_IMAGES),$(image) $(image:.gz=-$(DBG_IMAGE_MARK).gz))
+$(foreach image,$(SONIC_BAZEL_VS_GROUP_OUTPUTS),\
+    $(if $(strip $($(image)_BAZEL_ARGS)),$(error VS service image group requires empty owner Bazel arguments: $(image))))
+
 # One directory per recipe execution keeps parallel and repeated invocations separate.
 ifeq ($(SONIC_VS_IMAGE_TIMINGS),1)
 define vs_start_image_timing
@@ -115,16 +128,23 @@ $(addprefix $(TARGET_PATH)/, $(filter-out $(SONIC_BAZEL_VS_PAIR_OUTPUTS),$(SONIC
 # Grouped targets run once even when both variants are requested in parallel,
 # and rebuild the pair if either archive is missing. Each variant's manifest,
 # declared inputs and producer-transition stamp must exist before Bazel starts.
+define bazel_vs_archive_group_rule
+$(addprefix $(TARGET_PATH)/,$(1)) &: .platform bazel-docker-force \
+        $(foreach image,$(1),$$$$($(image)_BAZEL_DEPENDS)) \
+        $(addprefix $(TARGET_PATH)/.container-build-method/,$(filter $(SONIC_BAZEL_SWITCHABLE_IMAGES),$(1)))
+	$$(call build_bazel_docker_images,$(1))
+endef
+
 define bazel_vs_pair_rule
 ifneq ($$(strip $$($(1)_BAZEL_ARGS)),$$(strip $$($(2)_BAZEL_ARGS)))
 $$(error VS runtime/debug pair $(1) $(2) requires identical Bazel arguments)
 endif
-$(addprefix $(TARGET_PATH)/,$(1) $(2)) &: .platform bazel-docker-force \
-        $$$$($(1)_BAZEL_DEPENDS) $$$$($(2)_BAZEL_DEPENDS) \
-        $(addprefix $(TARGET_PATH)/.container-build-method/,$(filter $(SONIC_BAZEL_SWITCHABLE_IMAGES),$(1) $(2)))
-	$$(call build_bazel_docker_images,$(1) $(2))
+$(call bazel_vs_archive_group_rule,$(1) $(2))
 endef
-$(foreach image,$(SONIC_BAZEL_VS_PAIRED_IMAGES),$(eval $(call bazel_vs_pair_rule,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz))))
+$(foreach image,$(filter-out $(SONIC_BAZEL_VS_GROUP_IMAGES),$(SONIC_BAZEL_VS_PAIRED_IMAGES)),$(eval $(call bazel_vs_pair_rule,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz))))
+ifneq ($(strip $(SONIC_BAZEL_VS_GROUP_OUTPUTS)),)
+$(eval $(call bazel_vs_archive_group_rule,$(SONIC_BAZEL_VS_GROUP_OUTPUTS)))
+endif
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES))
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(sort $(SONIC_BAZEL_OCI_BASES)))

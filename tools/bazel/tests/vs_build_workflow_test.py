@@ -138,6 +138,12 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS", self.calls()[0]["args"])
 
+    def test_service_image_group_opt_in_reaches_only_the_build_container(self):
+        result = self.run_script("build_vs.sh", SONIC_VS_GROUP_BAZEL_IMAGES="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_GROUP_BAZEL_IMAGES",
+                      self.calls()[0]["args"])
+
     def test_native_handoff_is_forwarded_to_the_build_and_separate_validation_container(self):
         option = self.profile_options()[-1] + " -e SONIC_VS_REUSE_BAZEL_PRODUCERS"
         for script, goal in (("build_vs.sh", "target/sonic-vs.bin"), ("validate_vs.sh", "sonic-slave-run")):
@@ -302,6 +308,7 @@ else:
         self.assertEqual(build["env"]["SONIC_VS_IMAGE_TIMINGS"], "1")
         self.assertNotIn("SONIC_VS_IMAGE_TIMINGS", job["env"])
         self.assertEqual(job["env"]["SONIC_VS_REUSE_BAZEL_PRODUCERS"], "1")
+        self.assertEqual(job["env"]["SONIC_VS_GROUP_BAZEL_IMAGES"], "1")
 
         upload = next(step for step in job["steps"] if step.get("id") == "vs_image_timings_upload")
         self.assertEqual(upload["if"], "always()")

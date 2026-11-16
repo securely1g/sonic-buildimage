@@ -2761,6 +2761,7 @@ jobs:
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
+      SONIC_VS_GROUP_BAZEL_IMAGES: "1"
       # Four concurrent Make recipes share the runner's Bazel action budget.
       BAZEL_CONTAINER_ARGS: >-
         --jobs=2 --local_resources=cpu=2 --local_resources=memory=3072

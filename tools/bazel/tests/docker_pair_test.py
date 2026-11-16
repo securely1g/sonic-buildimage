@@ -359,5 +359,158 @@ include tools/bazel/docker.mk""")
             self.assertIn("--host_platform=@sonic_build_infra//platforms:aarch64_trixie", call["arguments"])
 
 
+class VSServiceGroupTest(ArchiveRecipeFixture, unittest.TestCase):
+    owners = ("docker-eventd", "docker-sonic-mgmt-framework", "docker-sysmgr",
+              "docker-orchagent", "docker-syncd-vs")
+    archives = tuple(name + suffix for name in owners for suffix in (".gz", "-dbg.gz"))
+    labels = {name: "//services:" + name for name in archives}
+
+    def setUp(self):
+        super().setUp()
+        inputs = self.root / "inputs"
+        inputs.mkdir()
+        self.prerequisites = {}
+        self.makefile += """
+CONFIGURED_PLATFORM ?= vs
+BLDENV ?= trixie
+DBG_IMAGE_MARK = dbg
+SONIC_INSTALL_DOCKER_IMAGES = """ + " ".join(self.archives[::2]) + """
+SONIC_BAZEL_DOCKER_IMAGES = $(SONIC_INSTALL_DOCKER_IMAGES)
+SONIC_BAZEL_DBG_DOCKER_IMAGES = """ + " ".join(self.archives[1::2]) + """
+SONIC_BAZEL_SWITCHABLE_IMAGES = $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)
+"""
+        for name in self.archives:
+            (inputs / (name + ".source")).write_text(name)
+            self.prerequisites[name] = ["inputs/" + name + ".ready",
+                                        "target/.container-build-method/" + name]
+            self.makefile += f"{name}_BAZEL_TARGET = {self.labels[name]}\n"
+            self.makefile += f"{name}_PATH = services/{name}\n"
+            self.makefile += f"{name}_BAZEL_DEPENDS = $(INPUT_ROOT)/{name}.ready\n"
+        self.makefile += """
+include tools/bazel/docker.mk
+INPUT_ROOT = inputs
+inputs/%.ready: inputs/%.source
+	@cp "$<" "$@"
+target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOOLS)),$$(SONIC_BAZEL_DBG_DOCKER_IMAGES),$$(SONIC_INSTALL_DOCKER_IMAGES)))
+	@printf 'installer\\n' > installed-containers
+"""
+
+    def installer(self, **environment):
+        return self.run_make(goals=["target/sonic-vs.bin"], parallel=True,
+                             environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1", **environment})
+
+    def test_group_builds_six_archives_once_with_all_prerequisites_and_separate_syncd(self):
+        result = self.run_make(
+            goals=["target/sonic-vs.bin"] + ["target/" + name for name in reversed(self.archives)],
+            parallel=True, environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1"})
+        self.assert_success(result)
+        self.assertNotIn("overriding recipe", result.stderr)
+        builds = self.recorded_calls(("build",))
+        self.assertEqual(len(builds), 3)
+        group = next(call for call in builds if self.labels[self.archives[0]] in call["arguments"])
+        self.assertEqual(group["arguments"][-6:], [self.labels[name] for name in self.archives[:6]])
+        self.assertEqual(set(group["prerequisite_sha256"]),
+                         {path for name in self.archives[:6] for path in self.prerequisites[name]})
+        self.assertEqual(len({call["output_base"] for call in builds}), 3)
+        self.assertEqual(len(self.recorded_calls(("cquery",))), len(self.archives))
+        for call in self.recorded_calls(("cquery",)):
+            if call["arguments"][-1] in [self.labels[name] for name in self.archives[:6]]:
+                self.assertEqual(call["output_base"], group["output_base"])
+        for call in builds:
+            self.assertFalse(pathlib.Path(call["output_base"]).exists())
+        self.assertCountEqual(
+            [call["output_base"] for call in self.recorded_calls(("shutdown",))],
+            [call["output_base"] for call in builds])
+        for name in self.archives:
+            self.assertEqual((self.target / name).read_bytes(), ("new " + name).encode())
+            self.assertIn(f"sbom target/{name} DOCKER_IMAGE services/{name}",
+                          self.markers.read_text().splitlines())
+
+    def test_debug_installer_and_missing_outputs_rebuild_the_complete_group(self):
+        self.assert_success(self.installer(INSTALL_DEBUG_TOOLS="y"))
+        for name in (self.archives[0], self.archives[3]):
+            (self.target / name).unlink()
+        self.calls.unlink()
+        self.assert_success(self.installer(INSTALL_DEBUG_TOOLS="y"))
+        self.assertEqual(len(self.recorded_calls(("build",))), 3)
+        for name in self.archives:
+            self.assertEqual((self.target / name).read_bytes(), ("new " + name).encode())
+
+    def test_disabled_pilot_keeps_independent_pairs(self):
+        for value in ("0", ""):
+            with self.subTest(value=value):
+                self.calls.unlink(missing_ok=True)
+                self.assert_success(self.installer(SONIC_VS_GROUP_BAZEL_IMAGES=value))
+                self.assertEqual(len(self.recorded_calls(("build",))), 5)
+
+    def test_standalone_request_keeps_one_archive_even_with_pilot_enabled(self):
+        self.assert_success(self.run_make(self.archives[0], environment={
+            "SONIC_VS_GROUP_BAZEL_IMAGES": "1"}))
+        build, = self.recorded_calls(("build",))
+        self.assertEqual([arg for arg in build["arguments"] if arg in self.labels.values()],
+                         [self.labels[self.archives[0]]])
+        self.assertEqual((self.target / self.archives[1]).read_bytes(), b"previous image")
+
+    def test_only_selected_owners_participate_and_single_owner_falls_back(self):
+        for selected, expected_builds, expected_group_size in (
+                (self.archives[::2][0:2], 1, 4), (self.archives[::2][0:1], 1, 2)):
+            with self.subTest(selected=selected):
+                self.calls.unlink(missing_ok=True)
+                result = self.run_make(
+                    goals=["target/sonic-vs.bin",
+                           "SONIC_INSTALL_DOCKER_IMAGES=" + " ".join(selected)],
+                    environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1"})
+                self.assert_success(result)
+                builds = self.recorded_calls(("build",))
+                self.assertEqual(len(builds), expected_builds)
+                self.assertEqual(sum(arg in self.labels.values() for arg in builds[0]["arguments"]),
+                                 expected_group_size)
+
+    def test_new_owner_flags_fail_explicitly_instead_of_changing_other_images(self):
+        result = self.run_make(goals=["target/sonic-vs.bin",
+                                    "docker-sysmgr-dbg.gz_BAZEL_ARGS=--define=unexpected=true"],
+                               environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires empty owner Bazel arguments", result.stderr)
+        self.assertEqual(self.recorded_calls(), [])
+
+    def test_missing_group_prerequisite_stops_group_before_bazel(self):
+        (self.root / "inputs" / (self.archives[3] + ".source")).unlink()
+        result = self.installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "installed-containers").exists())
+        for call in self.recorded_calls(("build",)):
+            self.assertNotIn(self.labels[self.archives[0]], call["arguments"])
+
+    def test_failed_build_preserves_all_previous_archives(self):
+        result = self.installer(FAKE_BAZEL_MODE="build_failure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "installed-containers").exists())
+        for name in self.archives:
+            self.assertEqual((self.target / name).read_bytes(), b"previous image")
+        self.assertFalse(self.markers.exists())
+
+    def test_group_profiles_record_all_queries_exports_and_shutdown(self):
+        self.assert_success(self.installer(SONIC_VS_IMAGE_TIMINGS="1"))
+        root = self.root / "artifacts/vs/image-timings"
+        self.assertEqual({path.name for path in root.iterdir()},
+                         {"docker-eventd.gz", "docker-orchagent.gz", "docker-syncd-vs.gz"})
+        directory, = (root / self.archives[0]).iterdir()
+        metadata = json.loads((directory / "recipe.json").read_text())
+        commands = ["build", *("cquery-" + name for name in self.archives[:6]), "shutdown"]
+        exports = ["export-" + name for name in self.archives[:6]]
+        self.assertEqual(metadata["bazel"], commands)
+        self.assertEqual(metadata["exports"], exports)
+        for phase in commands + exports:
+            self.assertEqual(json.loads((directory / (phase + ".timing.json")).read_text())["exit_code"], 0)
+
+    def test_other_platforms_keep_standalone_rules(self):
+        self.assert_success(self.installer(CONFIGURED_PLATFORM="broadcom"))
+        builds = self.recorded_calls(("build",))
+        self.assertEqual(len(builds), 5)
+        for call in builds:
+            self.assertEqual(sum(arg in self.labels.values() for arg in call["arguments"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

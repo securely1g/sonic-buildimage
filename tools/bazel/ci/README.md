@@ -292,6 +292,27 @@ The active image checks do not replace the source-package
 suites retained in the disabled legacy job. Neither path's installer checks
 establish BIOS/UEFI VM boot success.
 
+The active VS installer job opts into `SONIC_VS_GROUP_BAZEL_IMAGES=1`.
+For native Trixie VS installer requests, Eventd, Sysmgr and management framework
+runtime/debug archives share one Bazel build when at least two of those owners
+are selected for installation and have registered Bazel pairs. Make prepares
+every member's prerequisites and producer stamps before the grouped invocation.
+These owners currently have no owner-specific Bazel arguments; a new nonempty
+argument on any grouped archive fails explicitly rather than changing another
+image's configuration. All other owners, including Orchagent, Syncd and FRR,
+keep independent builds. P4RT's separate workspace is unchanged.
+
+The group uses one disposable private output base, exports each archive through
+the existing checked publication path, emits each SBOM fragment and shuts down
+and removes its base afterward. It adds no cross-job cache retention or action
+concurrency. Profiles and phase timings are recorded under the first grouped
+owner's timing directory; `recipe.json` lists all archive queries and exports.
+Compare the group's elapsed window and peak disk use with the original owners'
+overlapping builds before expanding the pilot. Grouping shares setup and analysis
+but may retain more live outputs together; no speedup or disk reduction is assumed.
+Unset the switch or set it to `0` to restore one invocation per image pair.
+Standalone archive requests remain independent even with the switch enabled.
+
 Each container retains its owner's dependencies and Bazel options. Standalone
 archive requests and other configurations retain their existing rules.
 Validation stops on a failed prerequisite or check.
