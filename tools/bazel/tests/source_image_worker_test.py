@@ -1674,6 +1674,25 @@ class ProvedDockerRootMountTest(unittest.TestCase):
                 legacy.assert_not_called()
                 current.assert_not_called()
 
+    def test_rejected_startup_proof_never_uses_legacy_stop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(artifacts=Path(directory))
+            state = {"docker_mount_protocol": "pending"}
+            path = args.artifacts / "worker-private.json"
+            path.write_text(json.dumps(state) + "\n")
+            with patch.object(worker, "state_for", return_value=state), \
+                 patch.object(worker, "run_docker_mount_action",
+                              side_effect=ValueError("Daemon generation or mount namespace changed")) as action, \
+                 patch.object(worker, "stop") as legacy, patch.object(worker, "stop_with_mount_proof") as current:
+                with self.assertRaisesRegex(ValueError, "Daemon generation or mount namespace changed"):
+                    worker.capture_docker_mount(args, "ready")
+                self.assertEqual(json.loads(path.read_text())["docker_mount_protocol"], "pending")
+                with self.assertRaisesRegex(ValueError, "startup proof is incomplete"):
+                    worker.stop_selected(args)
+                action.assert_called_once_with(args, state, "ready")
+                legacy.assert_not_called()
+                current.assert_not_called()
+
     def test_inventory_failure_still_stops_reproved_daemon_and_preserves_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "root"

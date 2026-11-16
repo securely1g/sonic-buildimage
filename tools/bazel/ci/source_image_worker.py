@@ -1123,7 +1123,8 @@ def prepare(args):
            "SONIC_BAZEL_REGISTRY_REVISION": catalog, "CI_HEAD_SHA": args.revision, "CI_BASE_SHA": "",
            "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONFIG": str(client), "BAZELISK_GITHUB_TOKEN": ""}
     state = {"image": args.image, "revision": args.revision, "workspace": str(workspace), "environment": env,
-             "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile}
+             "pidfile": str(pidfile), "docker_root": str(docker_root), "build_profile": profile,
+             "docker_mount_protocol": "pending"}
     if remote_cache is not None:
         state["remote_cache"] = remote_cache
     if args.image == "p4rt":
@@ -1314,7 +1315,7 @@ def run_docker_mount_action(args, state, action):
 def capture_docker_mount(args, stage):
     require(stage in ("before", "ready"), "Unknown private Docker capture stage")
     state = state_for(args)
-    require("docker_mount_protocol" not in state, "Do not replay a completed Docker mount capture")
+    require(state.get("docker_mount_protocol") == "pending", "Do not replay or adopt a Docker mount capture")
     run_docker_mount_action(args, state, stage)
     if stage == "ready":
         state["docker_mount_protocol"] = 1
@@ -1352,6 +1353,8 @@ def stop_selected(args):
     state = state_for(args)
     if "docker_mount_protocol" not in state:
         return stop(args)
+    require(state["docker_mount_protocol"] != "pending",
+            "Private Docker startup proof is incomplete; retain daemon and data")
     require(type(state["docker_mount_protocol"]) is int and state["docker_mount_protocol"] == 1,
             "Unknown Docker mount protocol; retain state")
     return stop_with_mount_proof(args, state)
