@@ -126,6 +126,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
             "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}")
         for flag in (
             "--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=3072",
+            "--remote_timeout=600s",
             "--experimental_remote_downloader=grpc://172.16.0.4:9092",
             "--experimental_remote_downloader_local_fallback",
         ):

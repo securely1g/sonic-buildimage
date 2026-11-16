@@ -80,7 +80,7 @@ else:
         self.environment = dict(
             os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
             SONIC_CI_CONTAINER_LABEL="vs-fixture-label", BAZEL="fixture-bazel",
-            BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3",
+            BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3 --remote_timeout=600s",
             SONIC_BUILD_RETRY_COUNT="0",
         )
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",

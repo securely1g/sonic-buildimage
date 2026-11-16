@@ -139,6 +139,15 @@ modifying tracked files. The active `vs_container` job and the disabled legacy
 `vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. The specialized
 upstream source-image and VS slave worker pools retain their existing selectors.
 
+The active `vs_container` job passes `--remote_timeout=600s` to the image builds
+and their validation commands so multi-gigabyte cache transfers have more than
+Bazel's default 60-second RPC deadline. Resource limits, retry settings and the
+master-only upload policy are unchanged. PR runs exercise downloads and build
+correctness with this allowance, but cannot validate upload recovery because
+remote uploads remain disabled. Confirm successful publication and subsequent
+reuse on a trusted master producer before attributing upload failures to the
+client deadline; server, proxy and storage deadlines may still apply.
+
 The agents and builder containers must be able to reach the remote cache, and
 the server must authorize writes. Enforce writer permissions on the server:
 the workflow flag is not an authorization boundary for pull-request code.
