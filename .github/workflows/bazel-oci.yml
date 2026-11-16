@@ -1492,7 +1492,7 @@ jobs:
         run: |
           if [[ -d artifacts ]]; then
             umask 077
-            preserved="$(mktemp -d "$RUNNER_TEMP/pre-macsec-artifacts.XXXXXXXX")"
+            preserved="$(mktemp -d "$SONIC_BAZEL_JOB_TEMP/pre-macsec-artifacts.XXXXXXXX")"
             mv artifacts "$preserved/artifacts"
             printf 'Completed Orchagent evidence preserved at %s/artifacts\n' "$preserved"
           fi
@@ -1552,6 +1552,7 @@ jobs:
           (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           PYMACSEC
       - name: Retain MACsec archives and reviewed evidence
+        id: bazel_upload_macsec_public
         if: always() && matrix.architecture == 'amd64' && steps.macsec_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

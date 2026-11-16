@@ -51,8 +51,8 @@ AMD64 archive jobs upload generic evidence before Sysmgr acceptance, Sysmgr
 evidence before SWSS layer acceptance, and SWSS layer evidence before Orchagent
 acceptance. Each step preserves its completed artifacts outside the checkout in
 a unique private directory under `SONIC_BAZEL_JOB_TEMP`, prefixed with
-`pre-sysmgr-artifacts.`, `pre-swss-layer-artifacts.`, or
-`pre-orchagent-artifacts.`. This keeps the source-only fence
+`pre-sysmgr-artifacts.`, `pre-swss-layer-artifacts.`,
+`pre-orchagent-artifacts.`, or `pre-macsec-artifacts.`. This keeps the source-only fence
 intact without colliding with or deleting prior jobs' evidence. The preserved
 path is logged. The registered post-job hook removes these job-owned copies only
 after their publication steps and artifact uploads succeed. Incomplete uploads
