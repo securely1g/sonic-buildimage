@@ -109,7 +109,7 @@ else:
         return [
             "BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", "INCLUDE_VS_DASH_SAI=y", "INCLUDE_FIPS=y",
             "ENABLE_ASAN=n", "ENABLE_SYNCD_RPC=n",
-            "SONIC_BUILDER_EXTRA_CMDLINE=--label vs-fixture-label -e BAZEL=fixture-bazel -e BAZEL_CONTAINER_ARGS",
+            "SONIC_BUILDER_EXTRA_CMDLINE=--label vs-fixture-label -e BAZEL=fixture-bazel -e BAZEL_CONTAINER_ARGS -e SONIC_BASE_REVIEW_REGISTRY",
         ]
 
     def assert_profile(self, call, target):

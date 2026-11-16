@@ -103,7 +103,8 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
             wrapper = ROOT / "tools/bazel/ci/libteam_draft_bazel.sh"
             result = subprocess.run(["bash", str(wrapper), "test", "--disk_cache=/private/disk",
                                      "@sonic_swss//crates/countersyncd:common_rust_test"], cwd=root,
-                                    env=dict(os.environ, PATH=str(root)+":/usr/bin:/bin"), capture_output=True, text=True, check=True)
+                                    env=dict(os.environ, PATH=str(root)+":/usr/bin:/bin", SONIC_BASE_REVIEW_REGISTRY=""),
+                                    capture_output=True, text=True, check=True)
             args = json.loads(result.stdout)
             self.assertIn("--nohome_rc", args)
             self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"+CATALOG, args)

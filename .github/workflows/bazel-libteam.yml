@@ -21,6 +21,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SONIC_BASE_REVIEW_REGISTRY: 6de31e78211b93162a791f3e513f906f8d2b6fc6
+
 jobs:
   native:
     name: Native libteam and SWSS consumers (${{ matrix.architecture }}, ${{ matrix.distribution }})
@@ -78,8 +81,7 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Use the canonical maintained registry.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/${{ env.SONIC_BASE_REVIEW_REGISTRY }}
         run: |
           set -euo pipefail
           mkdir -p artifacts
@@ -102,7 +104,7 @@ jobs:
             shift
             bazel --nosystem_rc --nohome_rc --noworkspace_rc \
               --bazelrc="$PWD/tools/bazel/common.bazelrc" \
-              "$command" "${options[@]}" "$@"
+              "$command" "${options[@]}" --remote_upload_local_results=false "$@"
           }
           targets=(
             //src/libteam:libteam_runtime

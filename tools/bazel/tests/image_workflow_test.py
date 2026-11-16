@@ -75,6 +75,9 @@ class VerificationWorkflowTest(unittest.TestCase):
         gate = jobs["eventd_runtime"]
         self.assertEqual(gate["name"], "Container archive (AMD64)")
         self.assertIn("archive", gate["needs"])
+        self.assertIn("p4rt_native", gate["needs"])
+        self.assertIn("p4rt_runtime", gate["needs"])
+        self.assertNotIn("p4rt_native", archive.get("needs", []))
         self.assertEqual(gate["if"], "always() && (" + archive["if"] + ")")
         build = next(step for step in archive["steps"] if step.get("id") == "eventd_build")
         self.assertEqual(build["if"], "matrix.architecture == 'amd64'")

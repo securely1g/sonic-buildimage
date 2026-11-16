@@ -80,6 +80,7 @@ elif command == "build":
     event_path = next(arg.split("=", 1)[1] for arg in sys.argv if arg.startswith("--build_event_json_file="))
     events = [
         {"id": {"started": {}}, "started": {"command": "build", "buildToolVersion": "8.5.1"}},
+        {"id": {"workspace": {}}, "workspaceInfo": {"localExecRoot": str(root)}},
         {"id": {"targetCompleted": {"label": sys.argv[-1]}}, "completed": {"success": True}},
         {"id": {"buildFinished": {}}, "finished": {"overallSuccess": True, "exitCode": {"code": 0}}},
         {"id": {"buildMetrics": {}}, "lastMessage": True},

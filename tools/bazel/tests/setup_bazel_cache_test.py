@@ -174,7 +174,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
 """)
         recorder.chmod(0o755)
         return dict(os.environ, HOME=str(home), PATH=str(binary) + ":/usr/bin:/bin",
-                    RECORD=str(root / "record.json"), BASH_ENV="/dev/null",
+                    RECORD=str(root / "record.json"), BASH_ENV="/dev/null", SONIC_BASE_REVIEW_REGISTRY="",
                     RUNNER_TEMP=str(root), CI_CPU="x86_64", CI_DISTRIBUTION="trixie")
 
     def test_all_seven_workflow_calls_reach_isolated_wrapper_and_direct_native(self):

@@ -43,6 +43,9 @@ concurrency:
   group: bazel-supervisor-rust-${{ github.run_attempt == '1' && github.event.pull_request.number || format('run-{0}', github.run_id) }}-${{ github.event.pull_request.head.sha || github.sha }}
   cancel-in-progress: true
 
+env:
+  SONIC_BASE_REVIEW_REGISTRY: 6de31e78211b93162a791f3e513f906f8d2b6fc6
+
 jobs:
   native:
     name: Rust listener (${{ matrix.arch }})

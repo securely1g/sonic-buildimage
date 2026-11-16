@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  SONIC_BASE_REVIEW_REGISTRY: 6de31e78211b93162a791f3e513f906f8d2b6fc6
+  BAZEL: tools/bazel/ci/libteam_draft_bazel.sh
+
 jobs:
   packages:
     name: FRR Python packages (${{ matrix.name }})
@@ -62,6 +66,9 @@ jobs:
           disk-cache: buildimage-frr-python-${{ matrix.architecture }}
           cache-version: "8.5.1"
 
+      - name: Preserve setup-bazel caches for the reviewed root
+        run: python3 -B tools/bazel/ci/preserve_setup_bazel_cache.py
+
       - name: Build wheels and runtime TARs and run complete upstream suites
         env:
           NATIVE_PLATFORM: ${{ matrix.platform }}
@@ -72,18 +79,18 @@ jobs:
                    --host_platform="@sonic_build_infra//platforms:$NATIVE_PLATFORM"
                    --jobs=4 --local_resources=cpu=4 --local_resources=memory=10000
                    --lockfile_mode=update)
-          bazel build "${options[@]}" \
+          "$BAZEL" build "${options[@]}" \
             //src/sonic-frr-mgmt-framework:sonic_frr_mgmt_framework_wheel \
             //src/sonic-frr-mgmt-framework:runtime \
             //src/sonic-bgpcfgd:sonic_bgpcfgd_wheel \
             //src/sonic-bgpcfgd:runtime
-          bazel test "${options[@]}" --nocache_test_results --test_output=errors \
+          "$BAZEL" test "${options[@]}" --nocache_test_results --test_output=errors \
             //src/sonic-frr-mgmt-framework:upstream_tests \
             //src/sonic-bgpcfgd:upstream_tests
           # The new installed-wheel acceptance is scoped to native AMD64.
           # Preserve the existing ARM64 source suite without extending its scope.
           if [[ "$NATIVE_ARCHITECTURE" == amd64 ]]; then
-            bazel test "${options[@]}" --nocache_test_results --test_output=errors \
+            "$BAZEL" test "${options[@]}" --nocache_test_results --test_output=errors \
               //src/sonic-frr-mgmt-framework:installed_wheel_test \
               //src/sonic-bgpcfgd:installed_wheel_test
           fi
@@ -127,7 +134,7 @@ jobs:
               outputs = []
               for target in (component.replace("-", "_") + "_wheel", "runtime"):
                   paths = subprocess.check_output(
-                      ["bazel", "cquery", *options, "--output=files", package + ":" + target],
+                      [os.environ["BAZEL"], "cquery", *options, "--output=files", package + ":" + target],
                       text=True).splitlines()
                   if len(paths) != 1:
                       raise ValueError("Expected one package output: " + repr(paths))
@@ -166,6 +173,7 @@ jobs:
         if: matrix.architecture == 'amd64'
         run: |
           python3 tools/bazel/ci/frr_python_rebuild.py \
+            --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--jobs=4 \
