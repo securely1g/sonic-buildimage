@@ -100,6 +100,10 @@ successfully uploaded component artifacts. Shared host repository, disk and
 Bazelisk caches, other checkouts' output bases, and Docker-referenced paths are
 preserved. Removal rejects symlink roots, changed directory identities and
 mounted subtrees rather than following them.
+The host runner's work-root alias (for example `_work` pointing to build storage)
+is resolved before registration and cleanup. Checkout, temporary and artifact
+directories below that physical root still require no-follow traversal; changing
+the work-root target invalidates the registered job directory.
 
 Base-image reviews may check out an older source revision. Their small cleanup
 controller is staged under ignored `target/ci-bazel-cleanup-controller` before

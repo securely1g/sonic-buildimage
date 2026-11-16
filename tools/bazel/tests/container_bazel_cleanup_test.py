@@ -312,6 +312,90 @@ class ContainerBazelCleanupTest(unittest.TestCase):
         self.assertEqual(error.exception.code, 1)
         self.assertTrue((self.cache / "bazel/data").is_file())
 
+    def test_host_cli_supports_a_symlinked_work_root_through_the_full_lifecycle(self):
+        work = self.root / "storage/work"
+        workspace = work / "project/project"
+        workspace.mkdir(parents=True)
+        runner_temp = work / "_temp"
+        runner_temp.mkdir()
+        runner = self.root / "actions-runner"
+        runner.mkdir()
+        alias = runner / "_work"
+        alias.symlink_to(work, target_is_directory=True)
+        artifacts = workspace / "src/sonic-yang-models/artifacts"
+        artifacts.mkdir(parents=True)
+        (artifacts / "package.whl").write_bytes(b"published")
+        environment = {
+            "HOME": str(self.home), "GITHUB_ACTIONS": "true", "GITHUB_JOB": "package",
+            "GITHUB_REPOSITORY": "securely1g/project",
+            "GITHUB_WORKSPACE": str(alias / "project/project"),
+            "RUNNER_TEMP": str(alias / "_temp"),
+        }
+        with mock.patch.dict(os.environ, environment), \
+                mock.patch.object(subject.Path, "is_file", return_value=False):
+            with mock.patch.object(sys, "argv", ["cleanup", "--prepare"]), \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                subject.main()
+            directory = Path(json.loads(output.getvalue())["directory"])
+            self.assertEqual(directory.parent, runner_temp)
+            self.assertEqual(json.loads((directory / subject.IDENTITY).read_text())["workspace"],
+                             str(workspace))
+            with mock.patch.dict(os.environ, SONIC_BAZEL_JOB_TEMP=str(directory),
+                                 BAZEL_CLEANUP_STEPS=json.dumps(self.steps)), \
+                    mock.patch.object(sys, "argv", ["cleanup", "--mark-artifacts"]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                subject.main()
+            with mock.patch.object(sys, "argv", ["cleanup", "--job-directory", str(directory)]), \
+                    mock.patch.object(subject, "servers", return_value=[]), \
+                    mock.patch.object(subject, "cleanup_host_bases") as bases, \
+                    mock.patch.object(subject, "check_container_users"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                subject.main()
+            bases.assert_called_once_with(self.home, workspace, "bazel")
+        self.assertFalse(directory.exists())
+        self.assertFalse(artifacts.exists())
+        self.assertTrue((self.cache / "bazel/data").is_file())
+
+    def test_host_paths_reject_symlinks_below_the_work_root(self):
+        work = self.root / "storage/work"
+        workspace = work / "project/project"
+        workspace.mkdir(parents=True)
+        runner_temp = work / "_temp"
+        runner_temp.mkdir()
+        alias = self.root / "_work"
+        alias.symlink_to(work, target_is_directory=True)
+        self.assertEqual(subject.host_paths(alias / "project/project", alias / "_temp"),
+                         (workspace, runner_temp))
+        for path in (workspace, runner_temp):
+            with self.subTest(path=path):
+                original = path.with_name(path.name + "-original")
+                path.rename(original)
+                path.symlink_to(original, target_is_directory=True)
+                with self.assertRaises(OSError):
+                    subject.host_paths(alias / "project/project", alias / "_temp")
+                path.unlink()
+                original.rename(path)
+
+    def test_retargeting_the_work_root_blocks_registered_job_cleanup(self):
+        roots = [self.root / name for name in ("old-work", "new-work")]
+        for root in roots:
+            (root / "project/project").mkdir(parents=True)
+            (root / "_temp").mkdir()
+        alias = self.root / "_work"
+        alias.symlink_to(roots[0], target_is_directory=True)
+        with mock.patch.dict(os.environ, GITHUB_JOB="package"):
+            workspace, runner_temp = subject.host_paths(alias / "project/project", alias / "_temp")
+            directory = subject.prepare(workspace, runner_temp)
+            alias.unlink()
+            alias.symlink_to(roots[1], target_is_directory=True)
+            workspace, runner_temp = subject.host_paths(alias / "project/project", alias / "_temp")
+            with mock.patch.object(subject, "servers") as servers, \
+                    self.assertRaisesRegex(ValueError, "registered runner job directory"):
+                subject.cleanup(self.home, workspace, runner_temp, directory, host=True)
+            servers.assert_not_called()
+        self.assertTrue(directory.exists())
+        self.assertTrue((self.cache / "bazel/data").is_file())
+
     def test_malformed_artifact_identity_is_an_explicit_error(self):
         self.authorize()
         marker = self.directory / subject.AUTHORIZATION

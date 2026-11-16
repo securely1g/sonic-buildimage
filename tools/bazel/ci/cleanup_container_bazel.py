@@ -288,6 +288,21 @@ def cleanup(home, workspace, runner_temp, directory, bazel="bazel", host=False):
     cleanup_artifacts(workspace, runner_temp, directory, host=host)
 
 
+def host_paths(workspace, runner_temp):
+    if (not workspace.is_absolute() or not runner_temp.is_absolute() or
+            workspace.parent.parent != runner_temp.parent or
+            any(".." in path.parts or any(character in str(path) for character in "\r\n")
+                for path in (workspace, runner_temp))):
+        raise ValueError("Cleanup requires the GitHub host workspace layout")
+    work_root = runner_temp.parent.resolve(strict=True)
+    workspace = work_root / workspace.relative_to(runner_temp.parent)
+    runner_temp = work_root / runner_temp.name
+    with ExitStack() as descriptors:
+        open_directory(workspace, descriptors)
+        open_directory(runner_temp, descriptors)
+    return workspace, runner_temp
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
@@ -305,6 +320,8 @@ def main():
                 workspace.name == os.environ.get("GITHUB_REPOSITORY", "").rsplit("/", 1)[-1])
         if os.environ.get("GITHUB_ACTIONS") != "true" or not (container or host):
             raise ValueError("Cleanup requires a GitHub Bazel job container or the YANG host job")
+        if host:
+            workspace, runner_temp = host_paths(workspace, runner_temp)
         if args.prepare:
             print(json.dumps({"directory": str(prepare(workspace, runner_temp))}))
         elif args.mark_artifacts:
