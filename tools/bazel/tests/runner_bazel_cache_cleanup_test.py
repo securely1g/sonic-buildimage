@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 from tools.bazel.ci import cleanup_runner_bazel_cache as subject
 
@@ -256,3 +257,121 @@ class RunnerBazelCacheCleanupTest(unittest.TestCase):
                 subject.cleanup(self.root, self.workspace, remove_package_cache=True)
             run.assert_not_called()
         self.assertEqual((outside / "sentinel").read_text(), "retain")
+
+    def test_retains_cache_only_within_both_exact_budgets(self):
+        gib = 1024**3
+        self.vs_cache.mkdir()
+        sentinel = self.vs_cache / "repository"
+        sentinel.write_text("retained")
+        for size, free, retained in (
+                (40 * gib, 200 * gib, True),
+                (40 * gib + 1, 200 * gib, False),
+                (40 * gib, 200 * gib - 1, False)):
+            with self.subTest(size=size, free=free), \
+                    mock.patch.object(subject, "check_container_users") as containers, \
+                    mock.patch.object(subject, "check_mounts") as mounts, \
+                    mock.patch.object(subject.subprocess, "check_output",
+                                      return_value=f"{size}\t{self.vs_cache}\n") as du, \
+                    mock.patch.object(subject.shutil, "disk_usage",
+                                      return_value=SimpleNamespace(free=free)), \
+                    mock.patch.object(subject.subprocess, "run",
+                                      side_effect=lambda command, check: shutil.rmtree(command[-1])) as remove:
+                if not self.vs_cache.exists():
+                    self.vs_cache.mkdir()
+                    sentinel.write_text("retained")
+                subject.cleanup(self.root, self.workspace, retain_vs_cache_max_gib=40)
+                self.assertEqual(self.vs_cache.exists(), retained)
+                self.assertEqual(remove.call_count, int(not retained))
+                containers.assert_called_once_with(self.vs_cache)
+                mounts.assert_called_once_with(self.vs_cache)
+                du.assert_called_once_with(
+                    ["sudo", "-n", "du", "--summarize", "--one-file-system",
+                     "--block-size=1", "--", str(self.vs_cache)], text=True)
+                if retained:
+                    self.assertEqual(sentinel.read_text(), "retained")
+
+    def test_retention_still_removes_obsolete_caches_before_measuring_space(self):
+        self.populate()
+        packages = self.vs_cache.parent / "packages"
+        packages.mkdir()
+
+        def measure(path):
+            self.assertTrue(all(not cache.exists() for cache in self.paths[:-1]))
+            self.assertFalse(packages.exists())
+            return SimpleNamespace(free=200 * 1024**3)
+
+        with mock.patch.object(subject, "check_container_users"), \
+                mock.patch.object(subject, "check_mounts"), \
+                mock.patch.object(subject.subprocess, "check_output", return_value="1\tcache\n"), \
+                mock.patch.object(subject.shutil, "disk_usage", side_effect=measure), \
+                mock.patch.object(subject.subprocess, "run",
+                                  side_effect=lambda command, check: shutil.rmtree(command[-1])):
+            subject.cleanup(self.root, self.workspace, remove_package_cache=True,
+                            retain_vs_cache_max_gib=40)
+        self.assertTrue(self.vs_cache.is_dir())
+
+    def test_retention_never_bypasses_active_cache_guards(self):
+        self.vs_cache.mkdir()
+        for guard in ("check_container_users", "check_mounts"):
+            with self.subTest(guard=guard), \
+                    mock.patch.object(subject, "check_container_users"), \
+                    mock.patch.object(subject, "check_mounts"), \
+                    mock.patch.object(subject, guard, side_effect=ValueError("in use")), \
+                    mock.patch.object(subject.subprocess, "check_output") as du, \
+                    mock.patch.object(subject.subprocess, "run") as remove:
+                with self.assertRaisesRegex(ValueError, "in use"):
+                    subject.cleanup(self.root, self.workspace, retain_vs_cache_max_gib=40)
+                du.assert_not_called()
+                remove.assert_not_called()
+
+    def test_retention_measurement_failure_stops_cleanup(self):
+        self.vs_cache.mkdir()
+        with mock.patch.object(subject, "check_container_users"), \
+                mock.patch.object(subject, "check_mounts"), \
+                mock.patch.object(subject.subprocess, "check_output",
+                                  side_effect=subprocess.CalledProcessError(1, "du")), \
+                mock.patch.object(subject.subprocess, "run") as remove:
+            with self.assertRaises(subprocess.CalledProcessError):
+                subject.cleanup(self.root, self.workspace, retain_vs_cache_max_gib=40)
+            remove.assert_not_called()
+
+    def test_negative_retention_limits_are_rejected(self):
+        for options in ({"retain_vs_cache_max_gib": -1}, {"min_free_gib": -1}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "nonnegative"):
+                subject.cleanup(self.root, self.workspace, **options)
+
+    def test_discards_large_action_cache_before_reusable_repository_contents(self):
+        disk_cache = self.vs_cache / "disk_cache"
+        disk_cache.mkdir(parents=True)
+        repository = self.vs_cache / "repo_contents_cache"
+        repository.mkdir()
+        sentinel = repository / "retained"
+        sentinel.write_text("extracted toolchain")
+        with mock.patch.object(subject, "check_container_users"), \
+                mock.patch.object(subject, "check_mounts"), \
+                mock.patch.object(subject.subprocess, "check_output",
+                                  side_effect=[f"{41 * 1024**3}\tcache\n", "1\tcache\n"]), \
+                mock.patch.object(subject.shutil, "disk_usage",
+                                  return_value=SimpleNamespace(free=200 * 1024**3)), \
+                mock.patch.object(subject.subprocess, "run",
+                                  side_effect=lambda command, check: shutil.rmtree(command[-1])) as remove:
+            subject.cleanup(self.root, self.workspace, retain_vs_cache_max_gib=40)
+        self.assertEqual([Path(call.args[0][-1]) for call in remove.call_args_list], [disk_cache])
+        self.assertEqual(sentinel.read_text(), "extracted toolchain")
+
+    def test_redirected_action_cache_is_refused_when_reclaiming_for_retention(self):
+        self.vs_cache.mkdir()
+        outside = self.root / "shared-action-cache"
+        outside.mkdir()
+        (self.vs_cache / "disk_cache").symlink_to(outside, target_is_directory=True)
+        with mock.patch.object(subject, "check_container_users"), \
+                mock.patch.object(subject, "check_mounts"), \
+                mock.patch.object(subject.subprocess, "check_output",
+                                  return_value=f"{41 * 1024**3}\tcache\n"), \
+                mock.patch.object(subject.shutil, "disk_usage",
+                                  return_value=SimpleNamespace(free=200 * 1024**3)), \
+                mock.patch.object(subject.subprocess, "run") as remove:
+            with self.assertRaisesRegex(ValueError, "changed during cleanup"):
+                subject.cleanup(self.root, self.workspace, retain_vs_cache_max_gib=40)
+            remove.assert_not_called()
+        self.assertTrue(outside.is_dir())

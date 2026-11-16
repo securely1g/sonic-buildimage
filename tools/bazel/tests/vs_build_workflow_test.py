@@ -86,7 +86,7 @@ else:
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",
                      "FORBID_VALIDATION", "CHANGE_REVISION_ACTION", "NOBOOKWORM", "NOTRIXIE",
                      "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL",
-                     "SONIC_VS_IMAGE_TIMINGS"):
+                     "SONIC_VS_IMAGE_TIMINGS", "SONIC_VS_PREWARM_BAZEL_REPOSITORIES"):
             self.environment.pop(name, None)
 
     def run_script(self, name, *args, **environment):
@@ -143,6 +143,23 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_GROUP_BAZEL_IMAGES",
                       self.calls()[0]["args"])
+
+    def test_prewarm_runs_in_the_same_slave_profile_before_parallel_image_builds(self):
+        result = self.run_script("build_vs.sh", SONIC_VS_PREWARM_BAZEL_REPOSITORIES="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prewarm, build = self.calls()
+        self.assertEqual(prewarm["args"], [
+            "-f", "Makefile.work", "BLDENV=trixie", "sonic-slave-run",
+            *self.profile_options(),
+            "SONIC_RUN_CMDS=bash tools/bazel/ci/prewarm_vs_repositories.sh"])
+        self.assertEqual(prewarm["bazel_args"], build["bazel_args"])
+        self.assert_profile(build, "target/sonic-vs.bin")
+
+    def test_prewarm_failure_prevents_the_image_build(self):
+        result = self.run_script("build_vs.sh", SONIC_VS_PREWARM_BAZEL_REPOSITORIES="1",
+                                 FAIL_ACTION="sonic-slave-run")
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertEqual([call["goal"] for call in self.calls()], ["sonic-slave-run"])
 
     def test_native_handoff_is_forwarded_to_the_build_and_separate_validation_container(self):
         option = self.profile_options()[-1] + " -e SONIC_VS_REUSE_BAZEL_PRODUCERS"
@@ -309,6 +326,12 @@ else:
         self.assertNotIn("SONIC_VS_IMAGE_TIMINGS", job["env"])
         self.assertEqual(job["env"]["SONIC_VS_REUSE_BAZEL_PRODUCERS"], "1")
         self.assertEqual(job["env"]["SONIC_VS_GROUP_BAZEL_IMAGES"], "1")
+        self.assertEqual(job["env"]["SONIC_VS_PREWARM_BAZEL_REPOSITORIES"], "1")
+        self.assertIn("--repo_contents_cache=/bazel_cache/repo_contents_cache",
+                      job["env"]["BAZEL_CONTAINER_ARGS"])
+        self.assertIn("--repo_contents_cache_gc_max_age=0", job["env"]["BAZEL_CONTAINER_ARGS"])
+        cleanup = next(step for step in job["steps"] if step.get("name") == "Reclaim local build caches")
+        self.assertIn("--retain-vs-cache-max-gib 40 --min-free-gib 200", cleanup["run"])
 
         upload = next(step for step in job["steps"] if step.get("id") == "vs_image_timings_upload")
         self.assertEqual(upload["if"], "always()")

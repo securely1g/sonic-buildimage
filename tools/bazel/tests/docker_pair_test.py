@@ -361,7 +361,7 @@ include tools/bazel/docker.mk""")
 
 class VSServiceGroupTest(ArchiveRecipeFixture, unittest.TestCase):
     owners = ("docker-eventd", "docker-sonic-mgmt-framework", "docker-sysmgr",
-              "docker-orchagent", "docker-syncd-vs")
+              "docker-orchagent", "docker-syncd-vs", "docker-gbsyncd-vs")
     archives = tuple(name + suffix for name in owners for suffix in (".gz", "-dbg.gz"))
     labels = {name: "//services:" + name for name in archives}
 
@@ -386,6 +386,8 @@ SONIC_BAZEL_SWITCHABLE_IMAGES = $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_D
             self.makefile += f"{name}_BAZEL_TARGET = {self.labels[name]}\n"
             self.makefile += f"{name}_PATH = services/{name}\n"
             self.makefile += f"{name}_BAZEL_DEPENDS = $(INPUT_ROOT)/{name}.ready\n"
+            if "syncd-vs" in name:
+                self.makefile += f"{name}_BAZEL_ARGS = --config=syncd-dash\n"
         self.makefile += """
 include tools/bazel/docker.mk
 INPUT_ROOT = inputs
@@ -399,7 +401,7 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
         return self.run_make(goals=["target/sonic-vs.bin"], parallel=True,
                              environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1", **environment})
 
-    def test_group_builds_six_archives_once_with_all_prerequisites_and_separate_syncd(self):
+    def test_groups_service_and_syncd_archives_with_all_prerequisites(self):
         result = self.run_make(
             goals=["target/sonic-vs.bin"] + ["target/" + name for name in reversed(self.archives)],
             parallel=True, environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1"})
@@ -412,10 +414,18 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
         self.assertEqual(set(group["prerequisite_sha256"]),
                          {path for name in self.archives[:6] for path in self.prerequisites[name]})
         self.assertEqual(len({call["output_base"] for call in builds}), 3)
+        syncd = next(call for call in builds if self.labels["docker-syncd-vs.gz"] in call["arguments"])
+        self.assertEqual(syncd["arguments"][-4:], [self.labels[name] for name in self.archives[8:]])
+        self.assertIn("--config=syncd-dash", syncd["arguments"])
+        self.assertEqual(set(syncd["prerequisite_sha256"]),
+                         {path for name in self.archives[8:] for path in self.prerequisites[name]})
         self.assertEqual(len(self.recorded_calls(("cquery",))), len(self.archives))
         for call in self.recorded_calls(("cquery",)):
             if call["arguments"][-1] in [self.labels[name] for name in self.archives[:6]]:
                 self.assertEqual(call["output_base"], group["output_base"])
+            elif call["arguments"][-1] in [self.labels[name] for name in self.archives[8:]]:
+                self.assertEqual(call["output_base"], syncd["output_base"])
+                self.assertIn("--config=syncd-dash", call["arguments"])
         for call in builds:
             self.assertFalse(pathlib.Path(call["output_base"]).exists())
         self.assertCountEqual(
@@ -441,7 +451,7 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
             with self.subTest(value=value):
                 self.calls.unlink(missing_ok=True)
                 self.assert_success(self.installer(SONIC_VS_GROUP_BAZEL_IMAGES=value))
-                self.assertEqual(len(self.recorded_calls(("build",))), 5)
+                self.assertEqual(len(self.recorded_calls(("build",))), 6)
 
     def test_standalone_request_keeps_one_archive_even_with_pilot_enabled(self):
         self.assert_success(self.run_make(self.archives[0], environment={
@@ -453,7 +463,8 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
 
     def test_only_selected_owners_participate_and_single_owner_falls_back(self):
         for selected, expected_builds, expected_group_size in (
-                (self.archives[::2][0:2], 1, 4), (self.archives[::2][0:1], 1, 2)):
+                (self.archives[::2][0:2], 1, 4), (self.archives[::2][0:1], 1, 2),
+                ((self.archives[8],), 1, 2)):
             with self.subTest(selected=selected):
                 self.calls.unlink(missing_ok=True)
                 result = self.run_make(
@@ -474,6 +485,25 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
         self.assertIn("requires empty owner Bazel arguments", result.stderr)
         self.assertEqual(self.recorded_calls(), [])
 
+    def test_syncd_group_rejects_missing_or_incompatible_owner_flags(self):
+        for value in ("", "--config=syncd-dash --define=unexpected=true"):
+            with self.subTest(value=value):
+                result = self.run_make(
+                    goals=["target/sonic-vs.bin", "docker-gbsyncd-vs-dbg.gz_BAZEL_ARGS=" + value],
+                    environment={"SONIC_VS_GROUP_BAZEL_IMAGES": "1"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("VS Syncd image group requires --config=syncd-dash", result.stderr)
+                self.assertEqual(self.recorded_calls(), [])
+
+    def test_syncd_group_retains_the_syncd_producer_for_validation(self):
+        self.assert_success(self.installer(SONIC_VS_REUSE_BAZEL_PRODUCERS="1"))
+        build = next(call for call in self.recorded_calls(("build",))
+                     if self.labels["docker-syncd-vs.gz"] in call["arguments"])
+        base = self.root / "target/.vs-bazel/docker-syncd-vs.gz"
+        self.assertEqual(build["output_base"], str(base))
+        self.assertTrue(base.is_dir())
+        self.assertFalse((base.parent / "docker-gbsyncd-vs.gz").exists())
+
     def test_missing_group_prerequisite_stops_group_before_bazel(self):
         (self.root / "inputs" / (self.archives[3] + ".source")).unlink()
         result = self.installer()
@@ -481,6 +511,15 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
         self.assertFalse((self.root / "installed-containers").exists())
         for call in self.recorded_calls(("build",)):
             self.assertNotIn(self.labels[self.archives[0]], call["arguments"])
+
+    def test_missing_gbsyncd_debug_prerequisite_stops_both_syncd_pairs(self):
+        (self.root / "inputs/docker-gbsyncd-vs-dbg.gz.source").unlink()
+        result = self.installer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / "installed-containers").exists())
+        for call in self.recorded_calls(("build",)):
+            self.assertNotIn(self.labels["docker-syncd-vs.gz"], call["arguments"])
+            self.assertNotIn(self.labels["docker-gbsyncd-vs.gz"], call["arguments"])
 
     def test_failed_build_preserves_all_previous_archives(self):
         result = self.installer(FAKE_BAZEL_MODE="build_failure")
@@ -507,7 +546,7 @@ target/sonic-vs.bin: $$(addprefix target/,$$(if $$(filter y,$$(INSTALL_DEBUG_TOO
     def test_other_platforms_keep_standalone_rules(self):
         self.assert_success(self.installer(CONFIGURED_PLATFORM="broadcom"))
         builds = self.recorded_calls(("build",))
-        self.assertEqual(len(builds), 5)
+        self.assertEqual(len(builds), 6)
         for call in builds:
             self.assertEqual(sum(arg in self.labels.values() for arg in call["arguments"]), 1)
 

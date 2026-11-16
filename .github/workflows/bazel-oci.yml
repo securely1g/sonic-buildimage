@@ -2767,10 +2767,13 @@ jobs:
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
       SONIC_VS_GROUP_BAZEL_IMAGES: "1"
+      SONIC_VS_PREWARM_BAZEL_REPOSITORIES: "1"
       # Four concurrent Make recipes share the runner's Bazel action budget.
       BAZEL_CONTAINER_ARGS: >-
         --jobs=2 --local_resources=cpu=2 --local_resources=memory=3072
         --remote_timeout=600s
+        --repo_contents_cache=/bazel_cache/repo_contents_cache
+        --repo_contents_cache_gc_max_age=0
         --experimental_remote_downloader=grpc://172.16.0.4:9092
         --experimental_remote_downloader_local_fallback
         --distdir=/bazel_cache/distdir/ape-1.0.1
@@ -2812,7 +2815,10 @@ jobs:
           docker system df
 
       - name: Reclaim local build caches
-        run: python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache --runner-workspace "${{ runner.workspace }}" --remove-package-cache
+        run: >-
+          python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache
+          --runner-workspace "${{ runner.workspace }}" --remove-package-cache
+          --retain-vs-cache-max-gib 40 --min-free-gib 200
 
       - name: Check host-agent build prerequisites
         run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
@@ -2843,6 +2849,9 @@ jobs:
           set -euo pipefail
           install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE"
           test -w "$SONIC_BAZEL_CACHE_SOURCE"
+          # Contents are immutable after publication; only the cache root needs writes.
+          install -d "$SONIC_BAZEL_CACHE_SOURCE/repo_contents_cache"
+          test -w "$SONIC_BAZEL_CACHE_SOURCE/repo_contents_cache"
           for cache in repository_cache disk_cache; do
             directory="$SONIC_BAZEL_CACHE_SOURCE/$cache"
             if test -d "$directory"; then

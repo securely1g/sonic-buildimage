@@ -14,6 +14,7 @@ from pathlib import Path
 PUBLIC_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,191}\Z")
 COMPILERS = {"CppCompile", "CppModuleCompile", "Rustc", "GoCompilePkg", "GoCompile"}
 CATEGORIES = ("lock", "compile", "foreign", "fetch")
+CACHE_CATEGORIES = ("cache_check", "repository", "extract")
 LOCK_EVENTS = {
     "Blocking on busy Bazel server (in client)",
     "Blocking on busy Bazel server (in server)",
@@ -30,8 +31,9 @@ def union_seconds(intervals):
     return total / 1_000_000  # Bazel trace timestamps are in microseconds.
 
 
-def summarize_profile(events):
+def summarize_profile(events, cache_details=None):
     spans = {key: [] for key in CATEGORIES}
+    cache_spans = {key: [] for key in CACHE_CATEGORIES}
     actions = defaultdict(list)
     sandbox_processes = defaultdict(list)
     for event in events:
@@ -42,6 +44,12 @@ def summarize_profile(events):
         name = event["name"]
         category = event.get("cat")
         thread = (event["pid"], event["tid"])
+        if category == "remote action cache check" and name == "check cache hit":
+            cache_spans["cache_check"].append(interval)
+        elif category == "Fetching repository":
+            cache_spans["repository"].append(interval)
+        elif category == "general information" and name.startswith("extracting: repository "):
+            cache_spans["extract"].append(interval)
         if category == "action processing":
             actions[thread].append((*interval, event.get("args", {}).get("mnemonic", "")))
         elif category == "general information" and name == "subprocess.run":
@@ -63,6 +71,8 @@ def summarize_profile(events):
             index = bisect_right(parents, start, key=itemgetter(0)) - 1
             if index >= 0 and end <= parents[index][1]:
                 add_process(spans, parents[index][2], (start, end))
+    if cache_details is not None:
+        cache_details.update({key: union_seconds(intervals) for key, intervals in cache_spans.items()})
     return {key: union_seconds(intervals) for key, intervals in spans.items()}
 
 
@@ -99,15 +109,15 @@ def read_plan(path):
     return plan
 
 
-def read_profile(path):
+def read_profile(path, cache_details=None):
     with gzip.open(path, "rt") as stream:
         events = json.load(stream)["traceEvents"]
     if not isinstance(events, list) or not events:
         raise ValueError("empty trace")
-    return summarize_profile(events)
+    return summarize_profile(events, cache_details)
 
 
-def read_owner(directory):
+def read_owner(directory, cache_details=None):
     row = {"owner": directory.name, "bazel_seconds": None, "export_seconds": None,
            **{key + "_seconds": None for key in CATEGORIES}, "failed": False,
            "bazel_phases": 0, "bazel_expected": 0, "profiles": 0, "profiles_expected": 0,
@@ -143,11 +153,15 @@ def read_owner(directory):
         row["profiles_expected"] += len(plan["profiles"])
         for phase in plan["profiles"]:
             try:
-                durations = read_profile(instance / f"{phase}.profile.json.gz")
+                details = {}
+                durations = read_profile(instance / f"{phase}.profile.json.gz", details)
             except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError):
                 problems.append(f"{phase} profile missing or unreadable")
                 continue
             row["profiles"] += 1
+            if cache_details is not None:
+                for key, seconds in details.items():
+                    cache_details[key] = cache_details.get(key, 0) + seconds
             for key, seconds in durations.items():
                 metric = key + "_seconds"
                 row[metric] = (row[metric] or 0) + seconds
@@ -163,12 +177,18 @@ def markdown_row(row):
 
 def report(root):
     recipes = []
+    cache_rows = []
     notes = []
     for directory in sorted(root.iterdir()):
         if directory.is_dir() and PUBLIC_NAME.fullmatch(directory.name):
-            row, problems = read_owner(directory)
+            details = {}
+            row, problems = read_owner(directory, details)
             if row is not None:
                 recipes.append(row)
+                if row["profiles"]:
+                    complete = row["profiles"] == row["profiles_expected"]
+                    cache_rows.append([row["owner"], *(measured(details[key], complete)
+                                                      for key in CACHE_CATEGORIES)])
             if problems:
                 notes.append(f"- `{directory.name}` — " + ", ".join(problems))
     recipes.sort(key=lambda row: (
@@ -187,6 +207,16 @@ def report(root):
                       "Parallel activities can overlap. The Bazel total also includes work such as analysis and linking. "
                       "A Make cache hit can skip Bazel entirely. "
                       "Zero means no matching span was recorded."])
+        if cache_rows:
+            lines.extend(["", "### Cache and repository preparation (wall seconds)", "",
+                          "| Make target or package | Action-cache checks | Repository preparation | Repository extraction |",
+                          "|---|---:|---:|---:|"])
+            lines.extend("| " + " | ".join(row) + " |" for row in cache_rows)
+            lines.extend(["", "Each column unions overlapping spans within each command, then sums commands. "
+                          "Repository preparation includes extraction and may include other work or waits. "
+                          "Action-cache checks are not a pure network-latency measurement. "
+                          "These columns overlap each other and the totals above; do not add them. "
+                          "Zero means no matching span was recorded, not proof that no work occurred."])
     else:
         lines.append("No Bazel recipes were recorded for this build.")
     if notes:

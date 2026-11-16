@@ -51,6 +51,22 @@ class ImageTimingSummaryTest(unittest.TestCase):
         self.assertEqual(summarize_profile(events),
                          {"compile": 0, "foreign": 0, "lock": 6, "fetch": 7})
 
+    def test_cache_details_union_workers_without_conflating_lookup_fetch_and_extraction(self):
+        events = [
+            event("remote action cache check", "check cache hit", 0, 5),
+            event("remote action cache check", "check cache hit", 2, 5, tid=2),
+            event("Fetching repository", "@@llvm", 1, 10),
+            event("Fetching repository", "@@gcc", 3, 10, tid=3),
+            event("general information", "extracting: repository @@llvm", 4, 3),
+            event("general information", "extracting: repository @@gcc", 5, 3, tid=3),
+            event("remote output download", "download outputs", 7, 5),
+            event("Starlark builtin function call", "download_and_extract", 0, 20, tid=4),
+        ]
+        details = {}
+        self.assertEqual(summarize_profile(events, details),
+                         {"compile": 0, "foreign": 0, "lock": 0, "fetch": 5})
+        self.assertEqual(details, {"cache_check": 7, "repository": 12, "extract": 4})
+
     def test_recipe_uses_independent_profiles_and_handles_failed_or_missing_phases(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root) / "docker-teamd.gz"
@@ -85,6 +101,8 @@ class ImageTimingSummaryTest(unittest.TestCase):
                                  text=True, capture_output=True, check=True)
             self.assertIn("2.00 (partial)", run.stdout)
             receipt = json.loads(output.read_text())
+            self.assertIn("### Cache and repository preparation", run.stdout)
+            self.assertIn("not a pure network-latency measurement", run.stdout)
             self.assertEqual(receipt["version"], 2)
             self.assertEqual(receipt["recipes"], [{
                 "owner": "docker-teamd.gz", "bazel_seconds": 6, "lock_seconds": 2,

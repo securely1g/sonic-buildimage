@@ -71,6 +71,20 @@ SONIC_BAZEL_VS_GROUP_OUTPUTS := $(foreach image,$(SONIC_BAZEL_VS_GROUP_IMAGES),$
 $(foreach image,$(SONIC_BAZEL_VS_GROUP_OUTPUTS),\
     $(if $(strip $($(image)_BAZEL_ARGS)),$(error VS service image group requires empty owner Bazel arguments: $(image))))
 
+# Keep Syncd first so validation reopens its existing retained producer base.
+SONIC_BAZEL_VS_SYNCD_GROUP_IMAGES :=
+ifeq ($(SONIC_VS_GROUP_BAZEL_IMAGES),1)
+SONIC_BAZEL_VS_SYNCD_GROUP_IMAGES := $(filter $(SONIC_INSTALL_DOCKER_IMAGES),$(filter \
+    $(SONIC_BAZEL_VS_PAIRED_IMAGES),docker-syncd-vs.gz docker-gbsyncd-vs.gz))
+ifneq ($(words $(SONIC_BAZEL_VS_SYNCD_GROUP_IMAGES)),2)
+SONIC_BAZEL_VS_SYNCD_GROUP_IMAGES :=
+endif
+endif
+SONIC_BAZEL_VS_SYNCD_GROUP_OUTPUTS := $(foreach image,$(SONIC_BAZEL_VS_SYNCD_GROUP_IMAGES),$(image) $(image:.gz=-$(DBG_IMAGE_MARK).gz))
+$(foreach image,$(SONIC_BAZEL_VS_SYNCD_GROUP_OUTPUTS),\
+    $(if $(filter-out --config=syncd-dash,$(strip $($(image)_BAZEL_ARGS))),$(error VS Syncd image group requires --config=syncd-dash only: $(image)))\
+    $(if $(filter --config=syncd-dash,$($(image)_BAZEL_ARGS)),,$(error VS Syncd image group requires --config=syncd-dash: $(image))))
+
 # One directory per recipe execution keeps parallel and repeated invocations separate.
 ifeq ($(SONIC_VS_IMAGE_TIMINGS),1)
 define vs_start_image_timing
@@ -141,9 +155,12 @@ $$(error VS runtime/debug pair $(1) $(2) requires identical Bazel arguments)
 endif
 $(call bazel_vs_archive_group_rule,$(1) $(2))
 endef
-$(foreach image,$(filter-out $(SONIC_BAZEL_VS_GROUP_IMAGES),$(SONIC_BAZEL_VS_PAIRED_IMAGES)),$(eval $(call bazel_vs_pair_rule,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz))))
+$(foreach image,$(filter-out $(SONIC_BAZEL_VS_GROUP_IMAGES) $(SONIC_BAZEL_VS_SYNCD_GROUP_IMAGES),$(SONIC_BAZEL_VS_PAIRED_IMAGES)),$(eval $(call bazel_vs_pair_rule,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz))))
 ifneq ($(strip $(SONIC_BAZEL_VS_GROUP_OUTPUTS)),)
 $(eval $(call bazel_vs_archive_group_rule,$(SONIC_BAZEL_VS_GROUP_OUTPUTS)))
+endif
+ifneq ($(strip $(SONIC_BAZEL_VS_SYNCD_GROUP_OUTPUTS)),)
+$(eval $(call bazel_vs_archive_group_rule,$(SONIC_BAZEL_VS_SYNCD_GROUP_OUTPUTS)))
 endif
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES))

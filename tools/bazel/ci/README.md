@@ -156,6 +156,56 @@ the workflow flag is not an authorization boundary for pull-request code.
 Enabling uploads does not guarantee backfilling results already present in
 local caches.
 
+### VS repository preparation and bounded retention
+
+The active VS job passes `--repo_contents_cache=/bazel_cache/repo_contents_cache`
+only through its Bazel 8 image/validation arguments. This is separate from the
+downloaded-archive `repository_cache` and the action-output `disk_cache`. It is
+not added to the slave-wide rc: nested Bazel 6 workspaces do not support it.
+No `Makefile.work` change is required; the existing cache mount carries all three.
+
+With `SONIC_VS_PREWARM_BAZEL_REPOSITORIES=1`, `build_vs.sh` first runs
+`prewarm_vs_repositories.sh` in the same Trixie slave profile, before starting
+the parallel installer build. It fetches only the pinned host LLVM repository,
+`@@sonic-fips++clang+symcrypt_llvm_llvm`, using the image's cache/download options.
+The pinned `toolchains_llvm` 1.11.2 distribution rule reports reproducibility
+for its catalogued downloads, making it eligible for Bazel 8.5.1 contents reuse.
+Prewarming fails if LLVM does not resolve into the shared contents cache; it
+does not silently succeed after another uncached extraction. A pin or canonical
+repository-name change must update this check. Other repository rules benefit
+only when they are eligible; local/configuration-only repositories are not
+made reproducible by this flag.
+
+Prewarm fetch and shutdown timings and the fetch profile are retained under
+`artifacts/vs/image-timings/repository-prewarm/`, alongside image profiles.
+Include this serial preparation time when comparing the entire build step.
+It does not build the image graph or run source compilation.
+
+Before each job, the idle-runner cleanup retains `vs-cache/bazel` only if its
+allocated size is at most 40 GiB and its filesystem has at least 200 GiB free.
+If either limit fails, it removes the bulky `disk_cache` first and remeasures,
+preferring to retain downloaded and extracted repositories. If the remaining
+cache still exceeds either budget, it removes that selected cache, as before.
+These are startup retention
+limits, not a hard cap on growth during a build; normal build disk preflight
+still applies. Obsolete container-home caches and the old local package cache
+are removed first. Shared NFS package-cache data is never removed.
+Existing redirected-path, active-container and mount guards apply even when
+retention is requested. CLI defaults preserve unconditional cleanup for other
+callers.
+
+Repository-contents idle GC is disabled for this job so a private server cannot
+delete old repository directories still referenced by another live output base.
+Retention decisions run only before the build, after the idle-cache guards.
+Private output bases remain per recipe or job, not cross-job analysis caches.
+
+The timing summary separately reports action-cache checks, repository
+preparation and repository extraction, unioning overlapping workers per command.
+These overlap existing download/build totals and are not additive or pure
+network-latency measurements. The numeric dashboard receipt remains unchanged.
+Use the full profiles to distinguish disk/network transfer, hashing and other
+work not separately identified by these spans.
+
 The fresh-checkout disk-cache verifier explicitly disables the remote cache,
 remote executor, and remote downloader for its isolated builds. This keeps remote
 hits from masking disk-cache misses and avoids enabling the remote downloader
@@ -310,13 +360,20 @@ are selected for installation and have registered Bazel pairs. Make prepares
 every member's prerequisites and producer stamps before the grouped invocation.
 These owners currently have no owner-specific Bazel arguments; a new nonempty
 argument on any grouped archive fails explicitly rather than changing another
-image's configuration. All other owners, including Orchagent, Syncd and FRR,
-keep independent builds. P4RT's separate workspace is unchanged.
+image's configuration. When both are selected and registered as Bazel pairs,
+Syncd and Gbsyncd form a second group with exactly `--config=syncd-dash` on all
+four archives; incompatible or missing owner arguments fail explicitly.
+Syncd is first so its existing retained producer base is reused by validation.
+Every member's prerequisites, export and SBOM fragment are still required.
+Other owners, including Orchagent and FRR, keep independent builds. Standalone
+requests and unsupported configurations retain their original selection.
+P4RT's separate workspace is unchanged.
 
-The group uses one disposable private output base, exports each archive through
+The service group uses one disposable private output base, exports each archive through
 the existing checked publication path, emits each SBOM fragment and shuts down
-and removes its base afterward. It adds no cross-job cache retention or action
-concurrency. Profiles and phase timings are recorded under the first grouped
+and removes its base afterward. Grouping adds no action concurrency.
+The Syncd group retains its base only within the job when producer reuse is
+enabled, as before. Profiles and phase timings are recorded under the first grouped
 owner's timing directory; `recipe.json` lists all archive queries and exports.
 Compare the group's elapsed window and peak disk use with the original owners'
 overlapping builds before expanding the pilot. Grouping shares setup and analysis
