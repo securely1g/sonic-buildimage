@@ -14,32 +14,44 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.bazel.cache import credentials
 
 
-def cache_options(cache_directory):
+def cache_options(cache_directory, remote_only=False):
     """Share content-addressed caches, keeping each Bazel output base private."""
     if not cache_directory:
         return []
     root = Path(cache_directory).expanduser().resolve()
     options = []
-    for name, flag in (("repository_cache", "repository_cache"), ("disk_cache", "disk_cache")):
+    names = ("repository_cache",) if remote_only else ("repository_cache", "disk_cache")
+    for name in names:
         path = root / name
         path.mkdir(parents=True, exist_ok=True)
-        options.append(f"--{flag}={path}")
+        options.append(f"--{name}={path}")
     return options
 
 
-def remote_cache_options():
+def remote_cache_options(required=False):
     """Read the shared cache without exposing authentication in Bazel options."""
     if not os.environ.get("BAZEL_REMOTE_AUTH"):
+        if required:
+            raise ValueError(credentials.ERROR)
         return []
     credentials.authorization()
     helper = Path(__file__).resolve().parent / "cache/credentials.py"
+    if required:
+        try:
+            valid_helper = (helper.resolve() == helper and helper.is_file() and
+                            os.access(helper, os.X_OK) and
+                            Path(credentials.__file__).resolve() == helper)
+        except (OSError, RuntimeError):
+            valid_helper = False
+        if not valid_helper:
+            raise ValueError(credentials.ERROR)
     return [
         "--remote_cache=" + credentials.ENDPOINT + "/",
         "--credential_helper=" + credentials.HOST + "=" + str(helper),
         "--remote_executor=",
         "--remote_accept_cached=true",
         "--remote_upload_local_results=false",
-    ]
+    ] + (["--disk_cache="] if required else [])
 
 
 def export_archive(source, destination):
@@ -69,11 +81,24 @@ def main():
     export.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "options":
-        arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
+        policy = os.environ.get("SONIC_BAZEL_CACHE_POLICY", "")
+        if policy not in ("", "remote-only"):
+            parser.error("SONIC_BAZEL_CACHE_POLICY must be empty or remote-only")
+        remote_only = policy == "remote-only"
+        required_options = []
+        if remote_only:
+            try:
+                # Refuse missing credentials before creating working directories.
+                required_options = remote_cache_options(required=True)
+            except ValueError:
+                parser.exit(2, credentials.ERROR + "\n")
+        # In K3s the caller supplies a transient repository/output location.
+        # Do not create, remove or reuse a local action-cache directory here.
+        arguments = cache_options(args.cache_directory, remote_only=remote_only) + shlex.split(args.arguments)
         try:
             # Apply the shared cache policy after caller options so Make image
             # builds cannot accidentally upload results or enable remote execution.
-            arguments += remote_cache_options()
+            arguments += required_options if remote_only else remote_cache_options()
         except ValueError:
             parser.exit(2, credentials.ERROR + "\n")
         if any(not value or any(char in value for char in "\r\n\0") for value in arguments):

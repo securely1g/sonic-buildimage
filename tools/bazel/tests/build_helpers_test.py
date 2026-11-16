@@ -45,6 +45,40 @@ class BuildHelpersTest(unittest.TestCase):
         self.assertEqual(build_helpers.cache_options(None), [])
         self.assertEqual(build_helpers.cache_options(""), [])
 
+    def test_legacy_cache_still_creates_repository_and_disk_directories(self):
+        root = self.root / "legacy-cache"
+        self.assertEqual(build_helpers.cache_options(root), [
+            f"--repository_cache={root / 'repository_cache'}",
+            f"--disk_cache={root / 'disk_cache'}",
+        ])
+        self.assertTrue((root / "repository_cache").is_dir())
+        self.assertTrue((root / "disk_cache").is_dir())
+
+    def test_remote_only_working_storage_preserves_existing_disk_cache(self):
+        root = self.root / "remote-working"
+        self.assertEqual(build_helpers.cache_options(root, remote_only=True), [
+            f"--repository_cache={root / 'repository_cache'}",
+        ])
+        self.assertTrue((root / "repository_cache").is_dir())
+        self.assertFalse((root / "disk_cache").exists())
+        disk = root / "disk_cache"
+        disk.mkdir()
+        sentinel = disk / "unrelated-existing-cache-entry"
+        sentinel.write_bytes(b"preserve existing caches")
+        before = sentinel.stat()
+        build_helpers.cache_options(root, remote_only=True)
+        after = sentinel.stat()
+        self.assertEqual(sentinel.read_bytes(), b"preserve existing caches")
+        self.assertEqual((before.st_ino, before.st_size, before.st_mtime_ns),
+                         (after.st_ino, after.st_size, after.st_mtime_ns))
+
+    def test_required_remote_helper_must_be_executable(self):
+        with patch.dict(build_helpers.os.environ, {"BAZEL_REMOTE_AUTH": "fixture-presence"}):
+            with patch.object(build_helpers.credentials, "authorization", return_value="fixture"):
+                with patch.object(build_helpers.os, "access", return_value=False):
+                    with self.assertRaisesRegex(ValueError, "Bazel remote cache access failed"):
+                        build_helpers.remote_cache_options(required=True)
+
 
 if __name__ == "__main__":
     unittest.main()

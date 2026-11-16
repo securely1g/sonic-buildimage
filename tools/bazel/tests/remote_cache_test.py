@@ -20,6 +20,7 @@ AUTH = "Basic " + base64.b64encode(b"test-client:private-test-password").decode(
 def environment(auth):
     result = dict(os.environ)
     result.pop("BAZEL_REMOTE_AUTH", None)
+    result.pop("SONIC_BAZEL_CACHE_POLICY", None)
     result.pop("MAKEFLAGS", None)
     result.pop("MFLAGS", None)
     if auth is not None:
@@ -28,10 +29,13 @@ def environment(auth):
 
 
 class RemoteCacheTest(unittest.TestCase):
-    def options(self, auth, *arguments):
+    def options(self, auth, *arguments, policy=None):
+        env = environment(auth)
+        if policy is not None:
+            env["SONIC_BAZEL_CACHE_POLICY"] = policy
         return subprocess.run(
             [sys.executable, "-B", str(OPTIONS), "options", *arguments],
-            cwd=ROOT, env=environment(auth), text=True, capture_output=True,
+            cwd=ROOT, env=env, text=True, capture_output=True,
         )
 
     def assert_no_credentials(self, text):
@@ -142,6 +146,72 @@ class RemoteCacheTest(unittest.TestCase):
                     self.assertEqual(record["args"], ["-e", "BAZEL_REMOTE_AUTH", "builder-image"])
                     self.assertEqual(record["auth_present"], auth is not None)
                     self.assert_no_credentials(result.stdout + result.stderr)
+
+    def test_remote_only_missing_auth_fails_before_creating_working_storage(self):
+        for auth in (None, ""):
+            with self.subTest(auth_present=bool(auth)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "working"
+                result = self.options(auth, f"--cache-directory={root}", policy="remote-only")
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "Bazel remote cache access failed.\n")
+                self.assertFalse(root.exists())
+
+    def test_remote_only_invalid_auth_does_not_create_storage_or_disclose_auth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "working"
+            result = self.options("Bearer private-test-password", f"--cache-directory={root}",
+                                  policy="remote-only")
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "Bazel remote cache access failed.\n")
+            self.assertFalse(root.exists())
+            self.assert_no_credentials(result.stdout + result.stderr)
+
+    def test_remote_only_policy_overrides_caller_action_cache_and_execution_flags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "working"
+            result = self.options(
+                AUTH, f"--cache-directory={root}",
+                "--arguments=--disk_cache=/caller/cache --remote_upload_local_results=true "
+                "--remote_accept_cached=false --remote_cache=https://other.example/ "
+                "--remote_executor=grpcs://other.example --jobs=3", policy="remote-only",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            options = result.stdout.splitlines()
+            effective = dict(option.split("=", 1) for option in options)
+            self.assertEqual(options[-1], "--disk_cache=")
+            self.assertEqual(effective["--disk_cache"], "")
+            self.assertEqual(effective["--repository_cache"], str(root / "repository_cache"))
+            self.assertEqual(effective["--remote_cache"], "https://" + HOST + "/")
+            self.assertEqual(effective["--credential_helper"], HOST + "=" + str(HELPER))
+            self.assertEqual(effective["--remote_upload_local_results"], "false")
+            self.assertEqual(effective["--remote_accept_cached"], "true")
+            self.assertEqual(effective["--remote_executor"], "")
+            self.assertEqual(effective["--jobs"], "3")
+            self.assertTrue((root / "repository_cache").is_dir())
+            self.assertFalse((root / "disk_cache").exists())
+            self.assert_no_credentials(result.stdout + result.stderr)
+
+    def test_remote_only_without_working_directory_still_disables_disk_cache(self):
+        result = self.options(AUTH, "--cache-directory=", policy="remote-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        options = result.stdout.splitlines()
+        self.assertEqual(options[-1], "--disk_cache=")
+        self.assertFalse(any(option.startswith("--repository_cache=") for option in options))
+        self.assertIn("--remote_cache=https://" + HOST + "/", options)
+        self.assert_no_credentials(result.stdout + result.stderr)
+
+    def test_unknown_policy_fails_before_creating_working_storage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "working"
+            result = self.options(AUTH, f"--cache-directory={root}", policy="unrecognized-policy")
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("SONIC_BAZEL_CACHE_POLICY must be empty or remote-only", result.stderr)
+            self.assertNotIn("unrecognized-policy", result.stderr)
+            self.assertFalse(root.exists())
+            self.assert_no_credentials(result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

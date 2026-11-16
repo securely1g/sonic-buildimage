@@ -793,7 +793,22 @@ def main():
     parser.add_argument("--distdir", type=Path)
     parser.add_argument("--cache-directory", type=Path,
                         help="persistent Bazel download/action cache visible to this process")
+    parser.add_argument("--producer-context", type=Path,
+                        help="reviewed original-producer compatibility context (verify only)")
+    parser.add_argument("--producer-context-sha256",
+                        help="context SHA256 pinned independently by the reviewed controller")
+    parser.add_argument("--producer-workspace", type=Path,
+                        help="separate immutable original producer checkout (verify only)")
+    parser.add_argument("--registry-workspace", type=Path,
+                        help="separate immutable consumer registry checkout (verify only)")
     args = parser.parse_args()
+    context_options = (args.producer_context, args.producer_context_sha256,
+                       args.producer_workspace, args.registry_workspace)
+    if any(value is not None for value in context_options):
+        if args.command != "verify":
+            parser.error("producer-context options require verify; no build fallback")
+        if not all(value is not None for value in context_options):
+            parser.error("producer-context verification requires all four context options")
     # Managed builders own certificate policy. Keep this optional default out
     # of verification-only calls, which do not download or invoke Bazel.
     if args.command in {"ensure", "plan", "build"} and args.java_trust_store is None:
@@ -819,7 +834,15 @@ def main():
     else:
         if args.state_dir or args.remote_cache or args.upload_local_results or args.ca_bundle or args.java_trust_store or args.distdir or args.cache_directory:
             parser.error("verify does not accept build options")
-        result = verify(debs_path(workspace, args.debs_directory), workspace, architecture=args.architecture, kernel_config=configuration)
+        if args.producer_context is None:
+            result = verify(debs_path(workspace, args.debs_directory), workspace, architecture=args.architecture, kernel_config=configuration)
+        else:
+            from tools.bazel.kernel import reuse_context
+            result = reuse_context.verify(
+                sys.modules[__name__], debs_path(workspace, args.debs_directory), workspace,
+                context_path=args.producer_context, context_sha256=args.producer_context_sha256,
+                producer_workspace=args.producer_workspace, registry_workspace=args.registry_workspace,
+                architecture=args.architecture, kernel_config=configuration)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

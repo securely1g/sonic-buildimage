@@ -43,7 +43,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"architecture":"amd64","runner":"ubuntu-24.04","machine":"x86_64"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04","machine":"x86_64"},{"architecture":"arm64","runner":"ubuntu-24.04-arm","machine":"aarch64"}]') }}
+          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && (github.event.pull_request.number == 206 || github.event.pull_request.number == 196) && '[{"architecture":"amd64","runner":"ubuntu-24.04","machine":"x86_64"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04","machine":"x86_64"},{"architecture":"arm64","runner":"ubuntu-24.04-arm","machine":"aarch64"}]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

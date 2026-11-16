@@ -842,7 +842,7 @@ docker-cleanup:
 
 .PHONY: sonic-build-hooks
 sonic-build-hooks:
-	$(Q)pushd src/sonic-build-hooks; TRUSTED_GPG_URLS=$(TRUSTED_GPG_URLS) $(MAKE) all; popd
+	$(Q)pushd src/sonic-build-hooks; TRUSTED_GPG_URLS=$(TRUSTED_GPG_URLS) $(MAKE) $(if $(filter reuse-only,$(SONIC_DEB_BUILD_POLICY)),verify,all); popd
 	$(Q)mkdir -p $(SLAVE_DIR)/buildinfo
 	$(Q)cp src/sonic-build-hooks/buildinfo/sonic-build-hooks* $(SLAVE_DIR)/buildinfo
 

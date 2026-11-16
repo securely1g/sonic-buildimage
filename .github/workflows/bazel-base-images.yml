@@ -22,8 +22,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # PR196 and PR206 are AMD64-only; other PRs/events retain this matrix.
         include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]') }}
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' &&
+            (github.event.pull_request.number == 196 || github.event.pull_request.number == 206) &&
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' ||
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]'
+          ) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     container:
@@ -146,8 +153,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # PR196 and PR206 are AMD64-only; other PRs/events retain this matrix.
         include: >-
-          ${{ fromJSON(github.event_name == 'pull_request' && github.repository == 'securely1g/sonic-buildimage' && github.event.pull_request.number == 196 && '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' || '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]') }}
+          ${{ fromJSON(
+            github.repository == 'securely1g/sonic-buildimage' &&
+            github.event_name == 'pull_request' &&
+            (github.event.pull_request.number == 196 || github.event.pull_request.number == 206) &&
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"}]' ||
+            '[{"architecture":"amd64","runner":"ubuntu-24.04"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]'
+          ) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:

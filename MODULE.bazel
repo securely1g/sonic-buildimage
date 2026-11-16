@@ -79,7 +79,12 @@ bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_
 bazel_dep(name = "sonic-snmpagent", version = "2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9", repo_name = "sonic_snmpagent")
 bazel_dep(name = "sonic-swss-common", version = "0.0.9-334389eae54afd1f4f5ee69f89c3a7ad2062ee61", repo_name = "sonic_swss_common")
 bazel_dep(name = "sonic-wpa-supplicant", version = "2.9.0.sonic.1", repo_name = "sonic_wpa_supplicant")
-bazel_dep(name = "scapy", version = "2.6.1.sonic.1")
+bazel_dep(name = "scapy", version = "2.6.1.sonic.3")
+# Keep the existing catalog and unrelated module selections.
+single_version_override(
+    module_name = "scapy",
+    registry = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/844fced9bca30f41e7fe02d7fd22974fc89c71a0",
+)
 bazel_dep(name = "hsflowd", version = "2.1.26.sonic.1")
 bazel_dep(name = "sflowtool", version = "6.11.0.sonic.2")
 bazel_dep(name = "libpsample", version = "1.1.0.sonic.1")

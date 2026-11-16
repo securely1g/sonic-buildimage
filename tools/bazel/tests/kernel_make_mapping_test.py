@@ -187,15 +187,15 @@ class KernelMakeMappingTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(log.exists(), "unrelated existing Docker target was forwarded by kernel hook")
 
-    def lazy_make_fixture(self):
+    def lazy_make_fixture(self, expected_command="ensure"):
         makefile = self.root / "lazy.mk"
         binary = self.root / "bin"
         binary.mkdir()
         python = binary / "python3"
         python.write_text(
             "#!" + sys.executable + "\nimport json,sys\nfrom pathlib import Path\n"
-            "assert sys.argv[1:4] == ['-B', 'tools/bazel/kernel/prepare.py', 'ensure']\n"
-            "with Path('order.txt').open('a') as out: out.write('ensure\\n')\n"
+            f"assert sys.argv[1:4] == ['-B', 'tools/bazel/kernel/prepare.py', {expected_command!r}]\n"
+            f"with Path('order.txt').open('a') as out: out.write({(expected_command + chr(10))!r})\n"
             "Path('arguments.json').write_text(json.dumps(sys.argv[4:]))\n"
             "if Path('fail-prepare').exists(): raise SystemExit(29)\n"
         )
@@ -251,6 +251,39 @@ class KernelMakeMappingTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.workspace / "order.txt").read_text().splitlines(), ["ensure", "ensure"])
         self.assertEqual(self.kernel_arguments()[1], {"--debs-directory": "target/debs/trixie"})
+
+
+    def test_verify_runs_directly_without_a_cache_argument(self):
+        makefile = self.lazy_make_fixture(expected_command="verify")
+        result = self.run_make(makefile, "bazel-kernel-ensure", SONIC_BAZEL_KERNEL_PREPARE="verify",
+                               SONIC_BAZEL_CACHE_SOURCE="fixture-cache")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.workspace / "order.txt").read_text().splitlines(), ["verify"])
+        config, options = self.kernel_arguments()
+        self.assertEqual(options, {"--debs-directory": "target/debs/trixie"})
+        self.assertNotIn("--cache-directory", options)
+        self.assertEqual((config["CONFIGURED_ARCH"], config["CONFIGURED_PLATFORM"], config["BLDENV"]),
+                         ("amd64", "vs", "trixie"))
+        self.assertFalse((self.workspace / "native-built.txt").exists())
+        self.assertFalse((self.workspace / "target").exists())
+
+    def test_invalid_preparation_mode_fails_before_recorder(self):
+        makefile = self.lazy_make_fixture()
+        result = self.run_make(makefile, "bazel-kernel-ensure", SONIC_BAZEL_KERNEL_PREPARE="other",
+                               SONIC_BAZEL_CACHE_SOURCE="fixture-cache")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must be ensure or verify", result.stderr)
+        for name in ("order.txt", "arguments.json", "native-built.txt", "target"):
+            self.assertFalse((self.workspace / name).exists(), name)
+
+    def test_verify_requires_bazel_before_recorder(self):
+        makefile = self.lazy_make_fixture(expected_command="verify")
+        result = self.run_make(makefile, "bazel-kernel-ensure", SONIC_BAZEL_KERNEL_PREPARE="verify",
+                               SONIC_BAZEL_CACHE_SOURCE="fixture-cache", BUILD_WITH_BAZEL_WHEN_AVAILABLE="n")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires BUILD_WITH_BAZEL_WHEN_AVAILABLE=y", result.stderr)
+        for name in ("order.txt", "arguments.json", "native-built.txt", "target"):
+            self.assertFalse((self.workspace / name).exists(), name)
 
     def test_enabled_kernel_forwards_each_configuration_to_bazel(self):
         makefile = self.lazy_make_fixture()
