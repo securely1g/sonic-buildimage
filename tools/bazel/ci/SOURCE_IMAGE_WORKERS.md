@@ -77,8 +77,7 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
-`database`, `eventd`, `lldp`, `radv`, `macsec`, `mux` or `frr`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework` or `teamd`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -191,25 +190,12 @@ to run the same image checks on an idle native AMD64 worker. Select an immutable
 source commit and retain the source/catalog and all four phase receipts; adding
 the selector alone does not establish image acceptance.
 
-Database, Eventd, FRR, LLDP, MACsec, MUX and Router Advertiser use the source checkout's
-image build, static validation and incremental checks. The merged sources use
-the maintained SONiC registry and the shared Bazel entrypoint. An empty catalog
-selection follows registry `main`. The worker records the endpoint and the tip
-observed during preparation. An optional immutable catalog selects that commit
-for the whole run. The bounded launcher and worker-local caches apply in both
-modes. Source checks bind to the selected image revision, and the worker records
-its controller revision separately.
-
-The installed phase runs the selected checkout's helper for Database, Eventd,
-LLDP, MACsec, MUX and Router Advertiser. The merged FRR workflow runs its probe inline.
-The dispatcher invokes its reviewed FRR adapter against the selected checkout,
-verifies source parents, both archives, image configurations, layers and Redis,
-then checks both installed probe results. Earlier reviewed sources retain their own wrapper and catalog requirements.
-
-SNMP and the shared base/config-engine/SWSS layers are not selectable here.
-Their existing workflows need an explicit adapter preserving all checks and
-receipts; a missing phase must not be treated as a pass. Use their dedicated
-workflows until that interface is reviewed.
+Database, Eventd, FRR, LLDP, MUX, Router Advertiser and SNMP use the regular
+Bazel OCI workflow on master. It builds runtime and debug archives on the
+`bazel-x64` pool and exercises the installed services on `ubuntu-24.04`.
+The MACsec source PR owns its build and installed-service checks.
+For authenticated Syncd and Gearbox requests, the dispatcher selects the shared
+K3s pool and verifies the original CI request before building.
 
 ## Explicit ordinary registry consumers
 

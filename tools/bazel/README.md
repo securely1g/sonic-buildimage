@@ -466,10 +466,11 @@ the value to the helper instead of interpolating it into shell code.
 
 ## Source-worker pool selection
 
-The manual Bazel OCI source worker retains the dedicated dpool route by default.
-For Syncd and Gearbox, `source_worker_pool=sonic-slave-container-k3s` selects the
-shared K3s label. This route requires `source_ci_request`, the immutable original
-normal-CI request artifact. The controller checks the complete checked-in worker
+For Syncd and Gearbox, the default pool selection (`auto`) sends a dispatch
+with `source_ci_request` to the shared K3s pool. The request identifies the
+immutable artifact produced by normal CI. Historical manual dispatches without
+a request retain their dedicated dpool route. Callers may also name the pool
+explicitly. The controller checks the complete checked-in worker
 contract hash before admitting its pool, source, catalog and controller identities.
 The assigned GitHub job, runner ID, runner name, pool label and both dispatch actors
 are bound before any build. A pool hint in a downloaded artifact is not admission.

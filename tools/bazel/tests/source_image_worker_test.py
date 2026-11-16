@@ -480,10 +480,39 @@ class ImageWorkerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             worker.worker_cache_root("/private/cache")
 
+    def test_automatic_worker_selection_matches_assignment_and_concurrency(self):
+        from tools.bazel.tests.registry_native_worker_test import condition
+        import yaml
+
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        trigger = workflow.get("on", workflow.get(True))
+        pool_input = trigger["workflow_dispatch"]["inputs"]["source_worker_pool"]
+        k3s = "sonic-slave-container-k3s"
+        dpool = "sonic-slave-container-dpool"
+        self.assertEqual(pool_input["default"], "auto")
+        self.assertEqual(set(pool_input["options"]), {"auto", k3s, dpool})
+        job = workflow["jobs"]["source_image"]
+        pool = job["env"]["WORKER_POOL"]
+        suffix = f" && '{k3s}' || '{dpool}'"
+        self.assertTrue(pool.startswith("$" + "{{ ") and pool.endswith(suffix + " }}"))
+        predicate = pool[4:-len(suffix + " }}")]
+        for selected, request, expected in (("auto", "123", True), ("auto", "", False),
+                                            (k3s, "123", True), (k3s, "", True),
+                                            (dpool, "123", False), (dpool, "", False)):
+            with self.subTest(selected=selected, request=request):
+                evaluation = predicate.replace("inputs.source_worker_pool", repr(selected)).replace(
+                    "inputs.source_ci_request", repr(request))
+                self.assertIs(condition(evaluation), expected)
+        self.assertIn(predicate + " && fromJSON('[\"sonic-slave-container-k3s\"]')", job["runs-on"])
+        self.assertIn("sonic-slave-container-dpool", job["runs-on"])
+        self.assertIn("inputs.source_worker", job["runs-on"])
+        self.assertIn(predicate + " && format('sonic-source-image-k3s-", job["concurrency"]["group"])
+        self.assertIn(predicate + " && format('bazel-oci-k3s-", workflow["concurrency"]["group"])
+        self.assertEqual(workflow["concurrency"]["cancel-in-progress"], "$" + "{{ !" + predicate + " }}")
+
     def test_k3s_workflow_binds_actual_assignment_and_request_concurrency(self):
         job = self.native_job()
         self.assertNotIn("SOURCE_WORKER_CONTROL", job["env"])
-        self.assertEqual(job["env"]["WORKER_POOL"], "${{ inputs.source_worker_pool }}")
         self.assertIn("inputs.source_image, inputs.source_ci_request", job["concurrency"]["group"])
         self.assertNotIn("sonic-slave-container-k3s-vs", job["concurrency"]["group"])
         self.assertIs(job["concurrency"]["cancel-in-progress"], False)
@@ -494,7 +523,7 @@ class ImageWorkerTest(unittest.TestCase):
         for name in ("Configure Debian downloads for the native worker",
                      "Scan staged source-image artifacts for private mirror locations"):
             for value in steps[name]["env"].values():
-                self.assertIn("inputs.source_worker_pool != 'sonic-slave-container-k3s'", value)
+                self.assertIn("steps.worker_paths.outputs.pool == 'sonic-slave-container-dpool'", value)
         names = [step["name"] for step in job["steps"]]
         self.assertLess(names.index("Bind the exact normal CI merge before native work"),
                         names.index("Prepare private Docker and persistent worker caches"))
@@ -518,6 +547,31 @@ class ImageWorkerTest(unittest.TestCase):
         for kind in ("CONTROL", "SOURCE", "SCRATCH"):
             environment["SOURCE_WORKER_" + kind] = "source-image-" + kind.lower() + "-123-2-sonic-slave-lgh114-1"
         return workspace, temporary, environment
+
+    def test_k3s_admission_only_reports_verified_pool_for_valid_requests(self):
+        guard = self.native_job()["steps"][0]["run"]
+        for change in ({}, {"SELECTED_IMAGE": "gearbox"}, {"SELECTED_IMAGE": "sysmgr"},
+                       {"SOURCE_CI_REQUEST": ""}, {"SOURCE_CI_REQUEST": "1x"},
+                       {"GITHUB_TRIGGERING_ACTOR": "other"}, {"GITHUB_ACTOR": "other"},
+                       {"GITHUB_REPOSITORY": "other/fork"}, {"ASSIGNED_WORKER": "sonic-slave-lgh114-1"}):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                workspace, _, environment = self.native_paths(root)
+                for kind in ("CONTROL", "SOURCE", "SCRATCH"):
+                    del environment["SOURCE_WORKER_" + kind]
+                environment.update(WORKER_POOL="sonic-slave-container-k3s", ASSIGNED_WORKER="ks-fixture-1",
+                                   RUNNER_NAME="ks-fixture-1", GITHUB_EVENT_NAME="workflow_dispatch",
+                                   GITHUB_REPOSITORY="securely1g/sonic-buildimage", GITHUB_ACTOR="securely1g",
+                                   GITHUB_TRIGGERING_ACTOR="securely1g", SELECTED_IMAGE="syncd", SOURCE_CI_REQUEST="123")
+                environment.update(change)
+                result = subprocess.run(["bash", "-e", "-c", guard], env=environment, cwd=workspace, capture_output=True)
+                path = Path(environment["GITHUB_OUTPUT"])
+                if not change or change.get("SELECTED_IMAGE") == "gearbox":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("pool=sonic-slave-container-k3s", path.read_text().splitlines())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(path.exists())
 
     def test_native_workflow_preserves_old_work_and_binds_every_driver_invocation(self):
         job = self.native_job()
@@ -821,60 +875,6 @@ class ImageWorkerTest(unittest.TestCase):
             with self.subTest(image=image, revision=revision), self.assertRaises(ValueError):
                 worker.selection(image, revision)
 
-    def test_dedicated_checks_precede_build_and_stop_on_failure(self):
-        checks = {
-            "database": ("database_make_test.py",),
-            "eventd": ("eventd_make_test.py",),
-            "lldp": ("lldp_make_test.py", "lldp_identity_test.py"),
-            "radv": ("radv_make_test.py",),
-            "macsec": (),
-            "mux": ("mux_make_test.py",),
-        }
-        memory = {"limit": str(20 * 1024**3), "cpu_max": "400000 100000", "events": {"oom": 0, "oom_kill": 0}}
-        for image, scripts in checks.items():
-            for failure in (None, *range(len(scripts))):
-                with self.subTest(image=image, failure=failure), tempfile.TemporaryDirectory() as directory:
-                    artifacts = Path(directory)
-                    args = SimpleNamespace(image=image, revision="a" * 40, phase="build",
-                                           workspace=Path("/source"), artifacts=artifacts)
-                    state = {"image": image, "revision": args.revision, "workspace": str(args.workspace),
-                             "environment": {}, "build_profile": worker.select_build_profile(20 * 1024**3, 4)}
-                    (artifacts / "worker-private.json").write_text(json.dumps(state))
-                    expected = [[sys.executable, "-B", "/source/tools/bazel/tests/" + script] for script in scripts]
-                    expected.append(worker.phase_command(image, "build", args.workspace, artifacts))
-                    results = [SimpleNamespace(returncode=0) for _ in expected]
-                    if failure is not None:
-                        results[failure].returncode = 7
-                    with patch.object(worker, "source_check") as source_check, \
-                            patch.object(worker, "memory_snapshot", return_value=memory), \
-                            patch.object(worker.subprocess, "run", side_effect=results) as run:
-                        if failure is None:
-                            worker.execute_phase(args)
-                        else:
-                            with self.assertRaisesRegex(ValueError, "Image phase failed: build"):
-                                worker.execute_phase(args)
-                        self.assertEqual([call.args[0] for call in run.call_args_list],
-                                         expected if failure is None else expected[:failure + 1])
-                        self.assertEqual(source_check.call_count, 2)
-                    receipt = json.loads((artifacts / "worker-build.json").read_text())
-                    self.assertEqual(receipt["status"], "passed" if failure is None else "failed")
-                    self.assertEqual(receipt["exit_code"], 0 if failure is None else 7)
-
-    def test_dedicated_build_checks_do_not_repeat_during_validation(self):
-        with tempfile.TemporaryDirectory() as directory:
-            artifacts = Path(directory)
-            args = SimpleNamespace(image="lldp", revision="a" * 40, phase="validate",
-                                   workspace=Path("/source"), artifacts=artifacts)
-            memory = {"limit": str(20 * 1024**3), "cpu_max": "400000 100000", "events": {"oom": 0, "oom_kill": 0}}
-            state = {"image": args.image, "revision": args.revision, "workspace": str(args.workspace),
-                     "environment": {}, "build_profile": worker.select_build_profile(20 * 1024**3, 4)}
-            (artifacts / "worker-private.json").write_text(json.dumps(state))
-            with patch.object(worker, "source_check"), patch.object(worker, "memory_snapshot", return_value=memory), \
-                    patch.object(worker.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
-                worker.execute_phase(args)
-            self.assertEqual([call.args[0] for call in run.call_args_list],
-                             [worker.phase_command("lldp", "validate", args.workspace, artifacts)])
-
     def test_fixed_interfaces_do_not_expand_into_owner_suites(self):
         root, artifacts = Path("/source"), Path("/evidence")
         for image in worker.DRIVERS:
@@ -895,9 +895,7 @@ class ImageWorkerTest(unittest.TestCase):
         root, artifacts = Path("/source"), Path("/evidence")
         prefix = [sys.executable, "-B"]
         wrapper = "/source/tools/bazel/ci/review_bazel.sh"
-        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("framework", "mgmt_framework"),
-                            ("database", "database"), ("eventd", "eventd"), ("lldp", "lldp"),
-                            ("radv", "radv"), ("macsec", "macsec"), ("mux", "mux"), ("frr", "frr")):
+        for image, stem in (("otel", "otel"), ("syncd", "syncd"), ("gearbox", "gbsyncd"), ("dash-engine", "dash_engine"), ("framework", "mgmt_framework")):
             with self.subTest(image=image):
                 driver = f"/source/tools/bazel/ci/{stem}_image.py"
                 for phase in ("build", "validate", "incremental"):
@@ -986,25 +984,13 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertFalse(condition(workflow["jobs"]["vs_container"]["if"], event="pull_request", branch=branch))
         self.assertFalse(condition(workflow["jobs"]["registry_native"]["if"], event="pull_request", branch=branch))
 
-    def test_service_dispatches_select_only_the_existing_native_image_job(self):
-        import yaml
-        from tools.bazel.tests.registry_native_worker_test import condition
-
-        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        jobs = workflow["jobs"]
-        for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr"):
-            with self.subTest(image=image):
-                selected = [name for name, job in jobs.items() if condition(
-                    str(job.get("if", "true")).replace("inputs.source_inputs_run", "'41689621493'"), mode=image)]
-                self.assertEqual(selected, ["source_image"])
-                self.assertTrue(condition(jobs["source_image_inputs"]["if"], mode=image))
-                self.assertFalse(condition(jobs["source_image"]["if"], mode=image))
-        self.assertIn("inputs.source_worker_pool == 'sonic-slave-container-k3s'", jobs["source_image"]["runs-on"])
-        self.assertIn('sonic-slave-container-dpool', jobs["source_image"]["runs-on"])
-        self.assertIn('inputs.source_worker', jobs["source_image"]["runs-on"])
-        for image in ("snmp", "base", "config-engine", "swss-layer"):
-            with self.subTest(unsupported=image), self.assertRaises(ValueError):
-                worker.selection(image, "a" * 40)
+    def test_service_images_are_excluded_from_source_worker_dispatch(self):
+        for pool in ("sonic-slave-container-k3s", "sonic-slave-container-dpool"):
+            with patch.dict(os.environ, {"WORKER_POOL": pool}):
+                for image in ("database", "eventd", "lldp", "radv", "macsec", "mux", "frr",
+                              "snmp", "base", "config-engine", "swss-layer"):
+                    with self.subTest(pool=pool, image=image), self.assertRaisesRegex(ValueError, "Unknown source image"):
+                        worker.selection(image, "a" * 40)
 
     def test_worker_followups_skip_only_their_owned_deb_fixtures_and_vs(self):
         import yaml
@@ -1045,7 +1031,6 @@ class ImageWorkerTest(unittest.TestCase):
             self.assertEqual(worker.catalog_for("gearbox", root), "a" * 40)
             self.assertEqual(worker.catalog_for("dash-engine", root), "a" * 40)
             self.assertEqual(worker.catalog_for("framework", root), "a" * 40)
-            self.assertEqual(worker.catalog_for("frr", root), "a" * 40)
             workflow.write_text("env:\n  BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh\n  SONIC_BAZEL_REGISTRY_REVISION: " + "a" * 40 + "\n")
             wrapper = root / "tools/bazel/ci/libteam_draft_bazel.sh"
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "a" * 40 + "\n")
@@ -1053,98 +1038,6 @@ class ImageWorkerTest(unittest.TestCase):
             wrapper.write_text("export SONIC_BAZEL_REGISTRY_REVISION=" + "b" * 40 + "\n")
             with self.assertRaises(ValueError):
                 worker.catalog_for("dash-ha", root)
-
-    def test_merged_drivers_use_the_maintained_registry_and_keep_explicit_review_pairs(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "tools/bazel/ci").mkdir(parents=True)
-            (root / ".github/workflows").mkdir(parents=True)
-            rc = root / ".bazelrc"
-            rc.write_text("common --registry=" + worker.REGISTRY_URL + "main\ncommon --registry=https://bcr.bazel.build\n")
-            wrapper = root / "tools/bazel/ci" / worker.CANONICAL_WRAPPER
-            wrapper.write_text("registry=" + worker.REGISTRY_URL + "main\n" + 'review="${SONIC_BASE_REVIEW_REGISTRY:-}"\n')
-            (root / ".github/workflows/bazel-oci.yml").write_text("\n".join(
-                f'python3 -B tools/bazel/ci/{name}_image.py build --bazel "$BAZEL" --artifacts artifacts/{name}'
-                for name in worker.CANONICAL_IMAGES))
-            for name in worker.CANONICAL_IMAGES:
-                self.assertEqual(worker.catalog_for(name, root), "")
-                self.assertEqual(worker.catalog_for(name, root, "a" * 40), "a" * 40)
-                self.assertEqual(worker.phase_command(name, "build", root, root)[-1], str(wrapper))
-            loaded = worker.phase_command("frr", "loaded", root, root)
-            self.assertIn(str(ROOT / "tools/bazel/ci/frr_loaded.py"), loaded)
-            self.assertEqual(loaded[loaded.index("--source") + 1], str(root))
-            rc.write_text(rc.read_text() + "common --registry=" + worker.REGISTRY_URL + "a" * 40 + "\n")
-            with self.assertRaisesRegex(ValueError, "one maintained"):
-                worker.catalog_for("eventd", root)
-
-    def test_macsec_catalog_comes_from_its_driver_workflow(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            workflows = root / '.github/workflows'; workflows.mkdir(parents=True)
-            drivers = root / 'tools/bazel/ci'; drivers.mkdir(parents=True)
-            (workflows / 'bazel-oci.yml').write_text('env:\n  BAZEL: tools/bazel/ci/libteam_draft_bazel.sh\n')
-            workflow = workflows / 'bazel-macsec.yml'
-            prefix = 'env:\n  SONIC_BAZEL_REGISTRY_REVISION: '
-            command = '\n  run: |\n    python3 -B tools/bazel/ci/macsec_image.py build --artifacts artifacts/macsec\n'
-            driver = drivers / 'macsec_image.py'
-            driver.write_text('parser.add_argument("--bazel", default="tools/bazel/ci/review_bazel.sh")\n')
-            for expression in ('a' * 40, "${{ inputs.registry_revision || '" + 'a' * 40 + "' }}"):
-                workflow.write_text(prefix + expression + command)
-                self.assertEqual(worker.catalog_for('macsec', root), 'a' * 40)
-                self.assertEqual(worker.catalog_for('macsec', root, 'b' * 40), 'b' * 40)
-                for invalid in ('main', 'A' * 40, '--registry=other'):
-                    with self.assertRaises(ValueError): worker.catalog_for('macsec', root, invalid)
-            for expression in ('main', '${{ inputs.registry_revision }}', '${{ arbitrary.expression }}'):
-                workflow.write_text(prefix + expression + command)
-                with self.assertRaises(ValueError): worker.catalog_for('macsec', root, 'b' * 40)
-            workflow.write_text(prefix + 'a' * 40 + command + '  SONIC_BAZEL_REGISTRY_REVISION: ' + 'b' * 40 + '\n')
-            with self.assertRaises(ValueError): worker.catalog_for('macsec', root)
-
-    def test_macsec_catalog_rejects_other_entrypoints_and_commented_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            workflows = root / '.github/workflows'; workflows.mkdir(parents=True)
-            drivers = root / 'tools/bazel/ci'; drivers.mkdir(parents=True)
-            (workflows / 'bazel-oci.yml').write_text('env:\n  BAZEL: bazel\n')
-            workflow = workflows / 'bazel-macsec.yml'
-            content = ('env:\n  SONIC_BAZEL_REGISTRY_REVISION: ' + 'a' * 40 + '\n  run: |\n'
-                       '    python3 -B tools/bazel/ci/macsec_image.py build --artifacts artifacts/macsec\n')
-            workflow.write_text(content)
-            driver = drivers / 'macsec_image.py'
-            valid = 'parser.add_argument("--bazel", default="tools/bazel/ci/review_bazel.sh")\n'
-            for invalid in (valid.replace('review_bazel.sh', 'other.sh'), '# ' + valid,
-                            valid.replace('"tools/bazel/ci/review_bazel.sh"', 'dynamic'), valid + valid):
-                driver.write_text(invalid)
-                with self.assertRaises(ValueError): worker.catalog_for('macsec', root, 'b' * 40)
-            driver.write_text(valid)
-            workflow.write_text(content.replace(' build --artifacts', ' build --bazel other --artifacts'))
-            with self.assertRaises(ValueError): worker.catalog_for('macsec', root, 'b' * 40)
-
-    def test_dedicated_service_catalogs_preserve_combined_source_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            workflows = root / '.github/workflows'; workflows.mkdir(parents=True)
-            common = workflows / 'bazel-oci.yml'
-            for image, filename in worker.SOURCE_WORKFLOWS.items():
-                common.write_text('env:\n  BAZEL: bazel\n')
-                dedicated = workflows / filename
-                dedicated.write_text('env:\n  BAZEL: ./tools/bazel/ci/review_bazel.sh\n'
-                                     '  SONIC_BAZEL_REGISTRY_REVISION: ' + 'a' * 40 + '\n')
-                self.assertEqual(worker.catalog_for(image, root), 'a' * 40)
-                self.assertEqual(worker.catalog_for(image, root, 'b' * 40), 'b' * 40)
-                common.write_text('env:\n  BAZEL: tools/bazel/ci/review_bazel.sh\n'
-                                  '  SONIC_BAZEL_REGISTRY_REVISION: ' + 'c' * 40 + '\n')
-                self.assertEqual(worker.catalog_for(image, root), 'c' * 40)
-                self.assertEqual(worker.catalog_for(image, root, 'b' * 40), 'b' * 40)
-                common.write_text('env:\n  BAZEL: bazel\n')
-                dedicated.write_text('env:\n  BAZEL: bazel\n'
-                                     '  SONIC_BAZEL_REGISTRY_REVISION: ' + 'a' * 40 + '\n')
-                if image == 'macsec':
-                    (root / 'tools/bazel/ci').mkdir(parents=True)
-                    (root / 'tools/bazel/ci/macsec_image.py').write_text('')
-                with self.assertRaises(ValueError): worker.catalog_for(image, root, 'b' * 40)
-            self.assertNotIn('database', worker.SOURCE_WORKFLOWS)
-            with self.assertRaises(ValueError): worker.catalog_for('database', root, 'b' * 40)
 
     def test_source_download_handoff_rejects_changed_archives(self):
         with tempfile.TemporaryDirectory() as directory:

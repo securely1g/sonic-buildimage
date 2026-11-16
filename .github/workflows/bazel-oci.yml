@@ -9,17 +9,17 @@ on:
       source_image:
         description: Dedicated native source worker task (image or registry consumer)
         type: choice
-        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr]
+        options: [none, preflight, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd]
         default: none
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd or Gearbox validation
         type: string
         default: ''
       source_worker_pool:
-        description: Native source-worker pool (K3s requires an authenticated normal-CI request)
+        description: Auto routes normal-CI requests to K3s and standalone image builds to the dedicated worker
         type: choice
-        options: [sonic-slave-container-dpool, sonic-slave-container-k3s]
-        default: sonic-slave-container-dpool
+        options: [auto, sonic-slave-container-dpool, sonic-slave-container-k3s]
+        default: auto
       source_revision:
         description: Reviewed 40-character image source or fixed registry commit
         type: string
@@ -52,8 +52,8 @@ permissions:
 
 concurrency:
   # Preserve long VS builds across source updates; same-revision reruns supersede.
-  group: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && format('bazel-oci-k3s-{0}-{1}', github.run_id, github.run_attempt) || format('bazel-oci-{0}-{1}-{2}-{3}', github.event.pull_request.number || github.ref, github.sha, inputs.source_image || 'none', inputs.source_revision) }}
-  cancel-in-progress: ${{ inputs.source_worker_pool != 'sonic-slave-container-k3s' }}
+  group: ${{ (inputs.source_worker_pool == 'sonic-slave-container-k3s' || (inputs.source_worker_pool == 'auto' && inputs.source_ci_request != '')) && format('bazel-oci-k3s-{0}-{1}', github.run_id, github.run_attempt) || format('bazel-oci-{0}-{1}-{2}-{3}', github.event.pull_request.number || github.ref, github.sha, inputs.source_image || 'none', inputs.source_revision) }}
+  cancel-in-progress: ${{ !(inputs.source_worker_pool == 'sonic-slave-container-k3s' || (inputs.source_worker_pool == 'auto' && inputs.source_ci_request != '')) }}
 
 env:
   BAZEL: bazel
@@ -169,7 +169,7 @@ jobs:
 
   source_image_inputs:
     name: Fetch pinned source-image downloads
-    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr"]'), inputs.source_image) && inputs.source_inputs_run == ''
+    if: github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd"]'), inputs.source_image) && inputs.source_inputs_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -209,10 +209,10 @@ jobs:
   source_image:
     needs: source_image_inputs
     name: Source image (${{ inputs.source_image }})
-    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd", "database", "eventd", "lldp", "radv", "macsec", "mux", "frr"]'), inputs.source_image)
-    runs-on: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && fromJSON('["sonic-slave-container-k3s"]') || fromJSON(format('["sonic-slave-container-dpool","{0}"]', inputs.source_worker)) }}
+    if: always() && !cancelled() && (needs.source_image_inputs.result == 'success' || (needs.source_image_inputs.result == 'skipped' && inputs.source_inputs_run != '')) && github.event_name == 'workflow_dispatch' && contains(fromJSON('["sysmgr", "dash-ha", "orchagent", "sflow", "otel", "syncd", "gearbox", "dash-engine", "gnmi", "gnmi-no-dialout", "framework", "teamd"]'), inputs.source_image)
+    runs-on: ${{ (inputs.source_worker_pool == 'sonic-slave-container-k3s' || (inputs.source_worker_pool == 'auto' && inputs.source_ci_request != '')) && fromJSON('["sonic-slave-container-k3s"]') || fromJSON(format('["sonic-slave-container-dpool","{0}"]', inputs.source_worker)) }}
     concurrency:
-      group: ${{ inputs.source_worker_pool == 'sonic-slave-container-k3s' && format('sonic-source-image-k3s-{0}-{1}', inputs.source_image, inputs.source_ci_request) || format('source-image-native-{0}-{1}', github.run_id, github.run_attempt) }}
+      group: ${{ (inputs.source_worker_pool == 'sonic-slave-container-k3s' || (inputs.source_worker_pool == 'auto' && inputs.source_ci_request != '')) && format('sonic-source-image-k3s-{0}-{1}', inputs.source_image, inputs.source_ci_request) || format('source-image-native-{0}-{1}', github.run_id, github.run_attempt) }}
       cancel-in-progress: false
     timeout-minutes: 360
     permissions:
@@ -223,12 +223,13 @@ jobs:
         shell: bash
     env:
       SOURCE_WORKER_CONFIGURED_MIRRORS: "1"
-      WORKER_POOL: ${{ inputs.source_worker_pool }}
+      WORKER_POOL: ${{ (inputs.source_worker_pool == 'sonic-slave-container-k3s' || (inputs.source_worker_pool == 'auto' && inputs.source_ci_request != '')) && 'sonic-slave-container-k3s' || 'sonic-slave-container-dpool' }}
       SELECTED_IMAGE: ${{ inputs.source_image }}
       SOURCE_REVISION: ${{ inputs.source_revision }}
       SOURCE_REGISTRY_REVISION: ${{ inputs.registry_revision }}
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
     steps:
+      # A request ID chooses a runner. Its origin, contract and merge are verified before build steps.
       - name: Require fresh native worker paths
         id: worker_paths
         env:
@@ -268,6 +269,7 @@ jobs:
               paths.append((kind, variable, name))
           with open(os.environ["GITHUB_OUTPUT"], "a") as output, open(os.environ["GITHUB_ENV"], "a") as environment:
               output.write("worker=" + worker + "\n")
+              output.write("pool=" + pool + "\n")
               for kind, variable, name in paths:
                   output.write(kind + "=" + name + "\n")
                   environment.write(variable + "=" + name + "\n")
@@ -282,7 +284,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: cb8fd897f3e20d53f9dab2f9e633b717b0c3229a
+          ref: 98af0c78258d2f86442c1207ec44fa874f0b4afe
           path: ${{ steps.worker_paths.outputs.control }}/.source-mirror-registry
           sparse-checkout: ci
           persist-credentials: false
@@ -363,8 +365,8 @@ jobs:
       - name: Configure Debian downloads for the native worker
         id: prepare_mirrors
         env:
-          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_MIRROR_ROOT || '' }}
-          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && steps.worker_paths.outputs.pool == 'sonic-slave-container-dpool' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && steps.worker_paths.outputs.pool == 'sonic-slave-container-dpool' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" prepare-mirrors \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
@@ -412,8 +414,8 @@ jobs:
         id: scan_mirrors
         if: always() && steps.public_artifacts.outcome == 'success'
         env:
-          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_MIRROR_ROOT || '' }}
-          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && inputs.source_worker_pool != 'sonic-slave-container-k3s' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
+          DEBIAN_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && steps.worker_paths.outputs.pool == 'sonic-slave-container-dpool' && secrets.DEBIAN_MIRROR_ROOT || '' }}
+          DEBIAN_SECURITY_MIRROR_ROOT: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'securely1g/sonic-buildimage' && github.actor == 'securely1g' && steps.worker_paths.outputs.pool == 'sonic-slave-container-dpool' && secrets.DEBIAN_SECURITY_MIRROR_ROOT || '' }}
         run: |
           python3 -B "$GITHUB_WORKSPACE/$SOURCE_WORKER_CONTROL/tools/bazel/ci/source_image_worker.py" scan-mirrors \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
