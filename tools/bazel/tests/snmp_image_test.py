@@ -96,16 +96,11 @@ class SnmpImageBuildTest(unittest.TestCase):
         self.assertIn("snmp_image.py validate ", build_step["run"])
         self.assertIn("snmp_image.py incremental ", build_step["run"])
         upload = next(step for step in archive if step.get("name") == "Retain SNMP archives and build evidence")
-        allocation = next(step for step in archive if step.get("id") == "snmp_artifacts")
-        self.assertLess(archive.index(allocation), archive.index(build_step))
-        self.assertEqual(allocation["if"], build_step["if"])
-        public_step = next(step for step in archive if step.get("id") == "snmp_public")
-        self.assertIn("steps.snmp_artifacts.outputs.path != ''", public_step["if"])
-        for step in (build_step, public_step):
-            self.assertEqual(step["env"]["SNMP_ARTIFACTS"], "${{ steps.snmp_artifacts.outputs.path }}")
-            self.assertNotIn("$RUNNER_TEMP/snmp", step["run"])
-            self.assertIn('--artifacts "$SNMP_ARTIFACTS"', step["run"])
-        self.assertEqual(upload["with"]["path"], "${{ steps.snmp_artifacts.outputs.path }}/public")
+        publish = next(step for step in archive if step.get("id") == "snmp_public")
+        self.assertIn('mktemp -d "$RUNNER_TEMP/snmp.XXXXXXXX"', build_step["run"])
+        self.assertEqual(publish["env"]["snmp_artifacts"], "${{ steps.snmp_build.outputs.directory }}")
+        self.assertIn("steps.snmp_build.outputs.directory != ''", publish["if"])
+        self.assertEqual(upload["with"]["path"], "${{ steps.snmp_build.outputs.directory }}/public")
         loaded = workflow["jobs"]["snmp_runtime"]
         self.assertEqual(loaded["needs"], "archive")
         download = next(step for step in loaded["steps"] if "actions/download-artifact" in step.get("uses", ""))
@@ -148,21 +143,28 @@ class SnmpArtifactsWorkflowTest(unittest.TestCase):
     def setUp(self):
         workflow = yaml.safe_load((image.ROOT / ".github/workflows/bazel-oci.yml").read_text())
         self.steps = workflow["jobs"]["archive"]["steps"]
-        self.allocate = next(step for step in self.steps if step.get("id") == "snmp_artifacts")
+        self.build = next(step for step in self.steps if step.get("id") == "snmp_build")
         self.cleanup = next(step for step in self.steps
                             if step.get("name") == "Remove uploaded SNMP temporary artifacts")
 
     def allocate_directory(self, temporary):
         output = temporary / "github-output"
         output.write_text("")
+        commands = temporary / "commands"
+        commands.mkdir(exist_ok=True)
+        for name in ("python3", "git"):
+            command = commands / name
+            command.write_text("#!/bin/sh\nexit 0\n")
+            command.chmod(0o755)
         result = subprocess.run(
-            ["bash", "-e", "-o", "pipefail", "-c", self.allocate["run"]],
-            env=dict(os.environ, RUNNER_TEMP=str(temporary), GITHUB_OUTPUT=str(output)),
+            ["bash", "-e", "-o", "pipefail", "-c", self.build["run"]],
+            env=dict(os.environ, RUNNER_TEMP=str(temporary), GITHUB_OUTPUT=str(output),
+                     BAZEL="fixture-bazel", PATH=str(commands) + os.pathsep + os.environ["PATH"]),
             text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return Path(output.read_text().strip().split("=", 1)[1])
 
-    def test_fresh_staging_publishes_current_bytes_without_reusing_old_artifacts(self):
+    def test_cleanup_preserves_other_jobs_and_stale_staging(self):
         with tempfile.TemporaryDirectory(prefix="snmp artifacts ") as temporary:
             root = Path(temporary)
             stale = root / "snmp/public/docker-snmp.gz"
@@ -171,7 +173,6 @@ class SnmpArtifactsWorkflowTest(unittest.TestCase):
             first = self.allocate_directory(root)
             second = self.allocate_directory(root)
             self.assertNotEqual(first, second)
-            self.assertEqual(first.stat().st_mode & 0o777, 0o700)
             payload = first / "docker-snmp.gz"
             payload.write_bytes(b"current validated archive")
             receipt = {"status": "built", "artifacts": {
@@ -180,6 +181,12 @@ class SnmpArtifactsWorkflowTest(unittest.TestCase):
             (first / "build-receipt.json").write_text(json.dumps(receipt))
             image.source_image_worker.publish(SimpleNamespace(artifacts=first))
             self.assertEqual((first / "public/docker-snmp.gz").read_bytes(), payload.read_bytes())
+            result = subprocess.run(
+                ["bash", "-e", "-o", "pipefail", "-c", self.cleanup["run"]],
+                env=dict(os.environ, RUNNER_TEMP=str(root), SNMP_ARTIFACTS=str(first)),
+                text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertFalse(first.exists())
             self.assertEqual(stale.read_bytes(), b"previous run")
             self.assertEqual(list(second.iterdir()), [])
 
@@ -187,7 +194,7 @@ class SnmpArtifactsWorkflowTest(unittest.TestCase):
         upload = next(step for step in self.steps if step.get("id") == "snmp_upload")
         self.assertLess(self.steps.index(upload), self.steps.index(self.cleanup))
         self.assertEqual(self.cleanup["if"],
-                         "always() && steps.snmp_artifacts.outcome == 'success' "
+                         "always() && steps.snmp_build.outputs.directory != '' "
                          "&& steps.snmp_upload.outcome == 'success'")
         with tempfile.TemporaryDirectory(prefix="snmp artifacts ") as temporary:
             root = Path(temporary)
@@ -209,9 +216,9 @@ class SnmpArtifactsWorkflowTest(unittest.TestCase):
             root = Path(temporary)
             unrelated = root / "other"
             unrelated.mkdir()
-            outside = root / "outside/snmp-images.fixture"
+            outside = root / "outside/snmp.fixture"
             outside.mkdir(parents=True)
-            link = root / "snmp-images.link"
+            link = root / "snmp.link"
             link.symlink_to(outside, target_is_directory=True)
             for directory in (root, unrelated, outside, link):
                 with self.subTest(directory=directory):

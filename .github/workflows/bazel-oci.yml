@@ -674,36 +674,29 @@ jobs:
             printf 'Completed Sysmgr evidence preserved at %s/artifacts\n' "$preserved"
           fi
 
-      - name: Allocate private SNMP artifacts directory
-        id: snmp_artifacts
-        if: matrix.architecture == 'amd64'
-        run: |
-          umask 077
-          directory="$(mktemp -d "$RUNNER_TEMP/snmp-images.XXXXXXXX")"
-          printf 'path=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - name: Build and validate SNMP runtime and debug archives
         id: snmp_build
         if: matrix.architecture == 'amd64'
-        env:
-          SNMP_ARTIFACTS: ${{ steps.snmp_artifacts.outputs.path }}
         run: |
-          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$BAZEL" --artifacts "$SNMP_ARTIFACTS"
-          python3 -B tools/bazel/ci/snmp_image.py validate --artifacts "$SNMP_ARTIFACTS"
-          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$BAZEL" --artifacts "$SNMP_ARTIFACTS"
+          snmp_artifacts=$(mktemp -d "$RUNNER_TEMP/snmp.XXXXXXXX")
+          printf 'directory=%s\n' "$snmp_artifacts" >> "$GITHUB_OUTPUT"
+          python3 -B tools/bazel/ci/snmp_image.py build --bazel "$BAZEL" --artifacts "$snmp_artifacts"
+          python3 -B tools/bazel/ci/snmp_image.py validate --artifacts "$snmp_artifacts"
+          python3 -B tools/bazel/ci/snmp_image.py incremental --bazel "$BAZEL" --artifacts "$snmp_artifacts"
           git diff --exit-code
       - name: Prepare public SNMP build evidence
         id: snmp_public
-        if: always() && steps.snmp_artifacts.outputs.path != '' && (steps.snmp_build.outcome == 'success' || steps.snmp_build.outcome == 'failure')
+        if: always() && steps.snmp_build.outputs.directory != '' && (steps.snmp_build.outcome == 'success' || steps.snmp_build.outcome == 'failure')
         env:
-          SNMP_ARTIFACTS: ${{ steps.snmp_artifacts.outputs.path }}
-        run: python3 -B tools/bazel/ci/snmp_image.py publish --artifacts "$SNMP_ARTIFACTS"
+          snmp_artifacts: ${{ steps.snmp_build.outputs.directory }}
+        run: python3 -B tools/bazel/ci/snmp_image.py publish --artifacts "$snmp_artifacts"
       - name: Retain SNMP archives and build evidence
         id: snmp_upload
         if: always() && steps.snmp_public.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: snmp-images-amd64-${{ github.sha }}
-          path: ${{ steps.snmp_artifacts.outputs.path }}/public
+          path: ${{ steps.snmp_build.outputs.directory }}/public
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
@@ -1482,9 +1475,9 @@ jobs:
           compression-level: 1
 
       - name: Remove uploaded SNMP temporary artifacts
-        if: always() && steps.snmp_artifacts.outcome == 'success' && steps.snmp_upload.outcome == 'success'
+        if: always() && steps.snmp_build.outputs.directory != '' && steps.snmp_upload.outcome == 'success'
         env:
-          SNMP_ARTIFACTS: ${{ steps.snmp_artifacts.outputs.path }}
+          SNMP_ARTIFACTS: ${{ steps.snmp_build.outputs.directory }}
         run: |
           python3 - <<'PY'
           import os
@@ -1495,7 +1488,7 @@ jobs:
           temporary = Path(os.environ["RUNNER_TEMP"]).resolve()
           if (not directory.is_absolute() or directory.is_symlink()
                   or directory.parent.resolve() != temporary
-                  or not directory.name.startswith("snmp-images.")):
+                  or not directory.name.startswith("snmp.")):
               raise ValueError("Refusing to remove an unexpected SNMP artifacts directory")
           shutil.rmtree(directory)
           PY
