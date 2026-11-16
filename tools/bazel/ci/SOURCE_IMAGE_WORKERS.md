@@ -170,10 +170,21 @@ checks remain independent requirements.
 UID 1000 preflight retains native Trixie, the immutable slave marker, 20 GiB memory
 and 50 GiB free workspace/cache gates. Only the fixed registry runner uses sudo
 in the same disposable container. No Docker daemon, image driver, Make package
-build, KVM or hosted source-download prerequisite is added. Common fails before
-sudo/APT until an actual provisioner-pinned image reference is known; a local
-image ID is never replaced with the hosted Debian reference. FIPS has no
-runtime-preparation requirement.
+build, KVM or hosted source-download prerequisite is added. Common compares the
+live marker and installed provisioner helper hashes with the reviewed identity
+before sudo/APT. Root repeats that check, writes a private read-only expected
+identity, and passes the typed provenance option to the original registry runner.
+The runner checks the same identity before building and before and after the
+unchanged owner runtime preparation. This identifies the base configuration and
+provisioner, not an OCI manifest. Other qualified-image checks remain unchanged;
+FIPS has no runtime-preparation requirement.
+
+Common selects registry catalog `e23b7089cd403a186984127b4db3599e0ad50d27`,
+including the exact Common #199 entry and the typed runner from registry #225.
+Its original 16 build targets, 24 tests, runtime helper hash and uncached tests
+are preserved. The reviewed identity is stored in
+`tools/bazel/ci/registry_common_worker_identity.json`. A changed deployment fails
+preflight and requires reviewing the new diagnostic before updating that file.
 
 The existing --bazel hook adds measured scheduling and audits all original
 build/test targets for DEB/package wrappers before each build/test command.
@@ -236,9 +247,9 @@ install packages, invoke Docker or Bazel, or run native acceptance.
 
 The receipt identifies only the recorded local base configuration and
 provisioner revision. It explicitly does not verify a derived image digest or
-a registry manifest digest. Common's existing qualified-image provenance gate
-remains unchanged; this diagnostic supplies evidence for a separate review of
-that contract.
+a registry manifest digest. The Common typed profile uses this reviewed identity
+and repeats strict checks during its native run. The existing qualified-image
+path remains unchanged.
 
 ### Declared tree archive export permissions
 
