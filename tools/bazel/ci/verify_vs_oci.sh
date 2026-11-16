@@ -110,12 +110,13 @@ start_image_check() {
 
 check_images() (
     set -e
-    local owner=$1 test_name=$2 report_name=$3 status=0 file path
+    local owner=$1 test_name=$2 report_name=$3 family=$4 status=0 file path policy execution_root
+    local label="//tools/bazel/tests:${family}_installed_images_policy"
     local -a reports
-    shift 3
+    shift 4
     start_image_check "$owner" "$test_name"
     "${private_bazel[@]}" test "${bazel_options[@]}" "$@" "//tools/bazel/tests:$test_name" \
-        --nocache_test_results --nozip_undeclared_test_outputs \
+        "$label" --keep_going --nobuild_tests_only --nocache_test_results --nozip_undeclared_test_outputs \
         2>&1 | tee "artifacts/vs/$report_name.log" || status=$?
 
     # Each suite runs in its owning output base in one configuration.
@@ -134,30 +135,21 @@ check_images() (
             cp --remove-destination -- "$path" "artifacts/vs/$report_name/${file##*/}"
         fi
     done
-    exit "$status"
-)
-
-# Retain both suites' diagnostics, including when the first test fails.
-set +e
-check_images docker-orchagent.gz swss_images_test swss-images
-swss_status=$?
-check_images docker-syncd-vs.gz syncd_p4_images_test syncd-p4-images --config=syncd-dash
-syncd_status=$?
-set -e
-if (( syncd_status )); then exit "$syncd_status"; fi
-if (( swss_status )); then exit "$swss_status"; fi
-
-materialize_policy() (
-    local family=$1 owner=$2 label="//tools/bazel/tests:${1}_installed_images_policy" policy execution_root
-    shift 2
-    start_image_check "$owner" "${family}_installed_images_policy"
-    "${private_bazel[@]}" build "${bazel_options[@]}" "$@" "$label"
+    if (( status )); then exit "$status"; fi
     policy=$("${private_bazel[@]}" cquery "${bazel_options[@]}" "$@" --output=files "$label")
     execution_root=$(private_bazel_execution_root)
     cp --remove-destination -- "$execution_root/$policy" "artifacts/vs/$family-installed-images-policy.json"
 )
-materialize_policy swss docker-orchagent.gz
-materialize_policy syncd docker-syncd-vs.gz --config=syncd-dash
+
+# Retain both suites' diagnostics, including when the first test fails.
+set +e
+check_images docker-orchagent.gz swss_images_test swss-images swss
+swss_status=$?
+check_images docker-syncd-vs.gz syncd_p4_images_test syncd-p4-images syncd --config=syncd-dash
+syncd_status=$?
+set -e
+if (( syncd_status )); then exit "$syncd_status"; fi
+if (( swss_status )); then exit "$swss_status"; fi
 
 python3 -B tools/bazel/ci/verify_p4rt_debug.py \
     --runtime-deb "$runtime_deb" --debug-deb "$debug_deb" \

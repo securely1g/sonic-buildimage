@@ -60,13 +60,20 @@ if command == 'test':
         path = output / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(name)
+    policy_label = next(arg for arg in args if arg.endswith('_installed_images_policy'))
+    (execroot / 'policy.json').write_text(policy_label)
     print('image verification output')
+    family = 'syncd' if 'syncd' in target else 'swss'
+    if os.environ.get('POLICY_FAIL_FAMILY') == family:
+        sys.exit(8)
     sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
 if command == 'build':
-    label = next(arg for arg in args if arg.startswith('//'))
-    (execroot / 'bazel-out').mkdir(parents=True, exist_ok=True)
-    (execroot / 'policy.json').write_text(label)
+    sys.exit('validation must build policy with the test, not in a separate invocation')
 if command == 'cquery':
+    if os.environ.get('QUERY_STATUS'):
+        sys.exit(int(os.environ['QUERY_STATUS']))
+    if os.environ.get('MISSING_POLICY'):
+        (execroot / 'policy.json').unlink()
     print('policy.json')
 """)
         self.bazel.chmod(0o755)
@@ -175,18 +182,28 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         arguments = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
         target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
-        self.assertEqual(len(target_calls), 6)
+        self.assertEqual(len(target_calls), 4)
         self.assertEqual(len({next(arg for arg in args if arg.startswith("--output_base="))
-                              for args in target_calls}), 4)
+                              for args in target_calls}), 2)
         test_calls = [args[args.index("test"):] for args in target_calls if "test" in args]
         common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
                   "--distdir=/input with spaces", "--jobs=3",
                   "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                   "--host_platform=@sonic_build_infra//platforms:x86_64_trixie", "--symlink_prefix=/"]
-        for index, (target, flags) in enumerate((("swss_images_test", []),
-                                               ("syncd_p4_images_test", ["--config=syncd-dash"]))):
+        for index, (target, family, flags) in enumerate((("swss_images_test", "swss", []),
+                                                       ("syncd_p4_images_test", "syncd",
+                                                        ["--config=syncd-dash"]))):
             self.assertEqual(test_calls[index], ["test", *common, *flags, "//tools/bazel/tests:" + target,
-                "--nocache_test_results", "--nozip_undeclared_test_outputs"])
+                "//tools/bazel/tests:" + family + "_installed_images_policy",
+                "--keep_going", "--nobuild_tests_only", "--nocache_test_results", "--nozip_undeclared_test_outputs"])
+        commands = [next(arg for arg in args if arg in ("test", "cquery", "shutdown"))
+                    for args in arguments]
+        self.assertEqual(commands, ["test", "cquery", "shutdown", "test", "cquery", "shutdown"])
+        for start in (0, 3):
+            bases = [next(arg for arg in args if arg.startswith("--output_base="))
+                     for args in arguments[start:start + 3]]
+            self.assertEqual(len(set(bases)), 1)
+            self.assertFalse(Path(bases[0].split("=", 1)[1]).exists())
         for family in ("swss-images", "syncd-p4-images"):
             for name in ("test.log", "test.xml", "validation.json"):
                 self.assertTrue((self.directory / "artifacts/vs" / family / name).is_file())
@@ -203,6 +220,24 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertTrue((self.directory / "artifacts/vs/syncd-p4-images/test.xml").is_file())
         self.assertFalse((self.directory / "debug-arguments.json").exists())
+
+    def test_policy_failure_preserves_both_test_reports_and_stops_debug_verification(self):
+        for family in ("swss", "syncd"):
+            with self.subTest(family=family):
+                result = self.run_verifier(POLICY_FAIL_FAMILY=family)
+                self.assertEqual(result.returncode, 8, result.stdout + result.stderr)
+                for report in ("swss-images", "syncd-p4-images"):
+                    self.assertTrue((self.directory / "artifacts/vs" / report / "test.xml").is_file())
+                self.assertFalse((self.directory / "debug-arguments.json").exists())
+
+    def test_policy_query_and_missing_output_fail_without_skipping_other_suite(self):
+        for options, status in (({"QUERY_STATUS": "9"}, 9), ({"MISSING_POLICY": "1"}, 1)):
+            with self.subTest(options=options):
+                result = self.run_verifier(**options)
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                for report in ("swss-images", "syncd-p4-images"):
+                    self.assertTrue((self.directory / "artifacts/vs" / report / "test.xml").is_file())
+                self.assertFalse((self.directory / "debug-arguments.json").exists())
 
     def test_missing_report_preserves_test_error_and_rejects_incomplete_success(self):
         for status in ("7", "0"):

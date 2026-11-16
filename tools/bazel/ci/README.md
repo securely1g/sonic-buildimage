@@ -256,7 +256,21 @@ container pairs select their Bazel producers.
 The shared verifier resolves both P4RT packages through Make. Native CI uses
 the config-engine archive already produced for the installer. It reopens each
 service's private Bazel output base to check the exact SWSS and Syncd exports
-and generate their installed-image policies. Both builders mount the job
+and generate their installed-image policies. Each family's test and policy
+target are requested together in one `bazel test` invocation, followed by a
+policy output query on the same live server before shutdown. This avoids
+restarting the server and traversing the family graph again in a separate
+policy build. `--keep_going` retains independent test diagnostics if policy
+generation fails; both family checks are attempted, and any test, policy,
+query or export failure stops validation. A successful family's policy may be
+retained as evidence even if the other family fails; later runtime verification
+still requires the entire step to succeed. Non-test policy targets are explicitly
+built even when a caller's rc enables `--build_tests_only`.
+Policy generation still performs
+its existing image/archive checks, and test integrity rehashing is unchanged.
+This removes repeated orchestration work, not the policy scan itself; measure
+the next full validation step before claiming a speedup.
+Both builders mount the job
 checkout at `/sonic`, and checkout cleanup removes the two bases. Standalone
 validation can request the config-engine archive through Make. The offline
 P4RT split-debug-symbol check runs in the same Trixie builder.
@@ -269,10 +283,12 @@ failures are not hidden by rebuilding an archive.
 The P4 image test still declares the native Syncd OCI images and Bazel archive
 outputs as inputs and compares them with the retained Make archives. Bazel may
 restore those inputs or rebuild them on a cache miss in the validation builder.
-The legacy build and validation steps share persistent action/download caches
-with separate private output bases; the active direct-slave job also retains
-its Bazel server. Splitting the workflow steps does not remove this work or
-claim a speedup. The active image checks do not replace the source-package
+The active host-driven job shares action/download caches and retains the
+Orchagent and Syncd producer output bases under `target/.vs-bazel/` for validation
+in the next disposable slave. Each recipe has its own server, which is shut down
+after use; the server process itself does not survive slave replacement.
+Splitting the workflow steps does not remove this work or claim a speedup.
+The active image checks do not replace the source-package
 suites retained in the disabled legacy job. Neither path's installer checks
 establish BIOS/UEFI VM boot success.
 

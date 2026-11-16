@@ -545,8 +545,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 if command == 'info':
                     sys.exit('info cannot resolve apparent Bzlmod platform labels')
                 if command == 'build':
-                    (execution_root / 'bazel-out').mkdir(parents=True, exist_ok=True)
-                    (execution_root / 'policy.json').write_text(config)
+                    sys.exit('policy must share the test invocation')
                 if command == 'cquery':
                     print('policy.json')
                 if command == 'test':
@@ -560,6 +559,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                     if not status:
                         (report / 'test.outputs').mkdir()
                         (report / 'test.outputs/validation.json').write_text(contents)
+                        (execution_root / 'policy.json').write_text(config)
                     sys.exit(status)
                 '''))
             bazel.chmod(0o755)
@@ -583,12 +583,12 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(result.returncode, failure, result.stderr)
         arguments = [json.loads(line) for line in calls.read_text().splitlines()]
         target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
-        self.assertEqual(len(target_calls), 2 if failure else 6)
+        self.assertEqual(len(target_calls), 2 + (swss_exit == 0) + (syncd_exit == 0))
         for invocation in target_calls:
             target = next(arg for arg in invocation if arg.startswith("//"))
             self.assertEqual("--config=syncd-dash" in invocation, "syncd" in target)
-        for output in outputs:
-            self.assertEqual(output.exists(), failure == 0)
+        for output, status in zip(outputs, (swss_exit, syncd_exit)):
+            self.assertEqual(output.exists(), status == 0)
         for family, target, config, status in (
                 ("swss-images", "swss_images_test", "default", swss_exit),
                 ("syncd-p4-images", "syncd_p4_images_test", "dash", syncd_exit)):
