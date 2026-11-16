@@ -123,7 +123,13 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertEqual(job["env"]["SONIC_BAZEL_REMOTE_CACHE"], "grpc://172.16.0.4:9092")
         self.assertEqual(
             job["env"]["SONIC_BAZEL_REMOTE_UPLOAD"],
-            "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}")
+            "${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || "
+            "(github.event_name == 'pull_request' && github.event.pull_request.number == 226 && "
+            "github.event.pull_request.head.repo.full_name == github.repository && "
+            "github.event.pull_request.head.ref == 'ci/vs-bazel-setup-reuse')) && 'y' || 'n' }}")
+        self.assertEqual(
+            job["env"]["SONIC_DPKG_CACHE_METHOD"],
+            "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'rwcache' || 'rcache' }}")
         for flag in (
             "--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=3072",
             "--remote_timeout=600s",

@@ -131,22 +131,24 @@ output bases and repository/disk caches are retained. Other startup failures
 and a failed recovery preserve Bazel's exit code and stop the job; installation
 timestamps are never patched to bypass Bazel's validation.
 
-The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
-ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
-and manual runs remain read-only. The archive job overrides the default in its
-ignored `.bazelrc.user`, which the shared Bazel configuration imports without
+The Bazel OCI workflow normally enables remote action-cache uploads for the
+AMD64 and ARM64 archive builds and VS builds only on pushes to `master`.
+Pull requests and manual runs otherwise remain read-only. The archive job
+overrides the default in its ignored `.bazelrc.user`, which the shared Bazel configuration imports without
 modifying tracked files. The active `vs_container` job and the disabled legacy
 `vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. The specialized
 upstream source-image and VS slave worker pools retain their existing selectors.
 
 The active `vs_container` job passes `--remote_timeout=600s` to the image builds
 and their validation commands so multi-gigabyte cache transfers have more than
-Bazel's default 60-second RPC deadline. Resource limits, retry settings and the
-master-only upload policy are unchanged. PR runs exercise downloads and build
-correctness with this allowance, but cannot validate upload recovery because
-remote uploads remain disabled. Confirm successful publication and subsequent
-reuse on a trusted master producer before attributing upload failures to the
-client deadline; server, proxy and storage deadlines may still apply.
+Bazel's default 60-second RPC deadline. Resource limits and retry settings are
+unchanged. A temporary upload exception applies only to the active VS job for
+same-repository securely1g/sonic-buildimage#226 from `ci/vs-bazel-setup-reuse`, allowing the trusted branch
+to test large-blob publication with this deadline. Other PRs and jobs retain
+their normal upload policy, and PR NFS package-cache access remains read-only.
+Remove the exception after the experiment. Confirm successful publication and
+subsequent reuse before attributing upload failures to the client deadline;
+server, proxy and storage deadlines may still apply.
 
 The agents and builder containers must be able to reach the remote cache, and
 the server must authorize writes. Enforce writer permissions on the server:
