@@ -100,6 +100,7 @@ class SnmpImageBuildTest(unittest.TestCase):
         self.assertLess(archive.index(allocation), archive.index(build_step))
         self.assertEqual(allocation["if"], build_step["if"])
         public_step = next(step for step in archive if step.get("id") == "snmp_public")
+        self.assertIn("steps.snmp_artifacts.outputs.path != ''", public_step["if"])
         for step in (build_step, public_step):
             self.assertEqual(step["env"]["SNMP_ARTIFACTS"], "${{ steps.snmp_artifacts.outputs.path }}")
             self.assertNotIn("$RUNNER_TEMP/snmp", step["run"])
