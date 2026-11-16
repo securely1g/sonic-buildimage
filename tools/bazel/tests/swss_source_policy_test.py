@@ -85,6 +85,8 @@ class SharedRustGraphTest(unittest.TestCase):
         self.assertEqual(set(graph.verify("\n".join("rust_library\t" + label for label in self.labels))), {"serde", "serde_core", "swss_common"})
         invalid = [self.labels[:-1], self.labels + [self.labels[0].replace("1.0.0", "2.0.0")],
                    [self.labels[0], self.labels[1].replace("crate+", "other+"), self.labels[2]],
+                   [self.labels[0], self.labels[1], "@@sonic-swss+//crates/swss-common:swss_common"],
+                   self.labels + ["@@sonic-swss+//crates/swss-common:swss_common"],
                    self.labels + ["@@swss_crates__serde-1.0.0//:serde"]]
         for labels in invalid:
             with self.subTest(labels=labels), self.assertRaises(ValueError):

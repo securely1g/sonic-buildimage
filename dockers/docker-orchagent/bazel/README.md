@@ -123,11 +123,11 @@ published shared infrastructure through registry `main`; the policy argument
 remains a generated build input.
 
 PR updates run native AMD64/ARM64 archive checks. `SWSS source layers (ARM64)`
-runs independently on its hosted runner. PR branches in this repository and
-pushes to `master` run the native AMD64 installer after the OCI regression
-checks; that installer includes AMD64 source-package validation. External-fork
-PRs keep hosted checks only. Manual `Bazel OCI` dispatch defaults to
-`skip_vs=true`; select `skip_vs=false` to include the installer.
+runs independently on the native `bazel-arm64` agent pool. PR branches in this
+repository and pushes to `master` run the native AMD64 installer after the OCI
+regression checks; that installer includes AMD64 source-package validation.
+External-fork PRs keep hosted checks only. Manual `Bazel OCI` dispatch defaults
+to `skip_vs=true`; select `skip_vs=false` to include the installer.
 
 Generated Bazel files carry an `AUTO-GENERATED. DO NOT EDIT MANUALLY.` header
 that names their generator. The package lock and generated JSON inputs/receipts
@@ -350,7 +350,7 @@ before running the shared label actions and orchagent contract tests under Bazel
 It verifies the source install
 inventory, installed bytes and modes, native ELF architecture, Common/Sairedis
 SONAME links, build IDs, DWARF and debug links. Each architecture's artifact
-includes the five tar files, hashes, summarized test and debug validation,
+includes the seven tar files, hashes, summarized test and debug validation,
 generated module lock and resolved module graph. CI starts without a module lock
 and rejects tracked input changes.
 
@@ -437,20 +437,20 @@ python3 -B tools/bazel/ci/container.py \
 On native ARM64 Trixie, append `--architecture arm64 --test-suite ci_source_tests`
 to the shared runner command. Keep `CONFIGURED_ARCH=amd64` for the registered
 Make metadata profile; the explicit native architecture selects the ARM64 host
-and target toolchains and source policy. AMD64 runs the 32-test `ci_tests` suite.
-ARM64 runs all 21 previous native source tests plus the declared package-contract
-and shared Rust graph checks in the 23-test `ci_source_tests` suite. It excludes
+and target toolchains and source policy. AMD64 runs the 35-test `ci_tests` suite.
+ARM64 runs the native source, Common/Protobuf/libteam linkage, package-contract
+and shared Rust graph checks in the 24-test `ci_source_tests` suite. It excludes
 full-image OCI contracts while preserving Common/Sairedis SONAME and debug-symbol
 checks and the shared Serde/Common/SWSS graph verification.
 
-Both source jobs export the same five TAR files: `swss.tar`, `protobuf.tar`,
-`rdeps.tar`, `config.tar`, and `debug-symbols.tar`. The public source receipt binds
-their tested hashes to the source revision and native architecture. The ARM64
-job uses its existing hosted runner and cache namespace; its prior successful
-source build does not prove current revisions or a peak storage requirement.
-The AMD64 source job retains dedicated storage admission and the repository-input
-handoff used by the automatic AMD64 VS job. ARM64 source evidence does not claim
-a complete ARM64 OCI image, VS installer or boot test.
+Both source jobs export the same seven TAR files: `swss.tar`, `protobuf.tar`,
+`libteam.tar`, `libteamdctl.tar`, `rdeps.tar`, `config.tar`, and
+`debug-symbols.tar`. Standalone `rdeps.tar` and `debug-symbols.tar` include
+Common's runtime libraries and debug symbols alongside the shared SWSS layer,
+while OCI image assembly continues to inherit Common from config-engine. The
+public source receipt binds their tested hashes to the source revision and
+native architecture. ARM64 source evidence does not claim a complete ARM64 OCI
+image, VS installer or boot test.
 
 ## Change the build
 

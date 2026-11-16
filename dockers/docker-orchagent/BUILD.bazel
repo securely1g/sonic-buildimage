@@ -327,6 +327,23 @@ debug_symbols_layer(
     image = ":rdeps",
 )
 
+# Standalone source validation checks Orchagent's complete native library
+# closure without the config-engine OCI parent, so include Common explicitly.
+sonic_layer(
+    name = "source_rdeps",
+    root_owned = True,
+    tars = [
+        "//dockers/docker-swss-layer-trixie:source_runtime",
+        "@sonic_swss_common//dist:libswsscommon_pkg",
+        "@sonic_swss_common//dist:sonic-db-cli_pkg",
+    ],
+)
+
+debug_symbols_layer(
+    name = "source_rdeps_debug_symbols",
+    image = ":source_rdeps",
+)
+
 # Synthesize ndisc6 postinst update-alternatives links and dpkg state for traceroute6.
 write_file(
     name = "traceroute6_alternative_state",
@@ -564,8 +581,10 @@ test_suite(
         "//tools/bazel/tests:swss_package_contract_test",
         "//tools/bazel/tests:swss_render_test",
         "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
+        "@libteam//:consumer_test",
         "@scapy//:upstream_test",
         "@scapy//:wheel_test",
+        "@sonic_swss//bazel:protobuf_runtime_test",
         "@sonic_swss//crates/countersyncd:common_rust_test",
         "@sonic_swss_common//dist:libswsscommon_package_test",
         "@sonic_swss_common//pyext:swsscommon_package_test",
@@ -590,6 +609,8 @@ test_suite(
         "//tools/bazel/tests:supervisor_python_full_test",
         "//tools/bazel/tests:supervisor_python_wheel_test",
         "//src/sonic-config-engine:sonic_cfggen_cli_test",
+        "@libteam//:consumer_test",
+        "@sonic_swss//bazel:protobuf_runtime_test",
         "@sonic_swss//crates/countersyncd:common_rust_test",
         "@sonic_swss_common//dist:libswsscommon_package_test",
         "@sonic_swss_common//pyext:swsscommon_package_test",
@@ -615,9 +636,9 @@ test_suite(
         "protobuf": "@sonic_dash_api//:protobuf_runtime_pkg",
         "libteam": "@libteam//:libteam_runtime",
         "libteamdctl": "@libteam//:libteamdctl_runtime",
-        "rdeps": ":rdeps",
+        "rdeps": ":source_rdeps",
         "config": "//dockers/docker-orchagent/config:files",
-        "debug-symbols": ":rdeps_debug_symbols",
+        "debug-symbols": ":source_rdeps_debug_symbols",
     }.items()
 ]
 

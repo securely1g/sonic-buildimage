@@ -494,8 +494,12 @@ class NativeArmSourceWorkflowTest(unittest.TestCase):
 
     def test_arm_evidence_does_not_replace_amd_installer_inputs(self):
         arm, checks, vs = self.job("source-arm64"), self.job("checks"), self.job("vs")
-        self.assertIn("runs-on: ubuntu-24.04-arm", arm)
+        self.assertIn("runs-on: [self-hosted, linux, bazel-arm64]", arm)
         self.assertIn("disk-cache: buildimage-swss-oci-arm64", arm)
+        self.assertIn("squashfs-tools", arm)
+        self.assertIn("preserve_setup_bazel_cache.py --private-remote-cache", arm)
+        self.assertIn("repair_bazel_startup.py", arm)
+        self.assertIn("source_mirrors.py", arm)
         self.assertIn("name: swss-source-layers-arm64", arm)
         self.assertNotIn("bazel-repository-inputs", arm)
         self.assertNotIn("--test-suite ci_tests", arm)

@@ -4,6 +4,8 @@ import re
 import sys
 from pathlib import Path
 
+COMMON_RUST_TARGET = "@@sonic-swss-common+//crates/swss-common:swss_common"
+
 
 def verify(output):
     entries = [line.split("\t", 1) for line in output.splitlines()]
@@ -12,9 +14,14 @@ def verify(output):
     labels = {label for kind, label in entries if kind == "rust_library"}
     if any("swss_crates" in label for label in labels):
         raise ValueError("legacy SWSS-owned Rust graph is still selected")
-    selected = {}
-    for name, suffix in (("serde", "//:serde"), ("serde_core", "//:serde_core"),
-                         ("swss_common", "//crates/swss-common:swss_common")):
+    common_matches = {
+        label for label in labels
+        if label == COMMON_RUST_TARGET or label.endswith("//crates/swss-common:swss_common")
+    }
+    if common_matches != {COMMON_RUST_TARGET}:
+        raise ValueError("expected Common-owned Rust target " + COMMON_RUST_TARGET)
+    selected = {"swss_common": COMMON_RUST_TARGET}
+    for name, suffix in (("serde", "//:serde"), ("serde_core", "//:serde_core")):
         matches = {label for label in labels if label.endswith(suffix)}
         if len(matches) != 1:
             raise ValueError("expected one shared Rust target for " + name)
