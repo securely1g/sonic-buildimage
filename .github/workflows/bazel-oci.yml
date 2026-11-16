@@ -1041,6 +1041,7 @@ jobs:
         run: |
           python3 -B tools/bazel/ci/container.py --container //dockers/docker-orchagent \
             --artifacts artifacts/orchagent-owner --bazel "$BAZEL" --reuse-build \
+            --source-workspace "$PWD" --short-test-temp \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--jobs=2 --bazel-arg=--local_resources=memory=8000
@@ -3866,9 +3867,10 @@ jobs:
           if test -n "$option_lines"; then
             while IFS= read -r option; do ci_options+=("--bazel-arg=$option"); done <<< "$option_lines"
           fi
-          python3 -B tools/bazel/ci/container.py --reuse-build \
+          RUNNER_TEMP=/tmp python3 -B tools/bazel/ci/container.py --reuse-build \
             --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk \
             --bazel "$BAZEL" --artifacts artifacts/swss \
+            --source-workspace "$PWD" --short-test-temp \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:x86_64_trixie \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:x86_64_trixie \
             "${ci_options[@]}"
