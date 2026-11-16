@@ -305,6 +305,8 @@ def execute(args, profile, cache):
            'build_profile':selected,'memory_before':before,'cache_mode':'persistent_worker_local',
            'build_targets':config['build_targets'],'test_targets':config['test_targets']}
     started=time.monotonic()
+    runner_finished=False
+    body_failed=False
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
         spec['downloader_config']=verified_mirror_config(args.workspace,private,args.artifacts)
@@ -319,6 +321,7 @@ def execute(args, profile, cache):
         while True:
             try:
                 code=child.wait(timeout=30)
+                runner_finished=True
                 require(code==0,'Ordinary registry runner failed')
                 break
             except subprocess.TimeoutExpired:
@@ -328,20 +331,39 @@ def execute(args, profile, cache):
         counts=lambda s:dict(line.split() for line in s.splitlines())
         require(all(counts(after['memory.events'])[key]==counts(before['memory.events'])[key] for key in ('oom','oom_kill')),
                 'Registry validation had OOM events')
-        write(args.artifacts/'worker-export-permissions.json', readable_tree_archives(args.artifacts))
         state.update(status='passed',no_oom_events=True)
     except BaseException as error:
+        body_failed=True
         state.update(status='failed',error_class=type(error).__name__)
         raise
     finally:
+        finalization_errors=[]
         try:
             state['server_shutdown']=shutdown_consumer(wrapper,work)
         except BaseException as error:
             state.update(status='failed',shutdown_error_class=type(error).__name__)
-            raise
-        finally:
+            finalization_errors.append(error)
+        try:
+            # A failed runner can leave complete indexed outputs. Only repair
+            # them after wait confirms it exited; successful runs still require
+            # the full output index even when it is missing.
+            if runner_finished and (not body_failed or (args.artifacts/'outputs.json').exists()):
+                write(args.artifacts/'worker-export-permissions.json', readable_tree_archives(args.artifacts))
+        except BaseException as error:
+            state.update(status='failed',export_error_class=type(error).__name__)
+            finalization_errors.append(error)
+        try:
             state.update(memory_after=memory(),elapsed_seconds=time.monotonic()-started)
+        except BaseException as error:
+            state.update(status='failed',memory_error_class=type(error).__name__)
+            finalization_errors.append(error)
+        try:
             write(args.artifacts/'worker-registry.json',state)
+        except BaseException as error:
+            print('Registry worker receipt write failed: '+type(error).__name__,file=sys.stderr)
+            finalization_errors.append(error)
+        if not body_failed and finalization_errors:
+            raise finalization_errors[0]
 
 
 def verify_outputs(artifacts):

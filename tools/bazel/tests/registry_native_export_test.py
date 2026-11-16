@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+from contextlib import ExitStack
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import Mock, patch
@@ -42,6 +43,100 @@ class ExportPermissionsTests(unittest.TestCase):
     def apply(self):
         with patch.object(os, 'geteuid', return_value=0):
             return worker.readable_tree_archives(self.artifacts)
+
+    def execute_case(self, wait_result, shutdown_error=None):
+        workspace = self.root/'registry'; workspace.mkdir()
+        cache = self.root/'cache'; cache.mkdir()
+        selected = {'jobs': 1}
+        marker = {'base_image': 'sha256:'+'b'*64}
+        args = NS(workspace=workspace, artifacts=self.artifacts,
+                  consumer='fips', worker=worker.WORKERS[0])
+        (self.artifacts/'worker-preflight.json').write_text(json.dumps({
+            'status': 'passed', 'build_profile': selected,
+            'facts': {'worker': args.worker, 'slave': marker}}))
+        config = {'build_targets': ['@owner//:sdk'], 'test_targets': ['@owner//:test']}
+        memory = {'memory.max': '25769803776', 'cpu.max': '400000 100000',
+                  'memory.events': 'oom 0\noom_kill 0'}
+        child = Mock()
+        if isinstance(wait_result, BaseException): child.wait.side_effect = wait_result
+        else: child.wait.return_value = wait_result
+        original_read_text, original_is_file = Path.read_text, Path.is_file
+        def read_text(path, *args, **kwargs):
+            if path == Path('/etc/sonic-slave-github-runner.json'): return json.dumps(marker)
+            if path == Path('/etc/os-release'): return 'VERSION_CODENAME=trixie\n'
+            return original_read_text(path, *args, **kwargs)
+        def is_file(path, *args, **kwargs):
+            return path == Path('/.dockerenv') or original_is_file(path, *args, **kwargs)
+        def check_output(command, **kwargs):
+            if command[-1] == '--version': return 'bazel 8.5.1\n'
+            if command[-2:] == ['rev-parse', 'HEAD']: return '784d3936660527a33571738e6638c9b987136394\n'
+            raise AssertionError('Unexpected command: '+repr(command))
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1'}, clear=True))
+            for target, name, value in [(os, 'geteuid', 0), (worker, 'marker_identity', None),
+                    (worker, 'registry_config', (Mock(), config)), (worker, 'memory', memory),
+                    (worker, 'select_build_profile', selected), (worker, 'cpu_limit', 4),
+                    (worker.shutil, 'which', '/mock/bazel'), (worker, 'verified_source_distdirs', []),
+                    (worker, 'verified_mirror_config', None), (worker, 'prepare_tools', []),
+                    (worker, 'clean_source', None), (worker.subprocess, 'Popen', child)]:
+                stack.enter_context(patch.object(target, name, return_value=value))
+            stack.enter_context(patch.object(Path, 'read_text', read_text))
+            stack.enter_context(patch.object(Path, 'is_file', is_file))
+            stack.enter_context(patch.object(worker.subprocess, 'check_output', side_effect=check_output))
+            shutdown = stack.enter_context(patch.object(worker, 'shutdown_consumer',
+                return_value={'status': 'stopped'}, side_effect=shutdown_error))
+            guard = stack.enter_context(patch.object(worker, 'readable_tree_archives', wraps=worker.readable_tree_archives))
+            failure = None
+            try: worker.execute(args, worker.PROFILES['fips'], cache)
+            except BaseException as error: failure = error
+        return failure, child, shutdown, guard
+
+    def test_failed_runner_repairs_indexed_tree_and_preserves_failure(self):
+        failure, child, shutdown, guard = self.execute_case(1)
+        self.assertIsInstance(failure, ValueError)
+        self.assertEqual(str(failure), 'Ordinary registry runner failed')
+        child.wait.assert_called_once_with(timeout=30); shutdown.assert_called_once()
+        guard.assert_called_once_with(self.artifacts)
+        self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o644)
+        self.assertEqual(worker.digest(self.file), self.item['sha256'])
+        self.assertTrue(worker.verify_outputs(self.artifacts))
+        self.assertEqual(json.loads((self.artifacts/'worker-export-permissions.json').read_text())['status'], 'passed')
+        state = json.loads((self.artifacts/'worker-registry.json').read_text())
+        self.assertEqual((state['status'], state['error_class']), ('failed', 'ValueError'))
+
+    def test_unconfirmed_runner_does_not_repair_indexed_tree(self):
+        interrupted = KeyboardInterrupt()
+        failure, child, shutdown, guard = self.execute_case(interrupted)
+        self.assertIs(failure, interrupted)
+        child.wait.assert_called_once_with(timeout=30); shutdown.assert_called_once()
+        guard.assert_not_called()
+        self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o600)
+        self.assertFalse((self.artifacts/'worker-export-permissions.json').exists())
+        state = json.loads((self.artifacts/'worker-registry.json').read_text())
+        self.assertEqual((state['status'], state['error_class']), ('failed', 'KeyboardInterrupt'))
+
+    def test_runner_failure_remains_primary_when_finalization_fails(self):
+        self.file.write_bytes(b'changed after indexing')
+        failure, _, shutdown, guard = self.execute_case(1, RuntimeError('shutdown failed'))
+        self.assertEqual(str(failure), 'Ordinary registry runner failed')
+        shutdown.assert_called_once(); guard.assert_called_once_with(self.artifacts)
+        state = json.loads((self.artifacts/'worker-registry.json').read_text())
+        self.assertEqual((state['status'], state['error_class']), ('failed', 'ValueError'))
+        self.assertEqual((state['shutdown_error_class'], state['export_error_class']), ('RuntimeError', 'ValueError'))
+        self.assertEqual(stat.S_IMODE(self.file.stat().st_mode), 0o600)
+
+    def test_success_requires_index_and_raises_first_finalization_error(self):
+        self.index.unlink()
+        shutdown_error = RuntimeError('shutdown failed')
+        try: raise LookupError('unrelated caller error')
+        except LookupError:
+            failure, _, shutdown, guard = self.execute_case(0, shutdown_error)
+        self.assertIs(failure, shutdown_error)
+        shutdown.assert_called_once(); guard.assert_called_once_with(self.artifacts)
+        state = json.loads((self.artifacts/'worker-registry.json').read_text())
+        self.assertEqual(state['status'], 'failed')
+        self.assertNotIn('error_class', state)
+        self.assertEqual((state['shutdown_error_class'], state['export_error_class']), ('RuntimeError', 'ValueError'))
 
     def test_exact_tree_bytes_inode_and_private_modes_preserved(self):
         before = self.file.stat(); private = self.secret.read_bytes()
@@ -169,9 +264,6 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn('runner.collect_outputs(', source)
         self.assertNotIn("'worker-publish.json',", source.split('def main():')[1])
         self.assertIn("worker.publish(", source)
-        worker_source = (ROOT/'tools/bazel/ci/registry_native_worker.py').read_text()
-        self.assertLess(worker_source.index("readable_tree_archives(args.artifacts)"),
-                        worker_source.index("state.update(status='passed',no_oom_events=True)"))
 
 
 class RetainedNativeValidationTests(unittest.TestCase):
