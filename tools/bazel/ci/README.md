@@ -158,13 +158,25 @@ local caches.
 
 ### VS repository preparation and bounded retention
 
-The active VS job passes `--repo_contents_cache=/bazel_cache/repo_contents_cache`
-only through its Bazel 8 image/validation arguments. This is separate from the
-downloaded-archive `repository_cache` and the action-output `disk_cache`. It is
-not added to the slave-wide rc: nested Bazel 6 workspaces do not support it.
-No `Makefile.work` change is required; the existing cache mount carries all three.
+The active VS job explicitly passes `--repo_contents_cache=` to disable prepared
+repository reuse in its Bazel 8 image/validation commands. A full run
+with shared repository contents reported a missing BUILD package for
+`@@llvm++llvm+llvm-project//:vars.bzl` during Database analysis. This is the
+`llvm` 0.8.18 source repository, not the SymCrypt LLVM distribution below.
+The log does not establish why its BUILD file was missing. Disable the
+experiment while investigating rather than adding an empty BUILD file or
+deleting a cache used by an active build. Existing prepared-repository entries
+are ignored; downloaded-archive `repository_cache`, action-output `disk_cache`,
+remote-cache policy and image grouping remain enabled.
 
-With `SONIC_VS_PREWARM_BAZEL_REPOSITORIES=1`, `build_vs.sh` first runs
+The prewarm helper remains available for controlled experiments but is not
+enabled in the active VS workflow. Re-enabling requires a full-graph test with
+fresh concurrent output bases after deleting the prewarm output base, not only
+an isolated repository-fetch smoke test. These Bazel 8 options are never added
+to the slave-wide rc used by nested Bazel 6 workspaces.
+
+For an explicit experiment with a nonempty `--repo_contents_cache` and
+`SONIC_VS_PREWARM_BAZEL_REPOSITORIES=1`, `build_vs.sh` first runs
 `prewarm_vs_repositories.sh` in the same Trixie slave profile, before starting
 the parallel installer build. It fetches only the pinned host LLVM repository,
 `@@sonic-fips++clang+symcrypt_llvm_llvm`, using the image's cache/download options.
@@ -184,7 +196,7 @@ It does not build the image graph or run source compilation.
 Before each job, the idle-runner cleanup retains `vs-cache/bazel` only if its
 allocated size is at most 40 GiB and its filesystem has at least 200 GiB free.
 If either limit fails, it removes the bulky `disk_cache` first and remeasures,
-preferring to retain downloaded and extracted repositories. If the remaining
+preferring to retain repository downloads. If the remaining
 cache still exceeds either budget, it removes that selected cache, as before.
 These are startup retention
 limits, not a hard cap on growth during a build; normal build disk preflight
@@ -194,8 +206,9 @@ Existing redirected-path, active-container and mount guards apply even when
 retention is requested. CLI defaults preserve unconditional cleanup for other
 callers.
 
-Repository-contents idle GC is disabled for this job so a private server cannot
-delete old repository directories still referenced by another live output base.
+For a prepared-repository experiment, disable repository-contents idle GC with
+`--repo_contents_cache_gc_max_age=0` so a private server cannot delete old
+repository directories still referenced by another live output base.
 Retention decisions run only before the build, after the idle-cache guards.
 Private output bases remain per recipe or job, not cross-job analysis caches.
 

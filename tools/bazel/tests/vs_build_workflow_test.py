@@ -80,7 +80,7 @@ else:
         self.environment = dict(
             os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
             SONIC_CI_CONTAINER_LABEL="vs-fixture-label", BAZEL="fixture-bazel",
-            BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3 --remote_timeout=600s",
+            BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3 --remote_timeout=600s --repo_contents_cache=",
             SONIC_BUILD_RETRY_COUNT="0",
         )
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",
@@ -326,10 +326,10 @@ else:
         self.assertNotIn("SONIC_VS_IMAGE_TIMINGS", job["env"])
         self.assertEqual(job["env"]["SONIC_VS_REUSE_BAZEL_PRODUCERS"], "1")
         self.assertEqual(job["env"]["SONIC_VS_GROUP_BAZEL_IMAGES"], "1")
-        self.assertEqual(job["env"]["SONIC_VS_PREWARM_BAZEL_REPOSITORIES"], "1")
-        self.assertIn("--repo_contents_cache=/bazel_cache/repo_contents_cache",
-                      job["env"]["BAZEL_CONTAINER_ARGS"])
-        self.assertIn("--repo_contents_cache_gc_max_age=0", job["env"]["BAZEL_CONTAINER_ARGS"])
+        self.assertNotIn("SONIC_VS_PREWARM_BAZEL_REPOSITORIES", job["env"])
+        self.assertIn("--repo_contents_cache=", job["env"]["BAZEL_CONTAINER_ARGS"].split())
+        self.assertNotRegex(job["env"]["BAZEL_CONTAINER_ARGS"], r"--repo_contents_cache=\S")
+        self.assertNotIn("--repo_contents_cache_gc_", job["env"]["BAZEL_CONTAINER_ARGS"])
         cleanup = next(step for step in job["steps"] if step.get("name") == "Reclaim local build caches")
         self.assertIn("--retain-vs-cache-max-gib 40 --min-free-gib 200", cleanup["run"])
 

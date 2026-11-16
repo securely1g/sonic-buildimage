@@ -178,7 +178,7 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
     def test_verification_keeps_archive_options_logs_and_deb_inputs(self):
         cache = self.directory / "cache with spaces"
         result = self.run_verifier(BAZEL_CONTAINER_CACHE_DIR=str(cache),
-                                   BAZEL_CONTAINER_ARGS="--distdir='/input with spaces' --jobs=3 --remote_timeout=600s")
+                                   BAZEL_CONTAINER_ARGS="--distdir='/input with spaces' --jobs=3 --remote_timeout=600s --repo_contents_cache=")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         arguments = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
         target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
@@ -188,6 +188,7 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         test_calls = [args[args.index("test"):] for args in target_calls if "test" in args]
         common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
                   "--distdir=/input with spaces", "--jobs=3", "--remote_timeout=600s",
+                  "--repo_contents_cache=",
                   "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                   "--host_platform=@sonic_build_infra//platforms:x86_64_trixie", "--symlink_prefix=/"]
         for index, (target, family, flags) in enumerate((("swss_images_test", "swss", []),
