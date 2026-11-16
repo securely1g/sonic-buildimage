@@ -460,7 +460,9 @@ class ImageWorkerTest(unittest.TestCase):
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
-        self.assertEqual(set(choices), set(worker.DRIVERS))
+        # Radv uses its own jobs instead of the dedicated source-image worker.
+        self.assertEqual(set(choices), set(worker.DRIVERS) | {"radv"})
+        self.assertNotIn("radv", worker.DRIVERS)
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)
         for gate in gates:
