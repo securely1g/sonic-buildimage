@@ -113,7 +113,7 @@ alias(
         name = "debian_runtime_" + arch,
         base = "//dockers/docker-base-trixie:docker-base-trixie",
         dependency_set = "config_engine_debian",
-        lock = "//dockers/docker-base-trixie/bazel:apt.lock.json",
+        lock = "@sonic_build_infra//apt:apt.lock.json",
         packages = APT_INPUTS["config_engine_debian"][arch],
         policy = {
             "schema": 1,

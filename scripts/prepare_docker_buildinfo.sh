@@ -8,11 +8,27 @@ case "${SONIC_DOCKER_APT_RETRIES:-}" in
     ""|0) ;;
     *) echo "SONIC_DOCKER_APT_RETRIES must be unset, empty, or 0" >&2; exit 1 ;;
 esac
+case "${SONIC_DOCKER_APT_PROXY:-}" in
+    ""|0|1) ;;
+    *) echo "SONIC_DOCKER_APT_PROXY must be unset, empty, 0, or 1" >&2; exit 1 ;;
+esac
+
+configure_apt_mounts() {
+    if [ "${SONIC_DOCKER_APT_PROXY:-}" = 1 ] || grep -qx '# SONIC_DOCKER_APT_PROXY=1' "$1"; then
+        python3 "$(dirname "$0")/docker_apt_secret_mounts.py" "$1" "${SONIC_DOCKER_APT_PROXY:-0}"
+    fi
+}
 
 if grep -q "^# SKIP_HOOK" "$2"; then
     if [ -n "${SONIC_DOCKER_APT_RETRIES:-}" ]; then
         echo "SONIC_DOCKER_APT_RETRIES requires buildinfo finalization" >&2
         exit 1
+    fi
+    if [ "${SONIC_DOCKER_APT_PROXY:-}" = 1 ] || [ -f "${4:-$2}" ]; then
+        if [ "${SONIC_DOCKER_APT_PROXY:-}" = 1 ] && [ "$2" != "${4:-$2}" ]; then
+            cp -- "$2" "$4" || exit 1
+        fi
+        configure_apt_mounts "${4:-$2}" || exit 1
     fi
     exit 0
 fi
@@ -167,8 +183,11 @@ if [ ! -f $DOCKERFILE_TARGET ] || ! grep -q "Auto-Generated for buildinfo" $DOCK
         }
     ' "$DOCKERFILE" > "$TEMP_FILE"
 
-    cat $TEMP_FILE > $DOCKERFILE_TARGET
-    rm -f $TEMP_FILE
+    configure_apt_mounts "$TEMP_FILE" || { rm -f "$TEMP_FILE"; exit 1; }
+    cat "$TEMP_FILE" > "$DOCKERFILE_TARGET" || { rm -f "$TEMP_FILE"; exit 1; }
+    rm -f "$TEMP_FILE"
+else
+    configure_apt_mounts "$DOCKERFILE_TARGET" || exit 1
 fi
 
 # Copy the build info config

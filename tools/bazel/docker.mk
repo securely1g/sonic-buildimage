@@ -8,9 +8,8 @@ $(foreach IMAGE,$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES),\
     $(if $(strip $($(IMAGE)_BAZEL_TARGET)),,$(error $(IMAGE)_BAZEL_TARGET is required for a Bazel container))\
     $(if $(strip $($(IMAGE)_PATH)),,$(error $(IMAGE)_PATH is required for a Bazel container SBOM)))
 
-ifneq ($(filter $(SONIC_PACKAGES_LOCAL),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)),)
-$(error Bazel container archives use the latest tag and cannot be in SONIC_PACKAGES_LOCAL: $(filter $(SONIC_PACKAGES_LOCAL),$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES)))
-endif
+# Local packages also accept these latest-tagged archives: the installer's
+# sonic-package-manager path adds SONIC_IMAGE_VERSION after loading them.
 
 # Let Bazel check declared inputs on every request. Export preserves timestamps
 # when bytes are unchanged and publishes changed archives atomically.
@@ -58,12 +57,22 @@ endif
 endif
 SONIC_BAZEL_VS_PAIR_OUTPUTS := $(foreach image,$(SONIC_BAZEL_VS_PAIRED_IMAGES),$(image) $(image:.gz=-$(DBG_IMAGE_MARK).gz))
 
+# One directory per recipe execution keeps parallel and repeated invocations separate.
+ifeq ($(SONIC_VS_IMAGE_TIMINGS),1)
+define vs_start_image_timing
+	timing_directory="$$(python3 -B tools/bazel/ci/time_vs_image.py image-recipe $(1))"
+	trap 'if [[ -f "$@.log" && ! -L "$@.log" ]]; then cp -- "$@.log" "$$timing_directory/make.log"; fi' EXIT
+endef
+vs_time_phase = python3 -B tools/bazel/ci/time_vs_image.py "$$timing_directory" $(1)
+endif
+
 # One invocation per owner keeps its runtime/debug configuration identical.
 # Query and export both standalone archives; unchanged exports retain timestamps.
 define build_bazel_docker_images
 	$(HEADER)
+	$(call vs_start_image_timing,$(1))
 	$(if $(word 2,$(1)),printf '%s\n' '[ bazel image pair ] [ $@ ] [ $(TARGET_PATH)/$(firstword $(1)) ]')
-	{
+	(
 		# These image builds are native. Keep both target and execution tools on
 		# Make's configured architecture instead of the root RC's AMD64 default.
 		case "$(CONFIGURED_ARCH)" in
@@ -78,12 +87,21 @@ define build_bazel_docker_images
 		if [ -n "$$bazel_option_lines" ]; then mapfile -t bazel_options <<< "$$bazel_option_lines"; fi
 		bazel_options+=("--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
-		"$${BAZEL:-bazel}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
+		source tools/bazel/private_server.sh
+		start_image_bazel "$(firstword $(1))"
+		private_bazel_shutdown_prefix=($(call vs_time_phase,shutdown))
+		bazel_options+=("--symlink_prefix=/")
+		$(call vs_time_phase,build) "$${private_bazel[@]}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)") || {
+			build_status=$$?
+			$(if $(filter 1,$(SONIC_VS_IMAGE_TIMINGS)),python3 -B tools/bazel/ci/private_server_diagnostics.py "$$bazel_output_base" "$$timing_directory" || true)
+			exit "$$build_status"
+		}
+		execution_root="$$(private_bazel_execution_root)"
 		$(foreach image,$(1),
-		bazel_output="$$("$${BAZEL:-bazel}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
-		python3 tools/bazel/build_helpers.py export --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
+		bazel_output="$$($(call vs_time_phase,cquery-$(image)) "$${private_bazel[@]}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
+		$(call vs_time_phase,export-$(image)) python3 tools/bazel/build_helpers.py export --execution-root="$$execution_root" --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
 		)
-	} $(LOG)
+	) $(LOG)
 	$(foreach image,$(1),$(call sbom_emit_fragment,$(TARGET_PATH)/$(image),DOCKER_IMAGE,$($(image)_PATH),,,,)
 	)
 	$(FOOTER)

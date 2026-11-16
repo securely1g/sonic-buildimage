@@ -5,8 +5,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path, PurePosixPath
-import re
-import shlex
 import shutil
 import signal
 import socket
@@ -22,21 +20,23 @@ APT_CONFIG = ROOT / "files/apt/apt.conf.d/apt-timeout-n-retries"
 
 
 class NativeDockerRetryTest(unittest.TestCase):
-    def test_workflow_retries_are_bounded_and_preserve_arguments_and_failure(self):
+    def test_host_workflow_uses_default_native_build_policy(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         job = workflow.split("\n  vs_container:\n", 1)[1].split("\n    steps:\n", 1)[0]
-        settings = dict(re.findall(
-            r'^      (DOCKER_BUILD|SONIC_BUILD_RETRY_COUNT|SONIC_BUILD_RETRY_INTERVAL): (.+)$',
-            job, re.MULTILINE))
-        settings = {key: value.strip('"') for key, value in settings.items()}
+        for name in ("DOCKER_BUILD", "SONIC_BUILD_RETRY_COUNT",
+                     "SONIC_BUILD_RETRY_INTERVAL", "SONIC_DOCKER_APT_RETRIES"):
+            self.assertNotRegex(job, r"(?m)^      " + name + ":")
+        self.assertIn("DOCKER_BUILD ?= docker build", (ROOT / "slave.mk").read_text())
+
+    def test_retry_helper_preserves_arguments_and_failure(self):
+        settings = {"SONIC_BUILD_RETRY_COUNT": "2", "SONIC_BUILD_RETRY_INTERVAL": "10"}
         retry_count = int(settings["SONIC_BUILD_RETRY_COUNT"])
         interval = int(settings["SONIC_BUILD_RETRY_INTERVAL"])
         self.assertGreater(retry_count, 0)
         self.assertLessEqual(retry_count, 3)
         self.assertGreater(interval, 0)
         self.assertLessEqual(interval, 30)
-        command = shlex.split(settings.pop("DOCKER_BUILD"))
-        command[0] = str(ROOT / command[0])
+        command = [str(ROOT / "scripts/run_with_retry"), "docker", "build"]
         arguments = ["--file", "fixture Dockerfile", "context with spaces"]
         for failures, expected_code, expected_calls in (
                 (0, 0, 1), (1, 0, 2), (retry_count + 1, 42, retry_count + 1)):
@@ -187,16 +187,9 @@ class AptIndexRefreshTest(unittest.TestCase):
             self.assertFalse(thread.is_alive(), "fixture server must stop")
 
     def download_with_native_docker_retry(self):
-        """Run real APT behind the CI retry wrapper without starting Docker."""
-        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        job = workflow.split("\n  vs_container:\n", 1)[1].split("\n    steps:\n", 1)[0]
-        settings = dict(re.findall(
-            r'^      (DOCKER_BUILD|SONIC_BUILD_RETRY_COUNT|SONIC_BUILD_RETRY_INTERVAL|'
-            r'SONIC_DOCKER_APT_RETRIES): (.+)$', job, re.MULTILINE))
-        settings = {key: value.strip('"') for key, value in settings.items()}
-        self.assertEqual(settings.pop("SONIC_DOCKER_APT_RETRIES"), "0")
-        command = shlex.split(settings.pop("DOCKER_BUILD"))
-        command[0] = str(ROOT / command[0])
+        """Exercise the opt-in APT retry mitigation without starting Docker."""
+        settings = {"SONIC_BUILD_RETRY_COUNT": "2", "SONIC_BUILD_RETRY_INTERVAL": "10"}
+        command = [str(ROOT / "scripts/run_with_retry"), "docker", "build"]
         # Match normal APT configuration loading: the build-only file overrides
         # the runtime policy in apt.conf.d. A late -c argument would reverse it.
         configuration = self.work / "etc/apt.conf.d"

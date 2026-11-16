@@ -1,6 +1,7 @@
 """Reject assembled images that differ from their source package receipts."""
 
 from contextlib import ExitStack
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -15,6 +16,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci.base_images import verify_directory_aliases, verify_editor_commands, verify_source_files
 from tools.bazel.ci import base_images
 from tools.bazel.tests.oci_base_fixture import image_fixture, oci_files, write_layout
+
+
+def write_source_receipt(path, base_digest, **changes):
+    """Use the source receipt schema that carries the selector's owner identity."""
+    document = {
+        "schema": 2, "kind": "bazel_source", "image": "docker-orchagent",
+        "architecture": "amd64", "distribution": "trixie", "contract_sha256": "b" * 64,
+        "base_manifest_digest": base_digest, "module_file_sha256": {"driver": "c" * 64},
+        "packages": [{"package": "local-driver", "version": "2.0", "architecture": "amd64",
+            "control_fields": {"Package": "local-driver", "Version": "2.0", "Architecture": "amd64",
+                               "Depends": "", "Pre-Depends": "", "Provides": "", "Multi-Arch": "no"},
+            "input_tar_sha256": "a" * 64,
+            "source": {"module": "driver", "version": "1.0-" + "d" * 40,
+                       "commit": "d" * 40, "target": "@driver//:runtime"},
+            "files": {"usr/lib/driver.so": {"kind": "file"}}}],
+    }
+    document.update(changes)
+    path.write_text(json.dumps(document))
+    return document
 
 
 class CachedImageLayoutTest(unittest.TestCase):
@@ -47,6 +67,10 @@ class CachedImageLayoutTest(unittest.TestCase):
 
             def cached_archives(workspace, directory, receipt, targets, **kwargs):
                 paths = {}
+                source_receipt = directory / "docker-orchagent.source-packages.receipt.json"
+                if architecture == "amd64":
+                    index = json.loads(oci_files(*image_fixture(architecture))["index.json"])
+                    write_source_receipt(source_receipt, index["manifests"][0]["digest"])
                 for name in targets:
                     paths[name] = directory / name
                     document = {"source_packages": []}
@@ -55,12 +79,15 @@ class CachedImageLayoutTest(unittest.TestCase):
                     if name == "docker-orchagent.runtime-apt-selection.json":
                         index = json.loads(oci_files(*image_fixture(architecture))["index.json"])
                         document = {
-                            "image": "docker-orchagent", "group": "runtime",
+                            "schema": 1, "variant": "runtime",
+                            "source_receipt_sha256": base_images.validation.sha(source_receipt),
                             "base_manifest_digest": index["manifests"][0]["digest"],
                             "dependency_check": {"status": "satisfied"},
                             "selected": [{"package": "runtime-addition"}],
                             "skipped_base": [{"package": "base-package"}],
                         }
+                    if name == source_receipt.name:
+                        document = json.loads(source_receipt.read_bytes())
                     paths[name].write_text(json.dumps(document))
                 return paths
 
@@ -104,6 +131,8 @@ class CachedImageLayoutTest(unittest.TestCase):
                 selection_target = "//dockers/docker-orchagent:runtime_apt_selection"
                 if architecture == "amd64":
                     self.assertIn(selection_target, audit.call_args.args[2])
+                    self.assertIn("//dockers/docker-orchagent:libteam_source_receipt", audit.call_args.args[2])
+                    self.assertTrue((artifacts / "docker-orchagent.source-packages.receipt.json").is_file())
                     self.assertEqual(receipt["orchagent_base_selection"], {
                         "base_manifest_digest": receipt["images"]["docker-config-engine-trixie"]["manifest_digest"],
                         "selected_package_count": 1, "skipped_base_package_count": 1,
@@ -112,6 +141,7 @@ class CachedImageLayoutTest(unittest.TestCase):
                     self.assertNotIn(selection_target, audit.call_args.args[2])
                     self.assertNotIn("orchagent_base_selection", receipt)
                     self.assertFalse((artifacts / "docker-orchagent.runtime-apt-selection.json").exists())
+                    self.assertFalse((artifacts / "docker-orchagent.source-packages.receipt.json").exists())
 
     def test_cached_archives_materialize_layout_for_each_native_architecture(self):
         for architecture in ("amd64", "arm64"):
@@ -123,23 +153,52 @@ class CachedImageLayoutTest(unittest.TestCase):
 
 
 class OrchagentBaseSelectionTest(unittest.TestCase):
-    def test_requires_runtime_selection_for_the_exact_source_base(self):
-        selection = {
-            "image": "docker-orchagent", "group": "runtime",
+    """Require the actual source schema and reject unrelated owner/base receipts."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.source_receipt = Path(temporary.name) / "source.json"
+        self.digest = "sha256:" + "a" * 64
+        write_source_receipt(self.source_receipt, self.digest)
+        self.selection = {
+            "schema": 1, "variant": "runtime",
+            "source_receipt_sha256": base_images.validation.sha(self.source_receipt),
             "base_manifest_digest": "sha256:" + "a" * 64,
             "dependency_check": {"status": "satisfied"},
-            "selected": [{"package": "libteam5"}], "skipped_base": [{"package": "libnl-3-200"}],
+            "selected": [{"package": "arping"}], "skipped_base": [{"package": "libnl-3-200"}],
         }
-        digest = selection["base_manifest_digest"]
-        self.assertEqual(base_images.verify_orchagent_selection(selection, digest), {
-            "base_manifest_digest": digest, "selected_package_count": 1, "skipped_base_package_count": 1,
+
+    def test_requires_runtime_selection_for_the_exact_source_base(self):
+        self.assertNotIn("image", self.selection)
+        self.assertNotIn("group", self.selection)
+        self.assertEqual(base_images.verify_orchagent_selection(
+            self.selection, self.digest, self.source_receipt), {
+            "base_manifest_digest": self.digest, "selected_package_count": 1, "skipped_base_package_count": 1,
         })
         for changed in (
                 {"base_manifest_digest": "sha256:" + "b" * 64},
-                {"image": "docker-telemetry"}, {"group": "debug"},
+                {"schema": 2}, {"variant": "debug"}, {"variant": None, "group": "runtime"},
+                {"source_receipt_sha256": "f" * 64}, {"source_receipt_sha256": None},
                 {"dependency_check": {"status": "failed"}}, {"dependency_check": {}}):
+            selection = {**self.selection, **changed}
+            for key, value in changed.items():
+                if value is None:
+                    selection.pop(key)
             with self.subTest(changed=changed), self.assertRaises(ValueError):
-                base_images.verify_orchagent_selection({**selection, **changed}, digest)
+                base_images.verify_orchagent_selection(selection, self.digest, self.source_receipt)
+        with self.assertRaisesRegex(ValueError, "different config-engine image"):
+            base_images.verify_orchagent_selection(self.selection, "sha256:" + "f" * 64, self.source_receipt)
+
+    def test_matching_hash_does_not_accept_another_owner_or_base(self):
+        """A correct digest alone cannot substitute a different image's source receipt."""
+        for changed in ({"image": "docker-telemetry"}, {"architecture": "arm64"},
+                        {"distribution": "bookworm"}, {"schema": 1},
+                        {"base_manifest_digest": "sha256:" + "b" * 64}):
+            write_source_receipt(self.source_receipt, self.digest, **changed)
+            selection = {**self.selection, "source_receipt_sha256": base_images.validation.sha(self.source_receipt)}
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                base_images.verify_orchagent_selection(selection, self.digest, self.source_receipt)
 
 
 class DuplicateLayerPathsTest(unittest.TestCase):
@@ -172,6 +231,29 @@ class SourceImageValidationTest(unittest.TestCase):
     def test_installed_file_matches_source_identity(self):
         native = verify_source_files(self.files, [self.report], 62)
         self.assertEqual(native[self.path]["source_package"], "source-component")
+
+    def test_installed_python_and_startup_bytes_modes_and_owners_are_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "runtime.tar"
+            with tarfile.open(path, "w") as archive:
+                member = tarfile.TarInfo("usr/local/lib/python3.13/dist-packages/sonic_grpc/gnoi/system_pb2.py")
+                member.size, member.mode = 5, 0o644
+                archive.addfile(member, io.BytesIO(b"proto"))
+                link = tarfile.TarInfo("usr/bin/owner-alias")
+                link.type, link.linkname, link.mode = tarfile.SYMTYPE, "owner-command", 0
+                archive.addfile(link)
+            files = base_images.validation.payload(path)
+            files[link.name]["mode"] = 0o777
+            self.assertEqual(len(base_images.verify_installed_layer(files, path)), 2)
+            for key, value in (("sha256", "wrong"), ("mode", 0o755), ("uid", 1000), ("gid", 1000),
+                               ("kind", "symlink")):
+                changed = {**files, member.name: {**files[member.name], key: value}}
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "changed config-engine"):
+                    base_images.verify_installed_layer(changed, path)
+            for changed in ({link.name: files[link.name]},
+                            {**files, link.name: {**files[link.name], "linkname": "different"}}):
+                with self.assertRaisesRegex(ValueError, "changed config-engine"):
+                    base_images.verify_installed_layer(changed, path)
 
     def test_later_layer_cannot_replace_source_elf_or_metadata(self):
         for field, value in (("sha256", "b" * 64), ("mode", 0o644), ("uid", 1000), ("gid", 1000)):

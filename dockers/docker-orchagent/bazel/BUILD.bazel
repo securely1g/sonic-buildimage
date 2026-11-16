@@ -1,9 +1,25 @@
 load("@rules_python//python:defs.bzl", "py_test")
 load("//tools/bazel/ci:configured_labels.bzl", "configured_labels")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_subset_lock")
 
-package(default_visibility = ["//dockers/docker-orchagent:__pkg__"])
+package(default_visibility = [
+    "//dockers/docker-orchagent:__pkg__",
+    "//tools/bazel/tests:__pkg__",
+])
 
-exports_files(["apt.lock.json"])
+exports_files([
+    "debug_source_paths.json",
+    "package_state.json",
+])
+
+# The OCI selector validates every member of the supplied dependency set.
+# Give it this layer's exact seven debug roots and closure from the shared lock.
+apt_subset_lock(
+    name = "debug_lock_view",
+    selection = "@orchagent_debug_apt_inputs//:apt_manifest.json",
+    dependency_set = "orchagent_debug_subset_debian",
+    out = "debug_apt.lock.json",
+)
 
 configured_labels(
     name = "shared_rust_labels",

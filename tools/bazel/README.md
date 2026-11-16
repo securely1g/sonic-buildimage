@@ -162,8 +162,8 @@ When returning to Make, the cache loader must replace the Bazel archive even if
 the destination already exists. The shared bridge requests a staged restore of
 that archive from a matching Make cache; a failed extraction preserves the prior
 archive and leaves the newer stamp in place for a retry.
-Archives selected for Bazel cannot appear in `SONIC_PACKAGES_LOCAL`: the shared
-archive macro supplies `:latest`, while that Make mode expects versioned tags.
+The shared archive macro exports `:latest`. For images in `SONIC_PACKAGES_LOCAL`,
+the installer loads the archive and adds the `SONIC_IMAGE_VERSION` tag.
 The base/config-engine images and service images register their own Bazel
 producers. SWSS supports native AMD64 Trixie VS without ASAN. Other SWSS configurations
 keep the Make build even with `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`.
@@ -250,6 +250,44 @@ recipe.
 
 ## Shared Bazel options and caches
 
+The shared `common.bazelrc` selects [debian_mirrors.cfg](debian_mirrors.cfg)
+as the workspace downloader configuration. For pinned `.deb` URLs at the
+configured Debian snapshot timestamps, the URL list contains the SONiC mirror,
+the same path in Debian's official pool, and the original dated snapshot, in
+that order. Other dated `.deb` URLs in the Debian and Debian security snapshot
+archives list the pool before the original snapshot. Bazel's local HTTP downloader
+tries the listed order. A configured remote downloader receives the complete URL
+list and checksum and may select any listed URL or cached content. If the remote
+request fails and local fallback is enabled, the local HTTP downloader uses the
+listed order. Inputs from `packages.trafficmanager.net` retain their normalization
+rules. Bazel still verifies downloaded bytes against the package rule's pinned
+SHA-256; package versions, snapshots, lockfiles and cache locations stay unchanged.
+For example, local HTTP downloading of `arping_2.25-1_amd64.deb` can use the pool
+when a mirror is unavailable and falls back to its snapshot if the pool no longer has it.
+The pool rules do not change package indexes, source archives or other hosts.
+
+The standalone [debian-pool.cfg](debian-pool.cfg) remains available to callers
+that explicitly need the pool and then the snapshot without the SONiC mirrors.
+The base image, eventd, supervisor, YANG, OCI and libteam workflows used for pull
+requests use the checksum-verified source mirror helper. By default, it appends the
+shared registry policy after `debian_mirrors.cfg`. This preserves the maintained local
+priority: the SONiC mirror, pool and dated snapshot appear before any additional
+shared mirror choices at the configured timestamps. Other dated package URLs list
+the pool and snapshot before the shared choices. Existing non-package fallbacks
+retain their order.
+
+The native VS installer passes `--prefer-debian-snapshot`, which puts the original
+dated Debian and Debian security URLs first in the URL list, including package
+indexes and source archives. The local and shared fallback candidates remain listed
+afterward. Libteam retains the effective configuration, its checksum and the shared
+source URL.
+
+The shared default path is relative to the Bazel workspace root, including commands
+run from subdirectories. It precedes `.bazelrc.user`, so a user downloader option
+there, or a command-line option, replaces the complete default.
+Bazel does not merge downloader files; a custom configuration must include any
+fallback rules it needs. Existing repository and action cache settings are kept.
+
 Make uses `SONIC_BAZEL_CACHE_SOURCE` as the host directory for shared Bazel
 caches. Its default is `$(SONIC_DPKG_CACHE_SOURCE)/bazel`, independent of
 `BUILD_WITH_BAZEL_WHEN_AVAILABLE`. Set it to a persistent directory writable by
@@ -275,6 +313,77 @@ An explicitly empty `SONIC_BAZEL_CACHE_SOURCE` omits both this cache mount and
 the mounted system configuration. Bazel still runs with its usual local
 configuration; an empty value does not disable Bazel or its own local caches.
 
+### Read the remote cache from Make image builds
+
+When the host environment contains `BAZEL_REMOTE_AUTH`, Make forwards that
+variable by name into `sonic-slave`. The Bazel image recipe then reads the shared
+HTTPS cache at `lgh-bazel-87263989.eastus.cloudapp.azure.com`. For example, a Make
+build of `target/docker-config-engine-trixie.gz` with
+`BUILD_WITH_BAZEL_WHEN_AVAILABLE=y` can reuse Common compilation seeded by Common
+CI when its source inputs, toolchains and build settings match.
+
+| Authentication | Make's Bazel image recipe |
+| --- | --- |
+| Missing or empty | Uses the existing caller-selected caches |
+| Valid `BAZEL_REMOTE_AUTH` environment value | Reads the shared remote cache with uploads disabled |
+| Malformed value | Stops with a sanitized error before invoking Bazel |
+
+Supply the complete Basic Authorization header through a secret manager or the
+GitHub Actions `BAZEL_REMOTE_AUTH` secret. Do not put its value in a Make argument,
+`BAZEL_CONTAINER_ARGS`, `.bazelrc` or a Docker command. The origin-scoped
+[`credentials.py`](cache/credentials.py) helper supplies it only to this HTTPS
+host. The variable remains in the Bazel client's environment; it is not an
+action/test environment setting.
+
+Remote reads work independently of `SONIC_BAZEL_CACHE_SOURCE`, including when
+that local mount is disabled. The recipe applies the remote endpoint, credential
+helper, local-execution and read-only upload settings after caller options, so
+an accidental `--remote_upload_local_results=true` cannot enable writes. Remove
+`BAZEL_REMOTE_AUTH` from the environment to use ordinary caller-selected cache
+settings instead. This integration covers the Bazel container recipe; it does
+not change legacy DEB/Make compilation or the separate kernel launcher.
+
+Both image builds and Common CI use `--incompatible_strict_action_env`. Bazel
+otherwise inherits the caller's `PATH` and `LD_LIBRARY_PATH` when an action runs:
+for example, sonic-slave adds `/usr/.cargo/bin` to `PATH`, while the Common CI
+job adds its Bazelisk installation. Those differences change cache keys even
+when the C++ sources and compiler arguments match. The strict setting gives
+actions a fixed `PATH` and omits inherited `LD_LIBRARY_PATH`; explicitly declared
+action variables still apply.
+
+Keep raw Bazel Java/client and execution logs private: they can contain client
+environment values. CI publishes only sanitized cache receipts and the explicit
+image-validation artifact list.
+
+To test the real Make path, first run Common's manual **Bazel remote cache
+validation** workflow from `master` with `seed_for_make=true`. After it succeeds, dispatch
+buildimage's **Common cache reuse through Make** workflow with that run ID as
+`seed_run`. Each native AMD64/ARM64 job downloads only seed evidence, checks out
+the exact Common source revision, and starts with no local Bazel outputs or
+action cache. It resolves the published native `sonic-slave-trixie` builder to
+an immutable digest, runs outer Make's `configure` and
+`target/docker-config-engine-trixie.gz` recipes, and requires every executed
+Common C++ compile/link action to be a remote hit matching the producer's seed.
+
+The workflow probes Bazel's Linux sandbox as Make's non-root builder before and
+after host setup. On an AppArmor-restricted GitHub runner, it allows user
+namespaces only for this job's sandbox executable at
+`/sonic/artifacts/private/bazel-install/linux-sandbox`. It leaves the host-wide
+restriction unchanged and removes its own profile after the job. Compilation
+and linking still require the Linux sandbox. Upstream OCI directory-copy actions
+run locally because their rule explicitly disables sandboxing; this exception
+does not allow local Common compilation to pass the cache proof.
+
+The jobs compare all six Common runtime/debug TAR hashes, then load the actual
+Make-produced image and import its Common Python binding and shared library.
+Debug TARs that the runtime image does not need are materialized separately;
+their checks do not replace the image recipe's action evidence. Uploaded
+`make-common-cache-amd64` and `make-common-cache-arm64` artifacts contain the
+builder digest, source revisions, cache counts, action digests, package/image
+hashes and runtime results. `preflight_only=true` checks builder/cache access
+without building. Ordinary PR events run the regression checks; the native
+image proof is explicitly dispatched and does not build a full VS installer.
+
 Inside the builder, `BAZEL` selects the executable or launcher. The bridge accepts:
 
 | Environment variable | Meaning |
@@ -298,6 +407,19 @@ BAZEL_CONTAINER_ARGS='--jobs=4' \
 BAZEL=bazel make -f slave.mk target/docker-example.gz \
   BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
+
+Each independent Bazel recipe in the Make installer build uses a private local
+server and output directory. The build, its queries and its exports use the same
+server, including both archives of a grouped runtime/debug build. Exports resolve
+against the producing server's execution root. Parallel recipes can therefore
+build from the same checkout while sharing the configured repository, disk and
+remote caches. Temporary build state is removed after the recipe, including on
+failure. Size the action and memory limits for the number of concurrent builds.
+
+Set `SONIC_BAZEL_REMOTE_CACHE` for a common endpoint across image, P4RT and
+kernel builds. The default is read-only. Set `SONIC_BAZEL_REMOTE_UPLOAD=y` to
+publish locally built results. The kernel also accepts its existing cache
+overrides. CI permits remote writes on pushes to `master`.
 
 The normal Make platform and build-environment setup must already be selected.
 When invoking Make outside the builder, forward extra options through
@@ -371,6 +493,25 @@ SONiC registry endpoint; do not add another endpoint in a home or user rc.
 Generated resolution receipts list registry lookup URLs from the lock; a reused
 lock can also contain historical lookups.
 
+Source-image workers can test a source checkout against an explicitly selected
+SONiC registry commit. For the same selection locally, run the review entry
+point from the image workspace root. For example, to inspect the Database
+image archive target at the current published registry revision:
+
+```sh
+export SONIC_BAZEL_REGISTRY_REVISION=$(git ls-remote --exit-code \
+  https://github.com/securely1g/sonic-bazel-registry.git refs/heads/main | cut -f1)
+tools/bazel/ci/review_bazel.sh query //dockers/docker-database:docker-database.gz
+```
+
+The entry point requires a full lowercase commit ID. It replaces the SONiC
+registry URL for that invocation, keeps BCR as the second registry, and disables
+remote cache uploads for reviewed builds. It keeps cache and downloader settings
+from the home `.bazelrc` and the workspace `.bazelrc.user`. For settings in the
+same command scope, the workspace file takes precedence. The worker sets
+`BAZEL_REAL` to its resource-limited Bazel launcher. Ordinary CI still uses
+registry `main`.
+
 ## Kernel Debian packages in the Make VS flow
 
 The opt-in kernel runtime/debug/header DEB producer and installer handoff are documented
@@ -378,3 +519,26 @@ in [kernel/README.md](kernel/README.md). The separate kernel workspace keeps
 the source/cache graph independent of the container graph and verifies the DEBs
 against the current buildimage inputs and kernel gitlink. Packages go directly
 to the normal `target/debs/trixie` directory.
+
+### Image environment from Make
+
+Images whose Dockerfile uses `ENV IMAGE_VERSION=$image_version` can opt in to the
+existing Make-to-Bazel input boundary:
+
+```make
+SONIC_BAZEL_IMAGE_ENVIRONMENTS += docker-sonic-gnmi
+$(DOCKER_GNMI)_BAZEL_DEPENDS += $(TARGET_PATH)/bazel-manifests/docker-sonic-gnmi/image.env
+```
+
+Use `env = "//:target/bazel-manifests/docker-sonic-gnmi/image.env"` on the
+`oci_image` target. The file contains `DEBIAN_FRONTEND=noninteractive` and the
+exact `SONIC_IMAGE_VERSION` selected by Make. It is independent of the package
+version stored in `manifest.json`; for example, package version `1.0.0` must not
+replace image version `master.42-test`. Debug images inherit the runtime image's
+environment. Images opt in individually, so existing producers are unchanged.
+
+The helper reuses the implementation exercised by the Eventd image: unchanged
+content retains its timestamp, updates are atomic, and invalid or empty values
+preserve the previous input. Newline, NUL and dollar characters are rejected to
+prevent extra environment records or rules_oci variable expansion. Make exports
+the value to the helper instead of interpolating it into shell code.

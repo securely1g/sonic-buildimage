@@ -19,10 +19,9 @@ sudo -n true || die 'This build requires the privileged runner profile and passw
 for command in docker dockerd make git python3 dpkg-deb mount findmnt ip timeout unshare; do
     command -v "$command" >/dev/null || die "Missing required tool: $command"
 done
-mountpoint -q /actions || die '/actions must be a worker-private Docker volume.'
-for cache in /dpkg_cache /bazel_cache; do
-    mountpoint -q "$cache" && [[ -w $cache ]] || die "Required writable cache mount is missing: $cache"
-done
+mountpoint -q /actions || die '/actions must be a worker-private volume.'
+mountpoint -q /dpkg_cache && [[ -w /dpkg_cache ]] || die "Required writable Make cache mount is missing: /dpkg_cache"
+[[ ! -e /bazel_cache ]] || die "Unexpected persistent Bazel cache on the K3s worker."
 
 artifacts="$workspace/artifacts/vs"
 mkdir -p "$artifacts"
@@ -104,7 +103,7 @@ PY
 stage=kernel-sandbox
 # Exercise the producer's pinned helper as the build user, including its
 # mounts: namespace creation alone does not establish sandbox readiness.
-export BAZELISK_HOME=/bazel_cache/bazelisk
+export BAZELISK_HOME=/actions/bazel/bazelisk
 if timeout --kill-after=5s 300s python3 -B "$workspace/tools/bazel/ci/check_kernel_sandbox.py" \
     > "$artifacts/kernel-sandbox.log" 2>&1; then
     python3 - "$artifacts/slave-preparation.json" <<'PY'
@@ -197,9 +196,15 @@ export BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y
 export ENABLE_ASAN=n ENABLE_SYNCD_RPC=n CROSS_BUILD_ENVIRON=n MULTIARCH_QEMU_ENVIRON=n
 export PREFER_DEBIAN_REPO="${PREFER_DEBIAN_REPO:-n}"
 export DOCKER_USERNAME=sonic DOCKER_USERTAG=latest DOCKER_LOCKDIR=/tmp/docklock
+docker_apt_options=$(python3 -B "$workspace/tools/bazel/ci/native_docker_apt.py" "$runner_temp" "$workspace")
+export SONIC_DOCKER_APT_PROXY= DOCKER_BUILD_OPTS="${DOCKER_BUILD_OPTS:-}"
+if [[ -n $docker_apt_options ]]; then
+    SONIC_DOCKER_APT_PROXY=1
+    DOCKER_BUILD_OPTS+="${DOCKER_BUILD_OPTS:+ }$docker_apt_options"
+fi
 export SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=y SONIC_CONFIG_USE_DOCKER_CACHE=y
 export SONIC_DPKG_CACHE_SOURCE=/dpkg_cache SONIC_DPKG_CACHE_METHOD=rwcache
-export SONIC_BAZEL_CACHE_SOURCE=/bazel_cache BAZELISK_HOME=/bazel_cache/bazelisk
+export SONIC_BAZEL_CACHE_SOURCE= BAZEL_CONTAINER_CACHE_DIR= BAZEL_SWSS_CACHE_DIR= BAZELISK_HOME=/actions/bazel/bazelisk
 export SONIC_DEFAULT_CONTAINER_REGISTRY='' DEFAULT_CONTAINER_REGISTRY=''
 # The minimal installer rootfs installs CA certificates after its first apt
 # update. Keep Make's HTTP bootstrap transport and signed APT metadata checks,
@@ -215,7 +220,7 @@ export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" BUILD_HOSTNAME="$(ho
 export SLAVE_DIR=sonic-slave-trixie DISTRO=trixie IMAGENAME=sonic-slave-trixie
 export SONIC_BUILD_TARGET=target/sonic-vs.bin
 export SLAVE_TAG="$(python3 -c 'import json; print(json.load(open("/etc/sonic-slave-github-runner.json"))["base_image"].split(":")[1])')"
-mkdir -p "$DOCKER_LOCKDIR" /dpkg_cache/vcache /bazel_cache/bazelisk
+mkdir -p "$DOCKER_LOCKDIR" /dpkg_cache/vcache /actions/bazel/bazelisk
 # The root build hook creates its package-cache path before Make's configure
 # recipe runs. Keep the checkout's output directories owned by the build user.
 mkdir -p "target/vcache/$IMAGENAME/deb" target/versions dpkg
@@ -303,6 +308,7 @@ if not required <= selected:
 path = Path(sys.argv[2])
 report = json.loads(path.read_text())
 report["make_profile"] = settings
+report["docker_apt_proxy_enabled"] = os.environ["SONIC_DOCKER_APT_PROXY"] == "1"
 report["source_revision"] = Path("artifacts/vs/preparation-revision.txt").read_text().strip()
 path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 PY
@@ -316,8 +322,9 @@ for variable in PLATFORM_ARCH TARGET_BOOTLOADER BUILD_WITH_BAZEL_WHEN_AVAILABLE 
     INCLUDE_VS_DASH_SAI INCLUDE_FIPS ENABLE_ASAN ENABLE_SYNCD_RPC CROSS_BUILD_ENVIRON \
     PREFER_DEBIAN_REPO \
     MULTIARCH_QEMU_ENVIRON DOCKER_HOST DOCKER_CONFIG DOCKER_USERNAME DOCKER_USERTAG DOCKER_LOCKDIR \
+    SONIC_DOCKER_APT_PROXY DOCKER_BUILD_OPTS \
     SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD SONIC_CONFIG_USE_DOCKER_CACHE \
-    SONIC_DPKG_CACHE_SOURCE SONIC_DPKG_CACHE_METHOD SONIC_BAZEL_CACHE_SOURCE BAZELISK_HOME \
+    SONIC_DPKG_CACHE_SOURCE SONIC_DPKG_CACHE_METHOD SONIC_BAZEL_CACHE_SOURCE BAZEL_CONTAINER_CACHE_DIR BAZEL_SWSS_CACHE_DIR BAZELISK_HOME \
     SONIC_DEFAULT_CONTAINER_REGISTRY DEFAULT_CONTAINER_REGISTRY MIRROR_URLS MIRROR_SECURITY_URLS \
     SONIC_BUILD_JOBS SONIC_BUILD_MEMORY MAKEFLAGS BUILD_NUMBER BUILD_TIMESTAMP SOURCE_DATE_EPOCH BUILD_HOSTNAME \
     SLAVE_DIR SLAVE_TAG DISTRO IMAGENAME SONIC_BUILD_TARGET TRUSTED_GPG_URLS \

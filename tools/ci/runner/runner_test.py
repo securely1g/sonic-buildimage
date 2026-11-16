@@ -20,6 +20,19 @@ import apparmor_gs
 class RunnerTests(unittest.TestCase):
     registration = {"id": 42, "name": "sonic-vs-9-unique", "attempt": "/data/sonic-runner/attempts/unique"}
 
+    def test_host_agent_checks_process_umask_without_legacy_service(self):
+        for mask, accepted in (("0022", True), ("0077", False)):
+            with self.subTest(mask=mask), \
+                    patch.object(preflight.Path, "read_text", return_value=f"Umask:\t{mask}\n"), \
+                    patch.object(preflight, "output") as output, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                if accepted:
+                    preflight.check_worker_umasks(host_agent=True)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "hides files"):
+                        preflight.check_worker_umasks(host_agent=True)
+                output.assert_not_called()
+
     def test_legacy_nat_checks_loaded_and_builtin_support_not_only_nft_nat(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -506,6 +519,16 @@ class PreflightStorageTests(unittest.TestCase):
 
 
 class PreflightBuildTargetTests(unittest.TestCase):
+    def test_host_agent_retains_capability_checks_without_legacy_installation(self):
+        with self.host(("--host-agent", "--build-target", "sonic-vs.bin")) as host, \
+                patch.object(preflight, "check_data_storage") as storage:
+            preflight.main()
+            storage.assert_not_called()
+            host.checks["check_worker_umasks"].assert_called_once_with(True)
+            for name in ("check_ghostscript", "check_legacy_nat", "check_disk"):
+                host.checks[name].assert_called_once()
+            host.device.assert_not_called()
+
     @contextlib.contextmanager
     def host(self, arguments=(), *, memory_gib=16):
         """Exercise the real entrypoint against controlled, non-root host probes."""

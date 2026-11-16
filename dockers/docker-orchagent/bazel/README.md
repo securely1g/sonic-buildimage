@@ -11,14 +11,23 @@ configurations independently. For SWSS, on native AMD64 Debian Trixie with
 SWSS and assemble its runtime and debug OCI images. Other SWSS configurations
 continue to use Make, even with the switch set to `y`.
 Bazel composes SWSS directly on the source-built config-engine OCI target.
-Make generates the container manifests and Scapy wheel, and coordinates the
-other containers, host packages, kernel and final `sonic-vs.img.gz` image.
+Scapy is built from the selected source by `@scapy//:wheel`; no Make wheel is an
+input to either Bazel Orchagent variant. Make generates the container manifests
+and coordinates the other containers, host packages, kernel and final
+`sonic-vs.img.gz` image. Legacy Make-only builds retain their Scapy wheel
+dependency and metadata.
 
 The source and toolchain revisions are declared in the root `MODULE.bazel`; they do not change
 the source revisions used by Make's existing submodules. SWSS and its declared
 source dependencies produce runtime tar layers and matching debug symbols.
 Pinned Debian packages supply external runtime dependencies; Bazel does not
 create Debian packages in this path.
+
+The source runtime added over config-engine now comes from
+`//dockers/docker-swss-layer-trixie:source_runtime`. It includes the patched
+libteam and libteamdctl used by SWSS's source link; the Orchagent APT roots no
+longer request their distribution replacements. This source-only TAR is shared
+with the new SWSS parent without changing Orchagent's config-engine selector.
 
 Make selects the builder before starting the build. Missing or invalid metadata
 for a selected Bazel target, a missing Bazel executable, or a Bazel build failure
@@ -49,14 +58,17 @@ configure packages, establish `Pre-Depends` installation ordering, or evaluate
 compatibility. Hash, path and library-collision errors still fail the build.
 
 The reviewed runtime roots remain in `orchagent_debian`; four unused Kerberos
-administration packages remain omitted. Debug roots are `gdb`, `gdbserver` and
-`strace` in `orchagent_debug_debian`, using the same dated Debian repositories.
+administration packages remain omitted. Debug selection projects the seven
+Orchagent debug roots (`gdb`, `gdbserver`, `strace`, `vim`, `sshpass`, and the
+FIPS OpenSSH client's `libedit2` and `libfido2-1` runtime libraries) from
+`sysmgr_debug_debian` via `@orchagent_debug_apt_inputs` and `:debug_lock_view`,
+omitting unused `openssh-server` dependencies such as `libwtmpdb0`.
 
-`apt.lock.json` is the canonical reviewed package record, including exact
-source identities and data/control hashes. Normal builds call
-`apt.import_lock(lock = "//dockers/docker-orchagent/bazel:apt.lock.json")`
-to import its runtime and debug dependency sets directly. No expanded MODULE
-fragment is checked in or regenerated beside the lock.
+`@sonic_build_infra//apt:apt.lock.json` is the canonical reviewed package
+record, including exact source identities and data/control hashes. Normal builds
+import this shared owner lock for `orchagent_debian` and derive `:debug_lock_view`
+directly from it. The same lock supplies the base and other container
+sets, so source packages and OCI images agree on their Debian inputs.
 
 Bazel generates the matching BUILD input labels automatically. The `apt_inputs`
 repository rule reads the same lock and writes `apt_inputs.bzl` in the generated
@@ -89,16 +101,14 @@ selects the shared command-line program. The owner suite checks the actual
 `:runtime_layer_policy` output used by the runtime layer.
 
 Orchagent has no Make-produced native DEB handoff: its component payloads come
-from source-owned Bazel targets. Its `retained_source = "none"` policy records
-that profile, with no retained-package manifest, feature requirements or debug
-replacements. Runtime selection reads the checked config-engine
-base; debug selection reads the completed Orchagent runtime and receives its
-`runtime_apt_selection` receipt as the declared `base_package_metadata` input.
-This carries the runtime APT packages and their requirements because archive
-assembly leaves the inherited dpkg database unchanged. The child checks that
-metadata against the actual dpkg baseline and validates the combined set again.
-Source-built payloads still rely on their owner contracts and runtime checks;
-this does not synthesize Debian metadata for them.
+from source-owned Bazel targets. Its `retained_source = "source"` policy binds
+runtime and debug APT selection to `:libteam_source_receipt` so source-built
+`libteam5` and `libteamdctl0` retain their owner TARs rather than distribution
+replacements. Runtime selection reads the checked config-engine base and writes
+the updated package inventory into `:installed_package_state`; debug selection
+reads the completed Orchagent runtime and receives `:runtime_package_metadata`
+as its declared `base_package_metadata` input, validating the combined runtime
+and debug set against the updated dpkg baseline.
 
 The `runtime_apt_selection` and `debug_apt_selection` targets expose receipts with
 the base digest, lock/policy hashes, selected and skipped packages, the validated
@@ -127,20 +137,23 @@ The package request recipe and policy remain handwritten inputs.
 
 To update packages in a separate clean checkout:
 
-1. Use `apt-resolve.MODULE.bazel` to resolve the intended runtime/debug roots
-   against the pinned Debian snapshot sources. Review the complete resulting
-   package identities, versions, dependencies and hashes in `apt.lock.json`.
+1. Update the Orchagent sets in `sonic-build-infra/apt/requests.json` and follow
+   that owner's APT refresh procedure. Review the resulting shared
+   `apt/apt.lock.json`, including package identities, versions, dependency edges
+   and hashes for every affected set.
 2. Keep reviewed extracted-content hashes only for unchanged source packages;
    validate and record data/control hashes for changed package inputs.
-3. Commit the reviewed lock with any changed package roots. Bazel imports its
-   packages and generates the BUILD mapping automatically; no MODULE export is
-   required. Run the owner tests and rebuild both images, checking the automatic
-   selection receipts and installed consumers.
+3. Publish the reviewed infrastructure update and select it in `MODULE.bazel`.
+   Bazel imports its packages and generates the BUILD mapping automatically.
+   Run the owner tests and rebuild both images, checking the selection receipts
+   and installed consumers.
 
-The selector checks dependency-version requirements without running package
-installation scripts. It does not update the inherited dpkg database or
-regenerate loader/Python caches. Full image support remains AMD64; native ARM64
-helper tests do not establish a complete ARM64 image.
+The selector checks `Depends` and `Pre-Depends`, including version requirements,
+across the checked base, retained packages and selected APT additions. Source
+TARs layered afterwards are outside that selection check. It does not run
+package installation scripts, update the inherited dpkg database or regenerate
+loader/Python caches. Full image support remains AMD64; native ARM64 helper
+tests do not establish a complete ARM64 image.
 
 ## Startup configuration
 
@@ -205,9 +218,9 @@ make target/docker-orchagent.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 make target/docker-orchagent-dbg.gz BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
 
-These targets first produce the Scapy wheel and Make manifests for
+These targets first produce Make manifests for
 `docker-base-trixie`, `docker-config-engine-trixie` and `docker-orchagent` under
-`target/bazel-manifests/`. The debug target also prepares the
+`target/bazel-manifests/`, while building Scapy through its source-owned wheel target. The debug target also prepares the
 `docker-orchagent-dbg` manifest, since its image extends the runtime image.
 Bazel consumes `//dockers/docker-config-engine-trixie:docker-config-engine-trixie`
 directly for the APT selection and SWSS image. Its Docker installer `.gz` remains
@@ -227,8 +240,7 @@ The shared archive helper publishes the completed archive to `target/` only
 after both commands succeed. It preserves the previous archive on failure and
 keeps its timestamp when the new bytes are unchanged.
 
-With the Scapy wheel available, prepare all owning manifests before invoking
-Bazel directly:
+Prepare all owning manifests before invoking Bazel directly:
 
 ```sh
 make -f tools/bazel/prepare_manifests.mk \
@@ -389,9 +401,10 @@ before starting nested Docker. Static-image, Docker-load and P4RT verification
 use separate Docker storage directories so Make's cleanup does not remove the
 completed build's store.
 
-Workflow concurrency is scoped to the source revision so a new push can run its
-hosted checks while an older full VS build keeps its progress. A rerun of the same
-revision supersedes its earlier run; a new full VS job waits for its runner.
+Each push, manual dispatch and explicit retry runs independently, including
+on the same commit. Automatic checks for the same PR and revision share a
+group. A new PR revision can run its hosted checks while an earlier VS build
+continues. The native VS job has its own worker limit.
 
 The native config-engine base supplies Common's C++ library, Python bindings
 and normalized database configuration from the same Bazel-resolved Common
@@ -403,8 +416,7 @@ Common twice. The source-layer guard prevents a regression to older TARs that
 used paths beneath `var/run` or other inherited directory aliases.
 Complete-image validation remains necessary. Guest
 boot, forwarding, ARM64 images and cross builds remain unvalidated. ASAN uses
-the existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when
-its Bazel path is selected.
+the existing Make path.
 
 To reproduce the source-layer check in native AMD64 Trixie, install the execution
 tools listed in `.github/workflows/bazel-oci.yml`, make the pinned Bazel
@@ -495,3 +507,43 @@ the [shared label macro](../../../tools/bazel/oci/README.md) and its non-ASAN
 settings to the source-owned `sonic_cfggen_template` macro. Manifest metadata
 continues to live in `rules/docker-orchagent.mk`. Other containers reuse the same
 Make generator and Bazel label action with their own declarations.
+
+## Source wheel and image acceptance
+
+The Scapy producer is `scapy@2.6.1.sonic.2` on registry `main`. It preserves
+SONiC's selected upstream commit, both production patches, the exact
+`scapy-2.6.1.dev0-py3-none-any.whl` output, TLS test stability backports and the
+upstream build backend. `config/BUILD.bazel` uses the existing standard wheel
+installer to add it. The source SWSS TAR is reused from the shared owner;
+Orchagent continues to extend config-engine, not the shared SWSS image, and
+records its runtime `installed_packages` state plus synthesized `ndisc6`
+`traceroute6` alternatives.
+
+The native FIPS debug profile also consumes the existing OpenSSH client TAR
+and matching symbols from `sonic-fips`, retains its `_ssh` group and ssh-agent
+permissions, and records the installed debug packages. Its pinned external
+tools include gdb, gdbserver, strace, sshpass and full vim, matching Make.
+These debug additions do not enter the runtime variant.
+
+The existing OCI AMD64 job builds both variants and separately validates
+source payload bytes/modes, native link closure, inherited files, matching debug
+symbols, the installed wheel and original owner test suites. Its installed-source
+edit probe requires both archives to change while preserving compiled symbols,
+the config-engine base and Scapy wheel; restoring the input restores digests.
+The existing runtime job loads those exact archives and exercises the real
+`tunnel_packet_handler.py` with source-built Scapy, a private Redis fixture
+and offline IPv4/IPv6 captures. It checks requested ping arguments without
+executing them. This does not test ASIC forwarding, live capture, complete
+supervisor startup, FIPS POST or a VS installer.
+
+Socat selects `1.8.0.2.sonic.6` from [registry #242](https://github.com/securely1g/sonic-bazel-registry/pull/242).
+Its explicit `tar.xz` type accepts the content-addressed Debian patch archive
+URL while retaining the original source hashes. The `.3` to `.6` upgrade also
+includes the published compiler/debug prefix mapping and compiler-path
+normalization from `.4`, plus the `procan` namespace-string termination fix from
+`.5`.
+
+Validation uses the maintained registry `main` and BCR through `.bazelrc`. The
+FIPS parent retains its selected source and known entropy/assembly-path
+reproducibility limitations; same-output-root restoration is not a fresh-root
+reproducibility claim.

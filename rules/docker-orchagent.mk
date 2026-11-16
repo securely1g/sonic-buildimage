@@ -22,11 +22,10 @@ SONIC_BAZEL_DOCKER_IMAGES += $(DOCKER_ORCHAGENT)
 SONIC_BAZEL_DBG_DOCKER_IMAGES += $(DOCKER_ORCHAGENT_DBG)
 $(DOCKER_ORCHAGENT)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT)
 $(DOCKER_ORCHAGENT_DBG)_BAZEL_TARGET = //dockers/docker-orchagent:$(DOCKER_ORCHAGENT_DBG)
-# Bazel composes the native config-engine image; Make supplies only its
-# generated metadata, plus the Scapy wheel used by the SWSS configuration layer.
+# Bazel composes the native config-engine image and source-owned Scapy wheel;
+# Make supplies only its generated metadata.
 $(DOCKER_ORCHAGENT)_BAZEL_DEPENDS = $(TARGET_PATH)/bazel-manifests/docker-base-trixie/manifest.json
 $(DOCKER_ORCHAGENT)_BAZEL_DEPENDS += $(TARGET_PATH)/bazel-manifests/docker-config-engine-trixie/manifest.json
-$(DOCKER_ORCHAGENT)_BAZEL_DEPENDS += $(PYTHON_WHEELS_PATH)/$(SCAPY)
 # Both variants use runtime metadata, with Make adding the debug suffix.
 SONIC_BAZEL_MANIFESTS += $(DOCKER_ORCHAGENT_STEM) $(DOCKER_ORCHAGENT_STEM)-$(DBG_IMAGE_MARK)
 $(DOCKER_ORCHAGENT_STEM)_MANIFEST_IMAGE = $(DOCKER_ORCHAGENT)

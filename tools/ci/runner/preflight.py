@@ -30,10 +30,13 @@ def check_umask(mask, origin):
         raise RuntimeError(f"{origin} umask {mask:04o} hides files/directories from Docker build users; use 0022")
 
 
-def check_worker_umasks():
+def check_worker_umasks(host_agent=False):
     process_mask = next(line.split()[1] for line in Path('/proc/self/status').read_text().splitlines()
                         if line.startswith('Umask:'))
     check_umask(int(process_mask, 8), "Preflight process")
+    if host_agent:
+        print(f"Host-agent process file creation mask: {process_mask}")
+        return
     service_mask = output("systemctl", "show", "sonic-vs-runner.service", "--property=UMask", "--value")
     if not service_mask:
         raise RuntimeError("Runner service umask is unavailable; run bootstrap.sh first")
@@ -123,6 +126,8 @@ def main():
     parser.add_argument("--docker-gib", type=int, default=100)
     parser.add_argument("--build-target", help="Output target; sonic-vs.bin does not require KVM")
     parser.add_argument("--check-data-only", action="store_true", help="Validate /data storage and exit")
+    parser.add_argument("--host-agent", action="store_true",
+                        help="Check an existing host agent without legacy service or /data layout requirements")
     args = parser.parse_args()
     if args.check_data_only:
         check_data_storage(build_target=args.build_target)
@@ -133,10 +138,11 @@ def main():
         parser.error("Run as sonic-runner so permission failures are visible")
     if platform.machine() != "x86_64":
         parser.error("The VS job needs native x86_64")
-    check_worker_umasks()
+    check_worker_umasks(args.host_agent)
     check_ghostscript()
     check_legacy_nat()
-    check_data_storage(build_target=args.build_target)
+    if not args.host_agent:
+        check_data_storage(build_target=args.build_target)
     flags = set(output("findmnt", "--noheadings", "--output", "OPTIONS", "--target", str(args.workspace)).split(","))
     blocked = flags & {"nodev", "nosuid", "noexec", "ro"}
     if blocked:

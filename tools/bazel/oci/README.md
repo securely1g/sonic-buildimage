@@ -161,9 +161,12 @@ manifest_labels(
 ```
 
 Set each `oci_image` target's `labels` attribute to the corresponding action.
-The `manifest_labels` macro accepts one manifest and an optional `out` filename.
-Its Python tool validates a JSON object and writes one compact JSON label line,
-preserving all manifest fields. The declared input lets Bazel invalidate the
+The `manifest_labels` macro takes the manifest, an optional `out` filename and
+an optional `image_version` string build setting. It encodes the JSON manifest
+on one line and writes Make's `Tag` label when the caller supplies a version setting.
+Owners can also pass `package_receipt` from their installed package receipt and
+`version_packages` for the components that Make labels with a name and version.
+The declared input lets Bazel invalidate the
 label action whenever Make publishes changed metadata. Runtime and debug labels
 have separate actions.
 

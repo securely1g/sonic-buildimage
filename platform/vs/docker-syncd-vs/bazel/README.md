@@ -145,12 +145,14 @@ and source package metadata remain part of the image. The original
 `Dockerfile.j2`, `start.sh`, `supervisord.conf`, `critical_processes` and Make
 image manifest remain the behavioral reference.
 
-The checked-in `apt.lock.json` is the only APT package list consumed by a build.
+The canonical package list is `@sonic_build_infra//apt:apt.lock.json`.
 `apt.import_lock` reads its package URLs, checksums, architectures and dependency
 edges during repository setup and exposes the standard Distroless package targets.
-To refresh it, use `apt-resolve.MODULE.bazel` in a private preparation checkout
-and review the resulting lock against the base. No expanded import file needs
-to be checked in or regenerated.
+Syncd selects `syncd_vs_debian` for runtime and `syncd_vs_vim_debug_debian` for
+its existing Vim debug tools. Refresh these sets through
+`sonic-build-infra/apt/requests.json` and review the shared lock against the base.
+The `ci_artifacts` filegroup exports the resolved lock so CI fingerprints the
+actual package metadata used by the image.
 
 ## Validation
 
