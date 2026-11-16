@@ -12,12 +12,16 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json
 
 WORKERS = tuple(f"sonic-slave-lgh114-{number}" for number in range(1, 5))
+POOLS = ("sonic-slave-container-dpool", "sonic-slave-container-k3s")
+# Public receipt/path syntax only; authoritative job metadata binds the pool.
+K3S_WORKER_PATTERN = r"ks-[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?"
 MINIMUM_MEMORY_BYTES = 20 * 1024**3
 
 
@@ -54,7 +58,22 @@ def marker_identity(path):
     return {"base_image": value["base_image"]}
 
 
-def measure(expected_worker):
+def worker_matches_pool(worker, pool):
+    if pool == "sonic-slave-container-dpool":
+        return worker in WORKERS
+    return pool == "sonic-slave-container-k3s" and re.fullmatch(K3S_WORKER_PATTERN, worker) is not None
+
+
+def worker_cache_root(pool="sonic-slave-container-dpool"):
+    """Keep the existing cache layout on the selected pool's mounted storage."""
+    if pool == "sonic-slave-container-dpool":
+        return Path("/bazel_cache")
+    if pool == "sonic-slave-container-k3s":
+        return Path("/actions/_work/.source-image-cache")
+    raise ValueError("Unknown source-worker pool")
+
+
+def measure(expected_worker, pool="sonic-slave-container-dpool"):
     checks, facts = {}, {}
     build_profile = None
 
@@ -65,8 +84,10 @@ def measure(expected_worker):
             checks[name] = False
 
     actual = os.environ.get("RUNNER_NAME", "")
-    check("worker_affinity", lambda: actual == expected_worker and actual in WORKERS)
-    facts["worker"] = actual if actual in WORKERS else "unexpected"
+    check("worker_affinity", lambda: actual == expected_worker and worker_matches_pool(actual, pool))
+    facts["worker"] = actual if worker_matches_pool(actual, pool) else "unexpected"
+    if pool == "sonic-slave-container-k3s":
+        facts["pool"] = pool
     facts["uid"], facts["gid"] = os.getuid(), os.getgid()
     check("build_user", lambda: facts["uid"] == facts["gid"] == 1000)
     facts["machine"] = platform.machine()
@@ -105,7 +126,10 @@ def measure(expected_worker):
     check("sudo", lambda: subprocess.run(["sudo", "-n", "true"], timeout=10, capture_output=True).returncode == 0)
     check("user_mount_namespace", lambda: subprocess.run(
         ["unshare", "--user", "--map-root-user", "--mount", "true"], timeout=10, capture_output=True).returncode == 0)
-    for name, mount in (("workspace", "/actions"), ("cache", "/bazel_cache")):
+    mounts = (("workspace", "/actions"), ("cache", "/bazel_cache"))
+    if pool == "sonic-slave-container-k3s":
+        mounts = (("workspace", "/actions"),)
+    for name, mount in mounts:
         check(name + "_mount", lambda mount=mount: subprocess.run(
             ["mountpoint", "-q", mount], timeout=10, capture_output=True).returncode == 0)
 
@@ -117,6 +141,79 @@ def measure(expected_worker):
             return filesystem in ("ext4", "xfs") and free >= 50 * 1024**3
 
         check(name + "_storage", storage)
+    if pool == "sonic-slave-container-k3s":
+        namespace = worker_cache_root(pool)
+        cache = namespace / "source-images" / actual
+        work_root = namespace.parent
+        directories = (namespace, namespace / "source-images", cache)
+        backing = Path("/actions")
+        measured_path = work_root
+
+        def private_directory(path):
+            info = path.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or path.resolve() != path or
+                    info.st_uid != 1000 or info.st_gid != 1000 or
+                    stat.S_IMODE(info.st_mode) != 0o700):
+                raise ValueError("Unsafe source-worker cache directory")
+            return info
+
+        def cache_mount():
+            nonlocal measured_path
+            if not checks["worker_affinity"] or not checks["workspace_mount"]:
+                return False
+            info = work_root.lstat()
+            facts["cache_root"] = {"namespace": "actions_work_source_images",
+                                   "worker_directory": "source-images/" + actual,
+                                   "backing_mount": "actions", "shared_with_workspace": True,
+                                   "lifetime": "current_worker_mount", "cross_pod_reuse": "not_established",
+                                   "work_root_uid": info.st_uid, "work_root_gid": info.st_gid,
+                                   "work_root_mode": oct(stat.S_IMODE(info.st_mode))}
+            if not stat.S_ISDIR(info.st_mode) or work_root.resolve() != work_root:
+                return False
+            for path in directories:
+                if path.exists() or path.is_symlink():
+                    private_directory(path)
+                    measured_path = path
+            target = subprocess.check_output(["findmnt", "-n", "-o", "TARGET", "-T", str(measured_path)],
+                                             text=True, timeout=10).strip()
+            return target == str(backing) and measured_path.stat().st_dev == backing.stat().st_dev
+
+        def cache_storage():
+            if not checks["cache_mount"]:
+                return False
+            filesystem = subprocess.check_output(["findmnt", "-n", "-o", "FSTYPE", "-T", str(measured_path)],
+                                                 text=True, timeout=10).strip()
+            free = shutil.disk_usage(measured_path).free
+            facts["cache_storage"] = {"filesystem": filesystem, "free_bytes": free,
+                                      "backing_mount": "actions", "shared_with_workspace": True}
+            return filesystem in ("ext4", "xfs") and free >= 50 * 1024**3
+
+        def cache_writable():
+            if not all(checks.values()):
+                return False
+            for path in directories:
+                path.mkdir(mode=0o700, exist_ok=True)
+                if private_directory(path).st_dev != backing.stat().st_dev:
+                    return False
+            target = subprocess.check_output(["findmnt", "-n", "-o", "TARGET", "-T", str(cache)],
+                                             text=True, timeout=10).strip()
+            if target != str(backing):
+                return False
+            # Only this new anonymous probe file is removed on close; cache data stays.
+            with tempfile.TemporaryFile(mode="w+b", dir=cache) as probe:
+                probe.write(b"source-worker-cache-probe\n")
+                probe.flush()
+                os.fsync(probe.fileno())
+                probe.seek(0)
+                if probe.read() != b"source-worker-cache-probe\n":
+                    return False
+            facts["cache_root"].update(uid=1000, gid=1000, mode="0o700", writable=True,
+                                       write_probe_closed=True)
+            return True
+
+        check("cache_mount", cache_mount)
+        check("cache_storage", cache_storage)
+        check("cache_writable", cache_writable)
     return {"schema": 1, "status": "passed" if all(checks.values()) else "failed", "checks": checks,
             "facts": facts, "build_profile": build_profile, "scope": "resource_and_namespace_preflight_only",
             "image_build_executed": False, "deb_generation_executed": False}
@@ -124,10 +221,13 @@ def measure(expected_worker):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--worker", required=True, choices=WORKERS)
+    parser.add_argument("--pool", choices=POOLS, default="sonic-slave-container-dpool")
+    parser.add_argument("--worker", required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    receipt = measure(args.worker)
+    if not worker_matches_pool(args.worker, args.pool):
+        parser.error("Worker name does not match the selected preflight pool")
+    receipt = measure(args.worker, args.pool)
     receipt["dispatcher_revision"] = subprocess.check_output(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
     safe_json(receipt)

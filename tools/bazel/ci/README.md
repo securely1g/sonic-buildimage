@@ -274,3 +274,6 @@ debug images retain their original private kernel-team/Redis checks, payload
 hashes and aggregate `loaded-validation.json`. This mode does not select DEB
 packaging or the full VS installer. The source and registry revisions are paired
 explicit inputs; worker control is a separate reviewed revision.
+
+Dedicated source-image workers use the registry's Debian mirror configuration.
+Trusted dpool jobs can select the private archives. K3s uses public archives.

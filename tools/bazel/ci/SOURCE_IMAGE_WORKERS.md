@@ -77,7 +77,7 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout` or `framework`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework` or `teamd`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -154,19 +154,16 @@ does not run unrelated owner test suites, package Make recipes, or the full VS
 installer. The selected image drivers still audit their configured graph for
 DEB generation before building.
 
+Trusted native source-image jobs use the Debian mirror roots configured for this repository. The pinned registry helper selects the snapshots and retains public fallback. [Registry mirror configuration](https://github.com/securely1g/sonic-bazel-registry/blob/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/README.md#private-debian-snapshot-mirrors)
+
 The worker also uses Bazel's official mirror for the exact BCR `gawk@5.3.2`
 source archive. Its existing SHA256 and upstream build overlay stay unchanged.
 Only the three selected GNU/kernel source URLs are rewritten; the original
-checksum-verified pigz downloader configuration is retained. Phase resource
+checksum-verified shared downloader configuration is retained. Phase resource
 receipts include the observed cgroup memory/swap limits as well as usage and OOM
 counters, so a runtime limit change is not confused with a successful capacity test.
 
-For four observed Debian snapshot HTTP 503 failures, the downloader retains the
-original timestamped URL and adds its verified official content-addressed
-`snapshot.debian.org/file/` endpoint. Both endpoints returned identical bytes
-matching the checked-in SHA256 and size. The URL's SHA1 identifier only locates
-the file; Bazel continues enforcing the original SHA256. Other snapshots,
-package versions and architectures are unchanged. Public Syncd/Gearbox policy
+Public Syncd/Gearbox policy
 validation recognizes only the exact checked-in `DEBIAN_FRONTEND=noninteractive`
 constant and retains the policy's original bytes and hash.
 
@@ -192,6 +189,13 @@ supplies the reviewed registry revision, just as for gNMI. This enables
 to run the same image checks on an idle native AMD64 worker. Select an immutable
 source commit and retain the source/catalog and all four phase receipts; adding
 the selector alone does not establish image acceptance.
+
+Database, Eventd, FRR, LLDP, MUX, Router Advertiser and SNMP use the regular
+Bazel OCI workflow on master. It builds runtime and debug archives on the
+`bazel-x64` pool and exercises the installed services on `ubuntu-24.04`.
+The MACsec source PR owns its build and installed-service checks.
+For authenticated Syncd and Gearbox requests, the dispatcher selects the shared
+K3s pool and verifies the original CI request before building.
 
 ## Explicit ordinary registry consumers
 

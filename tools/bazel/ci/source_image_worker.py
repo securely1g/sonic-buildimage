@@ -19,7 +19,8 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
-from tools.bazel.ci.source_worker_preflight import cpu_limit, measure, select_build_profile
+from tools.bazel.ci.source_worker_preflight import (
+    POOLS, cpu_limit, measure, select_build_profile, worker_cache_root, worker_matches_pool)
 from tools.bazel.gzip.source_archive import SOURCES
 
 DRIVERS = {"dash-ha": "dash_ha", "sysmgr": "sysmgr", "orchagent": "orchagent", "sflow": "sflow", "otel": "otel", "syncd": "syncd", "gearbox": "gbsyncd", "dash-engine": "dash_engine", "gnmi": "gnmi", "gnmi-no-dialout": "gnmi", "framework": "mgmt_framework", "teamd": "teamd"}
@@ -33,21 +34,13 @@ WRAPPERS["gnmi"] = "review_bazel.sh"
 WRAPPERS["gnmi-no-dialout"] = "review_bazel.sh"
 WRAPPERS["framework"] = "review_bazel.sh"
 GNMI_PROFILES = {"gnmi": "enabled", "gnmi-no-dialout": "disabled"}
-MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/97cc502556b7ec3435d2d67b105315bcc18bb47e/ci/source_mirrors.cfg"
-MIRROR_SHA = "ddd6f40504a30e138a62be0d728e1a352391d0f781c927eaf4ea45c44d8a0720"
+MIRROR_URL = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/4952d79f02632d44676e4947adb4338b13bf5f0b/ci/source_mirrors.cfg"
+MIRROR_SHA = "2e01494e18c47475b29309b9f6ac1506665b3331498996d24f69d6dfc77eacc8"
 
 
 def mirror_configuration(original):
     require(hashlib.sha256(original).hexdigest() == MIRROR_SHA, "Source mirror configuration checksum mismatch")
-    # BCR gawk@5.3.2 retains SHA256 f8c3486509de705192138b00ef2c00bbbdd0e84c30d5c07d23fc73a9dc4cc9cc.
-    # The official Bazel mirror was independently verified to contain these exact bytes.
-    destination = "https://mirror.bazel.build/ftp.gnu.org/gnu/gawk/gawk-5.3.2.tar.xz"
-    expressions = [r"mirrors\.kernel\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
-                   r"ftp\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz",
-                   r"ftpmirror\.gnu\.org/gnu/gawk/gawk-5\.3\.2\.tar\.xz"]
-    lines = ["rewrite " + expression + " " + destination for expression in expressions]
-    return original + ("\n# Exact verified mirrors; existing integrity checks remain enforced by Bazel.\n" +
-                       "\n".join(lines) + "\n").encode()
+    return original
 
 
 def require(value, message):
@@ -55,8 +48,16 @@ def require(value, message):
         raise ValueError(message)
 
 
+def selected_worker_pool():
+    pool = os.environ.get("WORKER_POOL", "sonic-slave-container-dpool")
+    require(pool in POOLS, "Unknown source-worker pool")
+    return pool
+
+
 def selection(image, revision):
     require(image in DRIVERS, "Unknown source image")
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(image in ("syncd", "gearbox"), "Image is not admitted to the K3s source-worker pool")
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "Source revision must be a full lowercase Git SHA")
     catalog = os.environ.get("SOURCE_REGISTRY_REVISION", "")
     require(not catalog or re.fullmatch(r"[0-9a-f]{40}", catalog),
@@ -199,14 +200,253 @@ print(json.dumps({"private_network_namespace": True, "tap_created_and_closed": T
         "device_major": 10, "device_minor": 200, "scope": "disposable network namespace; no VM or KVM"}, indent=2) + "\n")
 
 
+EXECUTION_NETWORK_PROBE = '''import json, os, urllib.error, urllib.request
+names = ("http_proxy", "https_proxy", "all_proxy", "no_proxy",
+         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
+result = {"uid": os.getuid(), "proxy_names_present": {name: name in os.environ for name in names},
+          "urllib_proxy_schemes": sorted(set(urllib.request.getproxies()) & {"http", "https", "ftp", "all", "no"})}
+try:
+    with urllib.request.urlopen("https://deb.debian.org/debian/dists/trixie/InRelease", timeout=10) as response:
+        result["http_status"] = response.status
+except urllib.error.HTTPError as error:
+    result.update(http_status=error.code, error_class="HTTPError")
+except Exception as error:
+    result["error_class"] = type(error).__name__
+print(json.dumps(result))
+'''
+
+
+APT_TRANSPORT_PROBE = '''import hashlib, json, os, pwd, resource, shlex, signal, stat, subprocess, tempfile, time
+CAP = 1024 * 1024
+URL = "https://deb.debian.org/debian/dists/trixie/InRelease"
+PROXIES = tuple("Acquire::" + protocol + "::" + key for protocol in ("http", "https")
+                for key in ("Proxy", "Proxy::deb.debian.org", "Proxy-Auto-Detect", "ProxyAutoDetect"))
+FIELDS = PROXIES + ("Acquire::EnableSrvRecords/b", "APT::Sandbox::User", "Debug::NoDropPrivs/b")
+
+def configuration():
+    keys = FIELDS + tuple("Binary::" + method + "::" + key for method in ("http", "https") for key in FIELDS)
+    args = ["apt-get", "shell"]
+    for index, key in enumerate(keys):
+        args.extend(("K" + str(index), key))
+    # The executable is a query, not apt-get. argv[0] selects apt-get's Binary scope.
+    raw = subprocess.run(args, executable="/usr/bin/apt-config", check=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5).stdout
+    if len(raw) > 65536:
+        raise ValueError("configuration size")
+    values = {}
+    for token in shlex.split(raw):
+        key, separator, value = token.partition("=")
+        if not separator or key not in {"K" + str(i) for i in range(len(keys))} or key in values:
+            raise ValueError("configuration format")
+        values[key] = value
+    for index in (8, 10):
+        if "K" + str(index) in values and values["K" + str(index)] not in ("true", "false"):
+            raise ValueError("configuration boolean")
+    sandbox = values.get("K9", "_apt")
+    return {"proxy_entries_present": ["K" + str(i) in values for i in range(8)],
+            "srv_enabled": values.get("K8", "true") == "true", "srv_default": "K8" not in values,
+            "sandbox_kind": sandbox if sandbox in ("_apt", "root", "") else "other",
+            "no_drop_privs": values.get("K10", "false") == "true",
+            "method_overrides_present": any("K" + str(i) in values for i in range(11, len(keys))),
+            "apt_config_present": "APT_CONFIG" in os.environ}
+
+def stop(process):
+    # The leader is still unreaped: its PID/PGID cannot be recycled during cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    time.sleep(2)
+    # A leader can exit before a method child. Always finish the owned group,
+    # then reap the leader; waiting for the leader alone cannot prove cleanup.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=2)
+
+def download(directory, disable_srv):
+    path = os.path.join(directory, "srv-disabled" if disable_srv else "baseline")
+    args = ["apt-get", "-o", "Acquire::Retries=0", "-o", "Acquire::http::Timeout=10",
+            "-o", "Acquire::https::Timeout=10"]
+    if disable_srv:
+        args += ["-o", "Acquire::EnableSrvRecords=false"]
+    args += ["download-file", URL, path]
+    # apt-helper uses APT's normal HTTPS acquisition, with apt-get's Binary scope.
+    process = subprocess.Popen(args, executable="/usr/lib/apt/apt-helper", start_new_session=True,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = {"status": "exit_failure"}
+    leader_owned = True
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            state = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if state is not None:
+                result["exit_code"] = state.si_status if state.si_code == os.CLD_EXITED else -state.si_status
+                break
+            time.sleep(0.05)
+        else:
+            result["status"] = "timeout"
+    except ChildProcessError:
+        # Do not signal a numeric group if an unexpected external reaper took
+        # away the leader identity that protects it against PID reuse.
+        leader_owned = False
+        raise
+    finally:
+        if leader_owned:
+            stop(process)
+    if result.get("exit_code") == 0:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or not 0 < size <= CAP:
+                return {"status": "size_or_type_rejected", "exit_code": 0}
+            data = stream.read(CAP + 1)
+        if len(data) != size:
+            return {"status": "size_or_type_rejected", "exit_code": 0}
+        result.update(status="downloaded", bytes=size, sha256=hashlib.sha256(data).hexdigest())
+    return result
+
+def main():
+    result = {"scope": "transport_only_no_signature_verification"}
+    try:
+        if os.getuid() != 0:
+            raise PermissionError("diagnostic identity")
+        config = configuration()
+        result["config"] = config
+        if config["method_overrides_present"] or config["sandbox_kind"] == "other":
+            result["status"] = "unsupported_configuration"
+            return result
+        account = pwd.getpwnam("_apt") if config["sandbox_kind"] == "_apt" else None
+        if account is not None and account.pw_uid == 0:
+            raise ValueError("sandbox identity")
+        # Generic download-file has no MaxReleaseFileSize bound. This limit is
+        # inherited by the helper and its methods, and applies only in this child.
+        resource.setrlimit(resource.RLIMIT_FSIZE, (CAP, CAP))
+        os.umask(0o077)
+        with tempfile.TemporaryDirectory(prefix="sonic-apt-diagnostic-") as directory:
+            if account is not None:
+                os.chown(directory, account.pw_uid, account.pw_gid)
+            # Private mode0700 remains accessible to the configured sandbox user;
+            # an inaccessible root-only target would make APT fall back to root.
+            result["attempts"] = []
+            for disable_srv in (False, True):
+                try:
+                    result["attempts"].append(download(directory, disable_srv))
+                except Exception as error:
+                    result["attempts"].append({"status": "error", "error_class": type(error).__name__})
+        result["status"] = "completed"
+    except Exception as error:
+        result.update(status="error", error_class=type(error).__name__)
+    return result
+
+if __name__ == "__main__":
+    print(json.dumps(main()))
+'''
+
+
+def prepare_apt_transport(artifacts):
+    """Keep only typed, bounded transport evidence; never publish APT output."""
+    try:
+        value = json.loads(output(["sudo", "-n", sys.executable, "-I", "-c", APT_TRANSPORT_PROBE],
+                                  timeout=50, stderr=subprocess.DEVNULL))
+        require(set(value) <= {"scope", "status", "config", "attempts", "error_class"} and
+                value["scope"] == "transport_only_no_signature_verification" and
+                value["status"] in {"completed", "error", "unsupported_configuration"}, "Unexpected APT diagnostic")
+        if value["status"] == "completed":
+            require("config" in value and "attempts" in value, "Incomplete APT diagnostic")
+        if value["status"] == "unsupported_configuration":
+            require("config" in value and "attempts" not in value, "Unexpected skipped APT attempts")
+        if "config" in value:
+            config = value["config"]
+            booleans = {"srv_enabled", "srv_default", "no_drop_privs", "method_overrides_present", "apt_config_present"}
+            require(set(config) == booleans | {"proxy_entries_present", "sandbox_kind"} and
+                    all(type(config[key]) is bool for key in booleans) and
+                    type(config["proxy_entries_present"]) is list and len(config["proxy_entries_present"]) == 8 and
+                    all(type(item) is bool for item in config["proxy_entries_present"]) and
+                    config["sandbox_kind"] in {"_apt", "root", "", "other"}, "Unexpected APT configuration diagnostic")
+        if "attempts" in value:
+            require(type(value["attempts"]) is list and len(value["attempts"]) == 2, "Unexpected APT attempts")
+        for row in [value, *value.get("attempts", [])]:
+            if row is not value:
+                require(set(row) <= {"status", "exit_code", "bytes", "sha256", "error_class"} and
+                        row["status"] in {"downloaded", "exit_failure", "timeout", "size_or_type_rejected", "error"},
+                        "Unexpected APT transport result")
+                if "exit_code" in row:
+                    require(type(row["exit_code"]) is int and -128 <= row["exit_code"] <= 255, "Unexpected APT exit")
+                if row["status"] == "downloaded":
+                    require(row.get("exit_code") == 0 and type(row.get("bytes")) is int and
+                            0 < row["bytes"] <= 1024 * 1024 and type(row.get("sha256")) is str and
+                            re.fullmatch("[0-9a-f]{64}", row["sha256"]), "Unexpected APT downloaded bytes")
+                else:
+                    require("bytes" not in row and "sha256" not in row, "Unexpected partial APT digest")
+            if "error_class" in row:
+                require(type(row["error_class"]) is str and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", row["error_class"]),
+                        "Unexpected APT error class")
+        safe_json(value)
+    except Exception as error:
+        value = {"status": "error", "error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-apt-transport.json").write_text(json.dumps(value, indent=2) + "\n")
+    except OSError:
+        print("Worker APT transport diagnostic could not be retained", file=sys.stderr)
+
+
+def prepare_execution_network(artifacts):
+    """Compare the two existing APT execution identities without recording values."""
+    result = {}
+    names = {"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+             "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"}
+    for context, prefix, expected_uid in (("worker", [], 1000), ("sudo", ["sudo", "-n"], 0)):
+        try:
+            value = json.loads(output([*prefix, sys.executable, "-I", "-c", EXECUTION_NETWORK_PROBE],
+                                      timeout=20, stderr=subprocess.DEVNULL))
+            require(set(value) <= {"uid", "proxy_names_present", "urllib_proxy_schemes", "http_status", "error_class"},
+                    "Unexpected network diagnostic field")
+            require(type(value["uid"]) is int and value["uid"] == expected_uid, "Unexpected diagnostic UID")
+            require(set(value["proxy_names_present"]) == names and
+                    all(type(present) is bool for present in value["proxy_names_present"].values()),
+                    "Unexpected proxy presence diagnostic")
+            require(isinstance(value["urllib_proxy_schemes"], list) and
+                    all(scheme in {"http", "https", "ftp", "all", "no"} for scheme in value["urllib_proxy_schemes"]),
+                    "Unexpected proxy scheme diagnostic")
+            require("http_status" in value or "error_class" in value, "Missing network diagnostic outcome")
+            if "http_status" in value:
+                require(type(value["http_status"]) is int and 100 <= value["http_status"] <= 599,
+                        "Unexpected HTTP status diagnostic")
+            if "error_class" in value:
+                require(isinstance(value["error_class"], str) and
+                        re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value["error_class"]),
+                        "Unexpected network error class")
+            safe_json(value)
+            result[context] = value
+        except Exception as error:
+            result[context] = {"error_class": type(error).__name__}
+    try:
+        (artifacts / "worker-execution-network.json").write_text(json.dumps(result, indent=2) + "\n")
+    except OSError:
+        # The existing APT command remains authoritative even if diagnostics cannot be retained.
+        print("Worker execution network diagnostic could not be retained", file=sys.stderr)
+    prepare_apt_transport(artifacts)
+
+
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
     packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
-        run(["sudo", "-n", "apt-get", "update"])
-        run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y",
-             "--no-install-recommends", *missing])
+        try:
+            run(["sudo", "-n", "apt-get", "-o", "Acquire::EnableSrvRecords=false", "update"])
+            run(["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get",
+                 "-o", "Acquire::EnableSrvRecords=false", "install", "-y",
+                 "--no-install-recommends", *missing])
+        except subprocess.CalledProcessError:
+            try:
+                prepare_execution_network(artifacts)
+            except Exception:
+                # Diagnostics must not replace the original APT failure.
+                print("Worker execution network diagnostic failed", file=sys.stderr)
+            raise
     for tool in packages:
         require(shutil.which(tool), "Missing image validation tool: " + tool)
     versions = output(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\n", *sorted(set(packages.values()))])
@@ -255,6 +495,7 @@ def launcher_text(binary, base, profile):
              "--local_resources=memory=" + str(profile["scheduler_memory_mb"])]
     return ("#!/usr/bin/env python3\nimport os, sys\n" +
             "binary = " + repr(binary) + "\nbase = " + repr(str(base)) + "\nargs = sys.argv[1:]\n" +
+            "if args == ['--version']:\n    os.execv(binary, [binary, '--version'])\n" +
             "if any(value in ('build', 'test', 'aquery', 'cquery') for value in args):\n" +
             "    args.extend(" + repr(flags) + ")\n" +
             "os.execv(binary, [binary, '--output_base=' + base, '--host_jvm_args=-Xmx" +
@@ -292,7 +533,7 @@ def temporary_directory():
     run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
     runner = os.environ.get("RUNNER_NAME", "")
     require(all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, attempt)) and
-            re.fullmatch(r"sonic-slave-lgh114-[1-4]", runner), "Invalid worker scratch identity")
+            worker_matches_pool(runner, selected_worker_pool()), "Invalid worker scratch identity")
     require(name == f"source-image-scratch-{run_id}-{attempt}-{runner}", "Worker scratch path differs from this run")
     path = root / name
     require(not path.is_symlink() and path.resolve() == path, "Worker scratch path must not traverse symlinks")
@@ -300,7 +541,7 @@ def temporary_directory():
 
 
 
-def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
+def configure_worker_mirrors(phase, artifacts, *, config=None, public=None, image=None):
     config = config or temporary_directory() / "source-image-mirrors.cfg"
     if phase == "cleanup-mirrors":
         config.unlink(missing_ok=True)
@@ -309,14 +550,49 @@ def configure_worker_mirrors(phase, artifacts, *, config=None, public=None):
     sys.path.insert(0, str(registry_ci))
     import private_mirrors
     roots = {key: os.environ.pop(key, "") for key, _ in private_mirrors.MIRROR_ROOTS}
-    redactor = private_mirrors.Redactor([root for root in roots.values() if root])
+    budget = None
+    if phase == "scan-mirrors" and image == "p4rt":
+        from mirror_privacy import TemporaryBudget
+        directory = artifacts / "mirror-scan-temporaries"
+        directory.mkdir(mode=0o700)
+        budget = TemporaryBudget(directory, maximum_bytes=32 * 1024 ** 3, minimum_free_bytes=16 * 1024 ** 3)
+    redactor = private_mirrors.Redactor([root for root in roots.values() if root],
+                                      **({"temporary_budget": budget} if budget else {}))
     redactor.mask_github()
     if phase == "scan-mirrors":
         public = public or artifacts / "public"
-        redactor.scrub_and_scan(public)
-        # Published image receipts bind their evidence and payloads by hash.
-        require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        try:
+            redactor.scrub_and_scan(public)
+            # Published image receipts bind their evidence and payloads by hash.
+            require(not (public / "mirror-redaction.json").exists(), "Private mirror location in staged image evidence")
+        finally:
+            if budget:
+                # Scalar diagnostics survive a failed scan; errors still fail the step.
+                print("Mirror scan temporary budget: " + json.dumps(budget.usage()), file=sys.stderr)
+        if budget:
+            usage = budget.usage()
+            require(all(type(value) is int and value >= 0 for value in usage.values()) and
+                    usage["live_bytes"] == usage["open_files"] == 0,
+                    "Scanner temporary files did not close cleanly")
+            measured = bool(redactor.patterns)
+            metrics = {"status": "passed" if measured else "not_run_no_private_patterns",
+                       "traversal_measured": measured,
+                       "maximum_bytes": usage["maximum_bytes"], "minimum_free_bytes": usage["minimum_free_bytes"]}
+            if measured:
+                metrics.update(peak_charged_temporary_bytes=usage["peak_bytes"],
+                               peak_open_files=usage["peak_open_files"], live_bytes=0, open_files=0)
+            path = public / "worker.json"
+            require(path.is_file() and not path.is_symlink(), "Missing regular worker receipt")
+            receipt = json.loads(path.read_text())
+            require(receipt.get("image") == "p4rt" and "mirror_scan" not in receipt,
+                    "Unexpected worker scan receipt")
+            receipt["mirror_scan"] = metrics
+            safe_json(receipt)
+            # Export copied this small JSON; the later CI bundle binds its final hash.
+            path.write_text(json.dumps(receipt, indent=2) + "\n")
         return
+    if selected_worker_pool() == "sonic-slave-container-k3s":
+        require(not any(roots.values()), "K3s source workers use only the existing public downloader")
     mirrors = private_mirrors.selected_mirrors(roots)
     if mirrors:
         require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
@@ -334,10 +610,14 @@ def prepare(args):
     workspace, artifacts = args.workspace, args.artifacts
     if args.image == "teamd":
         prepare_teamd_kernel(artifacts)
-    preflight = measure(os.environ.get("RUNNER_NAME", ""))
+    pool = selected_worker_pool()
+    preflight = measure(os.environ.get("RUNNER_NAME", ""), pool)
     (artifacts / "worker-preflight.json").write_text(json.dumps(preflight, indent=2) + "\n")
     require(preflight["status"] == "passed", "Worker resource/capability preflight failed")
     profile = preflight["build_profile"]
+    if pool == "sonic-slave-container-k3s":
+        require(profile == select_build_profile(20 * 1024**3, 6),
+                "K3s worker limits differ from the measured two-action profile")
     require(os.getuid() == 1000 and os.getgid() == 1000, "Expected worker UID/GID1000")
     require(platform.machine() == "x86_64" and
             platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie", "Expected native AMD64 Debian Trixie")
@@ -357,7 +637,7 @@ def prepare(args):
     require(Path("/etc/ssl/certs/java/cacerts").is_file() and os.access("/etc/ssl/certs/java/cacerts", os.R_OK),
             "Missing readable system Java trust store")
     run(["sudo", "-n", "true"])
-    for mount in ("/actions", "/bazel_cache"):
+    for mount in (("/actions", "/bazel_cache") if pool == "sonic-slave-container-dpool" else ("/actions",)):
         run(["mountpoint", "-q", mount])
     require(output(["findmnt", "-n", "-o", "FSTYPE", "-T", "/actions"]) in ("ext4", "xfs"), "Docker storage requires ext4 or XFS")
     if args.image == "syncd":
@@ -370,7 +650,7 @@ def prepare(args):
     catalog = catalog_for(args.image, workspace, os.environ.get("SOURCE_REGISTRY_REVISION", ""))
     if args.image == "sysmgr":
         run(["git", "-C", str(workspace), "submodule", "update", "--init", "--", "src/sonic-sysmgr/gnoi"])
-    cache = Path("/bazel_cache/source-images") / runner
+    cache = worker_cache_root(pool) / "source-images" / runner
     require(cache.resolve() == cache, "Cache path must not traverse symlinks")
     for name in ("repository", "disk", "bazelisk", args.image + "/output-base"):
         (cache / name).mkdir(parents=True, exist_ok=True)
@@ -613,7 +893,7 @@ def main():
     elif args.phase == "verify-input-run":
         verify_input_run(args)
     elif args.phase in ("prepare-mirrors", "scan-mirrors", "cleanup-mirrors"):
-        configure_worker_mirrors(args.phase, args.artifacts)
+        configure_worker_mirrors(args.phase, args.artifacts, image=args.image)
     elif args.phase == "prepare":
         prepare(args)
     elif args.phase == "publish":
