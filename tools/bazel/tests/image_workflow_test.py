@@ -77,7 +77,16 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(gate["needs"], [
             "archive", "database_acceptance", "frr_runtime", "teamd_runtime",
             "radv_acceptance", "lldp_runtime", "mux_runtime", "gearbox_runtime", "macsec_runtime",
+            "dash_engine_runtime",
         ])
+        dash = jobs["dash_engine_archive"]
+        self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(dash["timeout-minutes"], 360)
+        self.assertNotIn("needs", dash)
+        self.assertEqual(jobs["dash_engine_runtime"]["needs"], "dash_engine_archive")
+        self.assertEqual(jobs["dash_engine_runtime"]["runs-on"], "ubuntu-24.04")
+        self.assertTrue(any("dash_engine_loaded.py" in step.get("run", "")
+                            for step in jobs["dash_engine_runtime"]["steps"]))
         self.assertEqual(jobs["macsec_runtime"]["needs"], "archive")
         self.assertTrue(any("macsec_loaded.py" in step.get("run", "")
                             for step in jobs["macsec_runtime"]["steps"]))

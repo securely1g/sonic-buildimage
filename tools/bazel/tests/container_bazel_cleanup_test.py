@@ -413,7 +413,7 @@ class ContainerCleanupWorkflowTest(unittest.TestCase):
         action = "./.github/actions/bazel-post-job-cleanup"
         selected = {name for name, job in jobs.items()
                     if any(step.get("uses") == action for step in job["steps"])}
-        self.assertEqual(selected, {"archive", "gearbox_archive", "radv_native"})
+        self.assertEqual(selected, {"archive", "gearbox_archive", "dash_engine_archive", "radv_native"})
         self.assertEqual({entry["architecture"] for entry in jobs["archive"]["strategy"]["matrix"]["include"]},
                          {"amd64", "arm64"})
         for name in selected:
