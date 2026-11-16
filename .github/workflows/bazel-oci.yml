@@ -1942,7 +1942,7 @@ jobs:
     # Keep the required status on the job that actually loads and tests both archives.
     name: Container archive (AMD64)
     if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
-    needs: [archive, database_acceptance, frr_runtime, teamd_runtime, radv_acceptance, lldp_runtime, mux_runtime, gearbox_runtime]
+    needs: [archive, database_acceptance, frr_runtime, teamd_runtime, radv_acceptance, lldp_runtime, mux_runtime, gearbox_runtime, macsec_runtime]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
