@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Retain four genuine owner-test outcomes and a separate auxiliary installation."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import importlib
 import json
@@ -9,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import tempfile
 from urllib.parse import unquote, urlparse
 
 HELPER_SHA = '90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8'
@@ -192,7 +194,51 @@ def capture_registered(captures, output, retain, result):
     return complete
 
 
-def run(root):
+MODES = ('four-tests', 'short-wheel-tests')
+
+
+def targets_for_mode(mode):
+    require(mode in MODES, 'Unknown owner-test mode')
+    return TARGETS[:3] if mode == 'short-wheel-tests' else TARGETS
+
+
+@contextmanager
+def test_temporary_options(mode, receipt):
+    """Use Bazel's isolated per-test directories beneath a short job-owned base."""
+    targets_for_mode(mode)
+    if mode == 'four-tests':
+        yield []
+        return
+    configured = os.environ.get('RUNNER_TEMP', '')
+    parent = Path(configured)
+    require(configured and parent.is_absolute() and parent.is_dir() and
+            not parent.is_symlink() and parent.resolve(strict=True) == parent,
+            'Short wheel tests require the existing absolute runner temporary directory')
+    require(re.fullmatch(r'/[A-Za-z0-9_./-]+', str(parent)) and
+            len(str(parent).encode()) <= 37,
+            'Runner temporary directory is not a short portable path')
+    allocated = None
+    record = {'policy': 'bazel-test-tmpdir', 'per_test_isolation': 'bazel-managed',
+              'cleanup_complete': False}
+    receipt['test_temporary_directory'] = record
+    try:
+        with tempfile.TemporaryDirectory(prefix='swt-', dir=parent) as temporary:
+            allocated = Path(temporary)
+            require(allocated.parent == parent and not allocated.is_symlink() and
+                    allocated.resolve(strict=True) == allocated,
+                    'Unexpected wheel test temporary allocation')
+            # Bazel adds /_tmp/<32-character test hash>; the unchanged fixture
+            # adds its private venv. Keep the complete shebang below127bytes.
+            require(len(str(allocated).encode()) <= 50, 'Wheel test temporary base is too long')
+            record.update(path=str(allocated), path_bytes=len(str(allocated).encode()))
+            yield ['--test_tmpdir=' + str(allocated)]
+    finally:
+        if allocated is not None:
+            record['cleanup_complete'] = not os.path.lexists(allocated)
+
+
+def run(root, mode='four-tests'):
+    targets = targets_for_mode(mode)
     control, source, scratch = [root / name for name in ('control', 'source', 'scratch')]
     helper = load_module(control / 'tools/bazel/ci/build_vs_coherent_installed_policies.py',
                          HELPER_SHA, '_owner_diagnostic_cohort')
@@ -220,10 +266,11 @@ def run(root):
     private.mkdir(mode=0o700)
     output.mkdir(mode=0o700)
     receipt = {'status': 'preparing', 'commands': []}
-    result = {'schema': 1, 'status': 'running', 'scope': 'Four owner-test diagnostic only',
+    result = {'schema': 1, 'status': 'running', 'scope': ('Three unchanged wheel tests with short Bazel temporary directories'
+                        if mode == 'short-wheel-tests' else 'Four owner-test diagnostic only'),
               'image_acceptance': False, 'source_revision': plan['source_revision'],
               'native_revision': plan['native_revision'], 'controller_sha256': CONTROLLER_SHA,
-              'targets': list(TARGETS), 'files': {}, 'test_stage': 'not-run',
+              'targets': list(targets), 'test_mode': mode, 'files': {}, 'test_stage': 'not-run',
               'auxiliary_stage': 'not-run', 'original_failed_execution_scripts': False}
     stage, captures = 'source-preparation', []
     retention_failed = False
@@ -270,22 +317,24 @@ def run(root):
         actions = private / 'actions.json'
         actions.touch(mode=0o600)
         execute([bazel, 'aquery', *options, '--output=jsonproto',
-                 'deps(set(' + ' '.join(TARGETS) + '))'], private, receipt, 'actions', output_path=actions)
+                 'deps(set(' + ' '.join(targets) + '))'], private, receipt, 'actions', output_path=actions)
         audit = owner.inspect_actions(actions)
         require(not audit['deb_outputs'], 'Owner diagnostic produces DEB outputs')
         require(not audit['packaging_wrappers'], 'Owner diagnostic uses packaging wrappers')
         result['action_audit'] = audit
         stage = 'configured-test-labels'
-        labels = owner.configured_test_labels(TARGETS, bazel, options, private, receipt, execute)
+        labels = owner.configured_test_labels(targets, bazel, options, private, receipt, execute)
         events = private / 'tests.events.json'
         events.touch(mode=0o600, exist_ok=False)
         captures.extend([('private/tests.events.json', events), ('private/tests.command.log', private / 'tests.log')])
         stage, result['test_stage'] = 'four-tests', 'running'
         returncode = 0
         try:
-            execute([bazel, 'test', *options, '--nocache_test_results', '--test_output=errors',
-                     '--nozip_undeclared_test_outputs', '--build_event_json_file=' + str(events),
-                     *TARGETS], private, receipt, 'tests')
+            with test_temporary_options(mode, receipt) as temporary_options:
+                execute([bazel, 'test', *options, *temporary_options,
+                         '--nocache_test_results', '--test_output=errors',
+                         '--nozip_undeclared_test_outputs', '--build_event_json_file=' + str(events),
+                         *targets], private, receipt, 'tests')
         except subprocess.CalledProcessError as error:
             returncode = error.returncode
         result['test_returncode'] = returncode
@@ -298,9 +347,10 @@ def run(root):
         for (label, name), path in sorted(originals.items()):
             retain('private/tests/' + label.rsplit(':', 1)[1] + '/' + name, path)
         # Reuse the owner's exact required standard-output checks after either exit.
-        owner.collect_test_outputs(events, private, TARGETS, labels)
-        require(('@scapy//:upstream_test', 'test.outputs/upstream-xunit.xml') in originals,
-                'Scapy original xUnit is missing')
+        owner.collect_test_outputs(events, private, targets, labels)
+        if mode == 'four-tests':
+            require(('@scapy//:upstream_test', 'test.outputs/upstream-xunit.xml') in originals,
+                    'Scapy original xUnit is missing')
         stage, result['auxiliary_stage'] = 'auxiliary-inputs', 'running'
         execution_root = owner.build.execution_root(events)
         owned_root = scratch.resolve(strict=True)
@@ -397,8 +447,9 @@ def run(root):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--mode', choices=MODES, default='four-tests')
     args = parser.parse_args()
     require(args.root.is_absolute() and not args.root.is_symlink() and
             args.root.resolve(strict=True) == args.root, 'Root must be the existing private job directory')
-    raise SystemExit(run(args.root))
+    raise SystemExit(run(args.root, args.mode))
 

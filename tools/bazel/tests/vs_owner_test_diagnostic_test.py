@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 def module(path, name):
@@ -206,6 +207,76 @@ class OwnerDiagnosticTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertFalse(result['files']['failed.raw']['retained'])
         self.assertEqual((output / 'good.raw').read_bytes(), b'exact original')
+
+
+class ShortWheelTemporaryTests(unittest.TestCase):
+    def test_original_four_target_mode_has_no_temp_override(self):
+        with mock.patch.object(OWNER.tempfile, 'TemporaryDirectory') as allocation:
+            receipt = {}
+            with OWNER.test_temporary_options('four-tests', receipt) as options:
+                self.assertEqual(options, [])
+            allocation.assert_not_called()
+            self.assertEqual(receipt, {})
+            self.assertEqual(OWNER.targets_for_mode('four-tests'), OWNER.TARGETS)
+
+    def test_focused_mode_preserves_exact_three_wheel_targets(self):
+        self.assertEqual(OWNER.targets_for_mode('short-wheel-tests'), OWNER.TARGETS[:3])
+        with self.assertRaisesRegex(ValueError, 'Unknown'):
+            OWNER.targets_for_mode('skip-failures')
+
+    def test_private_short_bases_are_distinct_and_cleaned(self):
+        with tempfile.TemporaryDirectory(prefix='st-', dir='/tmp') as root:
+            with mock.patch.dict(os.environ, {'RUNNER_TEMP': root}):
+                first, second = {}, {}
+                with OWNER.test_temporary_options('short-wheel-tests', first) as one:
+                    one_path = Path(one[0].split('=', 1)[1])
+                    self.assertEqual(one_path.parent, Path(root))
+                    self.assertEqual(one_path.stat().st_mode & 0o777, 0o700)
+                    self.assertLessEqual(len(str(one_path).encode()), 50)
+                    with OWNER.test_temporary_options('short-wheel-tests', second) as two:
+                        two_path = Path(two[0].split('=', 1)[1])
+                        self.assertNotEqual(one_path, two_path)
+                        self.assertTrue(one_path.is_dir() and two_path.is_dir())
+                    self.assertFalse(two_path.exists())
+                self.assertFalse(one_path.exists())
+                self.assertTrue(Path(root).is_dir())
+                self.assertTrue(first['test_temporary_directory']['cleanup_complete'])
+                self.assertTrue(second['test_temporary_directory']['cleanup_complete'])
+
+    def test_test_failure_still_cleans_only_owned_temporary_base(self):
+        with tempfile.TemporaryDirectory(prefix='st-', dir='/tmp') as root:
+            marker = Path(root) / 'unrelated'
+            marker.write_bytes(b'preserve')
+            with mock.patch.dict(os.environ, {'RUNNER_TEMP': root}):
+                receipt = {}
+                with self.assertRaisesRegex(RuntimeError, 'original test failure'):
+                    with OWNER.test_temporary_options('short-wheel-tests', receipt) as options:
+                        allocated = Path(options[0].split('=', 1)[1])
+                        (allocated / 'test-child').mkdir()
+                        raise RuntimeError('original test failure')
+                self.assertFalse(allocated.exists())
+                self.assertTrue(receipt['test_temporary_directory']['cleanup_complete'])
+                self.assertEqual(marker.read_bytes(), b'preserve')
+
+    def test_missing_relative_or_symlink_runner_temp_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='st-', dir='/tmp') as root:
+            link = Path(root) / 'link'
+            link.symlink_to(root, target_is_directory=True)
+            for value in ('', 'relative', str(link)):
+                with self.subTest(value=value), mock.patch.dict(os.environ, {'RUNNER_TEMP': value}):
+                    with self.assertRaisesRegex(ValueError, 'existing absolute'):
+                        with OWNER.test_temporary_options('short-wheel-tests', {}):
+                            self.fail('Invalid runner temp accepted')
+
+    def test_long_or_space_runner_temp_is_rejected(self):
+        with tempfile.TemporaryDirectory(prefix='st-', dir='/tmp') as root:
+            for name in ('x' * 50, 'with space'):
+                parent = Path(root) / name
+                parent.mkdir()
+                with self.subTest(name=name), mock.patch.dict(os.environ, {'RUNNER_TEMP': str(parent)}):
+                    with self.assertRaisesRegex(ValueError, 'short portable'):
+                        with OWNER.test_temporary_options('short-wheel-tests', {}):
+                            self.fail('Unusable runner temp accepted')
 
 
 if __name__ == '__main__':

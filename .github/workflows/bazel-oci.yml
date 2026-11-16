@@ -11,6 +11,11 @@ on:
         type: choice
         options: [none, vs-bitarray-abi-debug, vs-bitarray-registry-qualification, vs-native-elf, vs-native-layer11, vs-coherent-installed-policies, vs-native-provenance, vs-swss-installed-policy, preflight, vs-host-siblings, vs-socat-binary, vs-binary-config, vs-original-inputs, vs-original-objects, vs-legacy-original-objects, vs-apt-policy, vs-apt-hook-source, vs-archive-config, vs-legacy-archives, vs-inspect, vs-tests, vs-inputs, vs-runtime, vs-cache-inspect, vs-cache-payloads, vs-native-cache, vs-mgmt-metadata, vs-mgmt-blobs, vs-remote-cache, vs-cache-transport, vs-cache-dns, vs-cache-config, vs-native-inventory, vs-native-syncd-inventory, vs-native-gearbox-inventory, vs-native-p4rt-loaded, worker-provenance, registry-native, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, framework, teamd, database, eventd, lldp, radv, macsec, mux, frr, p4rt, vs-configured-source-diagnostic, vs-kernel-preserve, vs-owner-test-diagnostic]
         default: none
+      owner_test_mode:
+        description: Focused owner validation mode (vs-owner-test-diagnostic only)
+        type: choice
+        options: [four-tests, short-wheel-tests]
+        default: four-tests
       source_ci_request:
         description: Optional immutable normal-CI request artifact ID for reviewed Syncd, Gearbox or P4RT validation
         type: string
@@ -6733,7 +6738,7 @@ jobs:
           import hashlib, json, os
           from pathlib import Path
           root = Path(os.environ['POLICY_ROOT']) / 'control'
-          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":148701,"sha256":"6f3fbed8992917dea3b0003a1f48405f1bded94fbacedf60206c07dbea5714c9"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":21314,"sha256":"1ede9fe34763907665b13fd3b03abcfb1965661f22eed266d073b6f7de657920"},"tools/bazel/ci/diagnose_vs_owner_tests.py":{"bytes":21982,"sha256":"28fee4c54f4a49ae9d4849ef0e71f199f4dfd426844f91ed67304882f5501178"},"tools/bazel/ci/auxiliary_installed_wheel_diagnostic.py":{"bytes":16984,"sha256":"c9346693da1be654cf7f19e3781d1cdda7b59f4618e03425fb69f91e9a25af34"}}')
+          expected = json.loads('{"tools/bazel/ci/build_vs_coherent_installed_policies.py":{"bytes":154062,"sha256":"90742f5704f634585290602893d58e704f5fad3b73ee46165758e4f984bc3de8"},"tools/bazel/ci/vs_coherent_installed_policy_inputs.json":{"bytes":34000,"sha256":"f684d202b09b6b25aad97058f1f6d63e56b78d993738113f058d64eb49e0dbfd"},"tools/bazel/tests/vs_coherent_installed_policy_test.py":{"bytes":148701,"sha256":"6f3fbed8992917dea3b0003a1f48405f1bded94fbacedf60206c07dbea5714c9"},"tools/bazel/ci/build_vs_swss_installed_policy.py":{"bytes":12396,"sha256":"23b9ac054d9fb8bec5346f771e5e32521b291f25cf6d9b55a56c01c5d7732f44"},"tools/bazel/ci/vs_original_metadata/kernel-context-744d.json":{"bytes":4729,"sha256":"8d343a4fffb57cede10b8cc238999e32fac282ccd545e69d8a760949037b5b33"},"tools/bazel/ci/vs_component_runtime_owner.py":{"bytes":78367,"sha256":"6488353fcc2e840b5838229b222cc98eb7413d48b6e3ebb642edd0613443c5af"},"tools/bazel/tests/vs_component_runtime_test.py":{"bytes":12324,"sha256":"604293921ab514744699d9e2f4006474fc952e8e38797e6068c71c160ec5752a"},"tools/bazel/tests/vs_component_runtime_callback_test.py":{"bytes":17296,"sha256":"7db5b7f4a15646c6c93bba66bb988f4d8ae882acdc0dd60923e1989860ffee35"},"tools/bazel/ci/container.py":{"bytes":21314,"sha256":"1ede9fe34763907665b13fd3b03abcfb1965661f22eed266d073b6f7de657920"},"tools/bazel/ci/diagnose_vs_owner_tests.py":{"bytes":24485,"sha256":"441f55014d78cfd39bdefd4239c5c84f0f3e399706ecfc825b060138571d1be8"},"tools/bazel/ci/auxiliary_installed_wheel_diagnostic.py":{"bytes":16984,"sha256":"c9346693da1be654cf7f19e3781d1cdda7b59f4618e03425fb69f91e9a25af34"}}')
           for name, identity in expected.items():
               path = root / name
               if path.is_symlink() or not path.is_file():
@@ -6839,7 +6844,7 @@ jobs:
             --source "$POLICY_ROOT/source" --native "$POLICY_ROOT/native" \
             --scratch "$POLICY_ROOT/scratch" --output "$POLICY_ROOT/outputs" \
             --archives "$POLICY_ROOT/inputs" --mirrors "$POLICY_ROOT/catalog/ci/source_mirrors.cfg"
-      - name: Run four original tests and retain separate auxiliary evidence
+      - name: Run selected original owner tests and retain separate auxiliary evidence
         id: diagnostic
         timeout-minutes: 60
         env:
@@ -6851,13 +6856,14 @@ jobs:
           BAZELISK_HOME: ${{ steps.paths.outputs.root }}/scratch/bazelisk
           TMPDIR: ${{ steps.paths.outputs.root }}/scratch/temporary
           PYTHONDONTWRITEBYTECODE: '1'
+          OWNER_TEST_MODE: ${{ inputs.owner_test_mode || 'four-tests' }}
           SONIC_CONTAINER_BAZEL_OPTIONS: ''
           SONIC_CONTAINER_BAZEL_CACHE_DIR: ''
           SONIC_SWSS_BAZEL_OPTIONS: ''
           SONIC_SWSS_BAZEL_CACHE_DIR: ''
         run: |
           python3 -I -S -B "$POLICY_ROOT/control/tools/bazel/ci/diagnose_vs_owner_tests.py" \
-            --root "$POLICY_ROOT"
+            --root "$POLICY_ROOT" --mode "$OWNER_TEST_MODE"
       - name: Retain original test evidence and separate auxiliary installation
         if: always() && steps.paths.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
