@@ -18,6 +18,7 @@ const IMAGE_STEP_LABELS = {
   "Build and verify sonic-vs.bin with Bazel": "Build and verify sonic-vs.bin with Bazel",
 };
 const IMAGE_SERIES_STYLES = {
+  [HOST_VS_BUILD_STEP]: ["Host Make .bin + archives", "#b02c45"],
   "Build the VS installer (.bin)": ["Outer Make .bin", "#007f78"],
   "Build sonic-vs.bin directly with slave.mk": ["Direct slave .bin", "#a34d12"],
   "Build the VS image": ["Legacy VM image", "#7458a6"],
@@ -267,11 +268,13 @@ function imageMeasurements(snapshot) {
 function imageSeries(job) {
   const measurement = imageMeasurement(job);
   const names = measurement.signature === null ? [] : JSON.parse(measurement.signature);
-  const label = names.length ? names.map(name => IMAGE_SERIES_STYLES[name][0]).join(" + ") : "Boundary unknown";
+  const styles = names.map(name => Object.hasOwn(IMAGE_SERIES_STYLES, name) ?
+    IMAGE_SERIES_STYLES[name] : [IMAGE_STEP_LABELS[name] ?? "Unknown image step", "#536775"]);
+  const label = styles.length ? styles.map(style => style[0]).join(" + ") : "Boundary unknown";
   return {
     key: JSON.stringify([job.kind, job.architecture || "unknown", measurement.signature]),
     label: `${kindLabel(job)} · ${label} · ${architecture(job)}`,
-    color: names.length === 1 ? IMAGE_SERIES_STYLES[names[0]][1] : "#536775",
+    color: styles.length === 1 ? styles[0][1] : "#536775",
   };
 }
 function selectTrendPoints(points, {series = "all", days = "all", limit = "60", reference = Date.now()} = {}) {

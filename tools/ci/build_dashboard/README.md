@@ -49,6 +49,12 @@ choose **Show all** to remove that display limit. These chart-only controls do
 not filter PR coverage or run history. Hover or focus a point to inspect its
 measured scope, source revision and breakdown availability.
 
+Host-Make installer and paired-archive builds have their own **Host Make .bin +
+archives** series and color. Recognized measurement boundaries without an
+explicit style use their measurement label and a neutral color rather than
+breaking chart rendering. Unrecognized boundaries remain **Boundary unknown**;
+the fallback does not infer a measurement scope or change recorded timings.
+
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
 skipped contributes only to **Skipped**. The latest associated run containing

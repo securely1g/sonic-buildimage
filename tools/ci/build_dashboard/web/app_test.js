@@ -335,6 +335,53 @@ test("direct-slave, outer-Make and legacy image scopes have distinct stable seri
   assert.deepEqual(points, before, "series metadata must not change recorded timings");
 });
 
+test("every recognized measurement boundary has a distinct series style", () => {
+  const context = vm.createContext({module: {exports: {}}, URL});
+  vm.runInContext(readFileSync(require.resolve("./app.js"), "utf8"), context);
+  const names = Array.from(vm.runInContext("Object.keys(IMAGE_STEP_LABELS)", context));
+  const series = names.map(name => imageSeries(timingPoint(name).job));
+  assert.ok(names.includes("Build sonic-vs.bin through the host Make wrapper"));
+  assert.equal(new Set(series.map(value => value.key)).size, names.length);
+  assert.equal(new Set(series.map(value => value.label)).size, names.length);
+  assert.equal(new Set(series.map(value => value.color)).size, names.length);
+  for (const value of series) assert.match(value.color, /^#[0-9a-f]{6}$/);
+});
+
+test("host-Make and unknown boundaries remain selectable without changing measurements", () => {
+  const points = [datedPoint(1, "2026-11-10T00:00:00Z", "Build sonic-vs.bin through the host Make wrapper"),
+    datedPoint(2, "2026-11-11T00:00:00Z", "Future unrecognized image step")];
+  const before = structuredClone(points);
+  const host = imageSeries(points[0].job), unknown = imageSeries(points[1].job);
+  assert.match(host.label, /Host Make \.bin \+ archives/);
+  assert.match(unknown.label, /Boundary unknown/);
+  assert.notEqual(host.color, unknown.color);
+  assert.deepEqual(selectTrendPoints(points, {series: host.key}).points, [points[0]]);
+  assert.deepEqual(selectTrendPoints(points, {series: unknown.key}).points, [points[1]]);
+  assert.deepEqual(points, before);
+});
+
+test("recognized future boundaries without styles use a safe named fallback", () => {
+  const context = vm.createContext({module: {exports: {}}, URL});
+  vm.runInContext(readFileSync(require.resolve("./app.js"), "utf8"), context);
+  vm.runInContext(`
+    IMAGE_STEP_LABELS["Future installer boundary"] = "Future installer measurement";
+    IMAGE_STEP_LABELS["constructor"] = "Future prototype-named boundary";
+  `, context);
+  const points = [datedPoint(1, "2026-11-10T00:00:00Z", "Future installer boundary"),
+    datedPoint(2, "2026-11-11T00:00:00Z", "constructor")];
+  const before = structuredClone(points);
+  const {imageSeries: seriesFor, selectTrendPoints: select} = context.module.exports;
+  for (const [index, label] of ["Future installer measurement", "Future prototype-named boundary"].entries()) {
+    const series = seriesFor(points[index].job);
+    assert.ok(series.label.includes(label));
+    assert.equal(series.color, "#536775");
+    const selection = select(points, {series: series.key});
+    assert.deepEqual(Array.from(selection.points, point => point.run.run_id), [index + 1]);
+  }
+  assert.notEqual(seriesFor(points[0].job).key, seriesFor(points[1].job).key);
+  assert.deepEqual(points, before);
+});
+
 function datedPoint(run_id, started_at, name = "Build the VS installer (.bin)") {
   const point = timingPoint(name);
   const completed_at = started_at === null ? null : new Date(Date.parse(started_at) + 120000).toISOString();
@@ -632,6 +679,21 @@ function chartFixture(points, width = 1100) {
   render();
   return {nodes, render};
 }
+
+test("chart renders host-Make and unknown-boundary snapshots and filters their series", () => {
+  const points = [datedPoint(1, "2026-11-10T00:00:00Z", "Build sonic-vs.bin through the host Make wrapper"),
+    datedPoint(2, "2026-11-11T00:00:00Z", "Future unrecognized image step")];
+  const {nodes, render} = chartFixture(points);
+  assert.equal(descendants(nodes.trend, node => node.attributes?.class === "chart-point").length, 2);
+  assert.equal(nodes["history-legend"].children.length, 2);
+  assert.match(nodes["history-legend"].textContent, /Host Make \.bin \+ archives/);
+  assert.match(nodes["history-legend"].textContent, /Boundary unknown/);
+  nodes["series-filter"].value = imageSeries(points[0].job).key;
+  render();
+  assert.equal(descendants(nodes.trend, node => node.attributes?.class === "chart-point").length, 1);
+  assert.equal(nodes["history-legend"].children.length, 1);
+  assert.match(nodes["history-legend"].textContent, /Host Make \.bin \+ archives/);
+});
 
 test("chart overview is scatter-only with a visible-series legend and keyboard point previews", () => {
   const points = [datedPoint(1, "2026-11-10T00:00:00Z"), datedPoint(2, "2026-11-11T00:00:00Z"),
