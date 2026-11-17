@@ -86,6 +86,10 @@ is registered **before** `setup-bazel` on the AMD64/ARM64 Bazel pools. GitHub
 runs post actions in reverse order, so local caches are saved before
 [`cleanup_container_bazel.py`](cleanup_container_bazel.py) reclaims disk space.
 The final regular step records publication outcomes; it does not delete files.
+It runs only after the `bazel_cleanup_register` step succeeds, ensuring Python,
+the cleanup controller and the registered job temporary directory are available.
+Once registered, publication outcomes are recorded even if a later build fails;
+early prerequisite failures or failed/skipped registration skip authorization.
 
 OCI archive, Gearbox, Router Advertiser, base-image, event-services and Rust
 supervisor container jobs stop their checkout-owned Bazel servers and remove

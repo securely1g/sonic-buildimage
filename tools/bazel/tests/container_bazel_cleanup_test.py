@@ -425,7 +425,9 @@ class ContainerCleanupWorkflowTest(unittest.TestCase):
                 setup = next(index for index, step in enumerate(steps)
                              if "setup-bazel@" in step.get("uses", ""))
                 self.assertLess(register, setup)
-                self.assertEqual(steps[-1]["if"], "always()")
+                self.assertEqual(steps[register]["id"], "bazel_cleanup_register")
+                self.assertEqual(steps[-1]["if"],
+                                 "always() && steps.bazel_cleanup_register.outcome == 'success'")
                 self.assertEqual(steps[-1]["env"]["BAZEL_CLEANUP_STEPS"], "${{ toJSON(steps) }}")
                 self.assertIn("--mark-artifacts", steps[-1]["run"])
                 for step in steps:
@@ -456,7 +458,9 @@ class ContainerCleanupWorkflowTest(unittest.TestCase):
                     self.assertIn("--init", job["container"]["options"])
                 else:
                     self.assertNotIn("container", job)
-                self.assertEqual(steps[-1]["if"], "always()")
+                self.assertEqual(steps[register]["id"], "bazel_cleanup_register")
+                self.assertEqual(steps[-1]["if"],
+                                 "always() && steps.bazel_cleanup_register.outcome == 'success'")
                 self.assertEqual(steps[-1]["env"]["BAZEL_CLEANUP_STEPS"], "${{ toJSON(steps) }}")
                 self.assertIn("--mark-artifacts", steps[-1]["run"])
                 uploads = [step for step in steps if "upload-artifact@" in step.get("uses", "")]
