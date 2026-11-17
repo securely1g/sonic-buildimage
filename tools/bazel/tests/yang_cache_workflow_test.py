@@ -124,6 +124,67 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
             subprocess.run(["bash", "-euc", setup], cwd=work, env=dict(os.environ, HOME=str(home), BASH_ENV="/dev/null"), check=True)
             self.assertTrue((work / ".bazelrc.user").read_text().startswith(before))
 
+    def test_source_check_rejects_yang_edits_but_not_unrelated_submodule_drift(self):
+        _, build = self.steps()
+        command = build.strip().splitlines()[-1]
+        self.assertEqual(command, "git diff --exit-code HEAD -- .")
+
+        def git(directory, *arguments):
+            return subprocess.run(
+                ["git", "-C", str(directory), "-c", "user.name=YANG Test",
+                 "-c", "user.email=yang-test@example.invalid", *arguments],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        with tempfile.TemporaryDirectory(prefix="yang source check ") as temporary:
+            root = Path(temporary)
+            source = root / "pins source"
+            source.mkdir()
+            git(source, "init", "--quiet")
+            (source / "source.txt").write_text("previous job\n")
+            git(source, "add", ".")
+            git(source, "commit", "--quiet", "-m", "Previous pin")
+            previous = git(source, "rev-parse", "HEAD")
+            (source / "source.txt").write_text("current pin\n")
+            git(source, "commit", "--quiet", "-am", "Current pin")
+
+            work = root / "checkout"
+            component = work / "src/sonic-yang-models"
+            component.mkdir(parents=True)
+            tracked = component / "setup.py"
+            tracked.write_text("original source\n")
+            git(work, "init", "--quiet")
+            git(work, "-c", "protocol.file.allow=always", "submodule", "add",
+                str(source), "src/sonic-p4rt/sonic-pins")
+            git(work, "add", ".")
+            git(work, "commit", "--quiet", "-m", "Distribution and pinned source")
+            git(work / "src/sonic-p4rt/sonic-pins", "checkout", "--detach", previous)
+
+            baseline = subprocess.run(
+                ["git", "diff", "--exit-code"], cwd=component,
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(baseline.returncode, 0)
+            self.assertIn("Subproject commit", baseline.stdout)
+
+            def check():
+                return subprocess.run(
+                    ["bash", "-euc", command], cwd=component,
+                    env=dict(os.environ, BASH_ENV="/dev/null"),
+                    capture_output=True, text=True, check=False,
+                )
+
+            clean = check()
+            self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+            tracked.write_text("changed source\n")
+            for staged in (False, True):
+                with self.subTest(staged=staged):
+                    if staged:
+                        git(work, "add", "src/sonic-yang-models/setup.py")
+                    changed = check()
+                    self.assertNotEqual(changed.returncode, 0)
+                    self.assertIn("changed source", changed.stdout)
+
     def test_missing_or_duplicate_cache_settings_leave_local_rc_unchanged(self):
         setup, _ = self.steps()
         for settings in ("", "build --disk_cache=/disk\n", "build --disk_cache=/one\nbuild --disk_cache=/two\n"):

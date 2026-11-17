@@ -77,6 +77,13 @@ stops the job before checkout.
 
 ### Post-job Bazel disk cleanup
 
+The YANG standalone distribution's final tracked-source check is scoped to
+`src/sonic-yang-models` and compares against `HEAD`, including staged edits.
+An unrelated initialized submodule can retain a different revision on a reused
+host runner when checkout does not request submodules; that does not indicate
+that the YANG build changed source. The check neither resets those submodules
+nor globally ignores submodule changes.
+
 SNMP retains its upload-gated immediate artifact cleanup within the registered
 job temporary directory; failed uploads preserve those artifacts. The post-job
 hook reclaims the remaining authorized job artifacts and Bazel state.
