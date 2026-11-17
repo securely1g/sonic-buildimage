@@ -254,13 +254,10 @@ ASAN, Syncd RPC or cross/emulated execution, and checks that both runtime/debug
 container pairs select their Bazel producers.
 
 The shared verifier resolves both P4RT packages through Make. Native CI uses
-the config-engine archive already produced for the installer. All native VS
-image recipes share one output base at `target/.vs-bazel/images`; concurrent
-Make requests wait on the same Bazel server lock. The enclosing slave Make
-invocation shuts down the server once, including on failure. Validation reopens
-that base to check the exact SWSS and Syncd exports and generate their
-installed-image policies, then shuts down once after the checks. Both builders
-mount the job checkout at `/sonic`, and checkout cleanup removes the base. Standalone
+the config-engine archive already produced for the installer. Image builds
+and validation use the workspace's normal Bazel server and output links,
+without per-image output bases or shutdown hooks. SWSS and Syncd checks run
+sequentially on that shared server, selecting DASH only for Syncd. Standalone
 validation can request the config-engine archive through Make. The offline
 P4RT split-debug-symbol check runs in the same Trixie builder.
 It does not request the Orchagent or Syncd Make archives again or add a package
@@ -272,9 +269,9 @@ failures are not hidden by rebuilding an archive.
 The P4 image test still declares the native Syncd OCI images and Bazel archive
 outputs as inputs and compares them with the retained Make archives. Bazel may
 restore those inputs or rebuild them on a cache miss in the validation builder.
-The native build and validation steps retain one image output base and share
-persistent action/download caches. P4RT and kernel workspaces keep their separate
-launchers. Splitting the workflow steps does not remove this work or
+The native build and validation steps share persistent action/download caches.
+P4RT and kernel workspaces keep their separate launchers.
+Splitting the workflow steps does not remove this work or
 claim a speedup. The active image checks do not replace the source-package
 suites retained in the disabled legacy job. Neither path's installer checks
 establish BIOS/UEFI VM boot success.
