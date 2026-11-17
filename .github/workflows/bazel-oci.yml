@@ -2595,7 +2595,8 @@ jobs:
           python3 -B tools/bazel/ci/container.py \
             --container //dockers/docker-orchagent --source-file "$SONIC_CI_MANIFEST_METADATA" \
             --architecture arm64 --test-suite ci_source_tests \
-            --bazel "$BAZEL" --artifacts artifacts/swss
+            --bazel "$BAZEL" --bazel-arg=--experimental_build_event_upload_strategy=local \
+            --artifacts artifacts/swss
 
       - name: Prepare public artifact list
         id: public_artifacts

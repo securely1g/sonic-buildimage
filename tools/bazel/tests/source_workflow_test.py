@@ -470,7 +470,9 @@ class NativeArmSourceWorkflowTest(unittest.TestCase):
                 "--container", "//dockers/docker-orchagent",
                 "--source-file", "rules/docker-orchagent.mk",
                 "--architecture", "arm64", "--test-suite", "ci_source_tests",
-                "--bazel", "selected-bazel", "--artifacts", "artifacts/swss",
+                "--bazel", "selected-bazel",
+                "--bazel-arg=--experimental_build_event_upload_strategy=local",
+                "--artifacts", "artifacts/swss",
             ])
 
     def test_native_guard_rejects_an_amd64_host(self):
@@ -498,6 +500,7 @@ class NativeArmSourceWorkflowTest(unittest.TestCase):
         self.assertIn("disk-cache: buildimage-swss-oci-arm64", arm)
         self.assertIn("squashfs-tools", arm)
         self.assertIn("preserve_setup_bazel_cache.py --private-remote-cache", arm)
+        self.assertIn("--bazel-arg=--experimental_build_event_upload_strategy=local", arm)
         self.assertIn("repair_bazel_startup.py", arm)
         self.assertIn("source_mirrors.py", arm)
         self.assertIn("name: swss-source-layers-arm64", arm)
