@@ -93,6 +93,23 @@ class ContainerBazelCleanupTest(unittest.TestCase):
         self.cleanup()
         self.assertFalse(self.directory.exists())
 
+    def test_dash_cleanup_only_removes_its_published_job_directory(self):
+        with mock.patch.dict(os.environ, GITHUB_JOB="dash_engine_archive"):
+            self.directory = subject.prepare(self.workspace, self.runner_temp)
+            evidence = self.directory / "dash-engine.scratch"
+            evidence.mkdir()
+            (evidence / "image.gz").write_bytes(b"DASH archive")
+            self.steps["bazel_upload_public_artifacts"]["outcome"] = "failure"
+            self.authorize()
+            self.cleanup()
+            self.assertTrue((evidence / "image.gz").is_file())
+            self.steps["bazel_upload_public_artifacts"]["outcome"] = "success"
+            (self.directory / subject.AUTHORIZATION).unlink()
+            self.authorize()
+            self.cleanup()
+            self.assertFalse(self.directory.exists())
+            self.assertTrue((self.artifacts / "image.gz").is_file())
+
     def test_missing_authorization_preserves_evidence(self):
         with contextlib.redirect_stdout(io.StringIO()) as logs:
             self.cleanup()
@@ -436,6 +453,11 @@ class ContainerCleanupWorkflowTest(unittest.TestCase):
                         self.assertTrue(identifier.startswith(subject.UPLOAD_PREFIX))
                         self.assertIn("steps." + identifier.removeprefix(subject.UPLOAD_PREFIX) +
                                       ".outcome == 'success'", step["if"])
+        dash_steps = jobs["dash_engine_archive"]["steps"]
+        scratch = next(step for step in dash_steps if step.get("id") == "dash_scratch")
+        self.assertIn('mktemp -d "$SONIC_BAZEL_JOB_TEMP/dash-engine.', scratch["run"])
+        self.assertLess(next(i for i, step in enumerate(dash_steps) if step.get("uses") == action),
+                        dash_steps.index(scratch))
         value = yaml.safe_load((ACTION / "action.yml").read_text())["runs"]
         self.assertEqual(value["using"], "node24")
         self.assertEqual(value["post-if"], "always()")

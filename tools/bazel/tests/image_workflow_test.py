@@ -45,6 +45,15 @@ class VerificationWorkflowTest(unittest.TestCase):
             git(source, "commit", "-qam", "pinned")
             pinned = git(source, "rev-parse", "HEAD")
 
+            # Pin a nested copy of the original repository before the top-level
+            # source gains a submodule of its own.
+            nested = root / "nested source"
+            git(root, "clone", "-q", str(source), str(nested))
+            git(source, "submodule", "add", "-q", str(nested), "nested module")
+            git(source, "commit", "-qm", "pin nested module")
+            nested_pin = pinned
+            pinned = git(source, "rev-parse", "HEAD")
+
             gnoi, pins, unused = "src/sonic-sysmgr/gnoi", "src/sonic-p4rt/sonic-pins", "unused module"
             for path in (gnoi, pins, unused):
                 git(parent, "submodule", "add", "-q", str(source), path)
@@ -71,6 +80,14 @@ class VerificationWorkflowTest(unittest.TestCase):
             self.assertEqual(git(checkout / pins, "rev-parse", "HEAD"), pinned)
             self.assertEqual(git(checkout, "diff", "--ignore-submodules=none", "HEAD"), "")
             self.assertFalse((checkout / unused / ".git").exists())
+
+            git(checkout / pins, "submodule", "update", "--init", "--", "nested module")
+            retained = checkout / pins / "nested module"
+            git(retained, "checkout", "-q", old)
+            git(checkout / pins, "config", "--remove-section", "submodule.nested module")
+            prepare()
+            self.assertEqual(git(retained, "rev-parse", "HEAD"), nested_pin)
+            self.assertEqual(git(checkout, "diff", "--ignore-submodules=none", "HEAD"), "")
 
             # Already-pinned local edits remain visible to the strict build check.
             (checkout / gnoi / "input").write_text("local edit\n")

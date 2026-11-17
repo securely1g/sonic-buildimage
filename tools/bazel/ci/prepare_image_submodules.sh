@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Only gNOI is required in a fresh checkout. Reused Actions checkouts can also
-# retain other populated submodules at revisions from the previous job.
-{
-    printf '%s\0' src/sonic-sysmgr/gnoi
-    git submodule foreach --quiet 'printf "%s\0" "$sm_path"'
-} | xargs -0 git --literal-pathspecs submodule update --init --checkout --
+# Restore populated worktrees, including nested ones left by earlier jobs.
+# A populated worktree can lose its local registration when a checkout is reused.
+workspace=${GITHUB_WORKSPACE:-$PWD}
+git -c safe.directory="$workspace" submodule foreach --recursive \
+    'git -c safe.directory="$toplevel" -c safe.directory="$toplevel/$sm_path" --literal-pathspecs -C "$toplevel" submodule update --init --checkout -- "$sm_path"'
 
-# Restore populated nested modules without initializing unused nested sources.
-git submodule foreach --recursive \
-    'git -c safe.directory="$toplevel" -c safe.directory="$toplevel/$sm_path" -C "$toplevel" submodule update --checkout -- "$sm_path"'
+# Only gNOI is required on a fresh runner.
+git -c safe.directory="$workspace" submodule update --init --checkout -- src/sonic-sysmgr/gnoi
