@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -60,7 +61,8 @@ def main(arguments):
     if arguments[0] == "image-recipe":
         images = arguments[1:]
         commands = ["build", *("cquery-" + image for image in images)]
-        directory = start_recipe(Path.cwd(), images[0], [*commands, "shutdown"], commands,
+        shutdown = [] if os.environ.get("SONIC_VS_REUSE_BAZEL_PRODUCERS") == "1" else ["shutdown"]
+        directory = start_recipe(Path.cwd(), images[0], [*commands, *shutdown], commands,
                                  ["export-" + image for image in images])
         print(directory)
         return 0

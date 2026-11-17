@@ -2,7 +2,9 @@
 """Execute VS installer dependency selection and the real grouped Bazel bridge."""
 
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import unittest
 
@@ -99,6 +101,51 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assertEqual(self.installer(), list(self.archives[::2]))
         self.assert_pairs()
         self.assertFalse((self.root / "artifacts/vs/image-timings").exists())
+
+    def test_native_vs_recipes_share_one_server_without_per_recipe_shutdown(self):
+        self.installer(SONIC_VS_REUSE_BAZEL_PRODUCERS="1", SONIC_VS_IMAGE_TIMINGS="1")
+        self.assert_pairs()
+        calls = self.recorded_calls()
+        base = self.root / "target/.vs-bazel/images"
+        self.assertEqual({call["output_base"] for call in calls}, {str(base)})
+        self.assertTrue((base / "execroot").is_dir())
+        self.assertEqual(self.recorded_calls(("shutdown",)), [])
+        for owner in self.archives[::2]:
+            recipe, = (self.root / "artifacts/vs/image-timings" / owner).iterdir()
+            commands = json.loads((recipe / "recipe.json").read_text())["bazel"]
+            self.assertNotIn("shutdown", commands)
+            self.assertTrue(all((recipe / (phase + ".timing.json")).is_file() for phase in commands))
+
+    def test_host_make_instruction_shuts_down_shared_server_once_after_all_exports(self):
+        (self.root / "session.mk").write_text(self.makefile)
+        instruction = next(line for line in (ROOT / "Makefile.work").read_text().splitlines()
+                           if line.startswith("SONIC_BUILD_INSTRUCTION :="))
+        prefix = instruction.split(":=", 1)[1].split("$(MAKE)", 1)[0].strip()
+        self.makefile += "\n.PHONY: shared-session\nshared-session:\n\t" + prefix + \
+            " $(MAKE) --no-print-directory -f session.mk -j2 target/sonic-vs.bin\n"
+        result = self.run_make(goals=["shared-session"],
+                               environment={"SONIC_VS_REUSE_BAZEL_PRODUCERS": "1"})
+        self.assert_success(result)
+        self.assert_pairs()
+        calls = self.recorded_calls(("build", "cquery", "shutdown"))
+        self.assertEqual({call["output_base"] for call in calls},
+                         {str(self.root / "target/.vs-bazel/images")})
+        self.assertEqual([call["arguments"][0] for call in calls].count("shutdown"), 1)
+        self.assertEqual(calls[-1]["arguments"], ["shutdown"])
+        self.assertTrue(pathlib.Path(calls[-1]["output_base"]).is_dir())
+
+    def test_shared_session_preserves_command_and_shutdown_failures(self):
+        for command_status, backend, expected in ((0, "true", 0), (17, "true", 17),
+                                                   (0, "false", 1), (17, "false", 17)):
+            with self.subTest(command_status=command_status, backend=backend):
+                result = subprocess.run(
+                    ["bash", str(ROOT / "tools/bazel/private_server.sh"),
+                     "bash", "-c", f"exit {command_status}"],
+                    cwd=self.root, env=dict(os.environ, BAZEL=backend),
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                if backend == "false":
+                    self.assertIn("Could not clean up Bazel server", result.stderr)
 
     def test_timed_pair_profiles_each_bazel_command_and_times_both_exports(self):
         self.installer(SONIC_VS_IMAGE_TIMINGS="1")

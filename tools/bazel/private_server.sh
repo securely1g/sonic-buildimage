@@ -1,5 +1,5 @@
 # Source inside one build's shell. Related build, query and export commands use
-# the same server. Independent recipes always have different writable state.
+# the same server. Native VS image recipes instead share one session-owned server.
 start_private_bazel() {
     local owner=${1##*/}
     shift
@@ -23,16 +23,13 @@ open_private_bazel() {
     trap 'exit 143' TERM
 }
 
-# /sonic is the job checkout in both disposable Trixie containers. Preserve
-# these two producers' on-disk outputs for the separate VS validation step.
+# The enclosing Make session owns shutdown, not individual image recipes.
 start_image_bazel() {
     local owner=$1
-    if [[ ${SONIC_VS_REUSE_BAZEL_PRODUCERS:-} == 1 &&
-          ( $owner == docker-orchagent.gz || $owner == docker-syncd-vs.gz ) ]]; then
-        local base="$PWD/target/.vs-bazel/$owner"
-        mkdir -p -- "$base" || return
-        open_private_bazel "$base"
-        private_bazel_keep_output=1
+    if [[ ${SONIC_VS_REUSE_BAZEL_PRODUCERS:-} == 1 ]]; then
+        bazel_output_base="$PWD/target/.vs-bazel/images"
+        mkdir -p -- "$bazel_output_base" || return
+        private_bazel=("${BAZEL:-bazel}" "--output_base=$bazel_output_base")
     else
         start_private_bazel "$owner"
     fi
@@ -62,8 +59,19 @@ finish_private_bazel() {
         fi
     fi
     if (( cleanup_status )); then
-        printf 'Could not clean up private Bazel server at %s\n' "$bazel_output_base" >&2
+        printf 'Could not clean up Bazel server at %s\n' "$bazel_output_base" >&2
     fi
     if (( status )); then exit "$status"; fi
     exit "$cleanup_status"
 }
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    set -euo pipefail
+    if (( $# == 0 )); then
+        echo 'Usage: private_server.sh COMMAND [ARGUMENT ...]' >&2
+        exit 2
+    fi
+    open_private_bazel "$PWD/target/.vs-bazel/images"
+    private_bazel_keep_output=1
+    "$@"
+fi

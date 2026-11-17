@@ -409,13 +409,20 @@ BAZEL=bazel make -f slave.mk target/docker-example.gz \
   BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
 
-Each independent Bazel recipe in the Make installer build uses a private local
-server and output directory. The build, its queries and its exports use the same
-server, including both archives of a grouped runtime/debug build. Exports resolve
-against the producing server's execution root. Parallel recipes can therefore
-build from the same checkout while sharing the configured repository, disk and
-remote caches. Temporary build state is removed after the recipe, including on
-failure. Size the action and memory limits for the number of concurrent builds.
+Native VS CI sets `SONIC_VS_REUSE_BAZEL_PRODUCERS=1`. All image recipes then use
+one local server and output base at `target/.vs-bazel/images`. Bazel serializes
+concurrent Make requests; the action and memory limits apply to that one server,
+not to each queued recipe. The host Make instruction wraps the slave invocation
+with `tools/bazel/private_server.sh`, which shuts down the image server once the
+invocation finishes, including on failure. Validation reopens the same output
+base and shuts down its server once all checks finish. Output state remains
+available for retries until the workflow removes the job checkout.
+
+Without that opt-in, independent image recipes retain their private temporary
+servers and cleanup. P4RT's separate workspace and pinned Bazel version, and
+the kernel's isolated launcher, do not share the image server. Grouped
+runtime/debug archives still build together, and exports always resolve against
+the producing execution root rather than workspace convenience symlinks.
 
 Set `SONIC_BAZEL_REMOTE_CACHE` for a common endpoint across image, P4RT and
 kernel builds. The default is read-only. Set `SONIC_BAZEL_REMOTE_UPLOAD=y` to
