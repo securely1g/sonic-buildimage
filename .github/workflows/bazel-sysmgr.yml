@@ -57,8 +57,12 @@ jobs:
           cache-version: "8.5.1"
       - name: Preserve setup-bazel caches for source checks
         run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
-      - name: Disable remote cache uploads
-        run: printf 'build --remote_upload_local_results=false\n' >> "$GITHUB_WORKSPACE/.bazelrc.user"
+      - name: Configure read-only cache and local test evidence
+        run: |
+          printf '%s\n' \
+            'build --remote_upload_local_results=false' \
+            'build --experimental_build_event_upload_strategy=local' \
+            >> "$GITHUB_WORKSPACE/.bazelrc.user"
       - name: Audit, build and validate installed packages and original tests
         env:
           BAZELISK_GITHUB_TOKEN: ""

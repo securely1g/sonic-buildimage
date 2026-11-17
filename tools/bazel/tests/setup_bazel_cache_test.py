@@ -116,7 +116,8 @@ class SetupBazelCacheTest(unittest.TestCase):
         steps = document["jobs"]["native"]["steps"]
         setup = next(step for step in steps if "setup-bazel@" in step.get("uses", ""))
         handoff = next(step for step in steps if HELPER in step.get("run", ""))
-        policy = next(step for step in steps if step.get("name") == "Disable remote cache uploads")
+        policy = next(step for step in steps
+                      if step.get("name") == "Configure read-only cache and local test evidence")
         build = next(step for step in steps if "src/sonic-sysmgr/bazel/ci.py" in step.get("run", ""))
         self.assertEqual(setup["with"]["module-root"], "src/sonic-sysmgr")
         self.assertEqual(steps.index(handoff), steps.index(setup) + 1)
@@ -133,6 +134,7 @@ class SetupBazelCacheTest(unittest.TestCase):
             self.assertEqual((root / ".bazelrc.user").read_text().splitlines(), [
                 "build --disk_cache=/disk", "common --repository_cache=/repo",
                 *PRIVATE_CACHE_SETTINGS, "build --remote_upload_local_results=false",
+                "build --experimental_build_event_upload_strategy=local",
             ])
             recorder = root / "bin/python3"
             recorder.write_text("""#!/usr/bin/python3

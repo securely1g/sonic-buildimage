@@ -40,7 +40,9 @@ Tests explicitly requesting `--nocache_test_results` still execute.
 Sysmgr runs in its own Bazel workspace and ignores workspace RC files. Its
 workflow passes the generated root `.bazelrc.user` explicitly through the
 build driver's `--startup-arg=--bazelrc=...` option and disables remote uploads
-in that RC file; it does not modify the source module.
+in that RC file; it does not modify the source module. It also selects local
+build-event artifact URIs so its evidence collector can copy test XML and
+undeclared outputs from disk even when remote caching is enabled.
 
 The manually triggered native AMD64 Make-cache build remains on
 `ubuntu-24.04`: its sandbox setup explicitly permits only disposable
