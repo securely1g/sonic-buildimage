@@ -18,6 +18,69 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_image_jobs_restore_populated_submodules_on_reused_checkouts(self):
+        script = Path("tools/bazel/ci/prepare_image_submodules.sh")
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        for job in ("archive", "gearbox_archive", "dash_engine_archive"):
+            self.assertIn(f"bash {script}", [step.get("run") for step in workflow["jobs"][job]["steps"]])
+
+        env = dict(os.environ, GIT_ALLOW_PROTOCOL="file")
+
+        def git(repo, *args):
+            return subprocess.check_output(
+                ["git", "-c", "user.name=Fixture", "-c", "user.email=ci@example.org", *args],
+                cwd=repo, env=env, text=True, stderr=subprocess.PIPE,
+            ).strip()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, parent, checkout = (root / name for name in ("source", "parent", "checkout"))
+            git(root, "init", "-q", str(source))
+            git(root, "init", "-q", str(parent))
+            (source / "input").write_text("old\n")
+            git(source, "add", "input")
+            git(source, "commit", "-qm", "old")
+            old = git(source, "rev-parse", "HEAD")
+            (source / "input").write_text("pinned\n")
+            git(source, "commit", "-qam", "pinned")
+            pinned = git(source, "rev-parse", "HEAD")
+
+            gnoi, pins, unused = "src/sonic-sysmgr/gnoi", "src/sonic-p4rt/sonic-pins", "unused module"
+            for path in (gnoi, pins, unused):
+                git(parent, "submodule", "add", "-q", str(source), path)
+            git(parent, "commit", "-qm", "pin submodules")
+            git(root, "clone", "-q", str(parent), str(checkout))
+            git(checkout, "submodule", "init", "--", unused)
+
+            def prepare(check=True):
+                return subprocess.run(["bash", ROOT / script], cwd=checkout, env=env,
+                                      capture_output=True, text=True, check=check)
+
+            prepare()
+            self.assertEqual(git(checkout / gnoi, "rev-parse", "HEAD"), pinned)
+            self.assertFalse((checkout / pins / ".git").exists())
+            self.assertFalse((checkout / unused / ".git").exists())
+
+            git(checkout, "submodule", "update", "--init", "--", pins)
+            git(checkout / pins, "checkout", "-q", old)
+            git(checkout, "reset", "--hard", "HEAD")
+            self.assertIn(pins, git(checkout, "diff", "--name-only", "--ignore-submodules=none", "HEAD"))
+            # A populated worktree can also lose its local registration.
+            git(checkout, "config", "--remove-section", f"submodule.{pins}")
+            prepare()
+            self.assertEqual(git(checkout / pins, "rev-parse", "HEAD"), pinned)
+            self.assertEqual(git(checkout, "diff", "--ignore-submodules=none", "HEAD"), "")
+            self.assertFalse((checkout / unused / ".git").exists())
+
+            # Already-pinned local edits remain visible to the strict build check.
+            (checkout / gnoi / "input").write_text("local edit\n")
+            prepare()
+            self.assertIn(gnoi, git(checkout, "diff", "--name-only", "--ignore-submodules=none", "HEAD"))
+            git(checkout / pins, "checkout", "-q", old)
+            (checkout / pins / "input").write_text("conflicting edit\n")
+            self.assertNotEqual(prepare(check=False).returncode, 0)
+            self.assertEqual((checkout / pins / "input").read_text(), "conflicting edit\n")
+
     def run_sysmgr_public_evidence(self, directory):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         step = next(step for step in workflow["jobs"]["archive"]["steps"]

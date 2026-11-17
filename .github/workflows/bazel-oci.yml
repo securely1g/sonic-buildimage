@@ -292,12 +292,8 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
-      - name: Prepare pinned source submodules
-        run: |
-          set -euo pipefail
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule foreach --recursive \
-            'git -c safe.directory="$toplevel" -c safe.directory="$toplevel/$sm_path" -C "$toplevel" submodule update --checkout -- "$sm_path"'
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --checkout -- src/sonic-sysmgr/gnoi
+      - name: Prepare pinned submodules for image builds
+        run: bash tools/bazel/ci/prepare_image_submodules.sh
       - name: Register post-job Bazel cleanup
         id: bazel_cleanup_register
         uses: ./.github/actions/bazel-post-job-cleanup
@@ -1935,12 +1931,8 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
-      - name: Prepare pinned source submodules
-        run: |
-          set -euo pipefail
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule foreach --recursive \
-            'git -c safe.directory="$toplevel" -c safe.directory="$toplevel/$sm_path" -C "$toplevel" submodule update --checkout -- "$sm_path"'
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --checkout -- src/sonic-sysmgr/gnoi
+      - name: Prepare pinned submodules for image builds
+        run: bash tools/bazel/ci/prepare_image_submodules.sh
       - name: Register post-job Bazel cleanup
         id: bazel_cleanup_register
         uses: ./.github/actions/bazel-post-job-cleanup
@@ -2159,8 +2151,8 @@ jobs:
           printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
           printf 'DASH_ARTIFACTS=%s\n' "$directory" >> "$GITHUB_ENV"
 
-      - name: Initialize Sysmgr's pinned gNOI source
-        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      - name: Prepare pinned submodules for image builds
+        run: bash tools/bazel/ci/prepare_image_submodules.sh
       - name: Set up Bazel
         uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
