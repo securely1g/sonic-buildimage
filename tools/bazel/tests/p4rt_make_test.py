@@ -60,7 +60,10 @@ if command == 'info':
     print(out)
 """)
             bazel.chmod(0o755)
+            schema = root / "cfg_schema.h"
+            schema.write_text("installed schema")
             command = ["make", "--no-print-directory", f"DEST={dest}", f"BAZEL_CACHE={root}",
+                       f"CFG_SCHEMA_H={schema}", f"CFG_SCHEMA_REPO={root}/schema-repository",
                        "SONIC_P4RT=p4rt.deb", "SONIC_P4RT_DBG=p4rt-dbg.deb", str(dest / "p4rt.deb")]
             record = root / "calls.jsonl"
             env = dict(os.environ, SONIC_VS_IMAGE_TIMINGS="1", BAZEL="root-workspace-only-wrapper",
@@ -84,9 +87,10 @@ if command == 'info':
             base, = {Path(c[1]) for c in calls}
             self.assertFalse(base.exists())
             for name, _, startup, options in calls:
-                self.assertIn(f"--output_user_root={root}/cache", startup)
+                self.assertFalse(any(option.startswith("--output_user_root=") for option in startup))
                 if name != "shutdown":
-                    for option in ("--symlink_prefix=/", f"--disk_cache={root}/disk_cache",
+                    for option in ("--symlink_prefix=/", f"--repository_cache={root}/repository_cache",
+                                   f"--disk_cache={root}/disk_cache",
                                    "--remote_cache=grpc://cache.example", "--remote_upload_local_results=false"):
                         self.assertIn(option, options)
 
