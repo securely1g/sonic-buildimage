@@ -28,6 +28,29 @@ this pool separately with an Ubuntu 24.04 x64 environment, Docker, passwordless
 sudo, and the tools required by each workflow. These selectors do not register
 or provision runners. Existing Bazel-specific pools are unchanged.
 
+Reused agents also need writable workspaces and sufficient Docker/containerd
+storage, not just installed tools. Root job containers can leave artifacts and
+Python bytecode that the runner service user cannot remove at the next checkout.
+Drain the agent before repairing ownership of its exact checkout; the guarded
+pre-checkout repair in [the kernel workflow](../../../.github/workflows/bazel-kernel-bundle.yml)
+is the existing reference. Do not disable checkout cleaning to hide this state.
+Ephemeral runner registration alone does not reset a reused VM's filesystem.
+
+Check both free blocks and inodes on the filesystems holding `/var/lib/docker`
+and `/var/lib/containerd`; mounting a larger Docker data root does not
+necessarily move containerd's snapshot storage. For agent diagnostics:
+
+```sh
+sudo -n true
+df -h /var/lib/docker /var/lib/containerd
+df -i /var/lib/docker /var/lib/containerd
+docker info --format '{{.DockerRootDir}}'
+docker system df
+```
+
+Reimage drained disposable agents or reclaim only verified job-owned data.
+Do not prune Docker/containerd state while another job is using the daemon.
+
 The native libteam/SWSS consumer and FRR Python builds instead use
 `[self-hosted, linux, bazel-x64]` for AMD64 and
 `[self-hosted, linux, bazel-arm64]` for ARM64. The AMD64 FRR/sonic-fib,

@@ -189,6 +189,11 @@ output bases and repository/disk caches are retained. Other startup failures
 and a failed recovery preserve Bazel's exit code and stop the job; installation
 timestamps are never patched to bypass Bazel's validation.
 
+The DASH HA runtime job binds checkout identity before downloading its build
+artifacts. Its strict source check receives the pinned merge's actual base and
+PR head from `checkout_identity.py`, not the potentially stale event base.
+Archive revision and runtime checkout equality checks remain enabled.
+
 The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
 ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
 and manual runs remain read-only. The archive job overrides the default in its
