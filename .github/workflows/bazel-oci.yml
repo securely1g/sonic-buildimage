@@ -85,7 +85,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: securely1g/sonic-bazel-registry
-          ref: 97cc502556b7ec3435d2d67b105315bcc18bb47e
+          # Keep this checkout aligned with source_image_worker.MIRROR_URL.
+          ref: 4952d79f02632d44676e4947adb4338b13bf5f0b
           path: control/.source-mirror-registry
           sparse-checkout: ci
           persist-credentials: false
