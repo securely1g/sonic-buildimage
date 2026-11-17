@@ -125,6 +125,21 @@ Base-image reviews may check out an older source revision. Their small cleanup
 controller is staged under ignored `target/ci-bazel-cleanup-controller` before
 cache setup, keeping the post hook independent of that checkout.
 
+The general Ubuntu migration opts into the same action with `migrated-job: 'true'`.
+Its controller verifies the self-hosted environment and workflow/job allowlist.
+Host jobs repair access before checkout; the post hook repairs ownership again
+without following links or changing hardlinked files. Root job containers use
+the runner-owned repository parent's UID/GID, not container root's identity.
+Migrated jobs retain evidence if the job fails, even if an upload succeeded.
+Otherwise all declared uploads must have valid successful/skipped outcomes,
+and existing generated artifacts require at least one successful upload.
+Jobs without generated artifacts or uploads can reclaim their empty registered
+temporary directory. Dashboard publication authorizes only `site` and `history`;
+other migrated jobs authorize only `artifacts`. These host jobs stop their own
+Bazel servers but preserve host output bases and shared caches. Acceptance-only
+gates and Pages deployment create no checkout/build state and need no hook.
+The mixed validator matrix registers cleanup only for its self-hosted AMD64 leg.
+
 This cleanup does not run on the VS installer agent, delete runner metadata,
 touch shared NFS/remote caches or prune Docker images. Agents already unable to
 start a job need a separate one-time cleanup while idle; a post hook cannot

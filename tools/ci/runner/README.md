@@ -31,10 +31,32 @@ or provision runners. Existing Bazel-specific pools are unchanged.
 Reused agents also need writable workspaces and sufficient Docker/containerd
 storage, not just installed tools. Root job containers can leave artifacts and
 Python bytecode that the runner service user cannot remove at the next checkout.
-Drain the agent before repairing ownership of its exact checkout; the guarded
-pre-checkout repair in [the kernel workflow](../../../.github/workflows/bazel-kernel-bundle.yml)
-is the existing reference. Do not disable checkout cleaning to hide this state.
+The migrated host jobs reuse the guarded pre-checkout ownership repair from
+[the kernel workflow](../../../.github/workflows/bazel-kernel-bundle.yml).
+They run it outside the checkout, including when a previous checkout was left
+incomplete. Do not disable checkout cleaning to hide this state.
 Ephemeral runner registration alone does not reset a reused VM's filesystem.
+
+Every migrated job that checks out source also registers the
+[post-job cleanup action](../../../.github/actions/bazel-post-job-cleanup/action.yml)
+before cache setup. Cleanup runs after cache-save hooks and artifact uploads,
+repairs workspace directory access and single-link file ownership, stops
+checkout-owned Bazel servers, and removes private job-container Bazel caches.
+Successful jobs with completed uploads also remove their verified artifact
+directories and registered job temporary directory. Dashboard publication
+instead cleans its generated `site` and `history` directories. Failed jobs,
+failed/cancelled uploads and missing authorization retain evidence with an
+explicit warning. Jobs without uploads retain any unexpected artifact directory.
+Retained evidence is not durable storage: a later checkout may clean it, so
+recover needed unuploaded diagnostics before reusing a failed agent.
+
+The four acceptance-only gates and Pages deployment do not check out source
+or create build outputs, so they do not acquire a workspace cleanup hook.
+The hosted ARM64 validator is unchanged. Shared host caches, other job temporary
+directories, source checkouts and global Docker/containerd state are not deleted.
+Host cleanup requires Python 3, passwordless sudo and working Docker access
+to reject paths still referenced by containers. A job that cannot reach checkout
+and registration still needs one-time repair on a drained agent.
 
 Check both free blocks and inodes on the filesystems holding `/var/lib/docker`
 and `/var/lib/containerd`; mounting a larger Docker data root does not
