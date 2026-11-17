@@ -80,13 +80,13 @@ else:
         self.environment = dict(
             os.environ, PATH=str(self.commands) + os.pathsep + os.environ["PATH"],
             SONIC_CI_CONTAINER_LABEL="vs-fixture-label", BAZEL="fixture-bazel",
-            BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3 --remote_timeout=600s --repo_contents_cache=",
+            BAZEL_CONTAINER_ARGS="--distdir='/source downloads' --jobs=3 --remote_timeout=600s",
             SONIC_BUILD_RETRY_COUNT="0",
         )
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",
                      "FORBID_VALIDATION", "CHANGE_REVISION_ACTION", "NOBOOKWORM", "NOTRIXIE",
                      "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL",
-                     "SONIC_VS_IMAGE_TIMINGS", "SONIC_VS_PREWARM_BAZEL_REPOSITORIES"):
+                     "SONIC_VS_IMAGE_TIMINGS"):
             self.environment.pop(name, None)
 
     def run_script(self, name, *args, **environment):
@@ -143,23 +143,6 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_GROUP_BAZEL_IMAGES",
                       self.calls()[0]["args"])
-
-    def test_prewarm_runs_in_the_same_slave_profile_before_parallel_image_builds(self):
-        result = self.run_script("build_vs.sh", SONIC_VS_PREWARM_BAZEL_REPOSITORIES="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        prewarm, build = self.calls()
-        self.assertEqual(prewarm["args"], [
-            "-f", "Makefile.work", "BLDENV=trixie", "sonic-slave-run",
-            *self.profile_options(),
-            "SONIC_RUN_CMDS=bash tools/bazel/ci/prewarm_vs_repositories.sh"])
-        self.assertEqual(prewarm["bazel_args"], build["bazel_args"])
-        self.assert_profile(build, "target/sonic-vs.bin")
-
-    def test_prewarm_failure_prevents_the_image_build(self):
-        result = self.run_script("build_vs.sh", SONIC_VS_PREWARM_BAZEL_REPOSITORIES="1",
-                                 FAIL_ACTION="sonic-slave-run")
-        self.assertEqual(result.returncode, 17, result.stderr)
-        self.assertEqual([call["goal"] for call in self.calls()], ["sonic-slave-run"])
 
     def test_native_handoff_is_forwarded_to_the_build_and_separate_validation_container(self):
         option = self.profile_options()[-1] + " -e SONIC_VS_REUSE_BAZEL_PRODUCERS"
@@ -327,9 +310,7 @@ else:
         self.assertEqual(job["env"]["SONIC_VS_REUSE_BAZEL_PRODUCERS"], "1")
         self.assertEqual(job["env"]["SONIC_VS_GROUP_BAZEL_IMAGES"], "1")
         self.assertNotIn("SONIC_VS_PREWARM_BAZEL_REPOSITORIES", job["env"])
-        self.assertIn("--repo_contents_cache=", job["env"]["BAZEL_CONTAINER_ARGS"].split())
-        self.assertNotRegex(job["env"]["BAZEL_CONTAINER_ARGS"], r"--repo_contents_cache=\S")
-        self.assertNotIn("--repo_contents_cache_gc_", job["env"]["BAZEL_CONTAINER_ARGS"])
+        self.assertNotIn("--repo_contents_cache", job["env"]["BAZEL_CONTAINER_ARGS"])
         cleanup = next(step for step in job["steps"] if step.get("name") == "Reclaim local build caches")
         self.assertIn("--retain-vs-cache-max-gib 40 --min-free-gib 200", cleanup["run"])
 

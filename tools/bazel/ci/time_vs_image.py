@@ -48,9 +48,6 @@ def time_phase(directory, phase):
 
 
 def main(arguments):
-    if arguments[0] == "prewarm-recipe":
-        print(start_recipe(Path.cwd(), "repository-prewarm", ["fetch", "shutdown"], ["fetch"], []))
-        return 0
     if arguments[0] == "start-recipe":
         parser = argparse.ArgumentParser()
         parser.add_argument("workspace", type=Path)
@@ -69,7 +66,7 @@ def main(arguments):
         return 0
     directory, phase, *command = arguments
     directory = Path(directory)
-    if phase in ("build", "test", "fetch") or phase.startswith("cquery-"):
+    if phase in ("build", "test") or phase.startswith("cquery-"):
         # cquery's stdout is consumed by Make. Only the real command writes there.
         profile = directory / f"{phase}.profile.json.gz"
         # Nested workspaces can have Bazel startup options before the command.

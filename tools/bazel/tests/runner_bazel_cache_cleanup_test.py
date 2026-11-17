@@ -340,13 +340,13 @@ class RunnerBazelCacheCleanupTest(unittest.TestCase):
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, "nonnegative"):
                 subject.cleanup(self.root, self.workspace, **options)
 
-    def test_discards_large_action_cache_before_reusable_repository_contents(self):
+    def test_discards_large_action_cache_before_downloaded_repositories(self):
         disk_cache = self.vs_cache / "disk_cache"
         disk_cache.mkdir(parents=True)
-        repository = self.vs_cache / "repo_contents_cache"
+        repository = self.vs_cache / "repository_cache"
         repository.mkdir()
         sentinel = repository / "retained"
-        sentinel.write_text("extracted toolchain")
+        sentinel.write_text("downloaded toolchain archive")
         with mock.patch.object(subject, "check_container_users"), \
                 mock.patch.object(subject, "check_mounts"), \
                 mock.patch.object(subject.subprocess, "check_output",
@@ -357,7 +357,7 @@ class RunnerBazelCacheCleanupTest(unittest.TestCase):
                                   side_effect=lambda command, check: shutil.rmtree(command[-1])) as remove:
             subject.cleanup(self.root, self.workspace, retain_vs_cache_max_gib=40)
         self.assertEqual([Path(call.args[0][-1]) for call in remove.call_args_list], [disk_cache])
-        self.assertEqual(sentinel.read_text(), "extracted toolchain")
+        self.assertEqual(sentinel.read_text(), "downloaded toolchain archive")
 
     def test_redirected_action_cache_is_refused_when_reclaiming_for_retention(self):
         self.vs_cache.mkdir()

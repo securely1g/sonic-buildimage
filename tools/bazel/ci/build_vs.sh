@@ -25,8 +25,4 @@ options=(
 revision=$(git rev-parse HEAD)
 mkdir -p artifacts/vs
 printf '%s\n' "$revision" > artifacts/vs/build-revision.txt
-if [[ ${SONIC_VS_PREWARM_BAZEL_REPOSITORIES:-} == 1 ]]; then
-    make -f Makefile.work BLDENV=trixie sonic-slave-run "${options[@]}" \
-        SONIC_RUN_CMDS='bash tools/bazel/ci/prewarm_vs_repositories.sh'
-fi
 make target/sonic-vs.bin "${options[@]}"
