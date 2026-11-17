@@ -77,7 +77,7 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework` or `teamd`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`, `teamd` or `p4rt`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -194,7 +194,7 @@ Database, Eventd, FRR, LLDP, MUX, Router Advertiser and SNMP use the regular
 Bazel OCI workflow on master. It builds runtime and debug archives on the
 `bazel-x64` pool and exercises the installed services on `ubuntu-24.04`.
 The MACsec source PR owns its build and installed-service checks.
-For authenticated Syncd and Gearbox requests, the dispatcher selects the shared
+For authenticated Syncd, Gearbox and P4RT requests, the dispatcher selects the shared
 K3s pool and verifies the original CI request before building.
 
 ## Explicit ordinary registry consumers

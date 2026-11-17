@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github/workflows/bazel-oci.yml"
 
 
-def jobs():
+def jobs(path=WORKFLOW):
     """Read top-level job blocks; the shell itself is executed without rewriting."""
-    contents = WORKFLOW.read_text().split("\njobs:\n", 1)[1]
+    contents = path.read_text().split("\njobs:\n", 1)[1]
     return dict(re.findall(r"^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)",
                            contents, re.MULTILINE | re.DOTALL))
 
@@ -198,7 +198,6 @@ class SourceWorkflowTest(unittest.TestCase):
                     analyses = [call for call in calls if "tools/bazel/ci/bazel_commands.py" in call["args"]]
                     self.assertEqual(len(analyses), int(dash and not source_exit and not make_exit))
                     self.assertFalse(any(call["name"] == "rm" or "clean" in call["args"] for call in calls))
-
 
 if __name__ == "__main__":
     unittest.main()

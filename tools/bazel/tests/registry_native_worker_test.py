@@ -321,11 +321,16 @@ class WorkflowTest(unittest.TestCase):
             self.assertFalse(condition(guard,event='pull_request',branch='codex/registry-native-workers-extra'))
         self.assertFalse(condition(self.flow['jobs']['vs_container']['if'],event='pull_request'))
     def test_fixed_checkout_permissions_and_no_hosted_cache_dependency(self):
+        from tools.bazel.ci import source_image_worker as source
         job=self.flow['jobs']['registry_native'];self.assertEqual(job['permissions'],{'contents':'read','actions':'read'})
         checkouts=[s for s in job['steps'] if s.get('uses','').startswith('actions/checkout@')]
         self.assertEqual(len(checkouts),3);self.assertTrue(all(s['with']['persist-credentials'] is False for s in checkouts))
         self.assertEqual(checkouts[1]['with']['repository'],'securely1g/sonic-bazel-registry')
-        self.assertEqual(checkouts[1]['with']['ref'],'97cc502556b7ec3435d2d67b105315bcc18bb47e')
+        mirror_prefix='https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/'
+        self.assertTrue(source.MIRROR_URL.startswith(mirror_prefix))
+        mirror_revision=source.MIRROR_URL.removeprefix(mirror_prefix).split('/',1)[0]
+        self.assertRegex(mirror_revision,r'^[0-9a-f]{40}$')
+        self.assertEqual(checkouts[1]['with']['ref'],mirror_revision)
         self.assertEqual(checkouts[2]['with']['repository'],'securely1g/sonic-bazel-registry')
         self.assertEqual(checkouts[2]['with']['ref'],'$'+'{{ inputs.source_revision }}')
         self.assertFalse(any('setup-bazel' in s.get('uses','') or 'actions/cache' in s.get('uses','') for s in job['steps']))
