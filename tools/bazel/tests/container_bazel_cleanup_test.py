@@ -498,7 +498,7 @@ class ContainerCleanupWorkflowTest(unittest.TestCase):
         shell = "\n".join(step.get("run", "") for step in job["steps"])
         for prefix in ("pre-sysmgr-artifacts", "pre-swss-layer-artifacts", "pre-sflow-artifacts",
                        "pre-orchagent-artifacts", "pre-lldp-artifacts", "pre-mux-artifacts",
-                       "pre-macsec-artifacts",
+                       "pre-macsec-artifacts", "pre-dash-ha-artifacts",
                        "snmp.", "orchagent-owner-output", "orchagent-owner-bazel"):
             self.assertIn("$SONIC_BAZEL_JOB_TEMP/" + prefix, shell)
             self.assertNotIn("$RUNNER_TEMP/" + prefix, shell)
