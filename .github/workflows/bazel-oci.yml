@@ -2089,6 +2089,11 @@ jobs:
     env:
       # Shared CI entry point with the canonical registry; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Keep action execution and the build-event file available during cache outages.
+      SONIC_CONTAINER_BAZEL_OPTIONS: >-
+        --remote_local_fallback
+        --incompatible_remote_local_fallback_for_remote_cache
+        --experimental_build_event_upload_strategy=local
     defaults:
       run:
         shell: bash

@@ -145,6 +145,10 @@ class VerificationWorkflowTest(unittest.TestCase):
         dash = jobs["dash_engine_archive"]
         self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
         self.assertEqual(dash["timeout-minutes"], 360)
+        self.assertEqual(shlex.split(dash["env"]["SONIC_CONTAINER_BAZEL_OPTIONS"]), [
+            "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
+            "--experimental_build_event_upload_strategy=local",
+        ])
         self.assertNotIn("needs", dash)
         self.assertEqual(jobs["dash_engine_runtime"]["needs"], "dash_engine_archive")
         self.assertEqual(jobs["dash_engine_runtime"]["runs-on"], "ubuntu-24.04")
