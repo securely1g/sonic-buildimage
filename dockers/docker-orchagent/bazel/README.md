@@ -122,12 +122,12 @@ the declarative `apt_layer` policy input API. The root `MODULE.bazel` now select
 published shared infrastructure through registry `main`; the policy argument
 remains a generated build input.
 
-Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
-for PR updates. Full VS/P4RT builds also run automatically for PR branches in
-this repository after the source checks pass. External-fork PRs keep hosted
-checks only. Manual `Bazel OCI` dispatch defaults to `skip_vs=true`; select
-`skip_vs=false` to include the full image job. A push to `master` runs archive
-and source checks without an automatic full VS build.
+PR updates run native AMD64/ARM64 archive checks. `SWSS source layers (ARM64)`
+runs independently on the native `bazel-arm64` agent pool. PR branches in this
+repository and pushes to `master` run the native AMD64 installer after the OCI
+regression checks; that installer includes AMD64 source-package validation.
+External-fork PRs keep hosted checks only. Manual `Bazel OCI` dispatch defaults
+to `skip_vs=true`; select `skip_vs=false` to include the installer.
 
 Generated Bazel files carry an `AUTO-GENERATED. DO NOT EDIT MANUALLY.` header
 that names their generator. The package lock and generated JSON inputs/receipts
@@ -281,7 +281,7 @@ override automatically. `BAZEL_SWSS_CACHE_DIR` remains a fallback when the
 generic variable is unset. Setting the generic variable to an empty value
 suppresses that fallback; it does not disable caches configured in an rc file.
 
-The source CI job also retains the five GitLab module source downloads selected
+The AMD64 source CI job also retains the five GitLab module source downloads selected
 by gzip: `rules_gzip`, `toolchain_utils`, `ape`, `download_utils`, and
 `rules_coreutils`. The small `bazel-repository-inputs` artifact contains about
 572 KB. The VS job verifies each BCR SHA512 again before the long Make build and
@@ -337,16 +337,20 @@ checks cache hits and identical bytes, then changes a source input and requires
 a rebuild. Its public result retains action names, cache status and archive
 hashes. See the [archive guide](../../../tools/bazel/oci/README.md#reproducible-docker-archives).
 
-The `SWSS source layers (AMD64)` PR check runs in native Debian Trixie. It checks
-the Make manifest handoff, legacy OCI import helpers, configuration rendering and package
-validator. A native Make regression also checks package-cache reuse across fresh
-checkouts and invalidation when source or architecture changes. The job then builds SWSS, its runtime dependencies, configuration and matching
-debug-symbol tar layers. It also runs SWSS's Common Rust API and Serde consumer
-test and checks the Debian path-filter rules. CI prepares manifests with Make
+The `SWSS source layers (ARM64)` PR check runs in native Debian Trixie. The
+native AMD64 installer job runs the corresponding source-package validation.
+These paths retain the Make manifest handoff, legacy OCI import helpers,
+configuration rendering and package validator. A native Make regression also
+checks package-cache reuse across fresh checkouts and invalidation when source
+or architecture changes. Each source-package validation then builds SWSS, its
+runtime dependencies, configuration and matching debug-symbol tar layers. Both
+run SWSS's Common Rust API and Serde consumer
+test and check the Debian path-filter rules. CI prepares manifests with Make
 before running the shared label actions and orchagent contract tests under Bazel.
 It verifies the source install
-inventory, installed bytes and modes, AMD64 ELF files, build IDs, DWARF and debug links. Its artifact
-includes the five tar files, hashes, summarized test and debug validation,
+inventory, installed bytes and modes, native ELF architecture, Common/Sairedis
+SONAME links, build IDs, DWARF and debug links. Each architecture's artifact
+includes the seven tar files, hashes, summarized test and debug validation,
 generated module lock and resolved module graph. CI starts without a module lock
 and rejects tracked input changes.
 
@@ -430,9 +434,27 @@ python3 -B tools/bazel/ci/container.py \
   --container //dockers/docker-orchagent --source-file rules/docker-orchagent.mk --bazel bazel --artifacts artifacts/swss
 ```
 
+On native ARM64 Trixie, append `--architecture arm64 --test-suite ci_source_tests`
+to the shared runner command. Keep `CONFIGURED_ARCH=amd64` for the registered
+Make metadata profile; the explicit native architecture selects the ARM64 host
+and target toolchains and source policy. AMD64 runs the 35-test `ci_tests` suite.
+ARM64 runs the native source, Common/Protobuf/libteam linkage, package-contract
+and shared Rust graph checks in the 24-test `ci_source_tests` suite. It excludes
+full-image OCI contracts while preserving Common/Sairedis SONAME and debug-symbol
+checks and the shared Serde/Common/SWSS graph verification.
+
+Both source jobs export the same seven TAR files: `swss.tar`, `protobuf.tar`,
+`libteam.tar`, `libteamdctl.tar`, `rdeps.tar`, `config.tar`, and
+`debug-symbols.tar`. Standalone `rdeps.tar` and `debug-symbols.tar` include
+Common's runtime libraries and debug symbols alongside the shared SWSS layer,
+while OCI image assembly continues to inherit Common from config-engine. The
+public source receipt binds their tested hashes to the source revision and
+native architecture. ARM64 source evidence does not claim a complete ARM64 OCI
+image, VS installer or boot test.
+
 ## Change the build
 
-The container's `BUILD.bazel` declares `ci_tests` and `ci_artifacts`. The shared
+The container's `BUILD.bazel` declares `ci_tests`, `ci_source_tests` and `ci_artifacts`. The shared
 `tools/bazel/ci/container.py` runner discovers those targets, audits and runs the
 suite, and exports the declared files. The shared
 `tools/bazel/oci/package_contract.py` implements source install checks from the

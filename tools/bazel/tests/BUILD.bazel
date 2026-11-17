@@ -41,7 +41,7 @@ py_test(
     size = "large",
     srcs = ["integration/oci_source_layers_test.py"],
     args = [
-        "--policy=$(rootpath //dockers/docker-orchagent:package_policy)",
+        "--policy=$(rootpath //dockers/docker-orchagent:source_package_policy)",
         "--runtime=$(rootpath //dockers/docker-orchagent:ci_swss)",
         "--library=protobuf.tar=$(rootpath //dockers/docker-orchagent:ci_protobuf)",
         "--library=libteam.tar=$(rootpath //dockers/docker-orchagent:ci_libteam)",
@@ -72,7 +72,7 @@ py_test(
         "//dockers/docker-orchagent:ci_protobuf",
         "//dockers/docker-orchagent:ci_rdeps",
         "//dockers/docker-orchagent:ci_swss",
-        "//dockers/docker-orchagent:package_policy",
+        "//dockers/docker-orchagent:source_package_policy",
         "//tools/bazel/dpkg:dpkg_excludes.txt",
         "//tools/bazel/dpkg:oci_includes.txt",
         "@sonic_build_infra//toolchains/binutils:objcopy",
@@ -89,7 +89,6 @@ py_test(
     # Keep archive inputs in the same default configuration as ci_artifacts.
     # A Python-version transition here also transitions every data dependency.
     target_compatible_with = [
-        "@platforms//cpu:x86_64",
         "@platforms//os:linux",
     ],
     deps = [

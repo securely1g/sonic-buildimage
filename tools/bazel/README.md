@@ -451,6 +451,14 @@ On native ARM64 Trixie, append
 `--bazel-arg=--platforms=@sonic_build_infra//platforms:aarch64_trixie` and
 `--bazel-arg=--host_platform=@sonic_build_infra//platforms:aarch64_trixie`.
 
+The native ARM64 source job runs the owner's `ci_source_tests` suite and exports
+the seven SWSS runtime/debug TARs through the shared CI runner on the native
+`bazel-arm64` agent pool, keeping source architecture in the public receipt.
+This suite includes package/debug validation, owner linkage checks and the
+shared Rust graph check; it does not assemble an ARM64 OCI image or installer.
+The AMD64 source job retains its complete `ci_tests` suite, dedicated runner,
+storage admission and repository-input handoff to the VS job.
+
 ## Registry selection
 
 Local commands default to the maintained SONiC registry `main` endpoint from

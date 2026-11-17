@@ -156,6 +156,67 @@ write_file(
     content = [json.encode(_PACKAGE_POLICY)],
 )
 
+# Source-only validation selects native paths independently of the AMD64 OCI
+# and Make interfaces above. Both variants retain the same owner inventories.
+[
+    write_file(
+        name = "source_policy_" + architecture,
+        out = "source_policy_" + architecture + ".json",
+        content = [json.encode(dict(
+            _PACKAGE_POLICY,
+            architecture = architecture,
+            install_inventory = dict(_PACKAGE_POLICY["install_inventory"], architecture = architecture),
+            libraries = {
+                "libteam.tar": {
+                    "architecture": architecture,
+                    "runtime_path": "usr/lib/" + multiarch + "/libteam.so.5.6.1",
+                    "soname_links": {"usr/lib/" + multiarch + "/libteam.so.5": "libteam.so.5.6.1"},
+                    "exclusive_pattern": "*/libteam.so*",
+                },
+                "libteamdctl.tar": {
+                    "architecture": architecture,
+                    "runtime_path": "usr/lib/" + multiarch + "/libteamdctl.so.0.1.5",
+                    "soname_links": {"usr/lib/" + multiarch + "/libteamdctl.so.0": "libteamdctl.so.0.1.5"},
+                    "exclusive_pattern": "*/libteamdctl.so*",
+                },
+                "protobuf.tar": {
+                    "architecture": architecture,
+                    "runtime_path": "usr/lib/" + multiarch + "/libprotobuf.so.32.0.12",
+                    "soname_links": {"usr/lib/" + multiarch + "/libprotobuf.so.32": "libprotobuf.so.32.0.12"},
+                    "exclusive_pattern": "*/libprotobuf.so*",
+                },
+            },
+            required_libraries = {
+                "usr/lib/" + multiarch + "/" + name + ".so.0.0.0": {
+                    "usr/lib/" + multiarch + "/" + name + ".so.0": name + ".so.0.0.0",
+                }
+                for name in ["libswsscommon", "libsonicdbcli", "libsairedis", "libsaimeta", "libsaimetadata"]
+            },
+            required_debug_paths = [
+                "usr/lib/libdashapi.so",
+                "usr/lib/python3/dist-packages/dash_api/_utils.so",
+                "usr/lib/" + multiarch + "/libprotobuf.so.32.0.12",
+                "usr/lib/" + multiarch + "/libteam.so.5.6.1",
+                "usr/lib/" + multiarch + "/libteamdctl.so.0.1.5",
+            ],
+        ))],
+    )
+    for architecture, multiarch in {"amd64": "x86_64-linux-gnu", "arm64": "aarch64-linux-gnu"}.items()
+]
+
+config_setting(
+    name = "source_arm64",
+    constraint_values = ["@platforms//cpu:aarch64"],
+)
+
+alias(
+    name = "source_package_policy",
+    actual = select({
+        ":source_arm64": ":source_policy_arm64",
+        "//conditions:default": ":source_policy_amd64",
+    }),
+)
+
 # Compose the source-built OCI image directly. The Docker archive is an
 # installer output, not an OCI input to another Bazel image.
 alias(
@@ -264,6 +325,23 @@ alias(
 debug_symbols_layer(
     name = "rdeps_debug_symbols",
     image = ":rdeps",
+)
+
+# Standalone source validation checks Orchagent's complete native library
+# closure without the config-engine OCI parent, so include Common explicitly.
+sonic_layer(
+    name = "source_rdeps",
+    root_owned = True,
+    tars = [
+        "//dockers/docker-swss-layer-trixie:source_runtime",
+        "@sonic_swss_common//dist:libswsscommon_pkg",
+        "@sonic_swss_common//dist:sonic-db-cli_pkg",
+    ],
+)
+
+debug_symbols_layer(
+    name = "source_rdeps_debug_symbols",
+    image = ":source_rdeps",
 )
 
 # Synthesize ndisc6 postinst update-alternatives links and dpkg state for traceroute6.
@@ -475,6 +553,7 @@ sonic_docker_archive(
 test_suite(
     name = "ci_tests",
     tests = [
+        "//dockers/docker-orchagent/bazel:shared_rust_graph_test",
         "//src/sonic-config-engine:sonic_cfggen_cli_test",
         "//tools/bazel/tests:apt_selection_test",
         "//tools/bazel/tests:containercfgd_full_test",
@@ -502,9 +581,45 @@ test_suite(
         "//tools/bazel/tests:swss_package_contract_test",
         "//tools/bazel/tests:swss_render_test",
         "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
+        "@libteam//:consumer_test",
         "@scapy//:upstream_test",
         "@scapy//:wheel_test",
+        "@sonic_swss//bazel:protobuf_runtime_test",
         "@sonic_swss//crates/countersyncd:common_rust_test",
+        "@sonic_swss_common//dist:libswsscommon_package_test",
+        "@sonic_swss_common//pyext:swsscommon_package_test",
+    ],
+)
+
+# ARM64 validates source TARs only; AMD64 keeps the complete ci_tests suite.
+# This deliberately excludes generated full-image metadata and OCI assembly.
+test_suite(
+    name = "ci_source_tests",
+    tests = [
+        "//tools/bazel/tests:sonic_yang_mgmt_full_test",
+        "//tools/bazel/tests:sonic_yang_mgmt_wheel_test",
+        "//tools/bazel/tests:apt_selection_test",
+        "//tools/bazel/tests:select_apt_payloads_test",
+        "//tools/bazel/tests:sonic_py_common_test",
+        "//tools/bazel/tests:sonic_py_common_full_test",
+        "//tools/bazel/tests:sonic_config_engine_full_test",
+        "//tools/bazel/tests:sonic_python_wheels_test",
+        "//tools/bazel/tests:containercfgd_full_test",
+        "//tools/bazel/tests:containercfgd_wheel_test",
+        "//tools/bazel/tests:supervisor_python_full_test",
+        "//tools/bazel/tests:supervisor_python_wheel_test",
+        "//src/sonic-config-engine:sonic_cfggen_cli_test",
+        "@libteam//:consumer_test",
+        "@sonic_swss//bazel:protobuf_runtime_test",
+        "@sonic_swss//crates/countersyncd:common_rust_test",
+        "@sonic_swss_common//dist:libswsscommon_package_test",
+        "@sonic_swss_common//pyext:swsscommon_package_test",
+        "//tools/bazel/tests:test_dpkg_patterns_up_to_date",
+        "//tools/bazel/tests:manifest_labels_test",
+        "//tools/bazel/tests:manifest_labels_action_test",
+        "//tools/bazel/tests:swss_render_test",
+        "//tools/bazel/tests:swss_package_contract_test",
+        "//dockers/docker-orchagent/bazel:shared_rust_graph_test",
     ],
 )
 
@@ -521,9 +636,9 @@ test_suite(
         "protobuf": "@sonic_dash_api//:protobuf_runtime_pkg",
         "libteam": "@libteam//:libteam_runtime",
         "libteamdctl": "@libteam//:libteamdctl_runtime",
-        "rdeps": ":rdeps",
+        "rdeps": ":source_rdeps",
         "config": "//dockers/docker-orchagent/config:files",
-        "debug-symbols": ":rdeps_debug_symbols",
+        "debug-symbols": ":source_rdeps_debug_symbols",
     }.items()
 ]
 

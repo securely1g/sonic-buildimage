@@ -39,7 +39,8 @@ def archive_hashes(paths):
 
 
 def verify_layers(runtime_path, dependencies_path, configuration_path, symbols_path,
-                  libraries, source, policy, *, source_layer_excludes, source_layer_includes, readelf, objcopy):
+                  libraries, source, policy, *, source_layer_excludes=None, source_layer_includes=None,
+                  readelf, objcopy):
     """Compare real archives with source declarations and native debug requirements."""
     archives = [runtime_path, dependencies_path, configuration_path, symbols_path, *libraries.values()]
     validated_hashes = archive_hashes(archives)
@@ -61,6 +62,10 @@ def verify_layers(runtime_path, dependencies_path, configuration_path, symbols_p
     artifact_validation.require(libraries.keys() == policy["libraries"].keys(),
                                 "library inputs differ from the declared package policy")
     for name, library_policy in policy["libraries"].items():
+        artifact_validation.require(
+            source_layer_excludes is not None and source_layer_includes is not None,
+            "OCI filter policy files are required for library validation",
+        )
         original = artifact_validation.payload(libraries[name], require_root=False)
         retained = image_validation.oci_filtered(original, source_layer_excludes, source_layer_includes)
         for path in original.keys() - retained.keys():
@@ -68,13 +73,19 @@ def verify_layers(runtime_path, dependencies_path, configuration_path, symbols_p
             if original[path]["kind"] != "directory":
                 artifact_validation.require(path not in dependencies, "filtered library path is present in the OCI layer: " + path)
         package_contract.validate_library_payload(dependencies, retained, library_policy)
+    required_libraries = package_contract.validate_required_libraries(dependencies, policy)
+    required_sonames = {}
+    for path, links in policy.get("required_libraries", {}).items():
+        artifact_validation.require(len(links) == 1, "required library must declare one SONAME link: " + path)
+        required_sonames[path] = Path(next(iter(links))).name
     debug = artifact_validation.debug_archives(
         dependencies_path, symbols_path,
         expected_machine=package_contract.elf_machine(policy["architecture"]),
         readelf=readelf, objcopy=objcopy,
+        required_sonames=required_sonames,
     )
     artifact_validation.require(
-        set(programs) | set(policy["required_debug_paths"]) <= {pair["path"] for pair in debug["debug_pairs"]},
+        set(programs) | required_libraries | set(policy["required_debug_paths"]) <= {pair["path"] for pair in debug["debug_pairs"]},
         "incomplete declared native debug coverage",
     )
     configuration = artifact_validation.payload(configuration_path)

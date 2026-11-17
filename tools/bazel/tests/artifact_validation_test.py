@@ -183,6 +183,33 @@ class ElfDebugTest(unittest.TestCase):
                     "prebuilt_debug_gaps": [],
                 })
 
+    def test_debug_archives_verify_embedded_soname_not_only_library_filename(self):
+        """Matching symbol files cannot hide an absent or different ABI SONAME."""
+        name = "opt/routing/lib/libroute.so.1.2.3"
+        expected_soname = "libroute.so.1"
+        for actual_soname in (expected_soname, "libroute.so.2", None):
+            with self.subTest(soname=actual_soname):
+                options = ["-Wl,-soname," + actual_soname] if actual_soname else []
+                self.run_tool("cc", "-g", "-shared", "-fPIC", "-Wl,--build-id=sha1", *options,
+                              str(self.root / "example.c"), "-o", str(self.binary))
+                self.identifier = validation.elf_info(self.binary)["build_id"]
+                self.debug_name = ("usr/lib/debug/.build-id/" + self.identifier[:2]
+                                   + "/" + self.identifier[2:] + ".debug")
+                self.symbols = self.root / self.debug_name
+                self.symbols.parent.mkdir(parents=True, exist_ok=True)
+                self.run_tool("objcopy", "--only-keep-debug", str(self.binary), str(self.symbols))
+                self.run_tool("objcopy", "--strip-debug", "--add-gnu-debuglink=" + str(self.symbols),
+                              str(self.binary))
+                runtime, symbols = self.archives(runtime_name=name)
+                options = dict(expected_machine=self.expected[self.name]["elf_machine"],
+                               required_sonames={name: expected_soname})
+                if actual_soname == expected_soname:
+                    result = validation.debug_archives(runtime, symbols, **options)
+                    self.assertEqual(result["debug_pairs"][0]["path"], name)
+                else:
+                    with self.assertRaisesRegex(ValueError, "runtime SONAME differs"):
+                        validation.debug_archives(runtime, symbols, **options)
+
     def test_debug_archives_reject_foreign_symbol_paths(self):
         """Reject debug archives containing files outside the build-ID directory layout."""
         runtime, symbols = self.archives(symbol_name="usr/share/unrelated-data")
