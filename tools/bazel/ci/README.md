@@ -255,3 +255,22 @@ explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
 out of public artifacts. A failed job publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
+
+
+## Teamd on the dedicated source workers
+
+The `source_image=teamd` choice uses the selected checkout's existing
+`teamd_image.py` build, validation and incremental phases, followed by its tracked
+`teamd_loaded.py`. Select the source companion containing that installed-image
+helper and its source-identity checks; selecting a checkout without the helper
+fails preparation. The combined image graph keeps `libteam5` and `libteamdctl0`
+owned by Teamd and consumes the selected SWSS parent directly.
+
+The worker checks that `team` and `team_mode_loadbalance` are already loaded
+before source checkout or downloads, and retains the result even on failure.
+It never loads host modules. The existing AMD64/Trixie admission, private Docker
+daemon, resource limits and persistent caches remain required. Both runtime and
+debug images retain their original private kernel-team/Redis checks, payload
+hashes and aggregate `loaded-validation.json`. This mode does not select DEB
+packaging or the full VS installer. The source and registry revisions are paired
+explicit inputs; worker control is a separate reviewed revision.
