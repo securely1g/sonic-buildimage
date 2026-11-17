@@ -23,7 +23,7 @@ permissions:
 jobs:
   tests:
     if: github.event_name != 'workflow_dispatch' || !inputs.inspect_capacity
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

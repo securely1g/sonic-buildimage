@@ -14,10 +14,25 @@ layout. The job validates the installer and the SWSS and Syncd runtime/debug
 image pairs before publishing them. Building this ONIE installer does not require
 KVM.
 
-GitHub-hosted Ubuntu runs the OCI regression checks and supplies verified
+The self-hosted `ubuntu-x64` pool runs the OCI regression checks and supplies verified
 source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
 run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Fork PRs and manual
 runs with `skip_vs=true` skip the native installer.
+
+## General Ubuntu x64 jobs
+
+Jobs previously selecting `ubuntu-24.04` now require all four labels:
+`[self-hosted, Linux, X64, ubuntu-x64]`. This includes the dashboard and runner
+manager tests, as well as direct and matrix-selected AMD64 CI jobs. Provision
+this pool separately with an Ubuntu 24.04 x64 environment, Docker, passwordless
+sudo, and the tools required by each workflow. These selectors do not register
+or provision runners. Existing Bazel-specific pools are unchanged.
+
+The manually triggered native AMD64 Make-cache build remains on
+`ubuntu-24.04`: its sandbox setup explicitly permits only disposable
+GitHub-hosted runners, and its preparation removes hosted-image SDKs.
+The Make-cache regression job uses `ubuntu-x64`. ARM64 jobs selecting
+`ubuntu-24.04-arm` are unchanged.
 
 ## Legacy one-job runner helpers
 
