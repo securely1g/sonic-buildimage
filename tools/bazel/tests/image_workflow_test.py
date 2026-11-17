@@ -74,7 +74,13 @@ class VerificationWorkflowTest(unittest.TestCase):
         archive = jobs["archive"]
         gate = jobs["eventd_runtime"]
         self.assertEqual(gate["name"], "Container archive (AMD64)")
-        self.assertIn("archive", gate["needs"])
+        self.assertEqual(gate["needs"], [
+            "archive", "database_acceptance", "frr_runtime", "teamd_runtime",
+            "radv_acceptance", "lldp_runtime", "mux_runtime", "gearbox_runtime", "macsec_runtime",
+        ])
+        self.assertEqual(jobs["macsec_runtime"]["needs"], "archive")
+        self.assertTrue(any("macsec_loaded.py" in step.get("run", "")
+                            for step in jobs["macsec_runtime"]["steps"]))
         self.assertEqual(gate["if"], "always() && (" + archive["if"] + ")")
         build = next(step for step in archive["steps"] if step.get("id") == "eventd_build")
         self.assertEqual(build["if"], "matrix.architecture == 'amd64'")
@@ -97,6 +103,13 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertTrue(any("eventd_loaded.py" in step.get("run", "") for step in gate["steps"]))
         guard = gate["steps"][0]
         self.assertEqual(guard["env"]["JOB_RESULTS"], "${{ toJSON(needs.*.result) }}")
+        self.assertNotIn("continue-on-error", guard)
+        self.assertNotIn("if", guard)
+        for malformed_or_empty in ("[]", "null", "not-json"):
+            with self.subTest(results=malformed_or_empty):
+                result = subprocess.run(["bash", "-ec", guard["run"]], capture_output=True,
+                                        env=dict(os.environ, JOB_RESULTS=malformed_or_empty))
+                self.assertNotEqual(result.returncode, 0)
         for position in range(len(gate["needs"])):
             for status in ("success", "failure", "skipped", "cancelled"):
                 with self.subTest(job=gate["needs"][position], status=status):
@@ -473,7 +486,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         for step in native["steps"]:
             self.assertNotIn("/runner-unused/", step.get("run", ""))
 
-    def test_self_hosted_archives_do_not_mount_or_delete_host_sdks(self):
+    def test_archive_container_reaps_child_processes_and_preserves_host_sdks(self):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         )
@@ -486,6 +499,7 @@ class VerificationWorkflowTest(unittest.TestCase):
              "arm64": ["self-hosted", "linux", "bazel-arm64"]},
         )
         self.assertFalse(archive["container"].get("volumes"))
+        self.assertIn("--init", archive["container"]["options"].split())
         self.assertNotIn(
             "Allocate source-build space on this disposable runner",
             [step.get("name") for step in archive["steps"]],
@@ -521,13 +535,14 @@ class VerificationWorkflowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="image configs ") as temporary:
             directory = Path(temporary)
             (directory / "artifacts/vs").mkdir(parents=True)
-            for source in ("tools/bazel/build_helpers.py", "tools/bazel/cache/credentials.py"):
+            for source in ("tools/bazel/build_helpers.py", "tools/bazel/cache/credentials.py",
+                           "tools/bazel/private_server.sh"):
                 destination = directory / source
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / source, destination)
             calls = directory / "calls.jsonl"
-            policy = directory / "policy.json"
-            policy.write_text("{}\n")
+            # A stale convenience link must never supply validation results.
+            (directory / "bazel-testlogs").symlink_to(directory / "stale")
             bazel = directory / "bazel"
             bazel.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
                 import json, os, sys
@@ -535,15 +550,19 @@ class VerificationWorkflowTest(unittest.TestCase):
                 args = sys.argv[1:]
                 with Path(os.environ['CALLS']).open('a') as output:
                     output.write(json.dumps(args) + '\\n')
+                base = Path(next(arg.split('=', 1)[1] for arg in args if arg.startswith('--output_base=')))
+                command = next(arg for arg in args if arg in ('test', 'build', 'info', 'cquery', 'shutdown'))
                 config = 'dash' if '--config=syncd-dash' in args else 'default'
-                logs = Path('testlogs') / config
-                logs.mkdir(parents=True, exist_ok=True)
-                link = Path('bazel-testlogs')
-                link.unlink(missing_ok=True)
-                link.symlink_to(logs, target_is_directory=True)
-                if args[0] == 'cquery':
-                    print(os.environ['POLICY'])
-                if args[0] == 'test':
+                execution_root = base / 'execroot/main'
+                logs = execution_root / 'bazel-out' / config / 'testlogs'
+                if command == 'info':
+                    sys.exit('info cannot resolve apparent Bzlmod platform labels')
+                if command == 'build':
+                    (execution_root / 'bazel-out').mkdir(parents=True, exist_ok=True)
+                    (execution_root / 'policy.json').write_text(config)
+                if command == 'cquery':
+                    print('policy.json')
+                if command == 'test':
                     target = next(arg.split(':')[1] for arg in args if arg.startswith('//'))
                     status = int(os.environ['SYNCD_EXIT' if config == 'dash' else 'SWSS_EXIT'])
                     report = logs / 'tools/bazel/tests' / target
@@ -559,11 +578,11 @@ class VerificationWorkflowTest(unittest.TestCase):
             bazel.chmod(0o755)
             for swss_exit, syncd_exit in ((0, 0), (13, 0), (0, 17), (13, 17)):
                 with self.subTest(swss_exit=swss_exit, syncd_exit=syncd_exit):
-                    self.check_static_workflow(directory, script, bazel, calls, policy, swss_exit, syncd_exit)
+                    self.check_static_workflow(directory, script, bazel, calls, swss_exit, syncd_exit)
 
-    def check_static_workflow(self, directory, script, bazel, calls, policy, swss_exit, syncd_exit):
+    def check_static_workflow(self, directory, script, bazel, calls, swss_exit, syncd_exit):
         calls.unlink(missing_ok=True)
-        for name in ("testlogs", "artifacts/vs/swss-images", "artifacts/vs/syncd-p4-images"):
+        for name in ("artifacts/vs/swss-images", "artifacts/vs/syncd-p4-images"):
             shutil.rmtree(directory / name, ignore_errors=True)
         outputs = [directory / "artifacts/vs" / (family + "-installed-images-policy.json")
                    for family in ("swss", "syncd")]
@@ -571,13 +590,14 @@ class VerificationWorkflowTest(unittest.TestCase):
             output.unlink(missing_ok=True)
         result = subprocess.run(["bash", "-c", script], cwd=directory,
                                 env=dict(os.environ, BAZEL=str(bazel), CALLS=str(calls),
-                                         POLICY=str(policy), SWSS_EXIT=str(swss_exit), SYNCD_EXIT=str(syncd_exit)),
+                                         SWSS_EXIT=str(swss_exit), SYNCD_EXIT=str(syncd_exit)),
                                 capture_output=True, text=True)
         failure = syncd_exit or swss_exit
         self.assertEqual(result.returncode, failure, result.stderr)
         arguments = [json.loads(line) for line in calls.read_text().splitlines()]
-        self.assertEqual(len(arguments), 2 if failure else 6)
-        for invocation in arguments:
+        target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
+        self.assertEqual(len(target_calls), 2 if failure else 6)
+        for invocation in target_calls:
             target = next(arg for arg in invocation if arg.startswith("//"))
             self.assertEqual("--config=syncd-dash" in invocation, "syncd" in target)
         for output in outputs:

@@ -10,6 +10,8 @@ on:
       - rules/p4rt.*
       - src/sonic-p4rt/**
       - src/sonic-swss-common
+      - tools/bazel/debian_mirrors.cfg
+      - tools/bazel/ci/source_mirrors.py
       - tools/bazel/p4rt_common_sdk.py
       - tools/bazel/ci/p4rt_common_sdk.py
       - tools/bazel/tests/p4rt_common_sdk_test.py
@@ -21,6 +23,8 @@ on:
       - rules/p4rt.*
       - src/sonic-p4rt/**
       - src/sonic-swss-common
+      - tools/bazel/debian_mirrors.cfg
+      - tools/bazel/ci/source_mirrors.py
       - tools/bazel/p4rt_common_sdk.py
       - tools/bazel/ci/p4rt_common_sdk.py
       - tools/bazel/tests/p4rt_common_sdk_test.py
@@ -88,6 +92,11 @@ jobs:
           disk-cache: p4rt-common-sdk-${{ matrix.arch }}
           cache-version: "8.5.1-6.4.0"
 
+      - name: Configure shared source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+
       - name: Test SDK refresh and failure handling
         run: python3 -B -m unittest discover -s tools/bazel/tests -p p4rt_common_sdk_test.py -v
 
@@ -97,7 +106,8 @@ jobs:
             --common-source src/sonic-swss-common \
             --output-dir "$RUNNER_TEMP/common-sdk" \
             --output-base "$RUNNER_TEMP/common-bazel-8" \
-            --arch '${{ matrix.arch }}' --bazel-arg=--jobs=2
+            --arch '${{ matrix.arch }}' --bazel-arg=--jobs=2 \
+            --bazel-arg=--downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg"
 
       - name: Install Common's external runtime dependencies
         working-directory: src/sonic-swss-common
@@ -107,14 +117,22 @@ jobs:
           python3 -B tools/bazel/runtime/prepare.py \
             --image-reference debian:trixie-20260918 \
             --output "$GITHUB_WORKSPACE/artifacts/p4rt/test-runtime.json"
-          native_args=()
+          native_args=(--downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg")
           if [ '${{ matrix.arch }}' = arm64 ]; then native_args+=(--config=aarch64); fi
+          runtime_targets=(
+            @libyang//:libyang_pkg
+            @libnl3//:libnl-3_pkg
+            @libnl3//:libnl-route-3_pkg
+            @libnl3//:libnl-nf-3_pkg
+          )
           bazel --output_base="$RUNNER_TEMP/common-bazel-8" build \
-            "${native_args[@]}" --jobs=2 --//tools/bazel:yang_modules=True @libyang//:libyang_pkg
-          libyang_archive="$(bazel --output_base="$RUNNER_TEMP/common-bazel-8" cquery \
-            "${native_args[@]}" --//tools/bazel:yang_modules=True --output=files @libyang//:libyang_pkg)"
-          test -f "$libyang_archive"
-          tar -xf "$libyang_archive" -C /
+            "${native_args[@]}" --jobs=2 --//tools/bazel:yang_modules=True "${runtime_targets[@]}"
+          for target in "${runtime_targets[@]}"; do
+            archive="$(bazel --output_base="$RUNNER_TEMP/common-bazel-8" cquery \
+              "${native_args[@]}" --//tools/bazel:yang_modules=True --output=files "$target")"
+            test -f "$archive"
+            tar -xf "$archive" -C /
+          done
           ldconfig
           bazel --output_base="$RUNNER_TEMP/common-bazel-8" shutdown
 

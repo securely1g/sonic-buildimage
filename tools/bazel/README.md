@@ -163,8 +163,8 @@ When returning to Make, the cache loader must replace the Bazel archive even if
 the destination already exists. The shared bridge requests a staged restore of
 that archive from a matching Make cache; a failed extraction preserves the prior
 archive and leaves the newer stamp in place for a retry.
-Archives selected for Bazel cannot appear in `SONIC_PACKAGES_LOCAL`: the shared
-archive macro supplies `:latest`, while that Make mode expects versioned tags.
+The shared archive macro exports `:latest`. For images in `SONIC_PACKAGES_LOCAL`,
+the installer loads the archive and adds the `SONIC_IMAGE_VERSION` tag.
 The base/config-engine images and service images register their own Bazel
 producers. SWSS supports native AMD64 Trixie VS without ASAN. Other SWSS configurations
 keep the Make build even with `BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`.
@@ -409,6 +409,19 @@ BAZEL=bazel make -f slave.mk target/docker-example.gz \
   BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
 
+Each independent Bazel recipe in the Make installer build uses a private local
+server and output directory. The build, its queries and its exports use the same
+server, including both archives of a grouped runtime/debug build. Exports resolve
+against the producing server's execution root. Parallel recipes can therefore
+build from the same checkout while sharing the configured repository, disk and
+remote caches. Temporary build state is removed after the recipe, including on
+failure. Size the action and memory limits for the number of concurrent builds.
+
+Set `SONIC_BAZEL_REMOTE_CACHE` for a common endpoint across image, P4RT and
+kernel builds. The default is read-only. Set `SONIC_BAZEL_REMOTE_UPLOAD=y` to
+publish locally built results. The kernel also accepts its existing cache
+overrides. CI permits remote writes on pushes to `master`.
+
 The normal Make platform and build-environment setup must already be selected.
 When invoking Make outside the builder, forward extra options through
 `SONIC_BUILDER_EXTRA_CMDLINE`.
@@ -470,6 +483,25 @@ Use `bazel help --announce_rc` to inspect the effective rc selection. Keep one
 SONiC registry endpoint; do not add another endpoint in a home or user rc.
 Generated resolution receipts list registry lookup URLs from the lock; a reused
 lock can also contain historical lookups.
+
+Source-image workers can test a source checkout against an explicitly selected
+SONiC registry commit. For the same selection locally, run the review entry
+point from the image workspace root. For example, to inspect the Database
+image archive target at the current published registry revision:
+
+```sh
+export SONIC_BAZEL_REGISTRY_REVISION=$(git ls-remote --exit-code \
+  https://github.com/securely1g/sonic-bazel-registry.git refs/heads/main | cut -f1)
+tools/bazel/ci/review_bazel.sh query //dockers/docker-database:docker-database.gz
+```
+
+The entry point requires a full lowercase commit ID. It replaces the SONiC
+registry URL for that invocation, keeps BCR as the second registry, and disables
+remote cache uploads for reviewed builds. It keeps cache and downloader settings
+from the home `.bazelrc` and the workspace `.bazelrc.user`. For settings in the
+same command scope, the workspace file takes precedence. The worker sets
+`BAZEL_REAL` to its resource-limited Bazel launcher. Ordinary CI still uses
+registry `main`.
 
 ## Kernel Debian packages in the Make VS flow
 

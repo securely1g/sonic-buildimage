@@ -253,9 +253,13 @@ It requires native AMD64/Trixie VS with Bazel, FIPS and DASH enabled, without
 ASAN, Syncd RPC or cross/emulated execution, and checks that both runtime/debug
 container pairs select their Bazel producers.
 
-The shared verifier resolves the config-engine archive and the two existing
-P4RT package prerequisites through Make, then runs the SWSS and Syncd image
-checks and offline P4RT split-debug-symbol check in the same Trixie builder.
+The shared verifier resolves both P4RT packages through Make. Native CI uses
+the config-engine archive already produced for the installer. It reopens each
+service's private Bazel output base to check the exact SWSS and Syncd exports
+and generate their installed-image policies. Both builders mount the job
+checkout at `/sonic`, and checkout cleanup removes the two bases. Standalone
+validation can request the config-engine archive through Make. The offline
+P4RT split-debug-symbol check runs in the same Trixie builder.
 It does not request the Orchagent or Syncd Make archives again or add a package
 definition. The legacy wrapper's Bookworm builder cleanup
 is retained. The final pair check requires all four archives and their manifests
@@ -288,6 +292,16 @@ Bazel configurations. The generated `*-installed-images-policy.json` files
 bind the Docker checks to those outputs; `installed-images.json` records the
 shared Docker-load result. The active workflow publishes these files in
 `sonic-vs-image-validation-amd64`.
+The Syncd `validation.json` includes additive `performance` evidence:
+`phase_seconds` separates input identity, image/archive validation, native
+packages/symbols, inherited base/symbols, and final input-integrity verification.
+`validation_seconds` excludes Bazel dependency preparation. Progress and timings
+are printed in the test log. Scoped cache statistics count hash reads/hits and
+bytes, inventory hits/misses, evictions and size/file-limit bypasses, plus
+separate final-integrity reads, bytes and duration.
+Successful duplicate-path checks for identical OCI layer bytes are reused only
+within the immutable-input cache scope. Invalid layers are never cached, and
+final byte-integrity verification remains mandatory.
 `runtime-debug-pairs-timing.json` (schema 2) records the revision and profile,
 P4 validation time, pair validation time and their total. It does not include
 the image build duration.

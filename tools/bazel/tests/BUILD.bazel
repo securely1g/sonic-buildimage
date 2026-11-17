@@ -1191,6 +1191,22 @@ _SYNCD_P4_IMAGE_INPUTS = {
 }
 
 py_test(
+    name = "syncd_validation_timing_test",
+    size = "small",
+    srcs = [
+        "integration/syncd_p4_images_test.py",
+        "syncd_validation_timing_test.py",
+    ],
+    main = "syncd_validation_timing_test.py",
+    deps = [
+        "//tools/bazel/ci:artifact_validation",
+        "//tools/bazel/ci:validation_inputs",
+        "//tools/bazel/oci:container_validation",
+        "//tools/bazel/oci:source_base_validation",
+    ],
+)
+
+py_test(
     name = "syncd_p4_images_test",
     size = "large",
     srcs = ["integration/syncd_p4_images_test.py"],
@@ -1349,3 +1365,15 @@ _INSTALLED_BASE = "//dockers/docker-config-engine-trixie"
     )
     for family, (owner, image) in _INSTALLED_IMAGE_FAMILIES.items()
 ]
+
+py_test(
+    name = "gbsyncd_make_test",
+    srcs = ["gbsyncd_make_test.py"],
+    data = [
+        "//:platform/template/docker-gbsyncd-trixie.mk",
+        "//:platform/vs/docker-gbsyncd-vs.mk",
+        "//platform/vs/docker-gbsyncd-vs:Dockerfile.j2",
+        "//platform/vs/docker-syncd-vs:Dockerfile.j2",
+    ],
+    python_version = "3.11",
+)
