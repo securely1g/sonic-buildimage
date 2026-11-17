@@ -21,17 +21,31 @@ runs with `skip_vs=true` skip the native installer.
 
 ## General Ubuntu x64 jobs
 
-Jobs previously selecting `ubuntu-24.04` now require all four labels:
+Most jobs previously selecting `ubuntu-24.04` now require all four labels:
 `[self-hosted, Linux, X64, ubuntu-x64]`. This includes the dashboard and runner
 manager tests, as well as direct and matrix-selected AMD64 CI jobs. Provision
 this pool separately with an Ubuntu 24.04 x64 environment, Docker, passwordless
 sudo, and the tools required by each workflow. These selectors do not register
 or provision runners. Existing Bazel-specific pools are unchanged.
 
+The native libteam/SWSS consumer and FRR Python builds instead use
+`[self-hosted, linux, bazel-x64]` for AMD64 and
+`[self-hosted, linux, bazel-arm64]` for ARM64. The AMD64 FRR/sonic-fib,
+gNMI image, Framework image, and Sysmgr package builds also use `bazel-x64`.
+These jobs opt in to the private remote cache and downloader through
+`preserve_setup_bazel_cache.py --private-remote-cache`, while retaining the
+setup-bazel disk/repository caches and disabling remote uploads by default.
+Tests explicitly requesting `--nocache_test_results` still execute.
+
+Sysmgr runs in its own Bazel workspace and ignores workspace RC files. Its
+workflow passes the generated root `.bazelrc.user` explicitly through the
+build driver's `--startup-arg=--bazelrc=...` option and disables remote uploads
+in that RC file; it does not modify the source module.
+
 The manually triggered native AMD64 Make-cache build remains on
 `ubuntu-24.04`: its sandbox setup explicitly permits only disposable
 GitHub-hosted runners, and its preparation removes hosted-image SDKs.
-The Make-cache regression job uses `ubuntu-x64`. ARM64 jobs selecting
+The Make-cache regression job uses `ubuntu-x64`. Other ARM64 jobs selecting
 `ubuntu-24.04-arm` are unchanged.
 
 ## Legacy one-job runner helpers

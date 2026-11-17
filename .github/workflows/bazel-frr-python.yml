@@ -21,12 +21,12 @@ jobs:
           - name: AMD64
             architecture: amd64
             machine: x86_64
-            runner: [self-hosted, Linux, X64, ubuntu-x64]
+            runner: [self-hosted, linux, bazel-x64]
             platform: x86_64_trixie
           - name: ARM64
             architecture: arm64
             machine: aarch64
-            runner: ubuntu-24.04-arm
+            runner: [self-hosted, linux, bazel-arm64]
             platform: aarch64_trixie
     container: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
     defaults:
@@ -61,6 +61,9 @@ jobs:
           repository-cache: true
           disk-cache: buildimage-frr-python-${{ matrix.architecture }}
           cache-version: "8.5.1"
+
+      - name: Preserve setup-bazel caches for source checks
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
 
       - name: Configure shared source download mirrors
         run: |
