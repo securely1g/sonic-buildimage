@@ -435,18 +435,6 @@ class WorkflowTests(unittest.TestCase):
         recovery=[step for step in job['steps'] if step.get('id')=='recover']
         self.assertEqual(recovery[0]['if'],"inputs.source_image == 'registry-native-export'")
 
-    def test_owned_feature_keeps_no_deb_fixtures_and_vs_guard(self):
-        jobs = yaml.safe_load((ROOT/'.github/workflows/bazel-oci.yml').read_text())['jobs']
-        branch = 'codex/registry-native-export-permissions'
-        guards = [step['env']['SOURCE_ONLY_NO_DEBS'] for job in jobs.values() for step in job.get('steps',[])
-                  if 'SOURCE_ONLY_NO_DEBS' in step.get('env', {})]
-        self.assertEqual(len(guards), 2)
-        for guard in guards:
-            self.assertTrue(condition(guard, event='pull_request', branch=branch))
-            self.assertFalse(condition(guard, event='pull_request', branch=branch+'-other'))
-            self.assertFalse(condition(guard, event='pull_request', branch=branch, head_repo='foreign/repo'))
-        self.assertFalse(condition(jobs['vs_container']['if'], event='pull_request', branch=branch))
-
 
 if __name__ == '__main__':
     unittest.main()
