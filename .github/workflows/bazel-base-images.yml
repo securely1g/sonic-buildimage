@@ -101,8 +101,12 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python3 -B tools/bazel/ci/base_review.py
 
-      - name: Initialize Sysmgr's pinned gNOI source
-        run: git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init -- src/sonic-sysmgr/gnoi
+      - name: Prepare pinned source submodules
+        run: |
+          set -euo pipefail
+          git -c safe.directory="$GITHUB_WORKSPACE" submodule foreach --recursive \
+            'git -c safe.directory="$toplevel" -c safe.directory="$toplevel/$sm_path" -C "$toplevel" submodule update --checkout -- "$sm_path"'
+          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --checkout -- src/sonic-sysmgr/gnoi
 
       - name: Check clean dependency inputs
         run: |

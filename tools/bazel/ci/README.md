@@ -77,12 +77,16 @@ stops the job before checkout.
 
 ### Post-job Bazel disk cleanup
 
-The YANG standalone distribution's final tracked-source check is scoped to
-`src/sonic-yang-models` and compares against `HEAD`, including staged edits.
-An unrelated initialized submodule can retain a different revision on a reused
-host runner when checkout does not request submodules; that does not indicate
-that the YANG build changed source. The check neither resets those submodules
-nor globally ignores submodule changes.
+Before source checks, the native Bazel workflows restore already-populated
+submodules to their superproject's recorded commits, recursively, then initialize
+the required Sysmgr gNOI source. A checkout without `submodules` does not update
+retained submodule revisions on a reused runner. The preparation uses
+`submodule foreach` to avoid cloning unrelated uninitialized modules, including
+registered modules whose working directories are absent. Git fetches missing
+pinned commits as needed; conflicting local edits fail explicitly rather than
+being forcibly reset. Repository-wide tracked-source checks remain enabled,
+including YANG's check. Preparation stays inline so base-image reviews selecting
+older source revisions do not depend on a newly added helper in that checkout.
 
 SNMP retains its upload-gated immediate artifact cleanup within the registered
 job temporary directory; failed uploads preserve those artifacts. The post-job
