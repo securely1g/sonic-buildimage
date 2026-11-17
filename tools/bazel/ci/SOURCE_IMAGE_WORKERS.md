@@ -77,7 +77,8 @@ The Bazel JVM uses the worker's readable system Java trust store, as the
 existing native launchers do; certificate verification remains enabled.
 
 To build an image, choose `source_image=sysmgr`, `dash-ha`, `orchagent`, `sflow`,
-`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework` or `teamd`,
+`otel`, `syncd`, `gearbox`, `dash-engine`, `gnmi`, `gnmi-no-dialout`, `framework`,
+`teamd`, `base-config` or `swss-layer`,
 a `source_worker` affinity label and a full `source_revision` SHA.
 An optional full `registry_revision` SHA explicitly pairs a reviewed catalog
 with that source. Leaving it blank retains the source workflow's existing
@@ -196,6 +197,10 @@ Bazel OCI workflow on master. It builds runtime and debug archives on the
 The MACsec source PR owns its build and installed-service checks.
 For authenticated Syncd and Gearbox requests, the dispatcher selects the shared
 K3s pool and verifies the original CI request before building.
+
+The AMD64 `base-config` and `swss-layer` selections use the
+[shared image profile interface](README.md#direct-shared-image-worker-profiles)
+for their existing combined build and inspection, incremental, and installed checks.
 
 ## Explicit ordinary registry consumers
 
