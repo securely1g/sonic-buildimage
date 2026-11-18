@@ -125,8 +125,8 @@ remains a generated build input.
 Native AMD64/ARM64 archive checks and AMD64 source-layer checks are configured
 for PR updates. Full VS/P4RT builds also run automatically for PR branches in
 this repository after the source checks pass. External-fork PRs keep hosted
-checks only. Manual `Bazel OCI` dispatch defaults to `skip_vs=true`; select
-`skip_vs=false` to include the full image job. A push to `master` runs archive
+checks only. Manual `Bazel OCI` dispatch defaults to `skip_vs=false`; select
+`skip_vs=true` to omit the full image job. A push to `master` runs archive
 and source checks without an automatic full VS build.
 
 Generated Bazel files carry an `AUTO-GENERATED. DO NOT EDIT MANUALLY.` header

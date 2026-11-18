@@ -237,7 +237,7 @@ The owning BUILD files sit beside the original container inputs:
 and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-syncd-vs/BUILD.bazel).
 The shared runner accepts either package path; it does not require owners to
 live under `dockers/`.
-Manual runs default to `skip_vs=true`; same-repository PRs retain the full VS
+Manual runs default to `skip_vs=false`; same-repository PRs retain the full VS
 job after hosted regressions and dependency resolution pass. Fork PRs and
 manual `skip_vs=true` runs omit source-package/full-image validation; hosted
 success alone does not establish those results.

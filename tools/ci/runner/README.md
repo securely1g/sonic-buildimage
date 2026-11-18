@@ -16,8 +16,10 @@ KVM.
 
 GitHub-hosted Ubuntu runs the OCI regression checks and supplies verified
 source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
-run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Fork PRs and manual
-runs with `skip_vs=true` skip the native installer.
+run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Manual `Bazel OCI`
+runs include `VS installer in SONiC slave (AMD64)` by default. Select
+`skip_vs=true` to run source and archive checks without the installer. Fork PRs
+also skip the native installer.
 
 ## Legacy one-job runner helpers
 
