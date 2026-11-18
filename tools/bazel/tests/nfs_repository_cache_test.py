@@ -81,25 +81,26 @@ class NfsRepositoryCacheTest(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "NFS unavailable"):
                     subject.prepare("downloads", self.root, "8.5.1")
 
-    def test_workflow_step_runs_off_by_default_after_cleanup_before_slaves(self):
+    def test_workflow_defaults_to_contents_and_explicit_off_needs_no_nfs(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         trigger = yaml.safe_load(workflow.split("\npermissions:", 1)[0].replace("\non:", "\ntrigger:"))
         dispatch = trigger["trigger"]["workflow_dispatch"]["inputs"]["repository_cache_mode"]
-        self.assertEqual(dispatch["default"], "off")
+        self.assertEqual(dispatch["default"], "downloads-and-contents")
         self.assertEqual(dispatch["options"], list(subject.MODES))
         job = jobs()["vs_container"]
         self.assertLess(job.index("- name: Reclaim local build caches"),
-                        job.index("- name: Configure opt-in NFS repository caches"))
-        self.assertLess(job.index("- name: Configure opt-in NFS repository caches"),
+                        job.index("- name: Configure NFS repository caches"))
+        self.assertLess(job.index("- name: Configure NFS repository caches"),
                         job.index("- name: Prepare the host-driven SONiC slave"))
-        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.repository_cache_mode", job)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.repository_cache_mode"
+                      " || 'downloads-and-contents' }}", job)
         environment = dict(os.environ, SONIC_VS_REPOSITORY_CACHE_MODE="off",
                            GITHUB_ENV=str(self.root / "github-env"))
         helper = self.root / "tools/bazel/ci/nfs_repository_cache.py"
         helper.parent.mkdir(parents=True)
         helper.symlink_to(ROOT / "tools/bazel/ci/nfs_repository_cache.py")
         result = subprocess.run(
-            ["bash", "-e", "-c", shell(steps(job)["Configure opt-in NFS repository caches"])],
+            ["bash", "-e", "-c", shell(steps(job)["Configure NFS repository caches"])],
             cwd=self.root, env=environment, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.root / "github-env").read_text(),
