@@ -61,7 +61,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.36-3070359b148ad6ad4eab749f5143ff2a38c980df",
+    version = "0.0.37-316e298e77ab5cfa69af9b0c05ec24d5d94bbe1e",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(
@@ -326,7 +326,7 @@ bazel_dep(name = "libyang", version = "3.12.2.sonic.6")
 
 single_version_override(
     module_name = "sonic-rust-deps",
-    version = "0.0.4-6d9c70f708d7420e9e2b2cdc906b80cee6b140f1",
+    version = "0.0.5-dd364f207d7b320a5af12c81da6d10893f292205",
 )
 
 bazel_dep(name = "sonic-fips", version = "0.0.6-18a778db501d455f8a1b6d1e3ef8e17121661177", repo_name = "sonic_fips")
@@ -362,10 +362,12 @@ source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "so
 source_modules(
     name = "image_source_modules",
     modules = {
+        "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
         "@libteam//:MODULE.bazel": "libteam",
         "@sonic_dash_api//:MODULE.bazel": "sonic-dash-api",
+        "@sonic_dash_ha//:MODULE.bazel": "sonic-dash-ha",
         "@socat//:MODULE.bazel": "socat",
         "@iproute2//:MODULE.bazel": "iproute2",
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
@@ -630,4 +632,50 @@ apt_inputs(
         "libboost-program-options1.83.0",
         "libboost-thread1.83.0",
     ],
+)
+
+bazel_dep(name = "sonic-dash-ha", version = "0.0.1-502377912f3530c9bb6c27007822919f6f32aeb7", repo_name = "sonic_dash_ha")
+
+# The shared infrastructure lock provides separate runtime, debug and test collections.
+use_repo(apt, "dash_ha_debian", "dash_ha_debug_debian", "dash_ha_test_debian")
+
+bazel_dep(name = "otelcol-contrib", version = "0.144.0.sonic.1", repo_name = "otelcol_contrib")
+
+otel_runtime_deps = use_extension("@otelcol_contrib//bazel:collector_deps.bzl", "go_deps")
+otel_runtime_deps.gazelle_default_attributes(
+    build_file_generation = "clean",
+    directives = ["gazelle:proto disable_global"],
+)
+otel_runtime_deps.module_override(
+    patch_strip = 1,
+    patches = ["@otelcol_contrib//bazel:0001-googlecloudspannerreceiver-embedded-metadata.patch"],
+    path = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/googlecloudspannerreceiver",
+)
+
+otel_golden_deps = use_extension("@otelcol_contrib//bazel:golden_deps.bzl", "go_deps")
+otel_golden_deps.gazelle_default_attributes(
+    build_file_generation = "clean",
+    directives = ["gazelle:proto disable_global"],
+)
+
+use_repo(apt, "otel_debian")
+
+# Native nnpy is source-built for the BMv2 clients installed by its owner.
+bazel_dep(name = "nnpy", version = "1.4.2.sonic.1")
+
+use_repo(apt, "dash_engine_debian", "dash_engine_debug_debian")
+
+apt_inputs(
+    name = "dash_engine_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
+source_modules(
+    name = "dash_engine_source_modules",
+    modules = {
+        "@p4lang_pi//:MODULE.bazel": "p4lang-pi",
+        "@p4lang_bmv2//:MODULE.bazel": "p4lang-bmv2",
+        "@nnpy//:MODULE.bazel": "nnpy",
+        "@sonic_fips//:MODULE.bazel": "sonic-fips",
+    },
 )
