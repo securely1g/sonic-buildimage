@@ -1764,6 +1764,15 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - &reclaim_unused_images
+        name: Reclaim unused images and build cache
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          docker system df
+          docker image prune --all --force
+          docker builder prune --all --force
+          docker system df
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: dash-ha-images-amd64-${{ github.sha }}
@@ -1816,6 +1825,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: macsec-image-amd64-${{ github.sha }}
@@ -1869,6 +1879,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: database-image-amd64-${{ github.sha }}
@@ -1937,6 +1948,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: lldp-image-amd64
@@ -1990,6 +2002,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mux-image-amd64-${{ github.sha }}
@@ -2185,7 +2198,7 @@ jobs:
   gearbox_runtime:
     name: Load and run gearbox images (AMD64)
     needs: gearbox_archive
-    runs-on: [self-hosted, Linux, X64, ubuntu-x64]
+    runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 20
     steps:
       - *restore_workspace_access
@@ -2208,6 +2221,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: gbsyncd-source-amd64-${{ github.sha }}
@@ -2671,6 +2685,7 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: eventd-image-amd64
@@ -2721,6 +2736,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: swss-layer-amd64
@@ -2845,6 +2861,7 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: snmp-images-amd64-${{ github.sha }}
@@ -2893,6 +2910,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sysmgr-images-amd64-${{ github.sha }}
@@ -2935,6 +2953,7 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: frr-image-amd64-${{ github.sha }}
@@ -3021,6 +3040,7 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: teamd-image-amd64-${{ github.sha }}
@@ -4142,6 +4162,7 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: gnmi-image-amd64
@@ -4321,6 +4342,7 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mgmt-framework-image-amd64
@@ -4526,6 +4548,7 @@ jobs:
             --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
             --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
             --github-output "$GITHUB_OUTPUT"
+      - *reclaim_unused_images
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: radv-image-amd64-${{ github.sha }}

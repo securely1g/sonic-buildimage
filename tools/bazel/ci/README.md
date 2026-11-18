@@ -149,8 +149,14 @@ Bazel servers but preserve host output bases and shared caches. Acceptance-only
 gates and Pages deployment create no checkout/build state and need no hook.
 The mixed validator matrix registers cleanup only for its self-hosted AMD64 leg.
 
-This cleanup does not run on the VS installer agent, delete runner metadata,
-touch shared NFS/remote caches or prune Docker images. Agents already unable to
+This post-job cleanup does not run on the VS installer agent, delete runner metadata,
+touch shared NFS/remote caches or prune Docker images. Self-hosted image-runtime
+host jobs separately reuse the VS installer's pre-download Docker image and
+builder-cache pruning step. Their VMs must have exclusive use of the daemon,
+with no concurrent jobs or background container builds. Container-based build
+jobs and GitHub-hosted runtime jobs do not receive that step. No additional
+host hook is required; containers and volumes are not pruned.
+Agents already unable to
 start a job need a separate one-time cleanup while idle; a post hook cannot
 recover an agent that fails before checkout. Continue managing host Docker
 retention outside active jobs.

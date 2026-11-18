@@ -230,6 +230,14 @@ jobs:
         with:
           ref: ${{ inputs.source_revision || github.sha }}
           persist-credentials: false
+      - name: Reclaim unused images and build cache
+        if: runner.environment == 'self-hosted'
+        run: |
+          set -euo pipefail
+          docker system df
+          docker image prune --all --force
+          docker builder prune --all --force
+          docker system df
       - name: Require this architecture's producer artifact
         env:
           ARTIFACT_ID: ${{ needs.native.outputs[format('{0}_artifact_id', matrix.architecture)] }}

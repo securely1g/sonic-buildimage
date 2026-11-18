@@ -73,6 +73,24 @@ docker system df
 Reimage drained disposable agents or reclaim only verified job-owned data.
 Do not prune Docker/containerd state while another job is using the daemon.
 
+Self-hosted image-runtime jobs in the OCI and source base-image workflows reuse
+the VS installer's "Reclaim unused images and build cache" step before downloading
+artifacts. It runs `docker image prune --all --force` and
+`docker builder prune --all --force`, reporting Docker disk usage before/after.
+Pruning failures stop the job; container-based build jobs and GitHub-hosted jobs
+do not receive this step. No runner hook or additional agent installation is
+required.
+
+These pools must use dedicated VMs with one active job and exclusive use of the
+Docker daemon: no other runner listeners, container workloads or background
+builders may share it. The step removes unused images/cache regardless of age;
+future jobs may need to pull or rebuild them. It does not prune containers,
+volumes, networks, Bazel caches or workspaces, and never directly deletes
+Docker/containerd files. Stopped containers retain their referenced images.
+Post-job workspace cleanup and failed-evidence retention remain unchanged.
+Pruning prevents accumulation, but a clean agent still needs enough disk space
+for downloaded archives and unpacked runtime/debug images.
+
 The native libteam/SWSS consumer and FRR Python builds instead use
 `[self-hosted, linux, bazel-x64]` for AMD64 and
 `[self-hosted, linux, bazel-arm64]` for ARM64. The AMD64 FRR/sonic-fib,
@@ -81,6 +99,12 @@ These jobs opt in to the private remote cache and downloader through
 `preserve_setup_bazel_cache.py --private-remote-cache`, while retaining the
 setup-bazel disk/repository caches and disabling remote uploads by default.
 Tests explicitly requesting `--nocache_test_results` still execute.
+
+The Gearbox installed-image runtime job uses `bazel-x64` rather than the general
+`ubuntu-x64` pool after repeated containerd capacity failures there. It remains
+a host job with workspace repair and post-job cleanup. The pool must still have
+enough storage for both downloaded archives and unpacked runtime/debug images;
+the selector does not increase disk capacity.
 
 Sysmgr runs in its own Bazel workspace and ignores workspace RC files. Its
 workflow passes the generated root `.bazelrc.user` explicitly through the
