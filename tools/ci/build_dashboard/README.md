@@ -97,6 +97,8 @@ breakdown lists the Make targets that invoked Bazel during installer
 construction, ordered by measured command and export time. Expand a target
 to inspect lock waits, compiler subprocesses, nested builds, cache fetches
 and exports. A Docker row can cover one archive or a runtime/debug pair.
+For a multi-image VS build, `vs-container-images` shows the shared Bazel
+command. The row for each participating image shows its archive exports.
 The Linux kernel row times the entire pinned launcher and reports its build,
 output query and module-graph profiles. When Make rebuilds the P4RT package,
 its row covers the nested Bazel build, tests, server shutdown and Debian package

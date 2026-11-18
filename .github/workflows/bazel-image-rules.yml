@@ -4,6 +4,10 @@ on:
   pull_request:
     paths:
       - tools/bazel/image/**
+      - tools/bazel/build_container_batch.py
+      - tools/bazel/container_batch.bzl
+      - tools/bazel/common.bazelrc
+      - tools/bazel/tests/integration/container_batch.py
       - tools/bazel/image-assembly-design.md
       - MODULE.bazel
       - .github/workflows/bazel-image-rules.yml
@@ -11,6 +15,10 @@ on:
     branches: [master]
     paths:
       - tools/bazel/image/**
+      - tools/bazel/build_container_batch.py
+      - tools/bazel/container_batch.bzl
+      - tools/bazel/common.bazelrc
+      - tools/bazel/tests/integration/container_batch.py
       - MODULE.bazel
       - .github/workflows/bazel-image-rules.yml
   workflow_dispatch:
@@ -44,6 +52,8 @@ jobs:
           repository-cache: true
           disk-cache: image-rule-actions-${{ matrix.architecture }}
           cache-version: "8.5.1"
+      - name: Compare batched and standalone configured container outputs
+        run: python3 tools/bazel/tests/integration/container_batch.py --architecture ${{ matrix.architecture }}
       - name: Run public Bazel rule actions
         env:
           BAZELISK_GITHUB_TOKEN: ""

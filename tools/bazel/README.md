@@ -56,16 +56,19 @@ Invalid metadata for a selected target and Bazel build errors remain failures.
 ### Build runtime and debug archives with the VS image
 
 During `make target/sonic-vs.bin BUILD_WITH_BAZEL_WHEN_AVAILABLE=y`,
-the Trixie builder builds each selected, supported runtime/debug pair in one
-Bazel invocation. The two targets share the owner's configuration and declared
-inputs. This retains the runtime layers and Bazel state while producing the
-matching debug image, before the VS builder exits. Both complete Docker archives
-are exported to `target/`; each archive remains independently cacheable.
+the Trixie builder issues one `bazel build` for the selected container archives.
+The same rule handles `sonic-vs.img.gz`. Make collects the installer containers,
+local container packages and Bazel archives loaded by legacy Docker recipes.
+It includes each selected container's registered runtime and debug variants.
+Make prepares their prerequisites, then Bazel sees all container targets at once
+and can schedule independent actions in parallel.
 
 For the native AMD64 FIPS/DASH CI configuration, this produces
 `docker-orchagent.gz`, `docker-orchagent-dbg.gz`, `docker-syncd-vs.gz` and
-`docker-syncd-vs-dbg.gz` during the VS build. The existing owner guards determine
-which pairs are available in other configurations.
+`docker-syncd-vs-dbg.gz` in the same build. The Syncd targets receive the
+owner's DASH settings while Orchagent keeps its own configuration. The bridge
+reads the archive paths from the build event stream and exports them to
+`target/`. A separate Bazel query for each output is unnecessary.
 
 Building a debug archive does not select it for installation.
 `INSTALL_DEBUG_TOOLS=y` selects the debug containers through the existing VS

@@ -37,6 +37,7 @@ const SECTION_LABELS = {
   "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
 };
 const TASK_LABELS = {
+  "vs-container-images": "Bazel container images",
   "final-image": "Final VS image recipe", rootfs: "Root filesystem squashfs", base: "Base container",
   "config-engine": "Config-engine container", "orchagent-release": "Orchagent release container",
   "orchagent-debug": "Orchagent debug container", "syncd-release": "Syncd release container",
@@ -999,6 +1000,9 @@ function renderRecipeRows(rows, legacy) {
     item.append(details); list.append(item);
   }
   const notes = ["Lock waits, compiler subprocesses, nested builds and cache reads can overlap. The Bazel total also includes work such as analysis and linking. Cache fetch includes disk and remote reads."];
+  if (rows.some(row => row.owner === "vs-container-images")) {
+    notes.push("vs-container-images records the shared Bazel build. Each participating image records its archive export time separately.");
+  }
   if (rows.some(row => row.owner === "linux-kernel")) {
     notes.push("Kernel time includes launcher setup and its nested build covers kernel Make as a whole.");
   }

@@ -47,6 +47,7 @@ SECTION_LABELS = {
 OUTER_TARGETS = {"bazel-vs-oci": "oci-session", "bazel-vs-oci-verify": "oci-verification"}
 TASK_LABELS = {
     "final-image": "Final VS image recipe",
+    "vs-container-images": "Bazel container images",
     "rootfs": "Root filesystem squashfs",
     "base": "Base container",
     "config-engine": "Config-engine container",
@@ -87,6 +88,7 @@ TASK_LABELS = {
     "macsec": "MACsec container",
 }
 EXACT_TARGETS = {
+    "target/vs-container-images": "vs-container-images",
     "target/sonic-vs.bin": "final-image",
     "target/sonic-vs.bin__vs__rfs.squashfs": "rootfs",
     "target/sonic-vs.img.gz": "final-image",
@@ -99,7 +101,7 @@ EXACT_TARGETS = {
 for _kind in TASK_LABELS.keys() - {
     "final-image", "rootfs", "base", "config-engine", "swss-layer", "orchagent-release",
     "orchagent-debug", "syncd-release", "syncd-debug", "p4rt-runtime", "p4rt-debug",
-    "orchagent-pair", "syncd-pair",
+    "orchagent-pair", "syncd-pair", "vs-container-images",
 }:
     EXACT_TARGETS[f"target/docker-{_kind}.gz"] = _kind
 

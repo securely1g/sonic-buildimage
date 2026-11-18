@@ -78,7 +78,9 @@ file, without dropping records or replacing the previous output on overflow.
   `image_recipe_timings`. Version 2 stores a `recipes` list. Each `owner`
   is the Make output basename or package build group. New owners appear as
   the build registers them. Repeated invocations for an owner contribute to
-  that owner's row.
+  that owner's row. The VS installer records a multi-image Bazel command once
+  under `vs-container-images`. Each participating image records its own exports
+  and expects zero individual Bazel commands and profiles for that invocation.
   - `bazel_seconds`, `bazel_phases` and `bazel_expected` report the measured
     duration, recorded timing count and expected timing count for its commands.
     The kernel measures its launcher once per invocation.

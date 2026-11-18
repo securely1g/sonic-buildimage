@@ -217,11 +217,13 @@ def build_evidence(events, durations):
     }
 
 
-def measured(seconds, complete):
+def measured(seconds, count=1, expected=1):
+    if expected == 0:
+        return "n/a"
     if seconds is None:
         return "unavailable"
     display = "<0.01" if 0 < seconds < 0.01 else f"{seconds:.2f}"
-    return display if complete else display + " (partial)"
+    return display if count == expected else display + " (partial)"
 
 
 def legacy_plan(owner):
@@ -362,7 +364,7 @@ def build_explanation(row):
     evidence = sorted(((value, BUILD_EVIDENCE[key]) for key, value in build.items()
                        if key in BUILD_EVIDENCE and value), reverse=True)
     if evidence:
-        text = (f"Largest recorded work category: {evidence[0][1]}: {measured(evidence[0][0], True)}s"
+        text = (f"Largest recorded work category: {evidence[0][1]}: {measured(evidence[0][0])}s"
                 + (" (partial)." if not complete else "."))
     else:
         text = "No matching work spans recorded; remaining analysis/setup work is not attributed."
@@ -372,7 +374,7 @@ def build_explanation(row):
         if row["profiles"] == row["profiles_expected"]:
             other_lock = row["lock_seconds"] - build["lock_seconds"]
             if other_lock > 0:
-                text += f" Other-command lock wait: {measured(other_lock, True)}s."
+                text += f" Other-command lock wait: {measured(other_lock)}s."
     return text
 
 
@@ -481,10 +483,9 @@ def target_markdown(row):
 
 
 def markdown_row(row):
-    return [row["owner"], measured(row["bazel_seconds"], row["bazel_phases"] == row["bazel_expected"]),
-            *(measured(row[key + "_seconds"], row["profiles"] == row["profiles_expected"]) for key in CATEGORIES),
-            measured(row["export_seconds"], row["exports"] == row["exports_expected"])
-            if row["exports_expected"] else "n/a"]
+    return [row["owner"], measured(row["bazel_seconds"], row["bazel_phases"], row["bazel_expected"]),
+            *(measured(row[key + "_seconds"], row["profiles"], row["profiles_expected"]) for key in CATEGORIES),
+            measured(row["export_seconds"], row["exports"], row["exports_expected"])]
 
 
 def report(root):
@@ -507,6 +508,9 @@ def report(root):
         lines.extend(["| Make target or package | Bazel / launcher | Bazel lock wait | Compiler subprocesses | "
                       "Nested build subprocesses | Cache input/output fetch | Export |", "|---|---:|---:|---:|---:|---:|---:|"])
         lines.extend("| " + " | ".join(markdown_row(row)) + " |" for row in recipes)
+        if any(row["owner"] == "vs-container-images" for row in recipes):
+            lines.extend(["", "`vs-container-images` records the shared Bazel build. "
+                          "Each participating image records its archive export time separately."])
         lines.extend(["", "Command times and exports are summed per target. The kernel launcher includes bootstrap, "
                       "build, output query and module resolution. Nested build time covers an entire Make or "
                       "foreign build subprocess. Cache fetch includes both disk and remote reads. "

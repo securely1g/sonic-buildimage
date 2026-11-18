@@ -9,8 +9,10 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.bazel.ci import time_vs_image
 from tools.bazel.ci.summarize_vs_image_timings import (
     BUILD_EVIDENCE, build_evidence, build_explanation, build_nonlock,
     markdown_row, named_spans, read_owner, report, summarize_profile,
@@ -26,6 +28,37 @@ def event(category, name, start, duration, tid=1, mnemonic=None):
 
 
 class ImageTimingSummaryTest(unittest.TestCase):
+    def test_shared_command_and_individual_exports_have_distinct_timing_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            group = Path(subprocess.check_output([
+                sys.executable, time_vs_image.__file__, "start-recipe", tmp, "vs-container-images",
+                "--bazel", "build", "--profiles", "build", "--exports",
+            ], text=True).strip())
+            command = ["bazel", "--output_base=local", "build", "//:first", "//:second"]
+            with mock.patch.object(time_vs_image.subprocess, "run") as execute:
+                time_vs_image.run_phase(group, "build", command, cwd=workspace)
+                execute.assert_called_once_with(
+                    [*command[:3], f"--profile={group}/build.profile.json.gz", "--noslim_profile", *command[3:]],
+                    check=True, cwd=workspace, env=None)
+                execute.reset_mock()
+                time_vs_image.run_phase(None, "build", command, cwd=workspace)
+                execute.assert_called_once_with(command, check=True, cwd=workspace, env=None)
+            with gzip.open(group / "build.profile.json.gz", "wt") as stream:
+                json.dump({"traceEvents": [event("Local execution process wall time", "CppCompile", 0, 5)]}, stream)
+            for name in ("first", "second"):
+                owner = time_vs_image.start_recipe(workspace, name, [], [], ["export"])
+                with time_vs_image.time_phase(owner, "export"):
+                    pass
+            receipt, markdown = report(workspace / "artifacts/vs/image-timings")
+            rows = {row["owner"]: row for row in receipt["recipes"]}
+            self.assertEqual(set(rows), {"first", "second", "vs-container-images"})
+            self.assertEqual(rows["vs-container-images"]["compile_seconds"], 5)
+            self.assertEqual(sum(row["bazel_phases"] for row in rows.values()), 1)
+            self.assertEqual(sum(row["profiles"] for row in rows.values()), 1)
+            self.assertEqual(sum(row["exports"] for row in rows.values()), 2)
+            self.assertIn("| first | n/a | n/a | n/a | n/a | n/a |", markdown)
+
     def test_compilation_counts_running_processes_and_unions_parallel_workers(self):
         events = [
             event("action processing", "Compiling a.cc", 0, 10, mnemonic="CppCompile"),

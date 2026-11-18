@@ -835,6 +835,22 @@ test("all build recipes are ordered by recorded commands and exports with separa
   }
 }));
 
+test("shared container build and export-only rows display their own measurements", () => withDocument(() => {
+  const job = recipeJob();
+  const group = {...job.image_recipe_timings.images[0], owner: "vs-container-images", bazel_seconds: 200,
+    bazel_phases: 1, bazel_expected: 1, profiles: 1, profiles_expected: 1,
+    exports: 0, exports_expected: 0, export_seconds: null};
+  const image = {...group, owner: "docker-sflow.gz", bazel_phases: 0, bazel_expected: 0,
+    profiles: 0, profiles_expected: 0, bazel_seconds: null, compile_seconds: null, foreign_seconds: null,
+    lock_seconds: null, fetch_seconds: null, exports: 2, exports_expected: 2, export_seconds: 4};
+  job.image_recipe_timings = {version: 2, status: "available", recipes: [group, image]};
+  const view = renderRecipeTimings(job), rows = descendants(view, node => node.tagName === "details");
+  assert.match(rows[0].textContent, /vs-container-images200sBazel \/ launcher200s/);
+  assert.match(rows[1].textContent, /docker-sflow.gz4sBazel \/ launcherN\/A/);
+  assert.match(rows[1].textContent, /Export4s/);
+  assert.match(view.textContent, /shared Bazel build/);
+}));
+
 test("unavailable or unverifiable profiles do not appear as measured recipes", () => withDocument(() => {
   const job = recipeJob();
   assert.equal(renderRecipeTimings({...job, kind: "container"}), null);
