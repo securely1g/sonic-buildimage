@@ -73,5 +73,6 @@ endif
 endif
 endif
 
-$(DOCKER_LLDP)_BAZEL_ARGS = --//dockers/docker-lldp:image_version=$(SONIC_IMAGE_VERSION)
+$(DOCKER_LLDP)_BAZEL_SHARED_ARGS = --//dockers/docker-lldp:image_version=$(SONIC_IMAGE_VERSION)
+$(DOCKER_LLDP)_BAZEL_ARGS = $($(DOCKER_LLDP)_BAZEL_SHARED_ARGS)
 $(DOCKER_LLDP_DBG)_BAZEL_ARGS = $($(DOCKER_LLDP)_BAZEL_ARGS)

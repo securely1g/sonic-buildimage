@@ -70,6 +70,13 @@ owner's DASH settings while Orchagent keeps its own configuration. The bridge
 reads the archive paths from the build event stream and exports them to
 `target/`. A separate Bazel query for each output is unnecessary.
 
+Owners can set `<archive>_BAZEL_SHARED_ARGS` to the subset of their normal
+Bazel arguments that every selected image can inherit. TeamD, for example,
+uses `//dockers/docker-teamd:image_version` only to label its own images.
+Make passes that flag on the shared command line. Changing the image tag then
+preserves the output paths of version-independent build actions. Source
+features such as Syncd's DASH selection stay on the owner's targets.
+
 Building a debug archive does not select it for installation.
 `INSTALL_DEBUG_TOOLS=y` selects the debug containers through the existing VS
 installer list; a normal image continues to install the runtime containers.

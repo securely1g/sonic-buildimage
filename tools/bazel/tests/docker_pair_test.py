@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Execute VS installer dependency selection and the real grouped Bazel bridge."""
 
+import ast
 import json
-import os
 import pathlib
 import sys
 import unittest
@@ -100,26 +100,63 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assert_batch()
         self.assertFalse((self.root / "artifacts/vs/image-timings").exists())
 
-    def test_archive_labels_and_syncd_profile_are_forwarded_per_owner(self):
-        # Capture the actual Make -> conductor arguments, then execute the
-        # conductor as usual. DASH must apply only to Syncd and its debug mate.
-        binary_dir = self.root / "bin"
-        binary_dir.mkdir()
-        python = binary_dir / "python3"
-        python.write_text(f"#!{sys.executable}\n" + """import json, os, pathlib, sys
-if "tools/bazel/build_container_batch.py" in sys.argv:
-    pathlib.Path("batch-arguments.json").write_text(json.dumps(sys.argv[1:]))
-os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
-""")
-        python.chmod(0o755)
-        self.installer(PATH=str(binary_dir) + os.pathsep + os.environ["PATH"])
-        arguments = json.loads((self.root / "batch-arguments.json").read_text())
-        for name in self.archives:
-            start = arguments.index("--archive=" + name)
-            self.assertEqual(arguments[start + 1:start + 3],
-                             ["--label=" + self.labels[name],
-                              "--owner-args=" + ("--config=syncd-dash" if "syncd" in name else "")])
-        self.assert_batch()
+    def test_owner_features_and_shared_version_reach_the_correct_bazel_targets(self):
+        # Load FRR's actual mixed registration. Its version belongs on the
+        # batch command, while only its configured targets enable SNMP/tcmalloc.
+        (self.root / "rules").symlink_to(ROOT / "rules", target_is_directory=True)
+        frr = ("docker-fpm-frr.gz", "docker-fpm-frr-dbg.gz")
+        version = "--//dockers/docker-fpm-frr:image_version=202705.42"
+        features = ["--//src/sonic-frr:tcmalloc=true", "--//src/sonic-frr:snmp=true"]
+        self.labels = dict(self.labels)
+        for name in frr:
+            self.labels[name] = "//dockers/docker-fpm-frr:" + name
+            self.prerequisites[name] = ["target/.container-build-method/" + name]
+        self.makefile = self.makefile.replace("include platform/vs/kvm-image.mk", """
+BUILD_WITH_BAZEL_WHEN_AVAILABLE = y
+INCLUDE_FIPS = y
+ENABLE_FRR_TCMALLOC = y
+ENABLE_FRR_SNMP_AGENT = y
+FRR_USER_UID = 300
+FRR_USER_GID = 300
+SONIC_IMAGE_VERSION = 202705.42
+DOCKERS_PATH = dockers
+include rules/docker-fpm-frr.mk
+# Manifests are exercised in frr_make_integration_test.
+$(DOCKER_FPM_FRR)_BAZEL_DEPENDS =
+$(DOCKER_FPM_FRR_DBG)_BAZEL_DEPENDS =
+SONIC_PACKAGES_LOCAL += $(DOCKER_FPM_FRR)
+include platform/vs/kvm-image.mk""")
+        self.installer()
+        build, = self.recorded_calls()
+        self.assertCountEqual(build["archives"], [*self.archives, *frr])
+        self.assertEqual(build["arguments"].count(version), 1)
+        for private in [*features, "--config=syncd-dash"]:
+            self.assertNotIn(private, build["arguments"])
+        wrapper = next(arg for arg in build["arguments"] if arg.endswith(":" + frr[0]))
+        package = self.root / wrapper.removeprefix("//").split(":")[0] / "BUILD.bazel"
+        nodes = ast.parse(package.read_text()).body
+        by_archive = {}
+        for node in nodes:
+            args = {kw.arg: ast.literal_eval(kw.value) for kw in node.value.keywords}
+            if "name" in args:
+                name = args["name"]
+                source = args["archive"] if "archive" in args else args["srcs"][0]
+                self.assertEqual(source, self.labels[name])
+                by_archive[name] = args.get("settings", {})
+        for name in frr:
+            self.assertEqual(by_archive[name], {"//src/sonic-frr:tcmalloc": "true", "//src/sonic-frr:snmp": "true"})
+        for name in self.archives[:2]:
+            self.assertEqual(by_archive[name], {})
+        for name in self.archives[2:]:
+            self.assertEqual(by_archive[name]["@sonic_sairedis//:enable_dashsai"], "true")
+            self.assertNotIn("//dockers/docker-fpm-frr:image_version", by_archive[name])
+        # A standalone FRR build and its output query still receive every flag.
+        self.calls.unlink()
+        self.assert_success(self.run_make(frr[1]))
+        build, query = self.recorded_calls()
+        for call in (build, query):
+            for option in [*features, version]:
+                self.assertEqual(call["arguments"].count(option), 1)
 
     def test_profile_shared_build_once_and_time_each_export(self):
         self.installer(SONIC_VS_IMAGE_TIMINGS="1")

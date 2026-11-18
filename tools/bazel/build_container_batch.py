@@ -26,6 +26,25 @@ EXPORT_POLICY = (
 )
 
 
+def starlark_setting(option):
+    key, equals, value = option.partition("=")
+    if not (equals and key.startswith(("--//", "--@")) and "//" in key and ":" in key):
+        raise ValueError("Unsupported per-container Bazel option: " + option)
+    return key[2:], value
+
+
+def shared_settings(arguments):
+    """Owners may explicitly share a flag when its value is safe for every target."""
+    shared = {}
+    for group in arguments:
+        for option in shlex.split(group):
+            key, value = starlark_setting(option)
+            if key in shared and shared[key] != value:
+                raise ValueError(f"Conflicting shared values for {key}: {shared[key]!r} and {value!r}")
+            shared[key] = value
+    return shared
+
+
 def owner_settings(arguments, rc):
     """Expand the checked-in Syncd profile and translate explicit Starlark flags."""
     options = []
@@ -41,13 +60,7 @@ def owner_settings(arguments, rc):
             options.extend(profile)
         else:
             options.append(option)
-    settings = {}
-    for option in options:
-        key, equals, value = option.partition("=")
-        if not (equals and key.startswith(("--//", "--@")) and "//" in key and ":" in key):
-            raise ValueError("Unsupported per-container Bazel option: " + option)
-        settings[key[2:]] = value
-    return settings
+    return dict(starlark_setting(option) for option in options)
 
 
 def batch_package(workspace, archives):
@@ -121,6 +134,7 @@ def build(args):
     workspace = Path.cwd()
     if not (len(args.archive) == len(args.label) == len(args.owner_args) == len(set(args.archive))):
         raise ValueError("Expected a unique archive, target label and option string for every batch member")
+    shared = shared_settings(args.shared_args)
     archives = {}
     owners = defaultdict(list)
     debug_suffix = "-" + args.debug_image_mark + ".gz"
@@ -129,7 +143,9 @@ def build(args):
             raise ValueError("Invalid container archive name: " + name)
         if not label.startswith(("//", "@")):
             raise ValueError("Expected an absolute Bazel target label: " + label)
-        archives[name] = (label, owner_settings(flags, workspace / "tools/bazel/common.bazelrc"))
+        owner_flags = owner_settings(flags, workspace / "tools/bazel/common.bazelrc")
+        private = {key: value for key, value in owner_flags.items() if shared.get(key) != value}
+        archives[name] = (label, private)
         owner = name.removesuffix(debug_suffix) + ".gz" if name.endswith(debug_suffix) else name
         owners[owner].append(name)
     package = batch_package(workspace, archives)
@@ -138,6 +154,7 @@ def build(args):
     cache_directory = settings.get("BAZEL_CONTAINER_CACHE_DIR", settings.get("BAZEL_SWSS_CACHE_DIR"))
     global_args = settings.get("BAZEL_CONTAINER_ARGS", settings.get("BAZEL_SWSS_ARGS", ""))
     options = build_helpers.cache_options(cache_directory) + shlex.split(global_args)
+    options.extend(f"--{key}={value}" for key, value in sorted(shared.items()))
     options.extend(build_helpers.remote_cache_options())
     platform = {"amd64": "x86_64_trixie", "arm64": "aarch64_trixie"}[args.architecture]
     platform = "@sonic_build_infra//platforms:" + platform
@@ -171,6 +188,8 @@ def main():
     parser.add_argument("--target-path", type=Path, required=True)
     parser.add_argument("--architecture", choices=("amd64", "arm64"), required=True)
     parser.add_argument("--debug-image-mark", default="dbg")
+    parser.add_argument("--shared-args", action="append", default=[],
+                        help="Owner-declared Starlark build settings safe for the entire batch")
     for option in ("--archive", "--label", "--owner-args"):
         parser.add_argument(option, action="append", required=True)
     args = parser.parse_args()

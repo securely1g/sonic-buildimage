@@ -4,6 +4,9 @@ include tools/bazel/manifests.mk
 # SONIC_BAZEL_DBG_DOCKER_IMAGES and declare each archive's explicit Bazel target,
 # complete Make prerequisite paths, and source path for its SBOM fragment.
 # An optional <archive>_BAZEL_ARGS selects that image's source-build features.
+# An owner may mark a subset as <archive>_BAZEL_SHARED_ARGS if other images
+# can inherit those flags. Keeping version labels on the command line lets
+# version-independent actions reuse the same output paths across builds.
 $(foreach IMAGE,$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES),\
     $(if $(strip $($(IMAGE)_BAZEL_TARGET)),,$(error $(IMAGE)_BAZEL_TARGET is required for a Bazel container))\
     $(if $(strip $($(IMAGE)_PATH)),,$(error $(IMAGE)_PATH is required for a Bazel container SBOM)))
@@ -140,6 +143,7 @@ ifeq ($(SONIC_VS_IMAGE_TIMINGS),1)
 endif
 	python3 -B tools/bazel/build_container_batch.py --target-path="$(TARGET_PATH)" --architecture="$(CONFIGURED_ARCH)" \
 		--debug-image-mark="$(DBG_IMAGE_MARK)" \
+		$(foreach image,$(SONIC_BAZEL_VS_BATCH_ARCHIVES),$(if $($(image)_BAZEL_SHARED_ARGS),--shared-args=$(call bazel_quote_argument,$($(image)_BAZEL_SHARED_ARGS)))) \
 		$(foreach image,$(SONIC_BAZEL_VS_BATCH_ARCHIVES),--archive="$(image)" --label="$($(image)_BAZEL_TARGET)" --owner-args=$(call bazel_quote_argument,$($(image)_BAZEL_ARGS))) $(LOG)
 	$(foreach image,$(SONIC_BAZEL_VS_BATCH_ARCHIVES),$(call sbom_emit_fragment,$(TARGET_PATH)/$(image),DOCKER_IMAGE,$($(image)_PATH),,,,)
 	)
