@@ -47,6 +47,15 @@ cleanup was specific to disposable GitHub-hosted runners. Provision sufficient
 build storage and manage host Docker/cache retention outside the job without
 deleting active builds.
 
+Base-image producers export separate AMD64/ARM64 artifact-ID job outputs.
+Each matrix leg sets only its own output, so completion order cannot replace
+the other architecture's identity. Runtime validation downloads the exact
+producer artifact ID into the existing flat artifact directory, not an artifact
+selected by name. This avoids failed-build evidence with the same name from an
+earlier run attempt. Failed producers still upload diagnostic evidence but do
+not export a successful handoff. Runtime-only reruns reuse the successful
+producer's ID; receipt, revision, architecture and checksum checks still apply.
+
 AMD64 archive jobs upload generic evidence before Sysmgr acceptance, Sysmgr
 evidence before SWSS layer acceptance, and SWSS layer evidence before Orchagent
 acceptance. Each step preserves its completed artifacts outside the checkout in

@@ -18,6 +18,62 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_base_runtime_downloads_the_exact_architecture_producer_artifact(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-base-images.yml").read_text())
+        native = workflow["jobs"]["native"]
+        runtime = workflow["jobs"]["runtime"]
+        export = next(step for step in native["steps"] if step.get("id") == "artifact_identity")
+        upload = next(i for i, step in enumerate(native["steps"])
+                      if step.get("id") == "bazel_upload_base_images_build")
+        self.assertGreater(native["steps"].index(export), upload)
+        self.assertNotIn("if", export)
+        self.assertEqual(export["env"]["ARTIFACT_ID"],
+                         "${{ steps.bazel_upload_base_images_build.outputs.artifact-id }}")
+        self.assertEqual(set(native["outputs"]), {"amd64_artifact_id", "arm64_artifact_id"})
+        for architecture in ("amd64", "arm64"):
+            self.assertEqual(native["outputs"][architecture + "_artifact_id"],
+                             "${{ steps.artifact_identity.outputs." + architecture + "_artifact_id }}")
+        steps = runtime["steps"]
+        download = next(step for step in steps if "download-artifact@" in step.get("uses", ""))
+        identity = "${{ needs.native.outputs[format('{0}_artifact_id', matrix.architecture)] }}"
+        self.assertEqual(runtime["needs"], "native")
+        self.assertEqual(download["with"], {
+            "artifact-ids": identity, "merge-multiple": True, "path": "artifacts/base-images",
+        })
+        guard = steps[steps.index(download) - 1]
+        self.assertEqual(guard["env"]["ARTIFACT_ID"], identity)
+        verify = next(step for step in steps if step.get("name") == "Load only this run's verified image")
+        for check in ("receipt['status'] == 'passed'", "receipt['architecture']",
+                      "receipt['revision']", "receipt['artifacts'][name]['sha256']"):
+            self.assertIn(check, verify["run"])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            for architecture, artifact in (("amd64", "200"), ("arm64", "300")):
+                output.write_text("")
+                environment = dict(os.environ, ARCHITECTURE=architecture, ARTIFACT_ID=artifact,
+                                   GITHUB_OUTPUT=str(output))
+                result = subprocess.run(["bash", "-c", export["run"]], env=environment,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_text(), f"{architecture}_artifact_id={artifact}\n")
+                result = subprocess.run(["bash", "-c", guard["run"]], env=environment,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            for architecture, artifact in (("amd64", ""), ("amd64", "0"),
+                                           ("amd64", "123\nother=456"), ("other", "200")):
+                output.write_text("")
+                environment = dict(os.environ, ARCHITECTURE=architecture, ARTIFACT_ID=artifact,
+                                   GITHUB_OUTPUT=str(output))
+                result = subprocess.run(["bash", "-c", export["run"]], env=environment,
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output.read_text(), "")
+                if architecture == "amd64":
+                    result = subprocess.run(["bash", "-c", guard["run"]], env=environment,
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+
     def test_image_jobs_restore_populated_submodules_on_reused_checkouts(self):
         script = Path("tools/bazel/ci/prepare_image_submodules.sh")
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
@@ -512,7 +568,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(runtime["steps"][0], repair)
         self.assertTrue(runtime["steps"][1]["uses"].startswith("actions/checkout@"))
         self.assertTrue(
-            runtime["steps"][2]["uses"].startswith("actions/download-artifact@")
+            runtime["steps"][3]["uses"].startswith("actions/download-artifact@")
         )
 
     def test_eventd_startup_diagnostics_probe_writes_and_preserve_bazel_failure(self):
