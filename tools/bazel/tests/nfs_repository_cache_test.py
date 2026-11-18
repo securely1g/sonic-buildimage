@@ -90,8 +90,10 @@ class NfsRepositoryCacheTest(unittest.TestCase):
         job = jobs()["vs_container"]
         self.assertLess(job.index("- name: Reclaim local build caches"),
                         job.index("- name: Configure NFS repository caches"))
+        self.assertLess(job.index("- name: Prepare the host-driven SONiC slave"),
+                        job.index("- name: Configure NFS repository caches"))
         self.assertLess(job.index("- name: Configure NFS repository caches"),
-                        job.index("- name: Prepare the host-driven SONiC slave"))
+                        job.index("- name: Build sonic-vs.bin through the host Make wrapper"))
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.repository_cache_mode"
                       " || 'downloads-and-contents' }}", job)
         environment = dict(os.environ, SONIC_VS_REPOSITORY_CACHE_MODE="off",
@@ -114,6 +116,67 @@ class NfsRepositoryCacheTest(unittest.TestCase):
              "--receipt", str(receipt)], cwd=self.root, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(receipt.read_text())["mode"], "off")
+
+    def test_enabled_workflow_prepares_in_slave_and_exports_only_after_success(self):
+        commands = self.root / "commands"
+        commands.mkdir()
+        make = commands / "make"
+        make.write_text("#!" + sys.executable + "\n" + """
+import json, os, pathlib, shlex, subprocess, sys
+args = sys.argv[1:]
+pathlib.Path('make-args.json').write_text(json.dumps(args))
+if os.environ.get('FAIL_SLAVE'):
+    sys.exit(17)
+command = next(arg.split('=', 1)[1] for arg in args if arg.startswith('SONIC_RUN_CMDS='))
+subprocess.run(shlex.split(command), env=dict(os.environ, INSIDE_SLAVE='1'), check=True)
+""")
+        make.chmod(0o755)
+        helper = self.root / "tools/bazel/ci/nfs_repository_cache.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_text("""
+import argparse, json, os
+from pathlib import Path
+assert os.environ.get('INSIDE_SLAVE') == '1', 'Host must not prepare NFS repositories'
+parser = argparse.ArgumentParser()
+parser.add_argument('--mode', required=True)
+parser.add_argument('--github-env', type=Path, required=True)
+parser.add_argument('--receipt', type=Path, required=True)
+args = parser.parse_args()
+root = '/nfs/bazel/repository-caches'
+contents = root + '/contents/bazel-8.5.1/vs-amd64/uid-1000' if args.mode == 'downloads-and-contents' else ''
+args.github_env.parent.mkdir(parents=True, exist_ok=True)
+args.github_env.write_text('SONIC_BAZEL_REPOSITORY_CACHE_SOURCE=' + root + '/downloads/uid-1000\\n'
+    + 'SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE=' + contents + '\\n')
+args.receipt.write_text(json.dumps({'mode': args.mode, 'inside_slave': True}))
+""")
+        script = shell(steps(jobs()["vs_container"])["Configure NFS repository caches"])
+        for mode in ("downloads", "downloads-and-contents"):
+            environment = dict(os.environ, PATH=str(commands) + os.pathsep + os.environ["PATH"],
+                               SONIC_VS_REPOSITORY_CACHE_MODE=mode,
+                               SONIC_CI_CONTAINER_LABEL="fixture-label",
+                               GITHUB_ENV=str(self.root / f"github-env-{mode}"))
+            result = subprocess.run(["bash", "-e", "-c", script], cwd=self.root, env=environment,
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            args = json.loads((self.root / "make-args.json").read_text())
+            self.assertEqual(args[:4],
+                             ["-f", "Makefile.work", "BLDENV=trixie", "sonic-slave-run"])
+            self.assertIn(
+                "SONIC_BUILDER_EXTRA_CMDLINE=--label fixture-label --mount type=bind,"
+                "source=/nfs/bazel/repository-caches,target=/nfs/bazel/repository-caches", args)
+            exported = dict(line.split("=", 1) for line in
+                            Path(environment["GITHUB_ENV"]).read_text().splitlines())
+            self.assertEqual(exported["SONIC_BAZEL_REPOSITORY_CACHE_SOURCE"],
+                             "/nfs/bazel/repository-caches/downloads/uid-1000")
+            self.assertEqual(bool(exported["SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE"]),
+                             mode == "downloads-and-contents")
+        failed_env = self.root / "failed-env"
+        result = subprocess.run(
+            ["bash", "-e", "-c", script], cwd=self.root,
+            env=dict(environment, FAIL_SLAVE="1", GITHUB_ENV=str(failed_env)),
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 17)
+        self.assertFalse(failed_env.exists(), "A failed slave must not export stale cache paths")
 
 
 if __name__ == "__main__":

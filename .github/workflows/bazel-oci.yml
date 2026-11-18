@@ -3782,6 +3782,7 @@ jobs:
       SONIC_DPKG_CACHE_METHOD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'rwcache' || 'rcache' }}
       SONIC_DPKG_CACHE_SOURCE: /nfs/dpkg_cache/vs
       SONIC_BUILD_JOBS: "4"
+      NOBOOKWORM: "1"
       ENABLE_DOCKER_BASE_PULL: "y"
       REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
       ACR_REGISTRY_NAME: sonicdev
@@ -3888,13 +3889,6 @@ jobs:
           printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
             "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
 
-      - name: Configure NFS repository caches
-        run: |
-          python3 -B tools/bazel/ci/nfs_repository_cache.py \
-            --mode "$SONIC_VS_REPOSITORY_CACHE_MODE" \
-            --github-env "$GITHUB_ENV" \
-            --receipt artifacts/vs/nfs-repository-cache.json
-
       - name: Authenticate to the slave image registry
         env:
           AZURE_CONFIG_DIR: ${{ runner.temp }}/vs-azure-cli
@@ -3907,15 +3901,36 @@ jobs:
           make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             2>&1 | tee artifacts/vs/configure.log
-          for build_env in bookworm trixie; do
-            make -f Makefile.work BLDENV="$build_env" docker-start \
-              SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-              2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
-          done
+          make -f Makefile.work BLDENV=trixie docker-start \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            2>&1 | tee artifacts/vs/docker-start-trixie.log
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
             2>&1 | tee artifacts/vs/kernel-sandbox.log
+
+      - name: Configure NFS repository caches
+        run: |
+          set -euo pipefail
+          case "$SONIC_VS_REPOSITORY_CACHE_MODE" in
+            off)
+              python3 -B tools/bazel/ci/nfs_repository_cache.py \
+                --mode off --github-env "$GITHUB_ENV" \
+                --receipt artifacts/vs/nfs-repository-cache.json
+              ;;
+            downloads|downloads-and-contents)
+              prepare="python3 -B tools/bazel/ci/nfs_repository_cache.py --mode $SONIC_VS_REPOSITORY_CACHE_MODE"
+              prepare+=" --github-env artifacts/vs/nfs-repository-cache.env --receipt artifacts/vs/nfs-repository-cache.json"
+              make -f Makefile.work BLDENV=trixie sonic-slave-run \
+                SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL --mount type=bind,source=/nfs/bazel/repository-caches,target=/nfs/bazel/repository-caches" \
+                SONIC_RUN_CMDS="$prepare"
+              cat artifacts/vs/nfs-repository-cache.env >> "$GITHUB_ENV"
+              ;;
+            *)
+              printf 'Unsupported NFS repository cache mode: %s\n' "$SONIC_VS_REPOSITORY_CACHE_MODE" >&2
+              exit 2
+              ;;
+          esac
 
       - name: Build sonic-vs.bin through the host Make wrapper
         id: native_build

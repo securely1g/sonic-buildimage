@@ -10,12 +10,22 @@ VS push and same-repository pull-request builds also use
 publication/restoration or pre-generated APT metadata.
 
 Provision `/nfs/bazel/repository-caches` on the existing NFS mount, with capacity
-and permissions allowing the host build UID to create its cache namespaces.
-The helper requires actual NFS backing, checks write/read access and a POSIX
-record lock on a temporary file, and never changes existing ownership or modes.
+and permissions allowing the slave's build UID to create its cache namespaces.
+After slave initialization, Docker bind-mounts that root at the same path into
+a preparation slave. The helper runs there as the actual unprivileged builder,
+not on the host or as container root. It requires actual NFS backing, checks
+write/read access and a POSIX record lock on a temporary file, and never changes
+existing ownership or modes. Container-generated exports return through the
+checkout's artifacts directory; the host need not traverse the NFS parent paths.
 A missing mount or unusable cache fails the enabled run instead of silently
-creating a local substitute. Existing parent directories must allow traversal.
+creating a local substitute. The mounted root and its cache subdirectories must
+allow traversal by the builder inside the slave.
 Use consistent builder UIDs across disposable agents for cross-agent reuse.
+
+The host-driven VS installer job prepares only the Trixie slave and sets
+`NOBOOKWORM=1` for configuration, the outer build wrapper and validation. Its
+Bookworm image aggregate has no selected outputs; P4 runtime/debug packages are
+resolved in Trixie. Other jobs and generic Bookworm build support are unchanged.
 
 | Host directory beneath that root | Slave mount | Used by |
 | --- | --- | --- |
@@ -28,14 +38,20 @@ Use consistent builder UIDs across disposable agents for cross-agent reuse.
 normal `SONIC_BAZEL_CACHE_SOURCE` mount. Action `disk_cache`, Bazelisk and Bazel
 output bases/server state are not moved to NFS. Local cache and checkout cleanup
 does not delete these separately mounted host directories.
+Repository bind sources use Docker `--mount`, which requires existing sources
+instead of silently creating root-owned directories. Docker's daemon checks
+those paths; an unprivileged host `test -d/-w` would incorrectly reject caches
+whose protected parent directories are bypassed by the container bind mount.
+Separate repository source paths must not contain commas.
 `build_helpers.py` enables prepared contents only for the image build/query
 invocations that consume its options, not globally in the system rc: nested
 projects can use older Bazel versions. Explicit caller flags can disable it.
 This does not change remote cache uploads or Make's dpkg cache.
 
 The setup step creates/checks the NFS cache directories after local cleanup and
-before the slave starts. Bazel writes downloaded archives to the download cache
-as it fetches them during the build. After an eligible repository rule completes
+slave initialization, but before the image build. Bazel writes downloaded
+archives to the download cache as it fetches them during the build.
+After an eligible repository rule completes
 successfully, Bazel moves its prepared files into the contents cache and links
 the output-base repository to that cache entry. These are direct NFS writes:
 there is no end-of-job upload or snapshot stage. Valid warm entries are reused.
