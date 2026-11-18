@@ -46,12 +46,32 @@ probing. The retained legacy job prepares a separate nested daemon and cgroups.
 The native base workflow retains
 its additional installed-program, Python/YANG and FIPS smoke checks.
 
-## Optional program and startup probes
+## Build and validate the source-based Syncd images
 
-The same entry point also supports the existing runtime/debug program-probe
-mode below. Its Syncd policy and source-image entry point are maintained in
-[PR #20](https://github.com/securely1g/sonic-buildimage/pull/20). Those probes are
-separate from the shared file checks enabled in full VS CI.
+The Syncd image graph from
+[PR #13](https://github.com/securely1g/sonic-buildimage/pull/13) and the generic
+archive/runtime checks are already on `master`. This entry point adds the
+Syncd-specific smoke policy and builds the declared source-image inputs before
+checking them together. The standalone validator regression workflow does not
+build that graph. After preparing its source dependencies and Make manifests as
+described in the image's `platform/vs/docker-syncd-vs/bazel/README.md`, run this
+command in the native AMD64 build environment with Docker available:
+
+```sh
+python3 tools/bazel/ci/validate_syncd_image.py \
+  --output artifacts/syncd-installed \
+  --redis-server /usr/bin/redis-server
+```
+
+It audits the selected Bazel actions, builds both image archives, and validates
+their installed packages and source symbols, including the inherited base.
+The action audit rejects Debian package production. It then runs the isolated
+container checks below. Reports in the output directory bind each check to the
+image, archive and package inputs it examined. The installed package database
+is checked against generated status and metadata outputs. The `_ssh` account
+and `ssh-agent` ownership/mode remain checked; no checked-in package-state
+snapshot is required. The declared installation-links TAR is checked against
+both final images, including resolution of every link destination.
 
 ## Run against prepared archives
 
@@ -66,7 +86,7 @@ python3 tools/bazel/ci/validate_runtime.py \
   --runtime /absolute/path/docker-syncd-vs.gz \
   --debug /absolute/path/docker-syncd-vs-dbg.gz \
   --static-report /absolute/path/validation.json \
-  --policy /absolute/path/runtime_smoke.json \
+  --policy platform/vs/docker-syncd-vs/config/runtime_smoke.json \
   --redis-server /usr/bin/redis-server \
   --output /absolute/path/runtime-validation.json
 ```
