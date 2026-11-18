@@ -1,5 +1,63 @@
 # Shared Bazel CI helpers
 
+## Opt-in VS NFS repository-cache trial
+
+The Bazel OCI workflow's manual `repository_cache_mode` input has three modes:
+`off` (the unchanged default), `downloads`, and `downloads-and-contents`.
+Select `source_image=none` and `skip_vs=false` to run the full VS build.
+Push and pull-request builds remain off. This is a direct-NFS experiment, not
+snapshot publication/restoration or pre-generated APT metadata.
+
+Provision `/nfs/bazel/repository-caches` on the existing NFS mount, with capacity
+and permissions allowing the host build UID to create its cache namespaces.
+The helper requires actual NFS backing, checks write/read access and a POSIX
+record lock on a temporary file, and never changes existing ownership or modes.
+A missing mount or unusable cache fails the opted-in run instead of silently
+creating a local substitute. Existing parent directories must allow traversal.
+Use consistent builder UIDs across disposable agents for cross-agent reuse.
+
+| Host directory beneath that root | Slave mount | Used by |
+| --- | --- | --- |
+| `downloads/uid-<uid>` | `/bazel_cache/repository_cache` | Both enabled modes |
+| `contents/bazel-8.5.1/vs-amd64/uid-<uid>` | `/bazel_cache/repo_contents_cache` | `downloads-and-contents` only |
+
+`Makefile.work` mounts these separately using
+`SONIC_BAZEL_REPOSITORY_CACHE_SOURCE` and
+`SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE`. Both default to empty and require the
+normal `SONIC_BAZEL_CACHE_SOURCE` mount. Action `disk_cache`, Bazelisk and Bazel
+output bases/server state are not moved to NFS. Local cache and checkout cleanup
+does not delete these separately mounted host directories.
+`build_helpers.py` enables prepared contents only for the image build/query
+invocations that consume its options, not globally in the system rc: nested
+projects can use older Bazel versions. Explicit caller flags can disable it.
+This does not change remote cache uploads or Make's dpkg cache.
+
+Compare the same revision/configuration in `off`, `downloads`, then two
+`downloads-and-contents` runs, ideally on fresh agents with the same UID. The
+first prepared-cache run populates eligible entries; the next tests reuse.
+Keep `artifacts/vs/nfs-repository-cache.json`, the existing per-target profiles
+and job duration. Compare repository preparation and total elapsed time, not
+overlapping spans added together. The normal VS installer/runtime/debug checks,
+including LLVM-dependent builds, remain enabled. The record-lock probe is not
+a multi-client NFS correctness test; validate the server's locking and rename
+behavior across agents before broader use.
+
+Bazel 8.5.1 only admits nonlocal repositories whose implementation reports
+`repo_metadata(reproducible=True)` to its contents cache. Enabling the flag does
+not make other rules eligible, and archive download hits alone do not eliminate
+APT metadata discovery. Actual Syncd savings and the earlier LLVM missing-package
+failure still need CI validation; no improvement is assumed. Choose `downloads`
+or `off` to roll back prepared-cache use without deleting shared data.
+The versioned namespace is only an isolation aid: Bazel still validates each
+repository's declared and recorded inputs.
+
+These are writable caches for mutually trusted jobs. Neither the workflow input
+nor the checksum-keyed download layout makes the prepared cache safe against
+untrusted writers; enforce NFS permissions and restrict who can run opted-in
+code. Retention and capacity management belong to the cache administrator.
+Never delete a live prepared cache: Bazel may retain symlinks into it between
+commands. Coordinate maintenance with users of that namespace.
+
 ## Remote cache uploads
 
 The [native event services](../../../.github/workflows/bazel-eventd.yml),

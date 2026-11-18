@@ -16,14 +16,19 @@ from tools.bazel.cache import credentials
 
 def cache_options(cache_directory):
     """Share content-addressed caches, keeping each Bazel output base private."""
-    if not cache_directory:
-        return []
-    root = Path(cache_directory).expanduser().resolve()
     options = []
-    for name, flag in (("repository_cache", "repository_cache"), ("disk_cache", "disk_cache")):
-        path = root / name
-        path.mkdir(parents=True, exist_ok=True)
-        options.append(f"--{flag}={path}")
+    if cache_directory:
+        root = Path(cache_directory).expanduser().resolve()
+        for name in ("repository_cache", "disk_cache"):
+            path = root / name
+            path.mkdir(parents=True, exist_ok=True)
+            options.append(f"--{name}={path}")
+    contents = os.environ.get("SONIC_BAZEL_REPO_CONTENTS_CACHE")
+    if contents:
+        path = Path(contents)
+        if not path.is_absolute() or not path.is_dir() or not os.access(path, os.W_OK):
+            raise ValueError("Prepared repository cache must be an existing writable absolute directory")
+        options.append(f"--repo_contents_cache={path}")
     return options
 
 
@@ -74,7 +79,10 @@ def main():
     export.add_argument("--execution-root", type=Path)
     args = parser.parse_args()
     if args.command == "options":
-        arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
+        try:
+            arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
+        except ValueError as error:
+            parser.error(str(error))
         try:
             # Apply the shared cache policy after caller options so Make image
             # builds cannot accidentally upload results or enable remote execution.

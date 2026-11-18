@@ -28,6 +28,11 @@ on:
         description: Skip the full VS image build
         type: boolean
         default: true
+      repository_cache_mode:
+        description: Opt-in VS NFS repository cache trial (leave skip_vs unchecked)
+        type: choice
+        options: ['off', downloads, downloads-and-contents]
+        default: 'off'
 
 permissions:
   contents: read
@@ -3789,6 +3794,7 @@ jobs:
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
+      SONIC_VS_REPOSITORY_CACHE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.repository_cache_mode || 'off' }}
       # Image recipes serialize through one Bazel server on this runner.
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
@@ -3881,6 +3887,13 @@ jobs:
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json
           printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
             "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
+
+      - name: Configure opt-in NFS repository caches
+        run: |
+          python3 -B tools/bazel/ci/nfs_repository_cache.py \
+            --mode "$SONIC_VS_REPOSITORY_CACHE_MODE" \
+            --github-env "$GITHUB_ENV" \
+            --receipt artifacts/vs/nfs-repository-cache.json
 
       - name: Authenticate to the slave image registry
         env:

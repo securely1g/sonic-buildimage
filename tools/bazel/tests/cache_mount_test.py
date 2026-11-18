@@ -10,6 +10,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -297,6 +298,50 @@ check:
                 self.assertFalse((source / "container-cache-write").exists())
             finally:
                 source.chmod(0o755)
+
+    def test_separate_repository_mounts_leave_action_and_bazelisk_caches_local(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            local = directory / "local"
+            downloads = directory / "NFS downloads"
+            contents = directory / "NFS 'prepared' `not-a-command`"
+            for path in (downloads, contents):
+                path.mkdir()
+                (path / "sentinel").write_text("retained")
+            for mode in ("downloads", "both"):
+                with self.subTest(mode=mode), patch.dict(os.environ, {
+                        "SONIC_BAZEL_REPOSITORY_CACHE_SOURCE": str(downloads),
+                        "SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE": (
+                            str(contents) if mode == "both" else "")}):
+                    result = self.cache_mount(directory, source=local)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    record = json.loads(result.stdout)
+                    self.assertEqual(record["mounts"]["/bazel_cache"], [str(local), "rw"])
+                    self.assertEqual(record["mounts"]["/bazel_cache/repository_cache"],
+                                     [str(downloads), "rw"])
+                    if mode == "both":
+                        self.assertEqual(record["mounts"]["/bazel_cache/repo_contents_cache"],
+                                         [str(contents), "rw"])
+                        self.assertIn("SONIC_BAZEL_REPO_CONTENTS_CACHE=/bazel_cache/repo_contents_cache",
+                                      record["args"])
+                    else:
+                        self.assertNotIn("/bazel_cache/repo_contents_cache", record["mounts"])
+                    self.assertEqual((downloads / "sentinel").read_text(), "retained")
+                    self.assertEqual((contents / "sentinel").read_text(), "retained")
+
+    def test_separate_mounts_require_local_parent_and_preexisting_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "shared"
+            for variable in ("SONIC_BAZEL_REPOSITORY_CACHE_SOURCE",
+                             "SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE"):
+                with self.subTest(variable=variable), patch.dict(
+                        os.environ, {variable: str(source)}):
+                    for local in ("", str(directory / "local")):
+                        result = self.cache_mount(directory, source=local)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse((directory / "docker-started").exists())
+                        self.assertFalse(source.exists())
 
 
 if __name__ == "__main__":
