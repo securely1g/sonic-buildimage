@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const {readFileSync} = require("node:fs");
 const test = require("node:test");
 const vm = require("node:vm");
-const {duration, measured, completedImageSeconds, imageMeasurement, imageTrendGroups, imageSeries, selectTrendPoints, chartScale, imageBreakdownLabel, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, coverageRows, baseSummary, prStateLabel} = require("./app.js");
+const {duration, measured, completedImageSeconds, imageMeasurement, imageTrendGroups, imageSeries, selectTrendPoints, chartScale, imageBreakdownLabel, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, safeGithubUrl, validateSnapshot, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, recipeRows, renderBuildExplanations, coverageRows, baseSummary, prStateLabel} = require("./app.js");
 const pr72Fixture = require("../testdata/pr72-carried-image-execution.json");
 
 test("closed draft PRs remain closed while open drafts and merged PRs keep their states", () => {
@@ -853,6 +853,49 @@ test("unavailable or unverifiable profiles do not appear as measured recipes", (
   }
 }));
 
+test("per-target explanations rank build-only time and keep query locks and historical gaps separate", () => withDocument(() => {
+  const job = recipeJob();
+  const build = {expected: 1, timings: 1, profiles: 1, seconds: 30, lock_seconds: 5,
+    compile_seconds: 0, foreign_seconds: 0, fetch_seconds: 2, repository_seconds: 12,
+    repository_read_seconds: 10, packaging_seconds: 8, cache_write_seconds: 4,
+    package_selection_seconds: 3, validation_seconds: 1,
+    arm64_repository_seconds: 3, armhf_repository_seconds: 0};
+  const base = {...job.image_recipe_timings.images[0], bazel_expected: 3, profiles_expected: 3, exports_expected: 2};
+  const repo = {...base, owner: "docker-repo.gz", build, lock_seconds: 105};
+  const fast = {...base, owner: "docker-fast.gz", build: {...build, seconds: 7}};
+  const kernel = {...base, owner: "linux-kernel", build: null, bazel_seconds: 10, bazel_phases: 1, bazel_expected: 1};
+  job.image_recipe_timings = {version: 2, status: "available", recipes: [fast, kernel, repo]};
+  const section = renderBuildExplanations(recipeRows(job.image_recipe_timings));
+  const rows = descendants(section, node => node.className === "target-card");
+  assert.match(section.textContent, /Why each target took its time/);
+  assert.match(rows[0].textContent, /docker-repo.gzRepository preparation \+ image packaging25sBuild excluding lock/);
+  assert.match(rows[0].textContent, /Largest recorded work category: Repository preparation/);
+  assert.match(rows[0].textContent, /Repository preparation12s \(12.00s\)/);
+  assert.match(rows[0].textContent, /Repository input reads\/waits10s/);
+  assert.match(rows[0].textContent, /ARM64 package repository preparation3s/);
+  assert.match(rows[0].textContent, /APT selection critical path3s/);
+  assert.match(rows[0].textContent, /Other-command lock wait: 100s/);
+  assert.match(rows[1].textContent, /linux-kernel \*Isolated kernel launcher10sLauncher elapsed/);
+  assert.match(rows[1].textContent, /Separate kernel launcher/);
+  assert.match(rows[2].textContent, /docker-fast.gzRepository preparation \+ image packaging2sBuild excluding lock/);
+  assert.match(rows[2].textContent, /Most build-command elapsed time was server lock waiting/);
+  const buttons = descendants(section, node => node.tagName === "button");
+  buttons[0].listeners.click();
+  assert.ok(rows.every(row => row.open));
+  buttons[1].listeners.click();
+  assert.ok(rows.every(row => !row.open));
+  assert.match(section.textContent, /overlap and must not be added/);
+  assert.match(renderBuildExplanations(recipeRows(recipeJob().image_recipe_timings)).textContent, /Detailed build-only evidence was not recorded/);
+  repo.build = {...build, profiles: 0, ...Object.fromEntries(Object.keys(build).filter(key => key.endsWith("_seconds")).map(key => [key, null]))};
+  const partial = renderBuildExplanations(recipeRows(job.image_recipe_timings)).textContent;
+  assert.match(partial, /Build profile unavailable/);
+  for (const change of [{repository: "<script>"}, {expected: true}, {repository_seconds: Infinity},
+                        {lock_seconds: 31}, {repository_seconds: "12"}]) {
+    repo.build = {...build, ...change};
+    assert.match(renderRecipeTimings(job).textContent, /could not be verified/);
+  }
+}));
+
 test("the recipe evidence link opens this job's successful timing artifact upload", () => withDocument(() => {
   const repository = "securely1g/sonic-buildimage", job = recipeJob();
   job.url = `https://github.com/${repository}/actions/runs/123/job/456`;
@@ -870,6 +913,44 @@ test("the recipe evidence link opens this job's successful timing artifact uploa
   job.steps[1] = upload;
   job.url = "https://github.com/unrelated/repo/actions/runs/123/job/456";
   assert.equal(links().length, 0);
+}));
+
+test("profile cards show named spans and receipts without accepting raw private action text", () => withDocument(() => {
+  const job = recipeJob(), base = job.image_recipe_timings.images[0];
+  const row = {...base, owner: "linux-kernel", build: null, bazel_expected: 1, bazel_phases: 1,
+    bazel_seconds: 183.843, profiles_expected: 3, exports: 0, exports_expected: 0, export_seconds: null,
+    details: {scope: "kernel-build", expected: 1, profiles: 1, phase_count: 1,
+      repositories: [{name: "//:apt+example", seconds: 12, read_seconds: 10, read_count: 2}],
+      critical_path: [{kind: "OCIImage", target: "//example:image", seconds: 8}],
+      phases: [{phase: "launcher", seconds: 183.843, lock_seconds: null, start_epoch_seconds: 1794944781.5, exit_code: 0}]}};
+  const value = {version: 2, status: "available", recipes: [row]};
+  job.image_recipe_timings = value;
+  const section = renderBuildExplanations(recipeRows(value)), card = descendants(section, node => node.className === "target-card")[0];
+  assert.match(card.textContent, /3m04sLauncher elapsed/);
+  assert.match(card.textContent, /Longest repository spansRepositorySpanNested reads\/waits\/\/:apt\+example12s \(12.00s\)2 reads; 10s/);
+  assert.match(card.textContent, /OCI image\/\/example:image8s/);
+  assert.match(card.textContent, /2026-11-17 19:46:21.500Z/);
+  assert.match(card.textContent, /Kernel spans describe its build profile only, not the whole launcher/);
+  assert.match(card.textContent, /Command receipts \(1\/1 shown\)/);
+  assert.equal(card.open, undefined, "Cards are collapsed initially");
+  const original = structuredClone(row.details);
+  for (const [group, edits] of [
+    ["repositories", {name: "/home/private"}], ["repositories", {name: "//:example\n"}],
+    ["repositories", {read_seconds: 13}], ["repositories", {command: "--token=never-publish"}],
+    ["critical_path", {kind: "Unknown command"}], ["critical_path", {target: "/home/private"}],
+    ["critical_path", {target: "platform/../private"}], ["critical_path", {target: "//example:../private"}],
+    ["critical_path", {target: "//..:image"}], ["critical_path", {target: "//example:image\n"}],
+    ["phases", {phase: "build --token=x"}], ["phases", {start_epoch_seconds: 253402300800}],
+  ]) {
+    row.details = structuredClone(original);
+    Object.assign(row.details[group][0], edits);
+    assert.equal(recipeRows(value), null);
+    assert.match(renderRecipeTimings(job).textContent, /could not be verified/);
+  }
+  row.details = {...original, repositories: Array(9).fill(original.repositories[0])};
+  assert.equal(recipeRows(value), null);
+  row.details = {...original, profiles: 0};
+  assert.equal(recipeRows(value), null);
 }));
 
 test("legacy snapshots keep their step duration without requiring a breakdown", () => withDocument(() => {
