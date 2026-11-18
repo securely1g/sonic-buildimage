@@ -276,14 +276,14 @@ class RegistryWorkerTest(unittest.TestCase):
 def namespace(value):
     return NS(**{k:namespace(v) if isinstance(v,dict) else v for k,v in value.items()})
 def condition(expression,event='workflow_dispatch',mode='registry-native',actor='securely1g',repo='securely1g/sonic-buildimage',
-              branch='codex/registry-native-workers',head_repo='securely1g/sonic-buildimage',consumer='fips'):
+              branch='codex/registry-native-workers',head_repo='securely1g/sonic-buildimage',consumer='fips',revision='28ea8a8b17f6ecf85a32aadf8ef5eb4f65ca9623',worker_name='sonic-slave-lgh114-2'):
     text=expression.strip()
     if text.startswith('$'+'{{'): text=text[3:-2].strip()
     text=text.replace('&&',' and ').replace('||',' or ');text=re.sub(r'!(?!=)','not ',text)
     return bool(eval(text,{'__builtins__':{}},{
         'github':namespace({'event_name':event,'repository':repo,'actor':actor,'head_ref':branch,'ref':'refs/heads/test',
             'event':{'pull_request':{'number':9999,'head':{'repo':{'full_name':head_repo}}}}}),
-        'inputs':namespace({'source_image':mode,'registry_consumer':consumer,'source_inputs_run':'','skip_vs':True}),
+        'inputs':namespace({'source_revision':revision,'source_worker':worker_name,'source_image':mode,'registry_consumer':consumer,'source_inputs_run':'','skip_vs':True}),
         'needs':namespace({'source_image_inputs':{'result':'skipped'}}),
         'always':lambda:True,'cancelled':lambda:False,'contains':lambda items,item:item in items,'fromJSON':json.loads,'false':False,'true':True}))
 
@@ -307,7 +307,7 @@ class WorkflowTest(unittest.TestCase):
                               if condition(str(body.get('if','true')),consumer=name)],['registry_native'])
     def test_existing_image_choices_and_jobs_remain(self):
         jobs=self.flow['jobs']
-        self.assertEqual(set(jobs),{'registry_native','source_image_inputs','source_image','source_worker_preflight','worker_provenance','archive','checks','vs','vs_container'})
+        self.assertEqual(set(jobs),{'registry_native_export','registry_native','source_image_inputs','source_image','source_worker_preflight','worker_provenance','archive','checks','vs','vs_container'})
         for choice in ['sysmgr','dash-ha','orchagent','sflow','otel','syncd','gearbox','dash-engine','gnmi','gnmi-no-dialout']:
             self.assertTrue(condition(jobs['source_image_inputs']['if'],mode=choice))
         self.assertFalse(condition(jobs['source_image_inputs']['if']));self.assertFalse(condition(jobs['source_image']['if']))

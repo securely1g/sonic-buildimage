@@ -239,3 +239,17 @@ provisioner revision. It explicitly does not verify a derived image digest or
 a registry manifest digest. Common's existing qualified-image provenance gate
 remains unchanged; this diagnostic supplies evidence for a separate review of
 that contract.
+
+### Declared tree archive export permissions
+
+After complete output-index verification, the root worker grants mode 0644 only
+to staged single-link tree TARs, rechecking their size, SHA256 and file identity
+before changing mode. Native payload bytes, source files and private provenance
+files are unchanged.
+
+The separate registry-native-export mode recovers only DASH run 41805992669 on
+worker2. It verifies the original GitHub phase outcomes and retained receipt
+hashes, complete build/test BEPs and output index before repairing export modes.
+It invokes no APT, Bazel or tests. Missing original evidence fails with a small
+cache-presence report. Recovered acceptance remains attributed to the original
+registry/control/run; the failed original publication receipt is preserved.

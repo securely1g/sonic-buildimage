@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -304,6 +305,8 @@ def execute(args, profile, cache):
            'build_profile':selected,'memory_before':before,'cache_mode':'persistent_worker_local',
            'build_targets':config['build_targets'],'test_targets':config['test_targets']}
     started=time.monotonic()
+    runner_finished=False
+    body_failed=False
     try:
         spec['distdirs']=verified_source_distdirs(cache,args.artifacts)
         spec['downloader_config']=verified_mirror_config(args.workspace,private,args.artifacts)
@@ -318,6 +321,7 @@ def execute(args, profile, cache):
         while True:
             try:
                 code=child.wait(timeout=30)
+                runner_finished=True
                 require(code==0,'Ordinary registry runner failed')
                 break
             except subprocess.TimeoutExpired:
@@ -329,17 +333,37 @@ def execute(args, profile, cache):
                 'Registry validation had OOM events')
         state.update(status='passed',no_oom_events=True)
     except BaseException as error:
+        body_failed=True
         state.update(status='failed',error_class=type(error).__name__)
         raise
     finally:
+        finalization_errors=[]
         try:
             state['server_shutdown']=shutdown_consumer(wrapper,work)
         except BaseException as error:
             state.update(status='failed',shutdown_error_class=type(error).__name__)
-            raise
-        finally:
+            finalization_errors.append(error)
+        try:
+            # A failed runner can leave complete indexed outputs. Only repair
+            # them after wait confirms it exited; successful runs still require
+            # the full output index even when it is missing.
+            if runner_finished and (not body_failed or (args.artifacts/'outputs.json').exists()):
+                write(args.artifacts/'worker-export-permissions.json', readable_tree_archives(args.artifacts))
+        except BaseException as error:
+            state.update(status='failed',export_error_class=type(error).__name__)
+            finalization_errors.append(error)
+        try:
             state.update(memory_after=memory(),elapsed_seconds=time.monotonic()-started)
+        except BaseException as error:
+            state.update(status='failed',memory_error_class=type(error).__name__)
+            finalization_errors.append(error)
+        try:
             write(args.artifacts/'worker-registry.json',state)
+        except BaseException as error:
+            print('Registry worker receipt write failed: '+type(error).__name__,file=sys.stderr)
+            finalization_errors.append(error)
+        if not body_failed and finalization_errors:
+            raise finalization_errors[0]
 
 
 def verify_outputs(artifacts):
@@ -366,6 +390,54 @@ def verify_outputs(artifacts):
     return True
 
 
+
+def readable_tree_archives(artifacts):
+    """Make only hash-bound staged tree TARs readable by the outer publisher."""
+    require(os.geteuid() == 0, 'Tree export admission requires container root')
+    require(artifacts.resolve() == artifacts and (artifacts/'outputs').resolve() == artifacts/'outputs',
+            'Staged output root must not traverse symlinks')
+    require(verify_outputs(artifacts), 'A complete declared output index is required')
+    index = json.loads((artifacts/'outputs.json').read_text())
+    records = {}
+    for items in index.values():
+        for item in items:
+            if item.get('type') == 'tree_archive':
+                name = item['path']
+                require(re.fullmatch(r'outputs/trees/[0-9a-f]{64}\.tar', name),
+                        'Unexpected staged tree archive name')
+                require(name not in records or records[name] == item, 'Conflicting tree records')
+                records[name] = item
+    changed = []
+    for name, item in sorted(records.items()):
+        path = artifacts/name
+        require(path.resolve() == path, 'Staged tree path must not traverse symlinks')
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and
+                    stat.S_IMODE(before.st_mode) in (0o600, 0o644),
+                    'Tree archive is not a private regular staged file')
+            require(Path('/proc/self/fd', str(stream.fileno())).resolve() == path.resolve() and
+                    path.resolve().is_relative_to((artifacts/'outputs').resolve()),
+                    'Tree archive descriptor escapes declared outputs')
+            require(before.st_size == item['size'] and
+                    hashlib.file_digest(stream, 'sha256').hexdigest() == item['sha256'],
+                    'Tree archive bytes differ from the declared index')
+            after_hash = os.fstat(stream.fileno())
+            identity = lambda v: (v.st_dev, v.st_ino, v.st_size, v.st_mtime_ns,
+                                  v.st_ctime_ns, v.st_uid, v.st_gid, v.st_nlink, v.st_mode)
+            require(identity(before) == identity(after_hash), 'Tree archive changed during verification')
+            os.fchmod(stream.fileno(), 0o644)
+            after = os.fstat(stream.fileno())
+            require((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                     after.st_uid, after.st_gid, after.st_nlink) ==
+                    (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                     before.st_uid, before.st_gid, before.st_nlink) and
+                    stat.S_IMODE(after.st_mode) == 0o644, 'Tree archive identity changed')
+            changed.append({'path': name, 'sha256': item['sha256'], 'size': item['size'],
+                            'previous_mode': stat.S_IMODE(before.st_mode), 'mode': 0o644})
+    return {'status': 'passed', 'tree_archives': changed, 'native_payload_bytes_unchanged': True}
+
+
 def validate_registry_lock(value, workspace, revision):
     """Validate exact local registry URLs without changing retained lock bytes."""
     prefix=workspace.resolve().as_uri()+'/'
@@ -386,13 +458,19 @@ def validate_registry_lock(value, workspace, revision):
     dependency_json(checked(value),'lock')
 
 
-def publish(args):
+def publish(args, *, recovery=False):
     """Use the ordinary registry transport, with private control/env outside it."""
     indexed_outputs=verify_outputs(args.artifacts)
-    destination=args.artifacts/'public';destination.mkdir(exist_ok=True)
+    require(type(recovery) is bool, 'Export mode must be explicit')
+    recovery_root=ROOT/'artifacts/registry-export'
+    destination=recovery_root/'public' if recovery else args.artifacts/'public'
+    archive=recovery_root/'registry-native-evidence.tar' if recovery else args.artifacts.parent/'registry-native-evidence.tar'
+    if recovery:
+        require(not destination.exists() and not archive.exists(), 'Recovery export destination must be fresh')
+    destination.mkdir(exist_ok=not recovery)
     for source in args.artifacts.iterdir():
         if source.name=='outputs' and not indexed_outputs: continue
-        if source==destination or source.name in ('build-events.jsonl','test-events.jsonl','failed-actions','worker-publish.json') or source.suffix=='.log': continue
+        if source==destination or (recovery and source.name=='public') or source.name in ('build-events.jsonl','test-events.jsonl','failed-actions','worker-publish.json') or source.suffix=='.log': continue
         require(not source.is_symlink(), 'Evidence root must not contain symlinks')
         if source.is_dir():
             # Registry output collector already confines/materializes these paths.
@@ -412,7 +490,7 @@ def publish(args):
     summaries={name:bep_summary((args.artifacts/name).read_text().splitlines(),partial=True)
                for name in ('build-events.jsonl','test-events.jsonl') if (args.artifacts/name).exists()}
     write(destination/'build-summary.json',summaries)
-    subprocess.run(['bash',str(args.workspace/'ci/archive_artifacts.sh'),str(destination),str(args.artifacts.parent/'registry-native-evidence.tar')],check=True)
+    subprocess.run(['bash',str(args.workspace/'ci/archive_artifacts.sh'),str(destination),str(archive)],check=True)
 
 
 def main():
