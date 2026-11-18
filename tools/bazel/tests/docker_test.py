@@ -50,6 +50,22 @@ if not record['prerequisites_ready']:
     raise SystemExit('Make prerequisites were not prepared before Bazel')
 mode = os.environ.get('FAKE_BAZEL_MODE', '')
 if operation == 'build':
+    if mode == 'scripted_failures':
+        import gzip
+        failures_path = pathlib.Path('fixture-failures.json')
+        failures = json.loads(failures_path.read_text())
+        profile = next((a.split('=', 1)[1] for a in arguments if a.startswith('--profile=')), None)
+        if profile:
+            with gzip.open(profile, 'wt') as output:
+                json.dump({'traceEvents': []}, output)
+        if failures:
+            code, events = failures.pop(0)
+            failures_path.write_text(json.dumps(failures))
+            pathlib.Path(be_file).write_text(''.join(json.dumps(e) + '\n' for e in events))
+            print(events[0]['aborted']['description'], file=sys.stderr)
+            if code < 0:
+                os.kill(os.getpid(), -code)
+            raise SystemExit(code)
     if mode == 'build_failure':
         raise SystemExit('fixture build failure')
     for archive in archives:

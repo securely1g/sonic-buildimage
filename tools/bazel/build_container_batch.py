@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,47 @@ EXPORT_POLICY = (
     '--invocation_policy=flag_policies { flag_name: "remote_download_outputs" '
     'disallow_values { disallowed_values: "minimal" new_value: "toplevel" } }'
 )
+GO_PROXY_TIMEOUT = re.compile(
+    r'\+go_deps\+[^:\s]+: fetch_repo: \S+@\S+: Get "https://proxy\.golang\.org/[^"\s]+/@v/[^"\s]+": '
+    r'net/http: TLS handshake timeout\Z'
+)
+
+
+def go_proxy_timed_out(events):
+    """Require a completed build event stream with only the Gazelle fetch error."""
+    timed_out = False
+    analysis_failed = False
+    last_message = False
+    try:
+        with events.open() as stream:
+            for line in stream:
+                event = json.loads(line)
+                last_message = event.get("lastMessage") is True
+                if "action" in event and not event["action"].get("success"):
+                    return False
+                if "aborted" in event:
+                    failure = event["aborted"]
+                    # Bazel also marks unbuilt dependents and unfinished targets.
+                    if not failure.get("description") and failure.get("reason") in (
+                        "ANALYSIS_FAILURE", "INCOMPLETE",
+                    ):
+                        continue
+                    label = event["id"].get("unconfiguredLabel", {}).get("label", "")
+                    if not (failure.get("reason") == "LOADING_FAILURE" and label.startswith("//external:")
+                            and GO_PROXY_TIMEOUT.search(failure.get("description", ""))):
+                        return False
+                    timed_out = True
+                if "finished" in event:
+                    finished = event["finished"]
+                    detail = finished.get("failureDetail", {})
+                    message = detail.get("message", "")
+                    cause = message.rsplit("build aborted: ", 1)[-1]
+                    analysis_failed = (finished.get("exitCode", {}).get("code") == 1
+                                       and ("analysis" in detail or "packageLoading" in detail)
+                                       and (cause == "Analysis failed" or GO_PROXY_TIMEOUT.search(cause) is not None))
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
+        return False
+    return timed_out and analysis_failed and last_message
 
 
 def starlark_setting(option):
@@ -164,7 +206,20 @@ def build(args):
             "--experimental_build_event_output_group_mode=default=inline_only",
             *dict.fromkeys(labels.values()),
         ]
-        time_vs_image.run_phase(build_timing, "build", command)
+        try:
+            time_vs_image.run_phase(build_timing, "build", command)
+        except subprocess.CalledProcessError as failure:
+            if (settings.get("SONIC_VS_RETRY_GO_FETCH") != "1" or failure.returncode != 1
+                    or not go_proxy_timed_out(events)):
+                raise
+            print("The Go module proxy TLS handshake timed out. Retrying the container batch once.",
+                  file=sys.stderr, flush=True)
+            events.unlink()
+            if build_timing:
+                retry = time_vs_image.start_recipe(workspace, "vs-container-images", ["build"], ["build"], [])
+                shutil.copyfile(build_timing / "batch-targets.json", retry / "batch-targets.json")
+                build_timing = retry
+            time_vs_image.run_phase(build_timing, "build", command)
         outputs = archive_outputs(events, set(labels.values()))
         for name, label in labels.items():
             with time_vs_image.time_phase(export_timings[name], "export-" + name):

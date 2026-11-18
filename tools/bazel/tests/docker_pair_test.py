@@ -11,6 +11,28 @@ sys.path.insert(0, str(ROOT))
 
 from tools.bazel.tests.docker_test import ArchiveRecipeFixture
 from tools.bazel.ci.private_server_diagnostics import snapshot
+from tools.bazel.ci.verify_vs_image_tags import batch_archives
+from tools.bazel.build_container_batch import go_proxy_timed_out
+
+
+OTEL_MODULE = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver"
+GAZELLE_TIMEOUT = (
+    "otelcol-contrib++go_deps+com_github_open_telemetry_opentelemetry_collector_contrib_receiver_"
+    f'otlpjsonfilereceiver: fetch_repo: {OTEL_MODULE}@v0.144.0: Get '
+    f'"https://proxy.golang.org/{OTEL_MODULE}/@v/v0.144.0.info": net/http: TLS handshake timeout'
+)
+
+
+def failure_events(description):
+    return [
+        {"id": {"unconfiguredLabel": {"label": "//external:" + description.split(":")[0]}},
+         "aborted": {"reason": "LOADING_FAILURE", "description": description}},
+        {"id": {"targetConfigured": {"label": "//dockers/docker-sonic-otel:docker-sonic-otel.gz"}},
+         "aborted": {"reason": "ANALYSIS_FAILURE"}},
+        {"id": {"buildFinished": {}}, "finished": {"exitCode": {"code": 1},
+         "failureDetail": {"packageLoading": {"code": "PACKAGE_MISSING"}, "message": description}}},
+        {"id": {"buildMetrics": {}}, "lastMessage": True},
+    ]
 
 
 class VSContainerBatchTest(ArchiveRecipeFixture, unittest.TestCase):
@@ -101,6 +123,71 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assertEqual(self.installer(), list(self.archives[::2]))
         self.assert_batch()
         self.assertFalse((self.root / "artifacts/vs/image-timings").exists())
+
+    def build_with_failures(self, failures, retry="1"):
+        (self.root / "fixture-failures.json").write_text(json.dumps(failures))
+        return self.run_make(goals=["target/sonic-vs.bin"], environment={
+            "FAKE_BAZEL_MODE": "scripted_failures", "SONIC_VS_IMAGE_TIMINGS": "1",
+            "SONIC_VS_RETRY_GO_FETCH": retry,
+        })
+
+    def test_go_proxy_timeout_retries_once_and_keeps_profiles_and_membership(self):
+        self.assert_success(self.build_with_failures([(1, failure_events(GAZELLE_TIMEOUT))]))
+        calls = self.recorded_calls()
+        self.assertEqual(len(calls), 2)
+        timings = self.root / "artifacts/vs/image-timings"
+        self.assertEqual(batch_archives(timings), sorted(self.archives))
+        codes = []
+        for call in calls:
+            self.assertCountEqual(call["archives"], self.archives)
+            profile_arg, = [arg for arg in call["arguments"] if arg.startswith("--profile=")]
+            profile = pathlib.Path(profile_arg.removeprefix("--profile="))
+            self.assertGreater(profile.stat().st_size, 0)
+            self.assertEqual(set(json.loads((profile.parent / "batch-targets.json").read_text())), set(self.archives))
+            codes.append(json.loads((profile.parent / "build.timing.json").read_text())["exit_code"])
+        self.assertEqual(codes, [1, 0])
+        self.assertEqual(len(list(timings.rglob("export-*.timing.json"))), len(self.archives))
+        log = (self.target / "vs-container-images.log").read_text()
+        self.assertIn(GAZELLE_TIMEOUT, log)
+        self.assertEqual(log.count("Retrying the container batch once."), 1)
+
+    def test_persistent_timeout_exhausts_one_retry(self):
+        failure = (1, failure_events(GAZELLE_TIMEOUT))
+        result = self.build_with_failures([failure, failure, failure])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.recorded_calls()), 2)
+        self.assertEqual((self.target / self.archives[0]).read_bytes(), b"previous image")
+        self.assertFalse((self.root / "installed-containers").exists())
+
+    def test_nonretryable_failures_stop_immediately(self):
+        timeout = failure_events(GAZELLE_TIMEOUT)
+        mismatch = failure_events("fetch_repo: checksum mismatch")
+        for failure, retry in [((1, mismatch), "1"), ((1, timeout), "0"), ((-15, timeout), "1")]:
+            with self.subTest(code=failure[0], retry=retry):
+                self.calls.unlink(missing_ok=True)
+                result = self.build_with_failures([failure, failure], retry)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(self.recorded_calls()), 1)
+                timings = self.root / "artifacts/vs/image-timings"
+                latest = max((json.loads(p.read_text()) for p in timings.rglob("build.timing.json")),
+                             key=lambda item: item["start_epoch_seconds"])
+                self.assertEqual(latest["exit_code"], 143 if failure[0] == -15 else 1)
+
+    def test_incomplete_malformed_and_mixed_build_events_do_not_retry(self):
+        path = self.root / "events.json"
+        timeout = failure_events(GAZELLE_TIMEOUT)
+        mismatch = failure_events("checksum mismatch")
+        self.assertFalse(go_proxy_timed_out(path))
+        timeout[2]["finished"]["failureDetail"]["message"] = "Analysis of target failed; build aborted: Analysis failed"
+        path.write_text("".join(json.dumps(event) + "\n" for event in timeout))
+        self.assertTrue(go_proxy_timed_out(path))
+        for events in [timeout[:-1], timeout[:1] + timeout[-1:],
+                       [*timeout[:1], mismatch[0], *timeout[1:]], [*timeout[:2], *mismatch[2:]],
+                       [*timeout[:1], {"action": {"success": False}}, *timeout[1:]]]:
+            path.write_text("".join(json.dumps(event) + "\n" for event in events))
+            self.assertFalse(go_proxy_timed_out(path))
+        path.write_text("".join(json.dumps(event) + "\n" for event in timeout) + "{malformed")
+        self.assertFalse(go_proxy_timed_out(path))
 
     def test_source_flags_reach_one_build_of_the_original_image_targets(self):
         # Exercise real FRR/gNMI registrations, including a nondefault dial-out setting.
