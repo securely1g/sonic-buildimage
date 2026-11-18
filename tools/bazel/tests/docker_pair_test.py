@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Execute VS installer dependency selection and the real grouped Bazel bridge."""
 
-import ast
 import json
 import pathlib
 import sys
@@ -49,6 +48,7 @@ endif
             self.makefile += f"{name}_BAZEL_DEPENDS = $(INPUT_ROOT)/{name}.ready\n"
             if "syncd" in name:
                 self.makefile += f"{name}_BAZEL_ARGS = --config=syncd-dash\n"
+                self.makefile += f"{name}_BAZEL_SHARED_ARGS = $({name}_BAZEL_ARGS)\n"
         self.makefile += """
 include platform/vs/kvm-image.mk
 include platform/vs/one-image.mk
@@ -86,6 +86,8 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         startup = build["arguments"][:build["arguments"].index("build")]
         self.assertTrue(any(arg.startswith("--invocation_policy=") for arg in startup), startup)
         self.assertCountEqual(build["archives"], archives)
+        self.assertCountEqual([arg for arg in build["arguments"] if arg.startswith("//")],
+                              [self.labels[name] for name in archives])
         self.assertTrue(build["prerequisites_ready"])
         self.assertEqual(set(build["prerequisite_sha256"]),
                          {path for name in archives for path in self.prerequisites[name]})
@@ -100,16 +102,16 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assert_batch()
         self.assertFalse((self.root / "artifacts/vs/image-timings").exists())
 
-    def test_owner_features_and_shared_version_reach_the_correct_bazel_targets(self):
-        # Load FRR's actual mixed registration. Its version belongs on the
-        # batch command, while only its configured targets enable SNMP/tcmalloc.
+    def test_source_flags_reach_one_build_of_the_original_image_targets(self):
+        # Exercise real FRR/gNMI registrations, including a nondefault dial-out setting.
         (self.root / "rules").symlink_to(ROOT / "rules", target_is_directory=True)
         frr = ("docker-fpm-frr.gz", "docker-fpm-frr-dbg.gz")
+        gnmi = ("docker-sonic-gnmi.gz", "docker-sonic-gnmi-dbg.gz")
         version = "--//dockers/docker-fpm-frr:image_version=202705.42"
         features = ["--//src/sonic-frr:tcmalloc=true", "--//src/sonic-frr:snmp=true"]
         self.labels = dict(self.labels)
-        for name in frr:
-            self.labels[name] = "//dockers/docker-fpm-frr:" + name
+        for name in (*frr, *gnmi):
+            self.labels[name] = "//dockers/" + name.removesuffix(".gz").removesuffix("-dbg") + ":" + name
             self.prerequisites[name] = ["target/.container-build-method/" + name]
         self.makefile = self.makefile.replace("include platform/vs/kvm-image.mk", """
 BUILD_WITH_BAZEL_WHEN_AVAILABLE = y
@@ -120,36 +122,31 @@ FRR_USER_UID = 300
 FRR_USER_GID = 300
 SONIC_IMAGE_VERSION = 202705.42
 DOCKERS_PATH = dockers
+ENABLE_TRANSLIB_WRITE = y
+ENABLE_NATIVE_WRITE = y
+ENABLE_DIALOUT = n
 include rules/docker-fpm-frr.mk
-# Manifests are exercised in frr_make_integration_test.
+include rules/docker-gnmi.mk
+# slave.mk inherits the source directory for generic debug images.
+$(DOCKER_GNMI_DBG)_PATH = $($(DOCKER_GNMI)_PATH)
+# The owner integration tests exercise the manifest prerequisites.
 $(DOCKER_FPM_FRR)_BAZEL_DEPENDS =
 $(DOCKER_FPM_FRR_DBG)_BAZEL_DEPENDS =
-SONIC_PACKAGES_LOCAL += $(DOCKER_FPM_FRR)
+$(DOCKER_GNMI)_BAZEL_DEPENDS =
+$(DOCKER_GNMI_DBG)_BAZEL_DEPENDS =
+SONIC_PACKAGES_LOCAL += $(DOCKER_FPM_FRR) $(DOCKER_GNMI)
 include platform/vs/kvm-image.mk""")
         self.installer()
         build, = self.recorded_calls()
-        self.assertCountEqual(build["archives"], [*self.archives, *frr])
-        self.assertEqual(build["arguments"].count(version), 1)
-        for private in [*features, "--config=syncd-dash"]:
-            self.assertNotIn(private, build["arguments"])
-        wrapper = next(arg for arg in build["arguments"] if arg.endswith(":" + frr[0]))
-        package = self.root / wrapper.removeprefix("//").split(":")[0] / "BUILD.bazel"
-        nodes = ast.parse(package.read_text()).body
-        by_archive = {}
-        for node in nodes:
-            args = {kw.arg: ast.literal_eval(kw.value) for kw in node.value.keywords}
-            if "name" in args:
-                name = args["name"]
-                source = args["archive"] if "archive" in args else args["srcs"][0]
-                self.assertEqual(source, self.labels[name])
-                by_archive[name] = args.get("settings", {})
-        for name in frr:
-            self.assertEqual(by_archive[name], {"//src/sonic-frr:tcmalloc": "true", "//src/sonic-frr:snmp": "true"})
-        for name in self.archives[:2]:
-            self.assertEqual(by_archive[name], {})
-        for name in self.archives[2:]:
-            self.assertEqual(by_archive[name]["@sonic_sairedis//:enable_dashsai"], "true")
-            self.assertNotIn("//dockers/docker-fpm-frr:image_version", by_archive[name])
+        archives = (*self.archives, *frr, *gnmi)
+        self.assertCountEqual(build["archives"], archives)
+        self.assertCountEqual([arg for arg in build["arguments"] if arg.startswith("//")],
+                              [self.labels[name] for name in archives])
+        for option in [version, *features, "--@sonic_gnmi//tools/bazel:enable_dialout=false",
+                       "--@sonic_sairedis//:enable_dashsai=true",
+                       "--@sonic_sairedis//:dash_sai=@sonic_dash//:sdk",
+                       "--@sonic_sairedis//:dash_runtime_metadata=@sonic_dash//:runtime_packages.json"]:
+            self.assertEqual(build["arguments"].count(option), 1, option)
         # A standalone FRR build and its output query still receive every flag.
         self.calls.unlink()
         self.assert_success(self.run_make(frr[1]))
@@ -345,6 +342,46 @@ target/%.gz-load: target/%.gz
         self.assertEqual(self.recorded_calls(), [])
         self.assertEqual((self.target / self.archives[0]).read_bytes(), b"previous image")
         self.assertFalse((self.root / "installed-containers").exists())
+
+    def test_unshared_owner_option_keeps_both_variants_on_the_standalone_recipe(self):
+        runtime, debug = self.archives[:2]
+        private = "--define=owner=orchagent"
+        self.makefile = self.makefile.replace("include tools/bazel/docker.mk", f"""
+{runtime}_BAZEL_ARGS = {private}
+{debug}_BAZEL_ARGS = {private}
+include tools/bazel/docker.mk""")
+        self.assertEqual(self.installer(), list(self.archives[::2]))
+        builds = self.recorded_calls(("build",))
+        batched, = [call for call in builds if self.archives[2] in call["archives"]]
+        self.assertCountEqual(batched["archives"], self.archives[2:])
+        self.assertNotIn(private, batched["arguments"])
+        standalone = [call for call in builds if runtime in call["archives"] or debug in call["archives"]]
+        self.assertCountEqual([name for call in standalone for name in call["archives"]], [runtime, debug])
+        queries = self.recorded_calls(("cquery",))
+        self.assertCountEqual([name for call in queries for name in call["archives"]], [runtime, debug])
+        for call in [*standalone, *queries]:
+            self.assertEqual(call["arguments"].count(private), 1)
+            self.assertNotIn("--config=syncd-dash", call["arguments"])
+        for name in self.archives:
+            self.assertEqual((self.target / name).read_bytes(), ("new " + name).encode())
+            self.assertIn(f"sbom target/{name} DOCKER_IMAGE services/{name}",
+                          self.markers.read_text().splitlines())
+
+    def test_conflicting_shared_owner_values_fail_before_any_archive_is_published(self):
+        additions = []
+        for name in self.archives:
+            value = "swss" if name in self.archives[:2] else "syncd"
+            additions += [f"{name}_BAZEL_ARGS = --//fixture:mode={value}",
+                          f"{name}_BAZEL_SHARED_ARGS = $({name}_BAZEL_ARGS)"]
+        self.makefile = self.makefile.replace("include tools/bazel/docker.mk",
+                                             "\n".join([*additions, "include tools/bazel/docker.mk"]))
+        result = self.run_make(goals=["target/sonic-vs.bin"], parallel=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("//fixture:mode", result.stdout + result.stderr)
+        self.assertEqual(self.recorded_calls(), [])
+        for name in self.archives:
+            self.assertEqual((self.target / name).read_bytes(), b"previous image")
+        self.assertFalse(self.markers.exists())
 
     def test_differing_owner_flags_are_rejected_instead_of_changing_runtime_config(self):
         self.makefile = self.makefile.replace("include tools/bazel/docker.mk", """

@@ -283,8 +283,8 @@ consumes those targets and validates the assembled OCI images, including their
 installed behavior and image-cache invalidation.
 
 The native VS Make build submits all selected Bazel container archives in one
-invocation. For example, Orchagent and Syncd build together, with the DASH
-settings applied to Syncd. On the build dashboard, `vs-container-images`
+invocation. For example, Orchagent and Syncd build together from common base
+layers. The Syncd sources read the selected DASH settings. On the build dashboard, `vs-container-images`
 records that invocation and its profile. The container rows record their
 archive exports. The normal installer selects runtime containers, and
 `INSTALL_DEBUG_TOOLS=y` selects debug containers.

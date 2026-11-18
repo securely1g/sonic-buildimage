@@ -36,11 +36,8 @@ operation = next(arg for arg in arguments if not arg.startswith('-'))
 labels = json.loads(os.environ['FAKE_BAZEL_LABELS'])
 be_file = next((arg.split('=', 1)[1] for arg in arguments
                 if arg.startswith('--build_event_json_file=')), None)
-if be_file:
-    targets = [arg for arg in arguments if arg.startswith('//') and ':' in arg]
-    archives = [target.rsplit(':', 1)[1] for target in targets]
-else:
-    archives = [labels[arg] for arg in arguments if arg in labels]
+targets = [arg for arg in arguments if arg in labels]
+archives = [labels[target] for target in targets]
 prerequisites = [path for name in archives
                  for path in json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[name]]
 record = {'operation': operation, 'arguments': arguments, 'archives': archives,

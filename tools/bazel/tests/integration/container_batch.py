@@ -16,10 +16,10 @@ from tools.bazel.ci.cache_reuse import json_records
 
 
 CASES = [
-    ("base.gz", [], "default VS normal.sai normal.sai"),
-    ("versioned.gz", ["--//:version=v16"], "v16 VS normal.sai normal.sai"),
-    ("syncd.gz", ["--config=syncd-dash"], "default DASH dash.sai dash.meta"),
-    ("syncd-dbg.gz", ["--config=syncd-dash", "--//:version=v16"], "v16 DASH dash.sai dash.meta"),
+    ("base.gz", "base", [], "default VS normal.sai normal.sai"),
+    ("versioned.gz", "versioned", ["--//:version=v16"], "v16 VS normal.sai normal.sai"),
+    ("syncd.gz", "syncd", ["--config=syncd-dash"], "default DASH dash.sai dash.meta"),
+    ("syncd-dbg.gz", "syncd_dbg", ["--config=syncd-dash", "--//:version=v16"], "v16 DASH dash.sai dash.meta"),
 ]
 
 
@@ -69,7 +69,7 @@ def _shared_child(ctx):
     out = ctx.actions.declare_file("ordinary-package.txt")
     ctx.actions.run(
         executable = "/bin/sh",
-        arguments = ["-c", 'printf package > "$1"', "package", out.path],
+        arguments = ["-c", 'printf %s "$1" > "$1"', "package", out.path],
         outputs = [out],
         mnemonic = "OrdinaryPackage",
     )
@@ -82,7 +82,7 @@ def _emit(ctx):
     content = " ".join([ctx.attr.version, ctx.attr.mode, ctx.file.sdk.basename, ctx.file.meta.basename])
     ctx.actions.run(
         executable = "/bin/sh",
-        arguments = ["-c", 'test -s "$1" && printf %s "$2" > "$3"', "archive", ctx.file.package.path, content, out.path],
+        arguments = ["-c", 'echo "$2" > "$3" && cat "$1" >> "$3"', "archive", ctx.file.package.path, content, out.path],
         inputs = [ctx.file.package],
         outputs = [out],
         mnemonic = "VersionedArchive",
@@ -90,33 +90,39 @@ def _emit(ctx):
     return [DefaultInfo(files = depset([out]))]
 
 probe = rule(implementation = _emit, attrs = {
-    "package": attr.label(default = ":ordinary", allow_single_file = True),
-    "version": attr.string(),
-    "mode": attr.string(),
-    "sdk": attr.label(default = "@sonic_sairedis//:dash_sai", allow_single_file = True),
-    "meta": attr.label(default = "@sonic_sairedis//:dash_runtime_metadata", allow_single_file = True),
+    "package": attr.label(default = "//:ordinary", allow_single_file = True),
+    "version": attr.string(default = "default"),
+    "mode": attr.string(default = "VS"),
+    "sdk": attr.label(default = "@sonic_sairedis//:standard", allow_single_file = True),
+    "meta": attr.label(default = "@sonic_sairedis//:standard", allow_single_file = True),
 })
 """)
     (workspace / "BUILD.bazel").write_text('''
 load(":flags.bzl", "text")
-load(":probe.bzl", "probe", "shared_child")
+load(":probe.bzl", "shared_child")
 package(default_visibility = ["//visibility:public"])
 text(name = "version", build_setting_default = "default")
 shared_child(name = "ordinary")
 config_setting(name = "v16", flag_values = {":version": "v16"})
 config_setting(name = "v17", flag_values = {":version": "v17"})
 config_setting(name = "dash", flag_values = {"@sonic_sairedis//:enable_dashsai": "true"})
-probe(
-    name = "archive",
-    version = select({":v16": "v16", ":v17": "v17", "//conditions:default": "default"}),
-    mode = select({":dash": "DASH", "//conditions:default": "VS"}),
-)
 ''')
+    # Only actual consumers inspect each flag. All image families embed the
+    # ordinary parent's exec path, so a changed Starlark output tree changes bytes.
+    for _, package, flags, _ in CASES:
+        attrs = []
+        if "--//:version=v16" in flags:
+            attrs.append('version=select({"//:v16": "v16", "//:v17": "v17", "//conditions:default": "default"})')
+        if "--config=syncd-dash" in flags:
+            attrs.extend(['mode=select({"//:dash": "DASH", "//conditions:default": "VS"})',
+                          'sdk="@sonic_sairedis//:dash_sai"', 'meta="@sonic_sairedis//:dash_runtime_metadata"'])
+        owner = workspace / package
+        owner.mkdir()
+        (owner / "BUILD.bazel").write_text('load("//:probe.bzl", "probe")\n' + public
+                                           + 'probe(name="archive", ' + ", ".join(attrs) + ')\n')
     tools = workspace / "tools/bazel"
     tools.mkdir(parents=True)
-    (tools / "BUILD.bazel").touch()
-    for filename in ("container_batch.bzl", "common.bazelrc"):
-        shutil.copy(ROOT / "tools/bazel" / filename, tools)
+    shutil.copy(ROOT / "tools/bazel/common.bazelrc", tools)
     shutil.copy(ROOT / ".bazelversion", workspace)
     profile = [line for line in (tools / "common.bazelrc").read_text().splitlines()
                if line.startswith("build:syncd-dash ")]
@@ -134,9 +140,9 @@ def check_shared_cache(workspace, bazel, command, output):
         options = ["--remote_cache=", "--remote_upload_local_results", "--disk_cache=" + str(workspace / "cache"),
                    "--execution_log_json_file=" + str(log)]
         env = dict(os.environ, BAZEL_CONTAINER_ARGS=shlex.join(options))
-        subprocess.run([*command, "--archive=shared.gz", "--label=//:archive",
+        subprocess.run([*command, "--archive=shared.gz", "--label=//versioned:archive",
                         "--owner-args=" + setting, "--shared-args=" + setting], cwd=workspace, env=env, check=True)
-        if (output / "shared.gz").read_text() != version + " VS normal.sai normal.sai":
+        if (output / "shared.gz").read_text().splitlines()[0] != version + " VS normal.sai normal.sai":
             raise AssertionError(f"Shared version {version} did not reach the archive")
         records = list(json_records(log))
         for mnemonic in ("OrdinaryPackage", "VersionedArchive"):
@@ -155,19 +161,30 @@ def check(workspace, architecture):
     env = dict(os.environ, BAZEL_CONTAINER_ARGS="--remote_download_minimal")
     try:
         check_shared_cache(workspace, bazel, command, output)
-        for name, flags, _ in CASES:
-            command.extend(["--archive=" + name, "--label=//:archive", "--owner-args=" + " ".join(flags)])
+        for name, package, flags, _ in CASES:
+            arguments = shlex.join(flags)
+            command.extend(["--archive=" + name, f"--label=//{package}:archive",
+                            "--owner-args=" + arguments, "--shared-args=" + arguments])
+        command.extend(["--archive=alias.gz", "--label=//base:archive", "--owner-args=",
+                        "--archive=external.gz", "--label=@sonic_dash//:sdk", "--owner-args="])
         subprocess.run(command, cwd=workspace, env=env, check=True)
-        mtimes = {name: (output / name).stat().st_mtime_ns for name, _, _ in CASES}
+        mtimes = {path.name: path.stat().st_mtime_ns for path in output.glob("*.gz")}
         subprocess.run(command, cwd=workspace, env=env, check=True)
-        for name, flags, expected in CASES:
-            direct = [bazel, "build", "//:archive", "--platforms=" + platform, "--host_platform=" + platform, *flags]
+        if mtimes != {path.name: path.stat().st_mtime_ns for path in output.glob("*.gz")}:
+            raise AssertionError("Rebuilding unchanged archives modified their timestamps")
+        parent = (output / "base.gz").read_bytes().splitlines()[1]
+        if not parent.endswith(b"/bin/ordinary-package.txt"):
+            raise AssertionError(f"Missing embedded parent output path: {parent!r}")
+        if (output / "external.gz").read_text() != "sdk" or (output / "alias.gz").read_bytes() != (output / "base.gz").read_bytes():
+            raise AssertionError("External or duplicate source labels exported incorrect bytes")
+        for name, package, flags, expected in CASES:
+            direct = [bazel, "build", f"//{package}:archive", "--platforms=" + platform, "--host_platform=" + platform, *flags]
             subprocess.run(direct, cwd=workspace, check=True)
             exported = (output / name).read_bytes()
-            if exported != (workspace / "bazel-bin/probe.txt").read_bytes() or exported != expected.encode():
-                raise AssertionError(f"{name} differs from standalone build or expected configuration: {exported!r}")
-            if (output / name).stat().st_mtime_ns != mtimes[name]:
-                raise AssertionError(f"Rebuilding the unchanged archive modified {name}")
+            if exported != (workspace / "bazel-bin" / package / "probe.txt").read_bytes():
+                raise AssertionError(f"{name} differs from its standalone build")
+            if exported.splitlines() != [expected.encode(), parent]:
+                raise AssertionError(f"{name} differs from expected configuration or shared parent: {exported!r}")
     finally:
         subprocess.run([bazel, "shutdown"], cwd=workspace, check=False)
 

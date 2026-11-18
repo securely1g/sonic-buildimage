@@ -65,17 +65,19 @@ and can schedule independent actions in parallel.
 
 For the native AMD64 FIPS/DASH CI configuration, this produces
 `docker-orchagent.gz`, `docker-orchagent-dbg.gz`, `docker-syncd-vs.gz` and
-`docker-syncd-vs-dbg.gz` in the same build. The Syncd targets receive the
-owner's DASH settings while Orchagent keeps its own configuration. The bridge
-reads the archive paths from the build event stream and exports them to
-`target/`. A separate Bazel query for each output is unnecessary.
+`docker-syncd-vs-dbg.gz` in the same build. Bazel builds the original targets
+in a common configuration so their shared base layers have identical bytes.
+Syncd and gearbox consume the DASH SDK. Orchagent uses Sairedis libraries
+that are independent of that selection. The bridge gets the archive paths
+from the build event stream and exports them to `target/`.
 
-Owners can set `<archive>_BAZEL_SHARED_ARGS` to the subset of their normal
-Bazel arguments that every selected image can inherit. TeamD, for example,
-uses `//dockers/docker-teamd:image_version` only to label its own images.
-Make passes that flag on the shared command line. Changing the image tag then
-preserves the output paths of version-independent build actions. Source
-features such as Syncd's DASH selection stay on the owner's targets.
+Set `<archive>_BAZEL_SHARED_ARGS` to the owner's complete standalone
+`_BAZEL_ARGS` when every selected image can inherit them. For example, only
+TeamD's label action reads `//dockers/docker-teamd:image_version`, so changing
+that flag preserves the output paths of version-independent actions. Owners
+with private settings keep their standalone Make recipe, including the paired
+runtime/debug build. Conflicting values declared as shared fail before Bazel
+starts.
 
 Building a debug archive does not select it for installation.
 `INSTALL_DEBUG_TOOLS=y` selects the debug containers through the existing VS

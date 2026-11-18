@@ -33,71 +33,54 @@ def starlark_setting(option):
     return key[2:], value
 
 
-def shared_settings(arguments):
-    """Owners may explicitly share a flag when its value is safe for every target."""
-    shared = {}
+def settings_from(arguments, rc):
+    """Read explicit flags and the checked-in settings selected by Syncd's profile."""
+    values = {}
     for group in arguments:
         for option in shlex.split(group):
-            key, value = starlark_setting(option)
-            if key in shared and shared[key] != value:
-                raise ValueError(f"Conflicting shared values for {key}: {shared[key]!r} and {value!r}")
-            shared[key] = value
-    return shared
+            if option == "--config=syncd-dash":
+                profile = []
+                for line in rc.read_text().splitlines():
+                    words = shlex.split(line, comments=True)
+                    if words[:1] == ["build:syncd-dash"]:
+                        profile.extend(words[1:])
+                if not profile:
+                    raise ValueError(f"Missing build:syncd-dash in {rc}")
+            else:
+                profile = [option]
+            for flag in profile:
+                key, value = starlark_setting(flag)
+                if key in values and values[key] != value:
+                    raise ValueError(f"Conflicting shared values for {key}: {values[key]!r} and {value!r}")
+                values[key] = value
+    return values
 
 
-def owner_settings(arguments, rc):
-    """Expand the checked-in Syncd profile and translate explicit Starlark flags."""
-    options = []
-    for option in shlex.split(arguments):
-        if option == "--config=syncd-dash":
-            profile = []
-            for line in rc.read_text().splitlines():
-                words = shlex.split(line, comments=True)
-                if words[:1] == ["build:syncd-dash"]:
-                    profile.extend(words[1:])
-            if not profile:
-                raise ValueError("Missing build:syncd-dash in " + str(rc))
-            options.extend(profile)
-        else:
-            options.append(option)
-    return dict(starlark_setting(option) for option in options)
-
-
-def batch_package(workspace, archives):
-    """Generate only forwarding targets; the configured dependency owns the archive."""
-    groups = sorted({tuple(sorted(settings)) for _, settings in archives.values() if settings})
-    rules = {group: "archive_config_" + str(i) for i, group in enumerate(groups)}
-    definitions = ['load("//tools/bazel:container_batch.bzl", "configured_archive_rule")']
-    for group, name in rules.items():
-        definitions.append(f"{name} = configured_archive_rule({json.dumps(group)})")
-    targets = []
-    if rules:
-        targets.append('load(":configs.bzl", ' + ", ".join(map(json.dumps, rules.values())) + ")")
-    for archive, (label, settings) in sorted(archives.items()):
-        if settings:
-            rule = rules[tuple(sorted(settings))]
-            targets.append(f'{rule}(name={json.dumps(archive)}, archive={json.dumps(label)}, '
-                           f'settings={json.dumps(settings, sort_keys=True)}, tags=["manual"])')
-        else:
-            targets.append(f'filegroup(name={json.dumps(archive)}, srcs=[{json.dumps(label)}], tags=["manual"])')
-    files = {"BUILD.bazel": "\n".join(targets) + "\n", "configs.bzl": "\n".join(definitions) + "\n"}
-    key = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
-    parent = workspace / "target/bazel-container-batch"
-    parent.mkdir(parents=True, exist_ok=True)
-    package = parent / key
-    if not package.exists():
-        # Parallel Make processes may select the same set. Readers see a complete package.
-        with tempfile.TemporaryDirectory(dir=parent) as staging:
-            prepared = Path(staging) / key
-            prepared.mkdir()
-            for name, content in files.items():
-                (prepared / name).write_text(content)
-            try:
-                prepared.rename(package)
-            except OSError:
-                if not package.is_dir():
-                    raise
-    return "//" + package.relative_to(workspace).as_posix()
+def build_labels(workspace, archives):
+    """Main-repository producer labels already match Bazel's canonical event IDs."""
+    labels = archives.copy()
+    aliases = {name: label for name, label in archives.items()
+               if not (label.startswith(("//", "@@")) and ":" in label)}
+    if not aliases:
+        return labels
+    # BEP rewrites apparent external repo names to canonical Bzlmod names and
+    # expands label shorthand. Identity filegroups give these exports stable IDs.
+    contents = "".join(
+        f'filegroup(name={json.dumps(name)}, srcs=[{json.dumps(label)}], tags=["manual"])\n'
+        for name, label in sorted(aliases.items())
+    )
+    package = Path("target/bazel-container-batch") / hashlib.sha256(contents.encode()).hexdigest()
+    directory = workspace / package
+    directory.mkdir(parents=True, exist_ok=True)
+    definition = directory / "BUILD.bazel"
+    if not definition.is_file():
+        # Concurrent builds may be preparing the same package.
+        with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
+            temporary.write(contents)
+        Path(temporary.name).replace(definition)
+    for name in aliases:
+        labels[name] = f"//{package}:{name}"
+    return labels
 
 
 def archive_outputs(events, labels):
@@ -134,7 +117,8 @@ def build(args):
     workspace = Path.cwd()
     if not (len(args.archive) == len(args.label) == len(args.owner_args) == len(set(args.archive))):
         raise ValueError("Expected a unique archive, target label and option string for every batch member")
-    shared = shared_settings(args.shared_args)
+    rc = workspace / "tools/bazel/common.bazelrc"
+    shared = settings_from(args.shared_args, rc)
     archives = {}
     owners = defaultdict(list)
     debug_suffix = "-" + args.debug_image_mark + ".gz"
@@ -143,13 +127,13 @@ def build(args):
             raise ValueError("Invalid container archive name: " + name)
         if not label.startswith(("//", "@")):
             raise ValueError("Expected an absolute Bazel target label: " + label)
-        owner_flags = owner_settings(flags, workspace / "tools/bazel/common.bazelrc")
-        private = {key: value for key, value in owner_flags.items() if shared.get(key) != value}
-        archives[name] = (label, private)
+        for key, value in settings_from([flags], rc).items():
+            if shared.get(key) != value:
+                raise ValueError(f"{name}: owner option --{key}={value} is not certified for the shared build")
+        archives[name] = label
         owner = name.removesuffix(debug_suffix) + ".gz" if name.endswith(debug_suffix) else name
         owners[owner].append(name)
-    package = batch_package(workspace, archives)
-    labels = {name: package + ":" + name for name in archives}
+    labels = build_labels(workspace, archives)
     settings = os.environ
     cache_directory = settings.get("BAZEL_CONTAINER_CACHE_DIR", settings.get("BAZEL_SWSS_CACHE_DIR"))
     global_args = settings.get("BAZEL_CONTAINER_ARGS", settings.get("BAZEL_SWSS_ARGS", ""))
@@ -174,7 +158,7 @@ def build(args):
             "--build_event_json_file=" + str(events),
             "--nobuild_event_json_file_path_conversion",
             "--experimental_build_event_output_group_mode=default=inline_only",
-            *labels.values(),
+            *dict.fromkeys(labels.values()),
         ]
         time_vs_image.run_phase(build_timing, "build", command)
         outputs = archive_outputs(events, set(labels.values()))

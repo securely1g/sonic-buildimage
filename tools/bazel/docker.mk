@@ -4,9 +4,9 @@ include tools/bazel/manifests.mk
 # SONIC_BAZEL_DBG_DOCKER_IMAGES and declare each archive's explicit Bazel target,
 # complete Make prerequisite paths, and source path for its SBOM fragment.
 # An optional <archive>_BAZEL_ARGS selects that image's source-build features.
-# An owner may mark a subset as <archive>_BAZEL_SHARED_ARGS if other images
-# can inherit those flags. Keeping version labels on the command line lets
-# version-independent actions reuse the same output paths across builds.
+# Owners whose complete option list can be shared with the selected images
+# declare it as <archive>_BAZEL_SHARED_ARGS. Other options keep the original
+# per-owner build so that shared OCI base layers always have canonical paths.
 $(foreach IMAGE,$(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES),\
     $(if $(strip $($(IMAGE)_BAZEL_TARGET)),,$(error $(IMAGE)_BAZEL_TARGET is required for a Bazel container))\
     $(if $(strip $($(IMAGE)_PATH)),,$(error $(IMAGE)_PATH is required for a Bazel container SBOM)))
@@ -68,9 +68,28 @@ vs_requested_images := $(foreach installer,$(notdir $(vs_installer_goals)),$($(i
 vs_required_images := $(sort $(call vs_required_bazel_images,$(vs_requested_images)))
 # Preserve the existing VS runtime/debug pair handoff, including when only one
 # variant goes into the installer. Singleton producers export just their archive.
-vs_paired_runtimes := $(filter $(SONIC_BAZEL_DOCKER_IMAGES),$(vs_required_images:%-$(DBG_IMAGE_MARK).gz=%.gz))
-SONIC_BAZEL_VS_BATCH_ARCHIVES := $(sort $(vs_required_images) $(vs_paired_runtimes) \
-    $(filter $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(vs_paired_runtimes:%.gz=%-$(DBG_IMAGE_MARK).gz)))
+vs_required_runtimes := $(filter $(SONIC_BAZEL_DOCKER_IMAGES),$(vs_required_images:%-$(DBG_IMAGE_MARK).gz=%.gz))
+vs_paired_debug := $(filter $(SONIC_BAZEL_DBG_DOCKER_IMAGES),$(vs_required_runtimes:%.gz=%-$(DBG_IMAGE_MARK).gz))
+vs_pairs := $(vs_paired_debug:%-$(DBG_IMAGE_MARK).gz=%.gz)
+
+# A private flag may change how a dependency is built. Keep that owner's
+# original invocation rather than applying its flags to unrelated images.
+define vs_classify_image
+ifneq ($(2),)
+ifneq ($$(strip $$($(1)_BAZEL_ARGS)),$$(strip $$($(2)_BAZEL_ARGS)))
+$$(error VS runtime/debug pair $(1) $(2) requires identical Bazel arguments)
+endif
+endif
+ifeq ($$(strip $$($(1)_BAZEL_ARGS)),$$(strip $$($(1)_BAZEL_SHARED_ARGS)))
+SONIC_BAZEL_VS_BATCH_ARCHIVES += $(1) $(2)
+else ifneq ($(2),)
+vs_private_pairs += $(1)
+endif
+endef
+$(foreach image,$(vs_pairs),$(eval $(call vs_classify_image,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz))))
+$(foreach image,$(filter-out $(vs_pairs) $(vs_paired_debug),$(vs_required_images)),$(eval $(call vs_classify_image,$(image))))
+SONIC_BAZEL_VS_BATCH_ARCHIVES := $(sort $(SONIC_BAZEL_VS_BATCH_ARCHIVES))
+vs_private_pair_archives := $(vs_private_pairs) $(vs_private_pairs:%.gz=%-$(DBG_IMAGE_MARK).gz)
 endif
 endif
 
@@ -114,19 +133,19 @@ define build_bazel_docker_images
 	$(FOOTER)
 endef
 
-$(addprefix $(TARGET_PATH)/,$(filter-out $(SONIC_BAZEL_VS_BATCH_ARCHIVES),$(bazel_docker_archives))) : $(TARGET_PATH)/%.gz : .platform bazel-docker-force \
+$(addprefix $(TARGET_PATH)/,$(filter-out $(SONIC_BAZEL_VS_BATCH_ARCHIVES) $(vs_private_pair_archives),$(bazel_docker_archives))) : $(TARGET_PATH)/%.gz : .platform bazel-docker-force \
         $$($$*.gz_BAZEL_DEPENDS)
 	$(call build_bazel_docker_images,$(@F))
 
-ifneq ($(SONIC_BAZEL_VS_BATCH_ARCHIVES),)
-define check_vs_pair_args
-ifneq ($$(strip $$($(1)_BAZEL_ARGS)),$$(strip $$($(2)_BAZEL_ARGS)))
-$$(error VS runtime/debug pair $(1) $(2) requires identical Bazel arguments)
-endif
+define bazel_vs_private_pair_rule
+$(addprefix $(TARGET_PATH)/,$(1) $(2)) &: .platform bazel-docker-force \
+        $$$$($(1)_BAZEL_DEPENDS) $$$$($(2)_BAZEL_DEPENDS) \
+        $(addprefix $(TARGET_PATH)/.container-build-method/,$(filter $(SONIC_BAZEL_SWITCHABLE_IMAGES),$(1) $(2)))
+	$$(call build_bazel_docker_images,$(1) $(2))
 endef
-$(foreach image,$(vs_paired_runtimes),$(if $(filter $(image:.gz=-$(DBG_IMAGE_MARK).gz),$(SONIC_BAZEL_DBG_DOCKER_IMAGES)), \
-    $(eval $(call check_vs_pair_args,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz)))))
+$(foreach image,$(vs_private_pairs),$(eval $(call bazel_vs_private_pair_rule,$(image),$(image:.gz=-$(DBG_IMAGE_MARK).gz))))
 
+ifneq ($(SONIC_BAZEL_VS_BATCH_ARCHIVES),)
 # All consumers wait for the same Make target, even under -j and when an
 # archive already exists. The conductor publishes every variant before return.
 $(addprefix $(TARGET_PATH)/,$(SONIC_BAZEL_VS_BATCH_ARCHIVES)): $(TARGET_PATH)/vs-container-images ;
