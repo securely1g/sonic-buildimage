@@ -13,9 +13,6 @@ import sys
 import tempfile
 import time
 
-import redis
-import runtime_smoke
-
 
 def require(value, message):
     if not value:
@@ -38,7 +35,22 @@ def wait_for(predicate, message, timeout=45):
     raise AssertionError(message)
 
 
+def wait_for_port_indexes(state, interface):
+    key = "PORT_INDEX_TABLE|" + interface
+
+    def read_indexes():
+        # port_index_mapper writes index and ifindex in separate Redis commands.
+        row = state.hgetall(key)
+        if "index" in row and "ifindex" in row:
+            return row
+
+    return wait_for(read_indexes, f"installed mapper did not publish index and ifindex for {interface}")
+
+
 def main():
+    import redis
+    import runtime_smoke
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--validation", type=Path, required=True)
     parser.add_argument("--debug", action="store_true")
@@ -135,7 +147,7 @@ def main():
             require(os.path.samefile("/proc/" + str(manager) + "/exe", "/usr/bin/sflowmgrd"), "wrong manager binary")
             require("RUNNING" in command("/usr/local/bin/supervisorctl", "status", "rsyslogd"), "rsyslog startup dependency failed")
             state.hset("PORT_TABLE|Ethernet0", mapping={"state": "ok", "netdev_oper_status": "up", "speed": "10000"})
-            mapping = wait_for(lambda: state.hgetall("PORT_INDEX_TABLE|Ethernet0"), "installed mapper did not publish port indexes")
+            mapping = wait_for_port_indexes(state, "Ethernet0")
             require(int(mapping["ifindex"]) == socket.if_nametoindex("Ethernet0"), "mapper did not use the actual interface")
             require(int(mapping["index"]) > 0, "mapper produced an invalid SONiC port index")
 
