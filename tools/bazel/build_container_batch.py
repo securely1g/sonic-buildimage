@@ -151,6 +151,10 @@ def build(args):
         if build_timing:
             timing = time_vs_image.start_recipe(workspace, owner, [], [], ["export-" + n for n in names])
         export_timings.update(dict.fromkeys(names, timing))
+    if build_timing:
+        # Preserve original producers and this invocation's exact membership.
+        targets = {name: [owner, archives[name]] for owner, names in owners.items() for name in names}
+        (build_timing / "batch-targets.json").write_text(json.dumps(targets) + "\n")
     with tempfile.TemporaryDirectory(prefix="sonic-container-batch-") as events_dir:
         events = Path(events_dir) / "events.json"
         command = [

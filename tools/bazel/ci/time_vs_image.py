@@ -52,7 +52,10 @@ def run_phase(directory, phase, command, *, cwd=None, env=None):
         # Nested workspaces may pass startup flags before the Bazel command.
         index = command.index(phase.split("-", 1)[0], 1) + 1
         profile = directory.resolve() / f"{phase}.profile.json.gz"
-        command = [*command[:index], f"--profile={profile}", "--noslim_profile", *command[index:]]
+        flags = [f"--profile={profile}", "--noslim_profile"]
+        if directory.parent.name == "vs-container-images":
+            flags.append("--experimental_profile_include_target_label")
+        command = [*command[:index], *flags, *command[index:]]
     with time_phase(directory, phase):
         return subprocess.run(command, check=True, cwd=cwd, env=env)
 

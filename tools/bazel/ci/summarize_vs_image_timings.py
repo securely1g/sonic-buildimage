@@ -9,11 +9,17 @@ import html
 import json
 import math
 import re
+import sys
 from operator import itemgetter
 from pathlib import Path
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.bazel.ci.container_profile import batch_profile, cache_fetch, combine_batches, union_seconds
+
+
 PUBLIC_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,191}\Z")
+MAX_BATCH_ARCHIVES = 1024
 COMPILERS = {"CppCompile", "CppModuleCompile", "Rustc", "GoCompilePkg", "GoCompile"}
 CATEGORIES = ("lock", "compile", "foreign", "fetch")
 LOCK_EVENTS = {
@@ -122,16 +128,6 @@ def named_spans(events):
     }
 
 
-def union_seconds(intervals):
-    """Return the observed wall time, counting active threads only once."""
-    total = 0
-    previous_end = -math.inf
-    for start, end in sorted(intervals):
-        total += max(0, end - max(previous_end, start))
-        previous_end = max(previous_end, end)
-    return total / 1_000_000  # Bazel trace timestamps are in microseconds.
-
-
 def summarize_profile(events):
     spans = {key: [] for key in CATEGORIES}
     actions = defaultdict(list)
@@ -152,9 +148,7 @@ def summarize_profile(events):
             add_process(spans, name, interval)
         elif category == "build phase marker" and name in LOCK_EVENTS:
             spans["lock"].append(interval)
-        elif category == "remote output download" and name.lower() in {
-            "download outputs", "stage remote inputs",
-        }:
+        elif cache_fetch(event):
             spans["fetch"].append(interval)
 
     # Sandboxed subprocess.run events carry no mnemonic. Their enclosing action on
@@ -244,17 +238,32 @@ def read_plan(path):
     return plan
 
 
-def read_profile(path, include_build=False):
+def read_profile(path):
     with gzip.open(path, "rt") as stream:
         events = json.load(stream)["traceEvents"]
     if not isinstance(events, list) or not events:
         raise ValueError("empty trace")
-    durations = summarize_profile(events)
-    return (durations, build_evidence(events, durations), named_spans(events)) if include_build else (
-        durations, None, None)
+    return events
 
 
-def read_owner(directory):
+def batch_targets(instance, legacy_archives):
+    targets = instance / "batch-targets.json"
+    if not targets.exists():
+        return legacy_archives, True
+    archives = json.loads(targets.read_text())
+    if not isinstance(archives, dict) or len(archives) > MAX_BATCH_ARCHIVES:
+        raise ValueError("invalid batch targets")
+    for name, value in archives.items():
+        if (not PUBLIC_NAME.fullmatch(name) or not name.endswith(".gz")
+                or not isinstance(value, list) or len(value) != 2
+                or not all(isinstance(v, str) for v in value)
+                or not PUBLIC_NAME.fullmatch(value[0]) or not value[0].endswith(".gz")
+                or not value[1].startswith(("//", "@"))):
+            raise ValueError("invalid batch archive or target")
+    return archives, False
+
+
+def read_owner(directory, *, legacy_archives=None, batches=None):
     row = {"owner": directory.name, "bazel_seconds": None, "export_seconds": None,
            **{key + "_seconds": None for key in CATEGORIES}, "failed": False,
            "bazel_phases": 0, "bazel_expected": 0, "profiles": 0, "profiles_expected": 0,
@@ -277,6 +286,7 @@ def read_owner(directory):
         has_named = has_build or kernel_launcher
         details["expected"] += int(has_named)
         phase_records = []
+        build_seconds = None
         for group, count, expected, metric in (
                 ("bazel", "bazel_phases", "bazel_expected", "bazel_seconds"),
                 ("exports", "exports", "exports_expected", "export_seconds")):
@@ -303,6 +313,7 @@ def read_owner(directory):
                     "start_epoch_seconds": started, "exit_code": code,
                 })
                 if group == "bazel" and phase == "build":
+                    build_seconds = seconds
                     build["timings"] += 1
                     build["seconds"] = (build["seconds"] or 0) + seconds
                 if code:
@@ -311,11 +322,24 @@ def read_owner(directory):
         row["profiles_expected"] += len(plan["profiles"])
         for phase in plan["profiles"]:
             try:
-                durations, evidence, named = read_profile(
-                    instance / f"{phase}.profile.json.gz", include_build=has_named and phase == "build")
+                events = read_profile(instance / f"{phase}.profile.json.gz")
+                durations = summarize_profile(events)
+                evidence = named = None
+                if phase == "build" and has_named:
+                    evidence = build_evidence(events, durations)
+                    named = named_spans(events)
             except (OSError, EOFError, ValueError, KeyError, TypeError, AttributeError):
                 problems.append(f"{phase} profile missing or unreadable")
                 continue
+            if batches is not None and phase == "build" and build_seconds is not None:
+                try:
+                    archives, legacy = batch_targets(instance, legacy_archives)
+                    attribution = batch_profile(events, build_seconds, archives, legacy=legacy)
+                    if attribution is not None:
+                        batches.append(attribution)
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    problems.append("per-container profile ownership unavailable")
+            del events
             row["profiles"] += 1
             for key, seconds in durations.items():
                 metric = key + "_seconds"
@@ -488,12 +512,39 @@ def markdown_row(row):
             measured(row["export_seconds"], row["exports"], row["exports_expected"])]
 
 
+def historical_archives(root):
+    # Before batch-targets.json a single shared build used export-only recipes
+    # for its members. Confirm their actual archive outputs in the trace.
+    archives = {}
+    if len(list((root / "vs-container-images").glob("*/recipe.json"))) == 1:
+        for plan_path in root.glob("*.gz/*/recipe.json"):
+            owner = plan_path.parent.parent.name
+            if not PUBLIC_NAME.fullmatch(owner):
+                continue
+            plan = read_plan(plan_path)
+            if not plan["bazel"] and not plan["profiles"]:
+                for phase in plan["exports"]:
+                    if phase.startswith("export-") and phase.endswith(".gz"):
+                        archive = phase.removeprefix("export-")
+                        if archive in archives or len(archives) >= MAX_BATCH_ARCHIVES:
+                            return {}
+                        archives[archive] = (owner, "")
+    return archives
+
+
 def report(root):
+    batches = []
+    breakdown = None
     recipes = []
     notes = []
     for directory in sorted(root.iterdir()):
         if directory.is_dir() and PUBLIC_NAME.fullmatch(directory.name):
-            row, problems = read_owner(directory)
+            if directory.name == "vs-container-images":
+                row, problems = read_owner(directory, legacy_archives=historical_archives(root), batches=batches)
+                if batches and len(batches) == row["profiles_expected"]:
+                    breakdown = combine_batches(batches)
+            else:
+                row, problems = read_owner(directory)
             if row is not None:
                 recipes.append(row)
             if problems:
@@ -533,7 +584,21 @@ def report(root):
         lines.append("No Bazel recipes were recorded for this build.")
     if notes:
         lines.extend(["", "Incomplete measurements", "", *notes])
-    return {"version": 2, "recipes": recipes}, "\n".join(lines) + "\n"
+    receipt = {"version": 2, "recipes": recipes}
+    if breakdown is not None:
+        receipt["container_breakdown"] = breakdown
+        lines.extend(["", "### Images in the shared Bazel command", "",
+                      "| Image | Actions | Action wall (s) | OCI tar (s) | Compression (s) | Cache fetch (s) |",
+                      "|---|---:|---:|---:|---:|---:|"])
+        for row in sorted(breakdown["rows"], key=lambda r: (-r["action_seconds"], r["owner"])):
+            lines.append("| {owner} | {actions} | {action_seconds:.2f} | {archive_seconds:.2f} | "
+                         "{compress_seconds:.2f} | {fetch_seconds:.2f} |".format(**row))
+        lines.extend(["", "Image rows can overlap. OCI tar, compression and cache fetch are included in "
+                      "action wall time. Archive exports are measured separately.",
+                      f"Images ran concurrently for {breakdown['parallel_seconds']:.2f}s. "
+                      f"Only shared or unattributed actions ran for {breakdown['other_action_seconds']:.2f}s. "
+                      f"No action was recorded for {breakdown['no_action_seconds']:.2f}s."])
+    return receipt, "\n".join(lines) + "\n"
 
 
 if __name__ == "__main__":
@@ -560,5 +625,11 @@ if __name__ == "__main__":
         print("SONIC_VS_BAZEL_TIMINGS_V2", json.dumps({
             "count": len(receipt["recipes"]), "evidence_count": len(receipt["recipes"]) * 3,
         }, separators=(",", ":")))
+        if breakdown := receipt.get("container_breakdown"):
+            for row in breakdown["rows"]:
+                print("SONIC_VS_CONTAINER_TIMINGS_V1", json.dumps({"row": row}, separators=(",", ":")))
+            trailer = {k: v for k, v in breakdown.items() if k != "rows"}
+            print("SONIC_VS_CONTAINER_TIMINGS_V1",
+                  json.dumps({"count": len(breakdown["rows"]), **trailer}, separators=(",", ":")))
     else:
         print(markdown, end="")
