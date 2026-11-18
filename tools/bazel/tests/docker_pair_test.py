@@ -107,7 +107,8 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         (self.root / "rules").symlink_to(ROOT / "rules", target_is_directory=True)
         frr = ("docker-fpm-frr.gz", "docker-fpm-frr-dbg.gz")
         gnmi = ("docker-sonic-gnmi.gz", "docker-sonic-gnmi-dbg.gz")
-        version = "--//dockers/docker-fpm-frr:image_version=202705.42"
+        make_metadata = "--//tools/bazel/image/vs/metadata:use_make_metadata=true"
+        version = "--//tools/bazel/oci:image_version=202705.42"
         features = ["--//src/sonic-frr:tcmalloc=true", "--//src/sonic-frr:snmp=true"]
         self.labels = dict(self.labels)
         for name in (*frr, *gnmi):
@@ -142,17 +143,18 @@ include platform/vs/kvm-image.mk""")
         self.assertCountEqual(build["archives"], archives)
         self.assertCountEqual([arg for arg in build["arguments"] if arg.startswith("//")],
                               [self.labels[name] for name in archives])
-        for option in [version, *features, "--@sonic_gnmi//tools/bazel:enable_dialout=false",
+        for option in [make_metadata, version, *features, "--@sonic_gnmi//tools/bazel:enable_dialout=false",
                        "--@sonic_sairedis//:enable_dashsai=true",
                        "--@sonic_sairedis//:dash_sai=@sonic_dash//:sdk",
                        "--@sonic_sairedis//:dash_runtime_metadata=@sonic_dash//:runtime_packages.json"]:
             self.assertEqual(build["arguments"].count(option), 1, option)
+        self.assertEqual([arg for arg in build["arguments"] if ":image_version=" in arg], [version])
         # A standalone FRR build and its output query still receive every flag.
         self.calls.unlink()
         self.assert_success(self.run_make(frr[1]))
         build, query = self.recorded_calls()
         for call in (build, query):
-            for option in [*features, version]:
+            for option in [make_metadata, *features, version]:
                 self.assertEqual(call["arguments"].count(option), 1)
 
     def test_profile_shared_build_once_and_time_each_export(self):

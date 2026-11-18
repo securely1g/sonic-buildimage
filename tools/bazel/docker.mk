@@ -102,6 +102,11 @@ endef
 vs_time_phase = python3 -B tools/bazel/ci/time_vs_image.py "$$timing_directory" $(1)
 endif
 
+# Use one release for every image label, including shared base and debug images.
+# Quote the entire option for the shell and for the batch's shlex option parser.
+bazel_quote_argument = '$(subst ','"'"',$(1))'
+bazel_make_image_options = --//tools/bazel/image/vs/metadata:use_make_metadata=true $(call bazel_quote_argument,--//tools/bazel/oci:image_version=$(SONIC_IMAGE_VERSION))
+
 # An individual archive goal keeps its own Bazel settings and export.
 define build_bazel_docker_images
 	$(HEADER)
@@ -119,7 +124,7 @@ define build_bazel_docker_images
 			--arguments="$${BAZEL_CONTAINER_ARGS-$${BAZEL_SWSS_ARGS:-}} $($(firstword $(1))_BAZEL_ARGS)")"
 		bazel_options=()
 		if [ -n "$$bazel_option_lines" ]; then mapfile -t bazel_options <<< "$$bazel_option_lines"; fi
-		bazel_options+=("--//tools/bazel/image/vs/metadata:use_make_metadata=true"
+		bazel_options+=($(bazel_make_image_options)
 			"--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
 		$(call vs_time_phase,build) "$${BAZEL:-bazel}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
@@ -162,13 +167,13 @@ ifeq ($(SONIC_VS_IMAGE_TIMINGS),1)
 endif
 	python3 -B tools/bazel/build_container_batch.py --target-path="$(TARGET_PATH)" --architecture="$(CONFIGURED_ARCH)" \
 		--debug-image-mark="$(DBG_IMAGE_MARK)" \
+		--shared-args=$(call bazel_quote_argument,$(bazel_make_image_options)) \
 		$(foreach image,$(SONIC_BAZEL_VS_BATCH_ARCHIVES),$(if $($(image)_BAZEL_SHARED_ARGS),--shared-args=$(call bazel_quote_argument,$($(image)_BAZEL_SHARED_ARGS)))) \
 		$(foreach image,$(SONIC_BAZEL_VS_BATCH_ARCHIVES),--archive="$(image)" --label="$($(image)_BAZEL_TARGET)" --owner-args=$(call bazel_quote_argument,$($(image)_BAZEL_ARGS))) $(LOG)
 	$(foreach image,$(SONIC_BAZEL_VS_BATCH_ARCHIVES),$(call sbom_emit_fragment,$(TARGET_PATH)/$(image),DOCKER_IMAGE,$($(image)_PATH),,,,)
 	)
 	$(FOOTER)
 
-bazel_quote_argument = '$(subst ','"'"',$(1))'
 endif
 
 SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_BAZEL_DOCKER_IMAGES) $(SONIC_BAZEL_DBG_DOCKER_IMAGES))

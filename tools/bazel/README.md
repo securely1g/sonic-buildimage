@@ -71,10 +71,16 @@ Syncd and gearbox consume the DASH SDK. Orchagent uses Sairedis libraries
 that are independent of that selection. The bridge gets the archive paths
 from the build event stream and exports them to `target/`.
 
+Make passes `--//tools/bazel/oci:image_version=$(SONIC_IMAGE_VERSION)` once.
+All 21 image recipes use it for the OCI `Tag` label, including both archives
+of each runtime/debug pair. For a standalone Bazel build, pass the same flag
+to reproduce a release label. The archive still loads as `<image>:latest`.
+The Dockerfiles that use an `IMAGE_VERSION` environment variable also retain
+that runtime input. Updating the release label reuses version-independent
+compilation outputs.
+
 Set `<archive>_BAZEL_SHARED_ARGS` to the owner's complete standalone
-`_BAZEL_ARGS` when every selected image can inherit them. For example, only
-TeamD's label action reads `//dockers/docker-teamd:image_version`, so changing
-that flag preserves the output paths of version-independent actions. Owners
+`_BAZEL_ARGS` when every selected image can inherit them. Owners
 with private settings keep their standalone Make recipe, including the paired
 runtime/debug build. Conflicting values declared as shared fail before Bazel
 starts.

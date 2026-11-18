@@ -3946,6 +3946,8 @@ jobs:
             --installer --secure-upgrade-mode no_sign \
             --expected-commit-id "$(git rev-parse --short HEAD)" \
             --json-output artifacts/vs/sonic-version.json
+          python3 -B tools/bazel/ci/verify_vs_image_tags.py \
+            --target target --version artifacts/vs/sonic-version.json --timings artifacts/vs/image-timings
           bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
           sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
             target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256

@@ -88,7 +88,7 @@ def build_images(args, directory):
     check.require(platform.machine() == "x86_64" and
                   platform.freedesktop_os_release().get("VERSION_CODENAME") == "trixie",
                   "LLDP image build requires native AMD64 Debian Trixie")
-    options = OPTIONS + ["--//dockers/docker-lldp:image_version=" + args.image_version]
+    options = OPTIONS + [build.image_version_option(args.image_version)]
     receipt = {"status": "building", "architecture": "amd64", "commands": [], "image_version": args.image_version}
     execute = partial(command_log.execute, cwd=ROOT)
     try:
@@ -230,7 +230,7 @@ def validate_images(directory):
 def incremental(args, directory):
     clean_source(directory)
     receipt = json.loads((directory / "build-receipt.json").read_text())
-    options = OPTIONS + ["--//dockers/docker-lldp:image_version=" + receipt["image_version"]]
+    options = OPTIONS + [build.image_version_option(receipt["image_version"])]
     check.require(receipt["status"] == "built", "missing accepted build")
     revision = source_identity()["revision"]
     check.require(receipt["revision"] == revision, "incremental checkout differs from built source")
