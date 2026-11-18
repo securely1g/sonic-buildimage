@@ -1,0 +1,35 @@
+module(
+    name = "sonic-yang-mgmt",
+    version = "1.0.1",
+)
+
+bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
+bazel_dep(name = "rules_python", version = "1.9.0.sonic.1")
+bazel_dep(name = "sonic-build-infra", version = "0.0.38-0baa4acc9eac9ccc793b81104b1580d530271cbe", repo_name = "sonic_build_infra")
+
+# This owner version exports the PythonRuntimeInfo target used by site_packages.
+# The older wheel-only Models registration cannot supply that runtime metadata.
+bazel_dep(name = "sonic-yang-models", version = "1.0.2-1dbe7ad4ab7efab414537236eb2f8522ce1f8abd", repo_name = "sonic_yang_models")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(python_version = "3.13")
+use_repo(python, "python_3_13")
+
+# Config-engine owns the shared image Python lock. Reuse its immutable bytes
+# rather than maintaining a second generated lock in the management package.
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(
+    name = "sonic_config_engine_lock",
+    urls = ["https://raw.githubusercontent.com/securely1g/sonic-buildimage/c7cbc6d71b284f94fde0e47bb71aa308684ecbdf/src/sonic-config-engine/requirements_lock.txt"],
+    sha256 = "dc868b1e5b823ab036413fb1bea68ae6197ccfe2af2815d623b7066f5daf74c4",
+    downloaded_file_path = "requirements_lock.txt",
+)
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    environment = {"CC": "gcc", "CXX": "g++"},
+    hub_name = "sonic_yang_mgmt_pip",
+    python_version = "3.13",
+    requirements_lock = "@sonic_config_engine_lock//file:requirements_lock.txt",
+)
+use_repo(pip, config_engine_pip = "sonic_yang_mgmt_pip")

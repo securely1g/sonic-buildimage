@@ -1,9 +1,13 @@
 load("@config_engine_pip//:requirements.bzl", "requirement")
 load("@rules_python//python:packaging.bzl", "py_wheel")
 load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_test.bzl", "py_test")
 load("@sonic_build_infra//python:site_packages.bzl", "site_packages")
+load(":build_context.bzl", "build_context")
 
 package(default_visibility = ["//visibility:public"])
+
+_CONTEXT = build_context()
 
 exports_files([
     "setup.py",
@@ -78,7 +82,7 @@ py_wheel(
     python_requires = _SOURCE_PYTHON_REQUIRES,
     python_tag = "py3",
     requires = _SOURCE_REQUIRES,
-    strip_path_prefixes = ["src/sonic-yang-mgmt/"],
+    strip_path_prefixes = _CONTEXT.wheel_strip_prefixes,
     summary = _SOURCE_SUMMARY,
     version = _SOURCE_VERSION,
     deps = [":wheel_payload"],
@@ -140,7 +144,7 @@ site_packages(
     site_packages = "/usr/local/lib/python3.13/dist-packages",
     summary = _SOURCE_SUMMARY,
     version = _SOURCE_VERSION,
-    runtime_deps = ["//src/sonic-yang-models:sonic-yang-models.runtime"],
+    runtime_deps = [_CONTEXT.models_runtime],
 )
 
 filegroup(
@@ -160,5 +164,25 @@ filegroup(
         "NOTICE*",
         "AUTHORS*",
     ]),
-    visibility = ["//tools/bazel/tests:__pkg__"],
+    visibility = _CONTEXT.source_test_visibility,
+)
+
+# Keep the source and runtime-test API used by external registry consumers.
+alias(
+    name = "requirements_lock.txt",
+    actual = _CONTEXT.requirements_lock,
+)
+
+filegroup(
+    name = "sonic_yang_mgmt_sources",
+    srcs = _MODULES,
+)
+
+py_test(
+    name = "sonic_yang_mgmt_runtime_test",
+    srcs = ["sonic_yang_mgmt_runtime_test.py"],
+    args = ["$(rootpath " + _CONTEXT.models_payload + ")"],
+    data = [_CONTEXT.models_payload],
+    python_version = "3.13",
+    deps = [":sonic_yang_mgmt"],
 )
