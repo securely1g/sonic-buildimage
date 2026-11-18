@@ -117,8 +117,16 @@ jobs:
           python3 -B tools/bazel/runtime/prepare.py \
             --image-reference debian:trixie-20260918 \
             --output "$GITHUB_WORKSPACE/artifacts/p4rt/test-runtime.json"
-          native_args=(--downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg")
-          if [ '${{ matrix.arch }}' = arm64 ]; then native_args+=(--config=aarch64); fi
+          native_args=(
+            --downloader_config="$RUNNER_TEMP/sonic-source-mirrors.cfg"
+            --host_platform=@sonic_build_infra//platforms:x86_64_trixie
+          )
+          if [ '${{ matrix.arch }}' = arm64 ]; then
+            native_args+=(
+              --config=aarch64
+              --host_platform=@sonic_build_infra//platforms:aarch64_trixie
+            )
+          fi
           runtime_targets=(
             @libyang//:libyang_pkg
             @libnl3//:libnl-3_pkg

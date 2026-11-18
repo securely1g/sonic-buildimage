@@ -84,9 +84,11 @@ def build_sdk(common_source, output_dir, arch, bazel="bazel", output_base=None, 
         raise ValueError("The P4RT SDK handoff requires a native build for the requested architecture")
     environment = dict(os.environ, USE_BAZEL_VERSION=BAZEL_VERSION)
     command = [bazel, f"--output_base={output_base}"]
+    host_cpu = "aarch64" if arch == "arm64" else "x86_64"
     options = [
         *bazel_args,
         *(["--config=aarch64"] if arch == "arm64" else []),
+        f"--host_platform=@sonic_build_infra//platforms:{host_cpu}_trixie",
         "--//tools/bazel:yang_modules=True",
     ]
 

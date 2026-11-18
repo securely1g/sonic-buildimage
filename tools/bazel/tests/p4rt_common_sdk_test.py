@@ -123,8 +123,10 @@ elif command == "info":
         calls = [json.loads(line) for line in (self.source / "calls.jsonl").read_text().splitlines()]
         self.assertEqual(sum(call[1] == "build" for call in calls), 2)
         self.assertEqual(sum(call[1] == "shutdown" for call in calls), 2)
+        host_cpu = "aarch64" if self.arch == "arm64" else "x86_64"
         for call in calls:
             if call[1] in ("build", "cquery"):
+                self.assertIn(f"--host_platform=@sonic_build_infra//platforms:{host_cpu}_trixie", call)
                 self.assertIn("--//tools/bazel:yang_modules=True", call)
         self.assertEqual((self.output / "include/swss/dbconnector.h").read_text(), "two")
         receipt = json.loads((self.output / "sdk-build.json").read_text())
