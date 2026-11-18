@@ -150,8 +150,9 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         result = self.run_verifier(settings={"SONIC_IMAGE_VERSION": "master.42-later"})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = (self.directory / "bazel-arguments.jsonl").read_text().splitlines()
-        for call in calls:
-            self.assertIn("--//tools/bazel/oci:image_version=master.42-built", json.loads(call))
+        for call in map(json.loads, calls):
+            self.assertIn("--//tools/bazel/image/vs/metadata:use_make_metadata=true", call)
+            self.assertIn("--//tools/bazel/oci:image_version=master.42-built", call)
 
     def test_verification_keeps_archive_options_logs_and_deb_inputs(self):
         cache = self.directory / "cache with spaces"
@@ -165,7 +166,8 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
                              for args in target_calls for arg in args))
         test_calls = [args[args.index("test"):] for args in target_calls if "test" in args]
         common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
-                  "--distdir=/input with spaces", "--jobs=3", "--//tools/bazel/oci:image_version=master.42-test",
+                  "--distdir=/input with spaces", "--jobs=3", "--//tools/bazel/image/vs/metadata:use_make_metadata=true",
+                  "--//tools/bazel/oci:image_version=master.42-test",
                   "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                   "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
         for index, (target, flags) in enumerate((("swss_images_test", []),

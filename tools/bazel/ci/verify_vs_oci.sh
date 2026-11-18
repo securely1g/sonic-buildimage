@@ -95,7 +95,8 @@ image_version=${config[SONIC_IMAGE_VERSION]}
 if [[ -f artifacts/vs/sonic-version.json ]]; then
     image_version=$(jq -er '.build_version | strings | select(length > 0)' artifacts/vs/sonic-version.json)
 fi
-bazel_options+=("--//tools/bazel/oci:image_version=$image_version"
+bazel_options+=(--//tools/bazel/image/vs/metadata:use_make_metadata=true
+    "--//tools/bazel/oci:image_version=$image_version"
     --platforms=@sonic_build_infra//platforms:x86_64_trixie
     --host_platform=@sonic_build_infra//platforms:x86_64_trixie)
 
