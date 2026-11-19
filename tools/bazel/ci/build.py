@@ -30,9 +30,6 @@ def execution_root_from_bep(path):
     return root
 
 
-execution_root = execution_root_from_bep
-
-
 def resolve_output(execution_root, output):
     """Resolve an actual declared output without checkout convenience symlinks."""
     relative = Path(output)
@@ -46,7 +43,7 @@ def resolve_output(execution_root, output):
 
 
 def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=(),
-                     use_execution_root=False, allow_external_execroot=False, additional_targets=()):
+                     use_execution_root=False, additional_targets=()):
     """Build filename-to-label declarations, exporting one nonempty file each.
 
     The caller owns target selection and payload validation. These are archive
@@ -64,7 +61,7 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
              *targets.values(), *additional_targets], directory, receipt, "build")
     execution_root = None
-    if use_execution_root or allow_external_execroot:
+    if use_execution_root:
         execution_root = execution_root_from_bep(directory / "build-events.jsonl")
         receipt["execution_root"] = str(execution_root)
     paths = {}
@@ -73,14 +70,8 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
                         directory, receipt, name + ".query").splitlines()
         if len(files) != 1:
             raise ValueError("Expected exactly one nonempty archive output for " + target)
-        if allow_external_execroot:
-            rel = Path(files[0])
-            if not files[0] or rel.is_absolute() or ".." in rel.parts:
-                raise ValueError("Expected an execution-root-relative Bazel output")
-            source = execution_root / rel
-        else:
-            source = (resolve_output(execution_root, files[0]) if use_execution_root
-                      else workspace / files[0])
+        source = (resolve_output(execution_root, files[0]) if use_execution_root
+                  else workspace / files[0])
         if not source.is_file() or not source.stat().st_size:
             raise ValueError("Expected exactly one nonempty archive output for " + target)
         destination = directory / name

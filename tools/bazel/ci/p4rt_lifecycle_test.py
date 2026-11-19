@@ -1,6 +1,7 @@
 """Keep the root and owner JVMs separate without relaxing original acceptance."""
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -27,6 +28,50 @@ class LifecycleTest(unittest.TestCase):
         self.calls.append(command)
         self.names.append(unused[2])
         return '123\n' if command == ['root-bazel', 'info', 'server_pid'] else 'ok'
+
+    def test_make_build_preserves_shared_server_and_forwards_only_owner_cache_settings(self):
+        backend = self.root / 'configured owner bazel'
+        backend.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        backend.chmod(0o755)
+        self.args.owner_bazel = str(backend)
+        endpoint = image.PRIVATE_CACHE_ENDPOINT
+        permitted = {'SONIC_BAZEL_REMOTE_CACHE': endpoint, 'SONIC_BAZEL_REMOTE_UPLOAD': 'y',
+                     'BAZEL_CONTAINER_ARGS': '--experimental_remote_downloader=' + endpoint +
+                     ' --experimental_remote_downloader_local_fallback --remote_header=X=private --local_resources=cpu=2'}
+        def execute(command, directory, receipt, name, **unused):
+            self.assertEqual(name, 'owner-build')
+            launcher = next(value.removeprefix('--bazel=') for value in command if value.startswith('--bazel='))
+            request = [launcher, '--output_base=/owner-base', 'build', '--config=p4rt-runtime', '//p4rt_app:runtime']
+            recorded = subprocess.check_output(request, text=True).splitlines()
+            self.assertEqual(recorded[1:], request[1:])
+            self.assertTrue(recorded[0].startswith('--bazelrc='))
+            rc = Path(recorded[0].split('=', 1)[1])
+            settings = [shlex.split(line) for line in rc.read_text().splitlines()]
+            self.assertEqual(settings, [['common', '--remote_cache=' + endpoint],
+                                        ['common', '--experimental_remote_downloader=' + endpoint],
+                                        ['common', '--experimental_remote_downloader_local_fallback'],
+                                        ['common', '--experimental_downloader_config=' +
+                                         str(image.ROOT / 'src/sonic-p4rt/source_mirrors.cfg')],
+                                        ['build', '--remote_upload_local_results=false']])
+            return 'OK'
+        with patch.dict(os.environ, permitted, clear=True), patch.object(image.command_log, 'execute', side_effect=execute) as call:
+            self.assertEqual(image.run_owner(self.args, self.root, self.root, 'build',
+                                             self.root, self.receipt, make_build=True), 'OK')
+            self.assertEqual(call.call_count, 1)
+            self.assertIn('--remote_cache=' + endpoint, image.root_options(make_build=True))
+            self.assertIn('--remote_upload_local_results=true', image.root_options(make_build=True))
+            self.assertNotIn('--remote_cache=' + endpoint, image.root_options())
+        self.assertEqual(list(self.root.glob('p4rt-owner-client-*')), [])
+
+    def test_make_with_no_selected_service_uses_the_local_owner_only(self):
+        with patch.dict(os.environ, {'BAZEL_CONTAINER_ARGS': '--experimental_remote_downloader=' +
+                                     image.PRIVATE_CACHE_ENDPOINT}, clear=True):
+            image.make_owner_launcher(self.root, 'bazel')
+        settings = (self.root / 'make-owner.bazelrc').read_text()
+        self.assertNotIn('grpc://', settings)
+        self.assertNotIn('--remote_cache=', settings)
+        self.assertIn('--experimental_downloader_config=', settings)
+        self.assertIn('--remote_upload_local_results=false', settings)
 
     def run_phase(self, phase='build', after=None, shutdown_error=None):
         def execute(command, *args, **kwargs):
@@ -89,8 +134,7 @@ class ReviewShutdownTest(unittest.TestCase):
             fake = root / 'bazel'
             fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             fake.chmod(0o755)
-            env = dict(os.environ, BAZEL_REAL=str(fake),
-                       SONIC_BAZEL_REGISTRY_REVISION='a' * 40)
+            env = dict(os.environ, BAZEL_REAL=str(fake), SONIC_BAZEL_REGISTRY_REVISION='a' * 40)
             for args in (['--version'], ['--output_base=' + str(root / 'base'), '--host_jvm_args=-Xmx3g', 'shutdown']):
                 result = subprocess.run(['bash', str(wrapper), *args], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

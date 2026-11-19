@@ -84,7 +84,7 @@ class P4rtMakeTest(unittest.TestCase):
             invocations = [json.loads(line) for line in calls.read_text().splitlines()]
             self.assertEqual(len(invocations), 1)
             args = invocations[0]
-            self.assertEqual(args[:3], ['-B', 'tools/bazel/ci/p4rt_image.py', 'prepare-owner'])
+            self.assertEqual(args[:3], ['-B', 'tools/bazel/ci/p4rt_image.py', 'prepare-make-owner'])
             for key, value in (('--directory', 'artifacts/p4rt'), ('--owner-bazel', '/owner/bazel6'),
                                ('--bazel', '/image/bazel8'), ('--owner-source', 'src/sonic-p4rt/sonic-pins')):
                 self.assertEqual(args[args.index(key) + 1], value)

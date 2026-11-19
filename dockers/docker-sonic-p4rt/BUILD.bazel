@@ -68,9 +68,12 @@ tar(
     ]
 ]
 
-filegroup(
+# Export a generated file under the image execution root, including for local owners.
+copy_file(
     name = "source_runtime",
-    srcs = ["@p4rt_owner_payload//:p4rt_runtime.tar"],
+    src = "@p4rt_owner_payload//:p4rt_runtime.tar",
+    out = "p4rt-runtime.tar",
+    allow_symlink = False,
 )
 
 tar(

@@ -1,17 +1,10 @@
-"""Check retained P4RT JSON evidence; no execution, network, or payload reads.
-
-The caller separately verifies the dispatch, worker, transfer CRC/SHA and exact
-source graph. These checks bind the owner's outputs and tests to the installed
-images. Large TAR/image hashes remain CI-reported evidence.
-"""
+"""Bind owner results, static image checks and same-run installed probes."""
 import hashlib
 import re
 
 IMAGES = ('docker-sonic-p4rt', 'docker-sonic-p4rt-dbg')
 PROGRAMS = ('p4rt', 'p4rt_program_table', 'p4rt_read',
             'p4rt_set_forwarding_pipeline', 'p4rt_write')
-PHASES = ('prepare-owner', 'prepare-owner-runtime', 'owner-tests',
-          'build', 'validate', 'incremental', 'loaded')
 
 
 def digest(value):
@@ -152,7 +145,3 @@ def verify(read, raw, *, source, owner, outputs, test_targets, owner_test_helper
         assert inc['baseline']['outputs'][n + '.gz'] == artifacts[n + '.gz']['sha256']
     for n in ('p4rt.source.tar', 'p4rt.debug.tar'):
         assert inc['changed']['outputs'][n] == inc['baseline']['outputs'][n] == artifacts[n]['sha256']
-    return {'owner_test_targets': len(test_targets), 'owner_test_cases': summary['testcase_count'], 'exports': 27,
-            'native_runtime': len(runtime), 'native_debug': len(native),
-            'owner_dwp_pairs': 5, 'source_debug_pairs': len(pairs),
-            'scope': 'CI-reported TAR/OCI software startup, arbitration and P4Info validation; no ASIC forwarding or full VS acceptance'}

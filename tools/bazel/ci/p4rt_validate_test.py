@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from tools.bazel.ci import p4rt_validate as validation
+from tools.bazel.ci import p4rt_loaded, p4rt_validate as validation
 
 
 class IncrementalOwnerOutputTest(unittest.TestCase):
@@ -41,6 +41,8 @@ class IncrementalOwnerOutputTest(unittest.TestCase):
                 'artifacts': {name: {'sha256': validation.check.sha(execution / path)}
                               for name, path in paths.items()},
             }
+            for path in (*receipt['layouts'].values(), receipt['base_layout']):
+                (execution / path).mkdir(parents=True)
             (directory / 'build-receipt.json').write_text(json.dumps(receipt))
             (directory / 'build-events.jsonl').write_text(json.dumps({
                 'workspaceInfo': {'localExecRoot': str(execution)}}) + '\n')
@@ -74,6 +76,26 @@ class IncrementalOwnerOutputTest(unittest.TestCase):
             self.assertEqual(result['baseline']['outputs'], result['restored']['outputs'])
             self.assertEqual(result['baseline']['outputs']['p4rt.source.tar'],
                              result['changed']['outputs']['p4rt.source.tar'])
+
+
+class DownloadedImagesTest(unittest.TestCase):
+    def test_release_intermediates_only_after_all_artifacts_match(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifacts = {}
+            for name in validation.p4rt_image.TARGETS:
+                path = directory / name
+                path.write_text(name)
+                artifacts[name] = {'sha256': validation.check.sha(path)}
+            p4rt_loaded.verify_download(directory, artifacts, False)
+            expected = {p.name for p in directory.iterdir()}
+            self.assertEqual(expected, set(artifacts))
+            changed = {**artifacts, 'p4rt.debug.tar': {'sha256': '0' * 64}}
+            with self.assertRaisesRegex(ValueError, 'artifact changed'):
+                p4rt_loaded.verify_download(directory, changed, True)
+            self.assertEqual({p.name for p in directory.iterdir()}, expected)
+            p4rt_loaded.verify_download(directory, artifacts, True)
+            self.assertEqual({p.name for p in directory.iterdir()}, expected - {'p4rt.debug.tar', 'p4rt.source.tar'})
 
 
 class DebugSaiTest(unittest.TestCase):

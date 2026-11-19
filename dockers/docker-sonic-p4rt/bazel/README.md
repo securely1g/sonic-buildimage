@@ -35,8 +35,7 @@ dependencies installed by `bazel-oci.yml`. Initialize the committed source owner
 
 ```sh
 git submodule update --init -- src/sonic-p4rt/sonic-pins
-export SONIC_BAZEL_REGISTRY_REVISION=6de31e78211b93162a791f3e513f906f8d2b6fc6
-export BAZEL="$PWD/tools/bazel/ci/review_bazel.sh"
+export BAZEL="$PWD/tools/bazel/ci/libteam_draft_bazel.sh"
 owner_revision=$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)
 
 for phase in prepare-owner build; do
@@ -60,8 +59,12 @@ mounts, shutdown order and excluded-profile producers are preserved.
 build. `P4RT_BAZEL`, `P4RT_BAZEL_OUTPUT_BASE` and `P4RT_BAZEL_JOBS` select the
 separate owner client. Keep each output base private to one active client and
 retain it for later builds; no clean is needed between image changes.
-The helper stops the idle image Bazel server before the owner build and test
-phases. Its disk caches and output tree remain available for the next phase.
+In dedicated CI the helper stops its idle image Bazel server before the owner
+build and test phases. Make can run other producers concurrently, so it keeps
+the shared root server alive. The Make SDK build uses the image cache policy.
+The Bazel 6 owner reads the slave's repository/disk caches, the PINS source
+mirror rules and any selected remote cache. The VS pool's configured remote
+downloader is also available. The owner never uploads local action results.
 
 ## Validate separately
 
@@ -85,7 +88,14 @@ The source owner's GCC 14 optimized split-DWARF output has a separately recorded
 fresh-compilation reproducibility limitation. Exact unchanged-cache and
 configuration edit/restore checks do not claim fresh compiler byte determinism.
 
-The image CI extends the existing `bazel-oci.yml`; inherited ARM64 helper checks
-remain, while P4RT image and loaded-service acceptance are AMD64-only. Public
-artifacts contain checked outputs and bounded provenance. Private preparation
-paths, raw invocations and environment records are excluded.
+In `bazel-oci.yml`, the AMD64 archive job runs in pinned Trixie on the
+`bazel-x64`, `vs` pool. It reserves a private scratch directory for the two
+output bases and checks that its filesystem has at least 90 GiB free. The PINS
+Bazel 6 client reads its own workspace configuration and the selected CI
+repository cache, disk cache and source-mirror rules. Trusted same-repository
+builds also read the pool's remote cache and downloader. The owner never
+uploads local action results. Fork builds use local caches and source mirrors.
+The Ubuntu 24.04 job downloads both archives and their evidence from that run,
+starts the services and checks them against the tested checkout. The required
+AMD64 archive check includes both jobs. ARM64 runs the existing helper checks.
+Public artifacts contain the selected build outputs and provenance summaries.

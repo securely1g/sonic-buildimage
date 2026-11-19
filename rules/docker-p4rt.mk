@@ -67,7 +67,7 @@ P4RT_BAZEL_PARENT_MANIFESTS = $(TARGET_PATH)/bazel-manifests/docker-base-trixie/
 
 .PHONY: bazel-p4rt-owner
 bazel-p4rt-owner: $(P4RT_BAZEL_PARENT_MANIFESTS)
-	python3 -B tools/bazel/ci/p4rt_image.py prepare-owner \
+	python3 -B tools/bazel/ci/p4rt_image.py prepare-make-owner \
 		--directory "$(P4RT_BAZEL_ARTIFACTS)" --bazel "$${BAZEL:-bazel}" \
 		--owner-source "$(P4RT_BAZEL_SOURCE)" --owner-revision "$(P4RT_BAZEL_REVISION)" \
 		--owner-bazel "$(P4RT_BAZEL)" --owner-output-base "$(P4RT_BAZEL_OUTPUT_BASE)" \

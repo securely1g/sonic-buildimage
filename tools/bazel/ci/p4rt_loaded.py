@@ -17,10 +17,25 @@ from tools.bazel.ci import p4rt_handoff, p4rt_image, validate_runtime
 from tools.bazel.ci.public_artifacts import safe_json
 
 
+def verify_download(directory, artifacts, release_inputs):
+    check.require(set(artifacts) == set(p4rt_image.TARGETS), 'Incomplete downloaded P4RT artifacts')
+    for name, record in artifacts.items():
+        source = directory / name
+        check.require(not source.is_symlink() and check.sha(source) == record['sha256'],
+                      'Accepted image artifact changed: ' + name)
+    if release_inputs:
+        # These two downloaded TARs replicate layers in the archives about to
+        # be loaded. The original native job artifacts stay available in Actions.
+        for name in ('p4rt.debug.tar', 'p4rt.source.tar'):
+            (directory / name).unlink()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--owner-source', type=Path, required=True)
+    parser.add_argument('--release-downloaded-inputs', action='store_true',
+                        help='Remove the two verified intermediate P4RT TARs before loading the installed images')
     args = parser.parse_args()
     directory = args.directory.resolve()
     revision = p4rt_image.source_identity(directory)
@@ -34,9 +49,7 @@ def main():
     owner_helper = owner_source / 'p4rt_app/runtime_package_test.py'
     check.require(check.sha(owner_helper) == report['p4rt_owner_test_sha256'],
                   'The installed DWP checks must use the validated source owner')
-    for name, record in report['artifacts'].items():
-        check.require(Path(name).name == name and check.sha(directory / name) == record['sha256'],
-                      'Accepted image artifact changed: ' + name)
+    verify_download(directory, report['artifacts'], args.release_downloaded_inputs)
 
     results = {}
     with tempfile.TemporaryDirectory(prefix='p4rt-redis-') as temporary:

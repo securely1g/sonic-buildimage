@@ -273,8 +273,9 @@ def validate(args):
         directory / 'owner-preparation/common-runtime.tar', directory / 'config-engine.source.tar')
     check.require(same_common == handoff['parent_common'] == preparation['parent_common'],
                   'installed parent no longer matches the owner SDK')
-    parent = oci_layout.validate_layout(ROOT / receipt['base_layout'], 'linux/amd64')
-    layouts = {stage: oci_layout.validate_layout(ROOT / receipt['layouts'][name], 'linux/amd64')
+    execution_root = build.execution_root_from_bep(directory / 'build-events.jsonl')
+    parent = oci_layout.validate_layout(build.resolve_output(execution_root, receipt['base_layout']), 'linux/amd64')
+    layouts = {stage: oci_layout.validate_layout(build.resolve_output(execution_root, receipt['layouts'][name]), 'linux/amd64')
                for stage, name in STAGES.items()}
     inventories = {stage: base_images.installed_inventory(layout) for stage, layout in layouts.items()}
     inherited = base_images.installed_inventory(parent)
@@ -391,13 +392,15 @@ def incremental(args):
     receipt = read_json(directory / 'build-receipt.json')
     check.require(receipt.get('status') == 'built' and receipt['revision'] == clean_source(directory),
                   'incremental checkout differs from the built source')
-    layouts = {name: ROOT / path for name, path in receipt['layouts'].items()}
-    base = ROOT / receipt['base_layout']
+    execution_root = build.execution_root_from_bep(directory / 'build-events.jsonl')
+    layouts = {name: build.resolve_output(execution_root, path) for name, path in receipt['layouts'].items()}
+    base = build.resolve_output(execution_root, receipt['base_layout'])
     options = p4rt_image.root_options()
-    execution_root = build.execution_root(directory / 'build-events.jsonl')
-    outputs = {name: execution_root / subprocess.check_output([args.bazel, 'cquery', *options,
-        '--output=files', p4rt_image.TARGETS[name]], cwd=ROOT, text=True).strip() for name in
-        (*[image + '.gz' for image in IMAGES], 'p4rt.source.tar', 'p4rt.debug.tar')}
+    outputs = {}
+    for name in (*[image + '.gz' for image in IMAGES], 'p4rt.source.tar', 'p4rt.debug.tar'):
+        path = subprocess.check_output([args.bazel, 'cquery', *options, '--output=files', p4rt_image.TARGETS[name]],
+                                       cwd=ROOT, text=True).strip()
+        outputs[name] = build.resolve_output(execution_root, path)
     command = [args.bazel, 'build', *options, p4rt_image.BASE,
                *[p4rt_image.OWNER + name for name in layouts], *[p4rt_image.TARGETS[name] for name in outputs]]
     def snapshot():

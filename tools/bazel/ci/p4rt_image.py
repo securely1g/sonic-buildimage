@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -20,7 +21,8 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import bazel_commands, build, command_log, p4rt_handoff, resolution
 from tools.bazel.p4rt_common_sdk import prepare_repository
-from tools.bazel.build_helpers import cache_options
+from tools.bazel.build_helpers import cache_options, remote_cache_options
+from tools.bazel.ci.preserve_setup_bazel_cache import PRIVATE_CACHE_ENDPOINT
 from tools.bazel.oci.oci_inventory import resolve_path
 
 OWNER = '//dockers/docker-sonic-p4rt:'
@@ -68,10 +70,13 @@ TARGETS = {
 }
 
 
-def root_options():
+def root_options(*, make_build=False):
     cache = os.environ.get('BAZEL_CONTAINER_CACHE_DIR', os.environ.get('BAZEL_SWSS_CACHE_DIR', ''))
     arguments = os.environ.get('BAZEL_CONTAINER_ARGS', os.environ.get('BAZEL_SWSS_ARGS', ''))
     extra = cache_options(cache) + shlex.split(arguments)
+    if make_build:
+        # Use the ordinary Make image producer's final read/write policy.
+        extra += remote_cache_options()
     check.require(all(value and not any(char in value for char in '\r\n\0') for value in extra),
                   'Bazel options must be nonempty single-line arguments')
     # Preserve cache/custom options, then enforce the recorded YANG/native profile.
@@ -82,10 +87,14 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
 
-def source_identity(directory):
+def check_directory(directory):
     check.require(not ROOT.is_relative_to(directory), 'Artifacts cannot contain the checkout')
     if directory.is_relative_to(ROOT):
         check.require(directory.relative_to(ROOT).parts[0] == 'artifacts', 'Use artifacts/<name> for in-checkout evidence')
+
+
+def source_identity(directory):
+    check_directory(directory)
     subprocess.run(['git', 'diff', '--exit-code', '--ignore-submodules=none', 'HEAD'], cwd=ROOT, check=True)
     untracked = subprocess.check_output(['git', 'ls-files', '--others', '--exclude-standard', '-z'], cwd=ROOT).decode().split('\0')
     # Full VS Make and preceding CI steps keep their independent receipts here.
@@ -93,6 +102,10 @@ def source_identity(directory):
     # and submodules remain covered by the complete HEAD diff above.
     check.require(not [name for name in untracked if name and not (ROOT / name).is_relative_to(ROOT / 'artifacts')],
                   'Image source checkout has undeclared inputs')
+    return checkout_revision()
+
+
+def checkout_revision():
     return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
 
 
@@ -108,9 +121,9 @@ def locations(args):
     return directory, directory / 'owner-preparation', directory / 'owner-sdk', directory / 'owner-output'
 
 
-def owner_command(args, sdk, output, phase, runtime=None):
+def owner_command(args, sdk, output, phase, runtime=None, *, bazel=None):
     command = [sys.executable, '-B', str(args.owner_source.resolve() / 'ci/production_runtime.py'),
-               '--phase=' + phase, '--bazel=' + args.owner_bazel,
+               '--phase=' + phase, '--bazel=' + (bazel or args.owner_bazel),
                '--buildimage=' + str(ROOT), '--sdk=' + str(sdk),
                '--output-base=' + str(args.owner_output_base.resolve()),
                '--output=' + str(output), '--jobs=' + str(args.jobs)]
@@ -127,10 +140,42 @@ def server_process(pid):
     return {'state': fields[0], 'started': int(fields[19]), 'rss_pages': int(fields[21])}
 
 
-def run_owner(args, sdk, output, phase, directory, receipt, runtime=None):
-    # Commands in the preceding phase have finished. Release only this root's
-    # idle JVM before starting the separate owner JVM; retain every cache/output.
+def make_owner_launcher(directory, bazel):
+    # Keep PINS' workspace rc and the slave's system rc for its mounted
+    # repository/disk caches. Its Bazel 6 client cannot consume root Bzlmod
+    # settings, --local_resources, or Bazel 8's spelling of --downloader_config.
+    config = directory / 'make-owner.bazelrc'
+    settings = remote_cache_options()
+    arguments = shlex.split(os.environ.get('BAZEL_CONTAINER_ARGS', os.environ.get('BAZEL_SWSS_ARGS', '')))
+    downloader = '--experimental_remote_downloader=' + PRIVATE_CACHE_ENDPOINT
+    if '--remote_cache=' + PRIVATE_CACHE_ENDPOINT in settings and downloader in arguments:
+        settings.append(downloader)
+        if '--experimental_remote_downloader_local_fallback' in arguments:
+            settings.append('--experimental_remote_downloader_local_fallback')
+    settings.append('--experimental_downloader_config=' + str(ROOT / 'src/sonic-p4rt/source_mirrors.cfg'))
+    # Prevent rc-line injection and keep the owner cache read-only on every ref.
+    check.require(all(not any(c in option for c in '\n\r\0') for option in settings), 'Invalid owner cache option')
+    config.write_text(''.join('common ' + shlex.quote(option) + '\n' for option in settings
+                              if not option.startswith('--remote_upload_local_results=')) +
+                      'build --remote_upload_local_results=false\n')
+    launcher = directory / 'bazel'
+    launcher.write_text('#!/bin/sh\nexec ' + shlex.join([bazel, '--bazelrc=' + str(config)]) + ' "$@"\n')
+    launcher.chmod(0o755)
+    return str(launcher)
+
+
+def run_owner(args, sdk, output, phase, directory, receipt, runtime=None, *, make_build=False):
     execute = partial(command_log.execute, cwd=ROOT)
+    if make_build:
+        # The normal Make recipes may use the checkout's root server in
+        # parallel. Only this PINS invocation owns its output base/shutdown.
+        with tempfile.TemporaryDirectory(prefix='p4rt-owner-client-', dir=directory) as scratch:
+            client = make_owner_launcher(Path(scratch), args.owner_bazel)
+            return execute(owner_command(args, sdk, output, phase, runtime, bazel=client),
+                           directory, receipt, 'owner-build')
+
+    # Dedicated image CI owns the two bounded JVMs. Release its root client
+    # before starting the owner without dropping either client's cached data.
     pid = int(execute([args.bazel, 'info', 'server_pid'], directory, receipt, 'root-server-pid').strip())
     before = server_process(pid)
     check.require(before is not None and before['state'] != 'Z', 'Root Bazel server identity is unavailable')
@@ -160,25 +205,31 @@ def prepare_manifests(execute, directory, receipt):
              'DOCKERS_PATH=dockers'], directory, receipt, 'manifests')
 
 
-def prepare_owner(args):
+def prepare_owner(args, *, make_build=False):
     native()
     directory, preparation, sdk, output = locations(args)
-    revision = source_identity(directory)
+    check_directory(directory)
     p4rt_handoff.source_identity(args.owner_source, args.owner_revision)
     preparation.mkdir(parents=True, exist_ok=True)
-    receipt = {'schema': 1, 'status': 'preparing', 'revision': revision, 'architecture': 'amd64',
+    receipt = {'schema': 1, 'status': 'preparing', 'architecture': 'amd64',
                'owner_revision': args.owner_revision, 'commands': []}
     execute = partial(command_log.execute, cwd=ROOT)
-    options = root_options()
+    options = root_options(make_build=make_build)
     started = time.monotonic()
     try:
         version = execute([args.bazel, '--version'], preparation, receipt, 'root-version')
         check.require([line for line in version.splitlines() if line.startswith('bazel ')] == ['bazel 8.5.1'],
                       'The selected image/Common builder must remain Bazel 8.5.1')
-        prepare_manifests(execute, preparation, receipt)
+        # A shared Make checkout may contain local edits and outputs from parallel
+        # packages. Its revision identifies the base commit only. The source owner,
+        # SDK, parent library and published TAR bytes are checked in both modes.
+        identity = checkout_revision if make_build else partial(source_identity, directory)
+        revision = receipt['revision'] = identity()
+        if not make_build:
+            prepare_manifests(execute, preparation, receipt)
         receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, list(PREPARATION_TARGETS.values()),
             workspace=ROOT, output=preparation / 'action-audit.json')
-        build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options, allow_external_execroot=True)
+        build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options, use_execution_root=True)
         module = (preparation / 'common.MODULE.bazel').read_text()
         check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
                       'The fetched Common owner differs from the selected image parent')
@@ -193,11 +244,12 @@ def prepare_owner(args):
             parent_archive=preparation / 'config-engine.source.tar')
         receipt['parent_common'] = p4rt_handoff.same_common_library(sdk,
             preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')
-        run_owner(args, sdk, output, 'build', preparation, receipt)
+        run_owner(args, sdk, output, 'build', preparation, receipt, make_build=make_build)
         receipt['owner_handoff'] = p4rt_handoff.stage(args.owner_source, args.owner_revision, sdk, output,
             ROOT / '.bazel-inputs/p4rt-owner', receipt['parent_common'])
-        check.require(source_identity(directory) == revision, 'Image source changed during owner preparation')
-        receipt.update(status='prepared', elapsed_seconds=time.monotonic() - started)
+        check.require(identity() == revision, 'Image source changed during owner preparation')
+        # CI validation and publication accept only the clean-checkout 'prepared' receipt.
+        receipt.update(status='prepared-for-make' if make_build else 'prepared', elapsed_seconds=time.monotonic() - started)
     except Exception as error:
         receipt.update(status='failed', error=str(error))
         raise
@@ -335,7 +387,7 @@ def build_images(args):
         layouts = [BASE, *[OWNER + name for name in layout_names]]
         receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, [*TARGETS.values(), *layouts],
             workspace=ROOT, output=directory / 'action-audit.json')
-        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=options, allow_external_execroot=True)
+        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=options, use_execution_root=True)
         execute([args.bazel, 'build', *options, *layouts], directory, receipt, 'layouts')
         receipt['layouts'] = {name: execute([args.bazel, 'cquery', *options, '--output=files', OWNER + name],
             directory, receipt, name + '.layout').strip() for name in layout_names}
@@ -376,7 +428,7 @@ def owner_tests(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('prepare-owner', 'prepare-owner-runtime', 'build', 'owner-tests'))
+    parser.add_argument('phase', choices=('prepare-owner', 'prepare-make-owner', 'prepare-owner-runtime', 'build', 'owner-tests'))
     parser.add_argument('--directory', required=True, type=Path)
     parser.add_argument('--bazel', default='bazel', help='Root image/Common Bazel 8.5.1 launcher')
     parser.add_argument('--owner-bazel', default='bazel', help='Separate owner Bazelisk or Bazel 6.4.0 launcher')
@@ -386,7 +438,8 @@ def main():
     parser.add_argument('--jobs', type=int, default=1)
     args = parser.parse_args()
     check.require(args.jobs > 0, 'Owner jobs must be positive')
-    {'prepare-owner': prepare_owner, 'prepare-owner-runtime': prepare_runtime,
+    {'prepare-owner': prepare_owner, 'prepare-make-owner': partial(prepare_owner, make_build=True),
+     'prepare-owner-runtime': prepare_runtime,
      'build': build_images, 'owner-tests': owner_tests}[args.phase](args)
 
 

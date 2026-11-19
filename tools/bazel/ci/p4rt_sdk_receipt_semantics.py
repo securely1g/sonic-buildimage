@@ -92,7 +92,3 @@ def verify(read, *, source, owner, preparation_targets, common_revision):
                 assert digest(item['sha256']) == installed['sha256']
                 if name in required: assert item['elf_machine'] == 62
         library_files[component] = len(files)
-    return {'sdk_preparation_roots': 10, 'sdk_parent_and_inventory_linkage': True,
-            'declared_libnl_linker_aliases': 4, 'declared_libyang_runtime_inputs': 1,
-            'library_metadata_records': library_files, 'private_original_sha256': originals,
-            'payload_byte_comparison': 'CI producer reported; selected JSON independently checked by envelope'}
