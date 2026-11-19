@@ -47,6 +47,7 @@ SECTION_LABELS = {
 OUTER_TARGETS = {"bazel-vs-oci": "oci-session", "bazel-vs-oci-verify": "oci-verification"}
 TASK_LABELS = {
     "final-image": "Final VS image recipe",
+    "vs-container-images": "Bazel container images",
     "rootfs": "Root filesystem squashfs",
     "base": "Base container",
     "config-engine": "Config-engine container",
@@ -87,6 +88,7 @@ TASK_LABELS = {
     "macsec": "MACsec container",
 }
 EXACT_TARGETS = {
+    "target/vs-container-images": "vs-container-images",
     "target/sonic-vs.bin": "final-image",
     "target/sonic-vs.bin__vs__rfs.squashfs": "rootfs",
     "target/sonic-vs.img.gz": "final-image",
@@ -99,7 +101,7 @@ EXACT_TARGETS = {
 for _kind in TASK_LABELS.keys() - {
     "final-image", "rootfs", "base", "config-engine", "swss-layer", "orchagent-release",
     "orchagent-debug", "syncd-release", "syncd-debug", "p4rt-runtime", "p4rt-debug",
-    "orchagent-pair", "syncd-pair",
+    "orchagent-pair", "syncd-pair", "vs-container-images",
 }:
     EXACT_TARGETS[f"target/docker-{_kind}.gz"] = _kind
 
@@ -127,16 +129,135 @@ RECIPE_REASONS = {"pending-collection", "step-not-successful", "logs-expired", "
                   "logs-temporarily-unavailable", "not-recorded", "invalid-timing"}
 RECIPE_MARKER = "SONIC_VS_IMAGE_TIMINGS_V1"
 BAZEL_RECIPE_MARKER = "SONIC_VS_BAZEL_TIMINGS_V2"
+CONTAINER_MARKER = "SONIC_VS_CONTAINER_TIMINGS_V1"
+CONTAINER_GROUP = "vs-container-images"
+CONTAINER_METRICS = {"action_seconds", "fetch_seconds", "archive_seconds", "compress_seconds"}
+CONTAINER_TOTALS = {"other_action_seconds", "no_action_seconds", "parallel_seconds"}
 RECIPE_STEP_VERSIONS = {"Summarize VS image build timings": 1, "Summarize VS Bazel build timings": 2}
 RECIPE_LISTS = {1: "images", 2: "recipes"}
 RECIPE_OWNER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,191}\Z")
 MAX_RECIPES = 1024
 MAX_RECIPE_COMMANDS = 65535
 RECIPE_COMMAND = "python3 -B tools/bazel/ci/summarize_vs_image_timings.py "
+BUILD_PROFILE_METRICS = {
+    "lock_seconds", "compile_seconds", "foreign_seconds", "fetch_seconds", "repository_seconds",
+    "repository_read_seconds", "packaging_seconds", "cache_write_seconds",
+    "package_selection_seconds", "validation_seconds",
+    "arm64_repository_seconds", "armhf_repository_seconds",
+}
+EVIDENCE_GROUPS = {"repositories", "critical_path", "phases"}
+REPOSITORY_NAME = re.compile(r"//:[A-Za-z0-9_.+~-]{1,188}\Z")
+PUBLIC_TARGET = re.compile(
+    r"(?:(?:@{1,2}[A-Za-z0-9_.+~-]+)?//[A-Za-z0-9_+./~-]*:[A-Za-z0-9_+./~-]+"
+    r"|(?:platform|dockers|tools|src|external)/[A-Za-z0-9_+./~-]+)\Z")
+CRITICAL_KINDS = {
+    "OCIImage", "OCITarball", "OCITarballManifest", "Gzip", "APTDebug", "APTRuntime",
+    "ValidatePackages", "ValidateSource", "GoCompilePkg", "GoLink", "GoStdlib",
+    "GoToolchainBinaryBuild", "PackageControls", "Unpack", "KernelBuild", "KernelTools", "Genrule",
+}
+
+
+def valid_target(value):
+    return (value is None or isinstance(value, str) and len(value) <= 240 and PUBLIC_TARGET.fullmatch(value)
+            and not any(part in {".", ".."} for part in re.split(r"[/:]", value)))
+
+
+def valid_named_evidence(value, row):
+    if (not isinstance(value, dict)
+            or set(value) != EVIDENCE_GROUPS | {"scope", "expected", "profiles", "phase_count"}
+            or value["scope"] not in ("build", "kernel-build", "unavailable")
+            or any(type(value[key]) is not int or not 0 <= value[key] <= MAX_RECIPE_COMMANDS * (
+                2 if key == "phase_count" else 1)
+                   for key in ("expected", "profiles", "phase_count"))
+            or value["profiles"] > min(value["expected"], row["profiles"])
+            or value["phase_count"] != row["bazel_phases"] + row["exports"]
+            or any(not isinstance(value[key], list) or len(value[key]) > 8 for key in EVIDENCE_GROUPS)
+            or len(value["phases"]) != min(8, value["phase_count"])):
+        return False
+    if value["scope"] == "build":
+        build = row.get("build")
+        if not build or any(value[key] != build[key] for key in ("expected", "profiles")):
+            return False
+    elif value["scope"] == "kernel-build":
+        if row["owner"] != "linux-kernel" or row.get("build") is not None:
+            return False
+    elif value["expected"] or value["profiles"]:
+        return False
+    if not value["profiles"] and (value["repositories"] or value["critical_path"]):
+        return False
+    for span in value["repositories"]:
+        if (not isinstance(span, dict) or set(span) != {"name", "seconds", "read_count", "read_seconds"}
+                or not isinstance(span["name"], str) or not REPOSITORY_NAME.fullmatch(span["name"])
+                or not finite_seconds(span["seconds"]) or not finite_seconds(span["read_seconds"])
+                or span["read_seconds"] > span["seconds"] + 1e-6
+                or type(span["read_count"]) is not int or not 0 <= span["read_count"] <= 1000000):
+            return False
+    for span in value["critical_path"]:
+        if (not isinstance(span, dict) or set(span) != {"kind", "target", "seconds"}
+                or not isinstance(span["kind"], str) or span["kind"] not in CRITICAL_KINDS
+                or not valid_target(span["target"]) or not finite_seconds(span["seconds"])):
+            return False
+    for phase in value["phases"]:
+        if (not isinstance(phase, dict)
+                or set(phase) != {"phase", "seconds", "lock_seconds", "start_epoch_seconds", "exit_code"}
+                or not isinstance(phase["phase"], str) or not RECIPE_OWNER.fullmatch(phase["phase"])
+                or not finite_seconds(phase["seconds"])
+                or phase["lock_seconds"] is not None and not finite_seconds(phase["lock_seconds"])
+                or phase["start_epoch_seconds"] is not None and (
+                    not finite_seconds(phase["start_epoch_seconds"]) or phase["start_epoch_seconds"] > 253402300799)
+                or type(phase["exit_code"]) is not int or not 0 <= phase["exit_code"] <= 255):
+            return False
+    return True
+
+
+def valid_build_evidence(value, row):
+    if value is None:
+        return True
+    if (not isinstance(value, dict)
+            or set(value) != {"expected", "timings", "profiles", "seconds"} | BUILD_PROFILE_METRICS):
+        return False
+    if (type(value["expected"]) is not int or not 1 <= value["expected"] <= row["bazel_expected"]
+            or any(type(value[key]) is not int or not 0 <= value[key] <= min(value["expected"], row[parent])
+                   for key, parent in (("timings", "bazel_phases"), ("profiles", "profiles")))):
+        return False
+    for count, metrics in (("timings", ("seconds",)), ("profiles", BUILD_PROFILE_METRICS)):
+        if value[count]:
+            if not all(finite_seconds(value[key]) for key in metrics):
+                return False
+        elif any(value[key] is not None for key in metrics):
+            return False
+    return (value["timings"] != value["expected"] or value["profiles"] != value["expected"]
+            or value["lock_seconds"] <= value["seconds"])
 
 
 def recipe_unavailable(reason, version=1):
     return {"version": version, "status": "unavailable", "reason": reason, RECIPE_LISTS[version]: []}
+
+
+def container_unavailable(reason):
+    return {"status": "unavailable", "reason": reason}
+
+
+def valid_container_breakdown(value, recipes):
+    if not isinstance(value, dict) or not any(row["owner"] == CONTAINER_GROUP for row in recipes):
+        return False
+    if set(value) == {"status", "reason"}:
+        return (value["status"] == "unavailable" and isinstance(value["reason"], str)
+                and value["reason"] in RECIPE_REASONS)
+    if (set(value) != {"rows"} | CONTAINER_TOTALS
+            or not all(finite_seconds(value[key]) for key in CONTAINER_TOTALS)
+            or not isinstance(value["rows"], list) or not 0 < len(value["rows"]) <= MAX_RECIPES):
+        return False
+    members = {row["owner"] for row in recipes if row["owner"].endswith(".gz") and row["exports_expected"] > 0}
+    seen = set()
+    for row in value["rows"]:
+        if (not isinstance(row, dict) or set(row) != {"owner", "actions"} | CONTAINER_METRICS
+                or not isinstance(row["owner"], str) or row["owner"] not in members or row["owner"] in seen
+                or type(row["actions"]) is not int or not finite_seconds(row["actions"])
+                or not all(finite_seconds(row[key]) for key in CONTAINER_METRICS)):
+            return False
+        seen.add(row["owner"])
+    return True
 
 
 def valid_recipes(value):
@@ -147,13 +268,15 @@ def valid_recipes(value):
     if value.get("status") == "unavailable":
         return (set(value) == {"version", "status", "reason", key} and value[key] == []
                 and isinstance(value["reason"], str) and value["reason"] in RECIPE_REASONS)
-    if (set(value) != {"version", "status", key} or value["status"] != "available"
+    fields = set(value) - ({"container_breakdown"} if version == 2 else set())
+    if (fields != {"version", "status", key} or value["status"] != "available"
             or not isinstance(value[key], list) or len(value[key]) > MAX_RECIPES):
         return False
     owners = set()
     fields = RECIPE_FIELDS if version == 1 else RECIPE_FIELDS | set(RECIPE_EXPECTED.values())
     for row in value[key]:
-        if (not isinstance(row, dict) or set(row) != fields or type(row["failed"]) is not bool
+        if (not isinstance(row, dict) or set(row) - ({"build", "details"} if version == 2 else set()) != fields
+                or type(row["failed"]) is not bool
                 or not isinstance(row["owner"], str) or not RECIPE_OWNER.fullmatch(row["owner"])
                 or row["owner"] in owners):
             return False
@@ -170,6 +293,12 @@ def valid_recipes(value):
                     return False
             elif any(row[metric] is not None for metric in metrics):
                 return False
+        if "build" in row and not valid_build_evidence(row["build"], row):
+            return False
+        if "details" in row and not valid_named_evidence(row["details"], row):
+            return False
+    if "container_breakdown" in value:
+        return valid_container_breakdown(value["container_breakdown"], value[key])
     return version == 2 or owners == RECIPE_OWNERS
 
 
@@ -193,6 +322,16 @@ def recipe_markers(log, start, end):
                 groups += int(command)
             elif ANSI.sub("", line).lstrip().startswith(RECIPE_COMMAND):
                 command = True
+        elif output and line.startswith(CONTAINER_MARKER + " "):
+            # Optional detail must never discard trustworthy outer recipe timings.
+            try:
+                if len(line.encode()) > 4096:
+                    raise ValueError("oversized container marker")
+                value = json.loads(line[len(CONTAINER_MARKER) + 1:], object_pairs_hook=unique_json_object,
+                                   parse_constant=reject_json_constant)
+            except (ValueError, RecursionError):
+                value = None
+            yield "container", value
         elif output and line.startswith((RECIPE_MARKER, BAZEL_RECIPE_MARKER)):
             prefix, _, payload = line.partition(" ")
             if (prefix not in markers or not payload.startswith("{") or not payload.endswith("}")
@@ -214,18 +353,55 @@ def parse_recipe_log(log, step):
     if not start or not end or end < start:
         return recipe_unavailable("invalid-timing", version)
     rows = []
+    owners, evidence_seen = {}, set()
+    members = []
+    container_totals = None
+    container_error = False
     result = None
     try:
         for marker_version, value in recipe_markers(log, start, end):
+            if marker_version == "container":
+                if not isinstance(value, dict) or container_error or container_totals is not None:
+                    container_error = True
+                elif set(value) == {"row"} and len(members) < MAX_RECIPES:
+                    members.append(value["row"])
+                elif (set(value) == {"count"} | CONTAINER_TOTALS and type(value["count"]) is int
+                      and value["count"] == len(members)):
+                    container_totals = {key: value[key] for key in CONTAINER_TOTALS}
+                else:
+                    container_error = True
+                continue
             if (expected is not None and marker_version != expected) or result is not None:
                 return recipe_unavailable("invalid-timing", version)
             expected = version = marker_version
             if marker_version == 1 and set(value) == {"version", "images"}:
                 result = dict(value, status="available")
             elif marker_version == 2 and set(value) == {"recipe"} and len(rows) < MAX_RECIPES:
-                rows.append(value["recipe"])
-            elif (marker_version == 2 and set(value) == {"count"} and type(value["count"]) is int
-                  and value["count"] == len(rows)):
+                row = value["recipe"]
+                if not isinstance(row, dict) or not isinstance(row.get("owner"), str) or row["owner"] in owners:
+                    return recipe_unavailable("invalid-timing", version)
+                if "details" in row and (not isinstance(row["details"], dict)
+                                        or any(row["details"].get(key) != [] for key in EVIDENCE_GROUPS)):
+                    return recipe_unavailable("invalid-timing", version)
+                rows.append(row)
+                owners[row["owner"]] = row
+            elif marker_version == 2 and set(value) == {"evidence"}:
+                evidence = value["evidence"]
+                if (not isinstance(evidence, dict) or set(evidence) != {"owner", "group", "values"}
+                        or not isinstance(evidence["owner"], str) or not isinstance(evidence["group"], str)
+                        or evidence["owner"] not in owners or evidence["group"] not in EVIDENCE_GROUPS
+                        or "details" not in owners[evidence["owner"]]
+                        or (evidence["owner"], evidence["group"]) in evidence_seen
+                        or not isinstance(evidence["values"], list) or len(evidence["values"]) > 8):
+                    return recipe_unavailable("invalid-timing", version)
+                owners[evidence["owner"]]["details"][evidence["group"]] = evidence["values"]
+                evidence_seen.add((evidence["owner"], evidence["group"]))
+            elif (marker_version == 2 and set(value) in ({"count"}, {"count", "evidence_count"})
+                  and type(value["count"]) is int and value["count"] == len(rows)
+                  and (type(value.get("evidence_count", 0)) is int
+                       and value.get("evidence_count", 0) == len(evidence_seen))
+                  and evidence_seen == {(row["owner"], key) for row in rows if "details" in row
+                                        for key in EVIDENCE_GROUPS}):
                 result = {"version": 2, "status": "available", "recipes": rows}
             else:
                 return recipe_unavailable("invalid-timing", version)
@@ -233,7 +409,16 @@ def parse_recipe_log(log, step):
         return recipe_unavailable("invalid-timing", version)
     if result is None and not rows:
         return recipe_unavailable("not-recorded", version)
-    return result if valid_recipes(result) else recipe_unavailable("invalid-timing", version)
+    if not valid_recipes(result):
+        return recipe_unavailable("invalid-timing", version)
+    if version == 2 and any(row["owner"] == CONTAINER_GROUP for row in rows):
+        detail = None if container_totals is None else {"rows": members, **container_totals}
+        if not container_error and valid_container_breakdown(detail, rows):
+            result["container_breakdown"] = detail
+        else:
+            reason = "invalid-timing" if container_error or members or container_totals is not None else "not-recorded"
+            result["container_breakdown"] = container_unavailable(reason)
+    return result
 
 
 def phase_unavailable(reason):

@@ -78,7 +78,9 @@ file, without dropping records or replacing the previous output on overflow.
   `image_recipe_timings`. Version 2 stores a `recipes` list. Each `owner`
   is the Make output basename or package build group. New owners appear as
   the build registers them. Repeated invocations for an owner contribute to
-  that owner's row.
+  that owner's row. The VS installer records a multi-image Bazel command once
+  under `vs-container-images`. Each participating image records its own exports
+  and expects zero individual Bazel commands and profiles for that invocation.
   - `bazel_seconds`, `bazel_phases` and `bazel_expected` report the measured
     duration, recorded timing count and expected timing count for its commands.
     The kernel measures its launcher once per invocation.
@@ -94,9 +96,71 @@ file, without dropping records or replacing the previous output on overflow.
   recipes. An unavailable result has a fixed `reason` and an empty list.
   The collector reads one bounded record per recipe and verifies the final
   count from the same job's summary step before persisting the result.
+  - A V2 summary with `vs-container-images` can also contain a
+    `container_breakdown`. Its `rows` identify participating archive owners
+    from the same recipe list. Each row contains an action count (`actions`),
+    union time across the owner's observed actions (`action_seconds`), and
+    observed `fetch_seconds`, `archive_seconds` and `compress_seconds`. An
+    owner can include both runtime and debug archive targets. Shared inputs
+    are counted with their identifiable producer or remain unattributed.
+    The `other_action_seconds` field counts intervals with only shared or
+    unattributed actions active. `no_action_seconds` counts launcher time
+    outside observed action spans. `parallel_seconds` counts intervals with
+    two or more image owners active. Per-owner active time can overlap.
+    Exports remain in the original V2 recipe rows.
+  - Independent `SONIC_VS_CONTAINER_TIMINGS_V1` log records have the same
+    step boundary and per-line size limit as the V2 receipts. A count trailer
+    and unique owner names are required. Missing or invalid detail preserves
+    the measured V2 data and records a fixed unavailable reason. Historical
+    receipts with no detail field stay valid. The collector checks retained
+    batch logs once for the optional markers, retrying transient log failures.
   Version 1 history keeps `images` for FRR, mux, TeamD and Syncd VS, with
   three command timings, three profiles and two exports expected per pair.
   Jobs predating the profiling step omit this field.
+  Version 2 rows may additionally contain `build`: `null` for non-image-launcher
+  scopes, or a strictly allowlisted numeric object. `expected`, `timings` and
+  `profiles` count explicit build commands, their receipts and their profiles.
+  `seconds` is the summed build receipt time. `lock_seconds`, `compile_seconds`,
+  `foreign_seconds`, `fetch_seconds`, `repository_seconds`,
+  `repository_read_seconds`, `packaging_seconds`, `cache_write_seconds`,
+  `package_selection_seconds`, `validation_seconds`,
+  `arm64_repository_seconds` and `armhf_repository_seconds` cover only those
+  build profiles, with per-category interval unions inside each invocation.
+  Repository input reads must be enclosed by a repository call on the same thread.
+  Packaging covers matching OCI image, tar/manifest and gzip critical-path spans,
+  not duplicate action-processing records. ARM fields describe observed package
+  repositories, not whether the work was necessary. Counts cannot exceed their
+  parent recipe coverage. Missing source counts require null metrics. Non-lock
+  build time is derived only with complete matching receipts and profiles and
+  cannot be negative. Older rows without this field remain valid and display
+  missing diagnostic evidence, not zero-duration work. No repository labels,
+  action names, commands, environment or log text are retained in this object.
+  Version 2 rows may also contain `details` for bounded named evidence:
+  - `scope` is `build`, `kernel-build`, or `unavailable`. `expected` and `profiles`
+    describe the build-profile coverage; kernel spans do not cover the whole launcher.
+  - `repositories` retains up to eight longest individual repository spans:
+    `name`, `seconds`, `read_count`, `read_seconds`. Names must be canonical
+    `//:` repository identifiers containing only ASCII letters/digits and
+    `_ . + ~ -`, with at most 188 identifier characters. Read coverage is the
+    interval union of enclosed same-thread `read` spans, not parsing CPU time.
+  - `critical_path` retains up to eight longest recognized actions: `kind`,
+    `target`, `seconds`. Kinds are allowlisted packaging, APT selection,
+    validation, Go build, package-control, unpack, kernel or genrule categories.
+    Targets are null or validated Bazel labels/workspace-relative output paths,
+    at most 240 characters. Absolute paths, traversal, arguments and raw
+    free-form action descriptions are not accepted.
+  - `phases` retains the first eight recorded receipts in request-clock order
+    where available: `phase`, `seconds`, `lock_seconds`, `start_epoch_seconds`,
+    `exit_code`. Phase names use the owner identifier alphabet/length.
+    Missing clocks and lock profiles are null, not zero. `phase_count` records
+    all observed command/export receipts, including any beyond the retained eight.
+    Repeated invocations contribute individual spans, not summed same-name spans.
+  Each list is sent in a separate `evidence` marker with `owner`, `group`, and
+  `values`, following its recipe marker's metadata and three empty list placeholders.
+  The final count trailer adds `evidence_count`. All three groups, even empty,
+  must arrive once for every detailed recipe; missing, duplicate, oversized or
+  unbound groups invalidate the receipt. Each marker remains at most 4096 bytes.
+  Old count-only trailers and rows without named evidence remain valid.
 - Each step: `number`, `name`, `status`, `conclusion`, `started_at`,
   `completed_at`, `duration_seconds`, `phase`.
   An optional `breakdown` provides nested Make build timings without changing
