@@ -229,7 +229,7 @@ include tools/bazel/docker.mk
         result = self.run_make(*self.archives, parallel=True)
         self.assert_success(result)
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 2)
         self.assertTrue(all(call['prerequisites_ready'] for call in calls))
         self.assertTrue(all(not any("source_config_engine" in arg for arg in call["arguments"])
                             for call in calls))
@@ -248,7 +248,7 @@ include tools/bazel/docker.mk
         """Supply both JSON inputs without building the runtime archive for a debug-only request."""
         self.assert_success(self.run_make(self.archives[1]))
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         self.assertTrue(all(call["prerequisites_ready"] for call in calls))
         self.assertEqual((self.target / self.archives[0]).read_bytes(), b"previous image")
 
@@ -273,12 +273,12 @@ include tools/bazel/docker.mk
         self.assertFalse((self.target / 'docker-config-engine-trixie.gz').exists())
         self.assertFalse((self.target / 'docker-base-trixie.gz').exists())
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 2)
         self.assertTrue(all(call['prerequisites_ready'] for call in calls))
         for archive in self.archives:
             self.assertEqual((self.target / archive).read_bytes(), ('new ' + archive).encode())
-            self.assertEqual([call['arguments'][0] for call in calls
-                              if call['arguments'][-1] == self.labels[archive]], ['build', 'cquery'])
+            self.assertEqual([call['operation'] for call in calls
+                              if call['arguments'][-1] == self.labels[archive]], ['build'])
 
     def test_stale_installer_archive_is_not_an_oci_input(self):
         """An unrelated Docker-only installer archive cannot replace the native OCI producer."""
@@ -287,7 +287,7 @@ include tools/bazel/docker.mk
         self.assert_success(self.run_make())
         self.assertEqual(archive.read_bytes(), b'previous installer archive, not an OCI layout')
         self.assertFalse((self.target / 'docker-config-engine-trixie.oci').exists())
-        self.assertEqual(len(self.recorded_calls()), 2)
+        self.assertEqual(len(self.recorded_calls()), 1)
 
 
 if __name__ == "__main__":

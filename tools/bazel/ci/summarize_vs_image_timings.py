@@ -17,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci import bazel_telemetry
 
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci.container_profile import batch_profile, cache_fetch, combine_batches, union_seconds
 
 

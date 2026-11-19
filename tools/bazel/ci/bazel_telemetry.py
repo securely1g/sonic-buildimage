@@ -5,6 +5,8 @@ import json
 import math
 import re
 
+from tools.bazel.ci import compact_execution_log
+
 
 MAX_RECORD = 16 * 1024 * 1024
 MAX_INPUT = 512 * 1024 * 1024
@@ -152,6 +154,12 @@ def records(path, fields=None):
 
 
 def logfile(directory, phase, kind):
+    if kind == "execution":
+        compact = directory / f"{phase}.execution.pb.zst"
+        if compact.exists() or compact.is_symlink():
+            if compact.is_symlink() or not compact.is_file():
+                raise ValueError("Telemetry log unavailable")
+            return compact
     path = directory / f"{phase}.{kind}.json.gz"
     if not path.exists():
         path = directory / f"{phase}.{kind}.json"
@@ -190,7 +198,9 @@ def spawn_metrics(path):
     result = dict.fromkeys(("spawns", "remote_hits", "disk_hits", "uncached",
                            "other_cached", "failed_spawns"), 0)
     longest = []
-    for spawn in records(path, SPAWN_FIELDS):
+    spawns = (compact_execution_log.records(path) if path.name.endswith(".pb.zst")
+              else records(path, SPAWN_FIELDS))
+    for spawn in spawns:
         if not isinstance(spawn.get("runner"), str) or type(spawn.get("cacheHit")) is not bool:
             raise ValueError("Invalid spawn record")
         hit, runner = spawn["cacheHit"], spawn["runner"]

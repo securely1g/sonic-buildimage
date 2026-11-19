@@ -92,11 +92,11 @@ $(TELEMETRY_ARCHIVE) $(ROUTING_ARCHIVE):
                 self.assertEqual(self.config(base)['os'], 'linux')
                 self.assertEqual(self.sources[base].stat().st_mtime_ns, source_mtimes[base])
             calls = self.recorded_calls()
-            self.assertEqual(len(calls), 8)
+            self.assertEqual(len(calls), 4)
             self.assertTrue(all(call['prerequisites_ready'] for call in calls))
             for name in self.archives:
-                self.assertEqual([call['arguments'][0] for call in calls
-                                  if call['arguments'][-1] == self.labels[name]], ['build', 'cquery'])
+                self.assertEqual([call['operation'] for call in calls
+                                  if call['arguments'][-1] == self.labels[name]], ['build'])
                 self.assertEqual((self.target / name).read_bytes(), ('new ' + name).encode())
             self.assertFalse((self.root / 'archive-rebuilds').exists())
         self.assertFalse((self.target / 'docker-config-engine-trixie.oci').exists())
@@ -149,7 +149,7 @@ registration:
         index = 'target/' + base + '/index.json'
         expected = hashlib.sha256((self.root / index).read_bytes()).hexdigest()
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 2)
         self.assertTrue(all(call['prerequisite_sha256'][index] == expected for call in calls))
         self.assertFalse((self.root / 'archive-rebuilds').exists())
 
@@ -170,7 +170,7 @@ registration:
         self.assertEqual(self.snapshot(base), before)
         receipt = json.loads((self.target / 'bases/.routing.oci.source.json').read_text())
         self.assertEqual(receipt['archive_sha256'], hashlib.sha256(replacement.read_bytes()).hexdigest())
-        self.assertEqual(len(self.recorded_calls()), 2)
+        self.assertEqual(len(self.recorded_calls()), 1)
 
     def test_mismatched_platform_stops_before_bazel_and_preserves_existing_outputs(self):
         """Reject the wrong architecture through normal logging without replacing the last valid

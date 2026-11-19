@@ -2,7 +2,6 @@
 
 import argparse
 from collections import defaultdict
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,19 +11,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.bazel import build_helpers
 from tools.bazel.ci import time_vs_image
 
 
-# Bazel applies this after rc/config expansion. Publishing only requires the
-# top-level outputs. The policy keeps an existing "all" download mode intact.
-EXPORT_POLICY = (
-    '--invocation_policy=flag_policies { flag_name: "remote_download_outputs" '
-    'disallow_values { disallowed_values: "minimal" new_value: "toplevel" } }'
-)
 GO_PROXY_TIMEOUT = re.compile(
     r'\+go_deps\+[^:\s]+: fetch_repo: \S+@\S+: Get "https://proxy\.golang\.org/[^"\s]+/@v/[^"\s]+": '
     r'net/http: TLS handshake timeout\Z'
@@ -98,63 +90,6 @@ def settings_from(arguments, rc):
     return values
 
 
-def build_labels(workspace, archives):
-    """Main-repository producer labels already match Bazel's canonical event IDs."""
-    labels = archives.copy()
-    aliases = {name: label for name, label in archives.items()
-               if not (label.startswith(("//", "@@")) and ":" in label)}
-    if not aliases:
-        return labels
-    # BEP rewrites apparent external repo names to canonical Bzlmod names and
-    # expands label shorthand. Identity filegroups give these exports stable IDs.
-    contents = "".join(
-        f'filegroup(name={json.dumps(name)}, srcs=[{json.dumps(label)}], tags=["manual"])\n'
-        for name, label in sorted(aliases.items())
-    )
-    package = Path("target/bazel-container-batch") / hashlib.sha256(contents.encode()).hexdigest()
-    directory = workspace / package
-    directory.mkdir(parents=True, exist_ok=True)
-    definition = directory / "BUILD.bazel"
-    if not definition.is_file():
-        # Concurrent builds may be preparing the same package.
-        with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
-            temporary.write(contents)
-        Path(temporary.name).replace(definition)
-    for name in aliases:
-        labels[name] = f"//{package}:{name}"
-    return labels
-
-
-def archive_outputs(events, labels):
-    """Resolve only the successful top-level targets' single declared file."""
-    outputs = {}
-    with events.open() as stream:
-        for line in stream:
-            event = json.loads(line)
-            target = event.get("id", {}).get("targetCompleted", {})
-            label = target.get("label")
-            if label not in labels or target.get("aspect"):
-                continue
-            completed = event["completed"]
-            if not completed.get("success") or label in outputs:
-                raise ValueError("Unsuccessful or duplicate Bazel target: " + label)
-            files = [item for group in completed.get("outputGroup", []) if group["name"] == "default"
-                     for item in group.get("inlineFiles", [])]
-            if len(files) != 1:
-                raise ValueError("Expected exactly one Bazel archive output for " + label)
-            uri = urlsplit(files[0].get("uri", ""))
-            path = Path(unquote(uri.path))
-            if uri.scheme != "file" or uri.netloc or not path.is_absolute():
-                raise ValueError("Expected a local Bazel archive URI for " + label)
-            if not path.is_file() or not path.stat().st_size:
-                raise ValueError("Bazel did not materialize a nonempty local archive for " + label)
-            outputs[label] = path
-    missing = labels - outputs.keys()
-    if missing:
-        raise ValueError("Missing Bazel archive outputs: " + ", ".join(sorted(missing)))
-    return outputs
-
-
 def build(args):
     workspace = Path.cwd()
     if not (len(args.archive) == len(args.label) == len(args.owner_args) == len(set(args.archive))):
@@ -175,7 +110,7 @@ def build(args):
         archives[name] = label
         owner = name.removesuffix(debug_suffix) + ".gz" if name.endswith(debug_suffix) else name
         owners[owner].append(name)
-    labels = build_labels(workspace, archives)
+    labels = build_helpers.build_labels(workspace, archives)
     settings = os.environ
     cache_directory = settings.get("BAZEL_CONTAINER_CACHE_DIR", settings.get("BAZEL_SWSS_CACHE_DIR"))
     global_args = settings.get("BAZEL_CONTAINER_ARGS", settings.get("BAZEL_SWSS_ARGS", ""))
@@ -200,7 +135,7 @@ def build(args):
     with tempfile.TemporaryDirectory(prefix="sonic-container-batch-") as events_dir:
         events = Path(events_dir) / "events.json"
         command = [
-            settings.get("BAZEL", "bazel"), EXPORT_POLICY, "build", *options,
+            settings.get("BAZEL", "bazel"), build_helpers.EXPORT_POLICY, "build", *options,
             "--build_event_json_file=" + str(events),
             "--nobuild_event_json_file_path_conversion",
             "--experimental_build_event_output_group_mode=default=inline_only",
@@ -220,7 +155,7 @@ def build(args):
                 shutil.copyfile(build_timing / "batch-targets.json", retry / "batch-targets.json")
                 build_timing = retry
             time_vs_image.run_phase(build_timing, "build", command)
-        outputs = archive_outputs(events, set(labels.values()))
+        outputs = build_helpers.archive_outputs(events, set(labels.values()))
         for name, label in labels.items():
             with time_vs_image.time_phase(export_timings[name], "export-" + name):
                 build_helpers.export_archive(outputs[label], args.target_path / name)

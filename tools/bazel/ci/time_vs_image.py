@@ -29,7 +29,7 @@ def exit_status(returncode):
 
 def telemetry_flags(directory, phase):
     return [f"--build_event_json_file={directory / (phase + '.bep.json')}",
-            f"--execution_log_json_file={directory / (phase + '.execution.json')}"]
+            f"--execution_log_compact_file={directory / (phase + '.execution.pb.zst')}"]
 
 
 def compress_telemetry(directory, phase):
@@ -84,7 +84,10 @@ def run_phase(directory, phase, command, *, cwd=None, env=None):
         if directory.parent.name == "vs-container-images":
             flags.append("--experimental_profile_include_target_label")
         if telemetry:
-            flags.extend(telemetry_flags(directory.resolve(), phase))
+            capture = telemetry_flags(directory.resolve(), phase)
+            if any(arg.startswith("--build_event_json_file=") for arg in command):
+                capture = [arg for arg in capture if not arg.startswith("--build_event_json_file=")]
+            flags.extend(capture)
         command = [*command[:index], *flags, *command[index:]]
     try:
         with time_phase(directory, phase):
@@ -96,11 +99,11 @@ def run_phase(directory, phase, command, *, cwd=None, env=None):
                           if arg.startswith("--build_event_json_file="))
             events = Path(cwd or Path.cwd()) / events
             destination = directory.resolve() / f"{phase}.bep.json"
-            if events != destination and events.is_file():
-                try:
+            try:
+                if events != destination and events.is_file():
                     shutil.copyfile(events, destination)
-                except OSError as error:
-                    print(f"Telemetry capture unavailable for {phase}: {error}", file=sys.stderr)
+            except OSError as error:
+                print(f"Telemetry capture unavailable for {phase}: {error}", file=sys.stderr)
             compress_telemetry(directory, phase)
 
 
@@ -117,7 +120,7 @@ def main(arguments):
         return 0
     if arguments[0] == "image-recipe":
         images = arguments[1:]
-        commands = ["build", *("cquery-" + image for image in images)]
+        commands = ["build"]
         directory = start_recipe(Path.cwd(), images[0], commands, commands,
                                  ["export-" + image for image in images])
         print(directory)

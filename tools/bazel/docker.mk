@@ -135,11 +135,10 @@ define build_bazel_docker_images
 		bazel_options+=($(bazel_make_image_options)
 			"--platforms=@sonic_build_infra//platforms:$$bazel_platform"
 			"--host_platform=@sonic_build_infra//platforms:$$bazel_platform")
-		$(call vs_time_phase,build) "$${BAZEL:-bazel}" build "$${bazel_options[@]}" $(foreach image,$(1),"$($(image)_BAZEL_TARGET)")
-		$(foreach image,$(1),
-		bazel_output="$$($(call vs_time_phase,cquery-$(image)) "$${BAZEL:-bazel}" cquery "$${bazel_options[@]}" --output=files "$($(image)_BAZEL_TARGET)")"
-		$(call vs_time_phase,export-$(image)) python3 tools/bazel/build_helpers.py export --query-output="$$bazel_output" --output="$(TARGET_PATH)/$(image)"
-		)
+		python3 -B tools/bazel/build_helpers.py build-export \
+			$(if $(filter 1,$(SONIC_VS_IMAGE_TIMINGS)),--timing-directory="$$timing_directory") \
+			$(foreach image,$(1),--output="$(TARGET_PATH)/$(image)" --label="$($(image)_BAZEL_TARGET)") \
+			-- "$${BAZEL:-bazel}" "$${bazel_options[@]}"
 	} $(LOG)
 	$(foreach image,$(1),$(call sbom_emit_fragment,$(TARGET_PATH)/$(image),DOCKER_IMAGE,$($(image)_PATH),,,,)
 	)

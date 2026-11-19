@@ -65,7 +65,7 @@ $(addprefix $(TARGET_PATH)/,$(LEGACY_IMAGES)): $(TARGET_PATH)/%.gz:
         expected_labels = {self.labels[name] for name in self.archives
                            if bazel == "y" and (telemetry if name.startswith("telemetry") else routing) == "y"}
         self.assertEqual({call["arguments"][-1] for call in self.recorded_calls()}, expected_labels)
-        self.assertEqual(len(self.recorded_calls()), 2 * len(expected_labels))
+        self.assertEqual(len(self.recorded_calls()), len(expected_labels))
         return snapshot
 
     def test_independent_runtime_debug_switches_rebuild_only_changed_family(self):

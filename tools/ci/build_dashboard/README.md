@@ -139,7 +139,7 @@ not an exhaustive causal partition. Historical runs without these details say so
 The workflow summary uses GitHub-native collapsible sections and the same evidence
 tables; GitHub does not support the dashboard's custom styling or JavaScript controls.
 
-New instrumented build/test invocations also record BEP and JSON execution logs.
+New instrumented build/test invocations also record BEP and compact execution logs.
 Each card and workflow-summary disclosure shows BEP analysis/execution spans,
 local persistent action-cache hits/misses, logged remote/disk-cache hits,
 non-cache-hit/failed spawns, and up to three longest timed spawns. Coverage counts
@@ -158,17 +158,20 @@ dashboard keeps the numeric breakdown and validated, bounded named evidence in b
 runs keep their four-image reports, and pre-profiling runs keep their original
 Make timings.
 The same artifact retains `<phase>.bep.json.gz` and
-`<phase>.execution.json.gz` for build/test phases, including failed invocations
-when Bazel produced the files. Queries retain their existing profiles only.
-JSON execution logs avoid a converter dependency but cost more I/O than compact
-logs; fast gzip runs after each timed command, so compare full job time too.
+`<phase>.execution.pb.zst` for build/test phases, including failed invocations
+when Bazel produced the files. Compact spawn metadata is reduced directly
+through `zstd`, without expanding shared inputs into a large JSON log. Historical
+raw/gzipped JSON execution logs remain readable. Only BEP needs post-command gzip.
+Standalone/private container exports now use BEP outputs instead of a separate
+output query; historical query profiles remain readable.
 Raw telemetry can contain command lines, input paths and action environment
 variables. Review artifact access and avoid secrets in action environments or
 command-line options. The public dashboard/history retains only validated
 numeric data, fixed runner categories and bounded public target/mnemonic fields,
 never the raw BEP or execution logs. Reporting reads at most 512 MiB of
-uncompressed input per source and 16 MiB per JSON record; oversized, malformed or
-unfinished sources are unavailable, not zero-hit observations.
+uncompressed BEP and 32 GiB of execution input. Selected metadata values are
+bounded at 16 MiB; unneeded inventories are discarded incrementally. Oversized,
+malformed or unfinished sources are unavailable, not zero-hit observations.
 
 Open **Step timings**, then expand the Make VS image-build step marked
 **Measured breakdown**. Each section covers one sequential Make target, including its

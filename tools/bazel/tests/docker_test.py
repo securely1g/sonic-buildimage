@@ -50,6 +50,7 @@ if not record['prerequisites_ready']:
     raise SystemExit('Make prerequisites were not prepared before Bazel')
 mode = os.environ.get('FAKE_BAZEL_MODE', '')
 if operation == 'build':
+    print('INFO: fixture build diagnostic', file=sys.stderr)
     if mode == 'scripted_failures':
         import gzip
         failures_path = pathlib.Path('fixture-failures.json')
@@ -88,8 +89,11 @@ if operation == 'build':
                 elif mode == 'multiple_outputs':
                     outputs *= 2
                 event = {'id': {'targetCompleted': {'label': label}}, 'completed': {
-                    'success': True, 'outputGroup': [{'name': 'default', 'inlineFiles': outputs}]}}
+                    'success': mode != 'failed_target',
+                    'outputGroup': [{'name': 'default', 'inlineFiles': outputs}]}}
                 print(json.dumps(event), file=stream)
+            if mode == 'truncated_bep':
+                stream.write('{"unfinished":')
 elif operation == 'cquery':
     source = pathlib.Path('bazel-bin/archive outputs') / labels[arguments[-1]]
     print('INFO: fixture query diagnostic', file=sys.stderr)
@@ -213,7 +217,7 @@ registered: $(SONIC_TARGET_LIST)
                 self.assertEqual(destination.read_bytes(), ("new " + archive).encode())
                 self.assertEqual(destination.stat().st_mode & 0o777, 0o644)
                 calls = self.recorded_calls()
-                self.assertEqual([call['operation'] for call in calls], ["build", "cquery"])
+                self.assertEqual([call['operation'] for call in calls], ["build"])
                 self.assertTrue(all(call['prerequisites_ready'] for call in calls))
                 for call in calls:
                     self.assertEqual(call['arguments'][-1], self.labels[archive])
@@ -234,7 +238,7 @@ registered: $(SONIC_TARGET_LIST)
                     "BAZEL_CONTAINER_ARGS": "--platforms=//wrong:target --host_platform=//wrong:host",
                 }))
                 calls = self.recorded_calls()
-                self.assertEqual([call["operation"] for call in calls], ["build", "cquery"])
+                self.assertEqual([call["operation"] for call in calls], ["build"])
                 for call in calls:
                     for flag in ("--platforms=", "--host_platform="):
                         selected = [arg for arg in call["arguments"] if arg.startswith(flag)]
@@ -264,7 +268,7 @@ registered: $(SONIC_TARGET_LIST)
             "BAZEL_CONTAINER_ARGS": "--jobs=2 --define=image=default",
         }))
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 2 * len(self.archives))
+        self.assertEqual(len(calls), len(self.archives))
         for call in calls:
             args = call["arguments"]
             self.assertIn("--jobs=2", args)
@@ -288,10 +292,10 @@ registered: $(SONIC_TARGET_LIST)
             footer = f"footer target/{archive}"
             self.assertIn(sbom, markers)
             self.assertLess(markers.index(sbom), markers.index(footer))
-            self.assertIn('INFO: fixture query diagnostic', (self.target / (archive + '.log')).read_text())
+            self.assertIn('INFO: fixture build diagnostic', (self.target / (archive + '.log')).read_text())
         self.assertFalse((self.root / 'logging-errors').exists())
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 2 * len(self.archives))
+        self.assertEqual(len(calls), len(self.archives))
         self.assertFalse(any(arg.startswith(("--output_base=", "--output_user_root="))
                              for call in calls for arg in call["arguments"]))
 
@@ -364,14 +368,11 @@ selection:
                 self.calls.unlink(missing_ok=True)
                 result = self.run_make(archive)
                 self.assert_success(result)
-                self.assertEqual([call["operation"] for call in self.recorded_calls()], ["build", "cquery"])
+                self.assertEqual([call["operation"] for call in self.recorded_calls()], ["build"])
                 self.assertEqual((self.target / archive).read_bytes(), ("new " + archive).encode())
         self.makefile = original
 
-    def test_build_and_query_share_cache_and_quoted_options_without_shell_expansion(self):
-        """Keep build and query configurations identical while preserving literal arguments and
-        retaining the shared output base.
-        """
+    def test_build_exports_without_query_and_preserves_quoted_options(self):
         cache = self.root / "builder's persistent cache"
         options = ["--jobs=2", "--define=message=two words", "--define=owner=builder's cache",
                    "--define=literal=$(touch SHOULD_NOT_EXIST)"]
@@ -379,14 +380,12 @@ selection:
             "BAZEL_CONTAINER_CACHE_DIR": str(cache), "BAZEL_CONTAINER_ARGS": shlex.join(options),
         }))
         calls = self.recorded_calls()
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 1)
         for call in calls:
             arguments = call['arguments']
             for option in [*options, f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache"]:
                 self.assertIn(option, arguments)
             self.assertFalse(any(option.startswith(("--output_base=", "--output_user_root=")) for option in arguments))
-        self.assertEqual(calls[0]['arguments'][1:],
-                         [option for option in calls[1]['arguments'][1:] if option != '--output=files'])
         self.assertTrue((cache / 'repository_cache').is_dir())
         self.assertTrue((cache / 'disk_cache').is_dir())
         self.assertFalse((self.root / 'SHOULD_NOT_EXIST').exists())
@@ -416,12 +415,12 @@ selection:
                     self.assertEqual([option for option in arguments if option.startswith('--disk_cache=')],
                                      [f'--disk_cache={expected_cache}/disk_cache'] if expected_cache else [])
 
-    def test_failed_build_query_or_invalid_output_preserves_previous_archive(self):
+    def test_failed_build_bep_or_invalid_output_preserves_previous_archive(self):
         """Ensure production logging exposes failures without replacing the last image or reaching
         SBOM and success hooks.
         """
         archive = self.archives[0]
-        for mode in ('build_failure', 'query_failure', 'no_outputs', 'multiple_outputs',
+        for mode in ('build_failure', 'failed_target', 'truncated_bep', 'no_outputs', 'multiple_outputs',
                      'missing_output', 'empty_output', 'directory_output'):
             with self.subTest(mode=mode):
                 self.calls.unlink(missing_ok=True)
@@ -433,10 +432,7 @@ selection:
                 result = self.run_make(environment={'FAKE_BAZEL_MODE': mode})
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((destination.read_bytes(), destination.stat().st_mtime_ns), previous)
-                expected = ['build', 'cquery']
-                if mode == 'build_failure':
-                    expected = ['build']
-                self.assertEqual([call['operation'] for call in self.recorded_calls()], expected)
+                self.assertEqual([call['operation'] for call in self.recorded_calls()], ['build'])
                 self.assertFalse([path for path in self.target.glob(archive + '.*') if path.suffix != '.log'])
                 self.assertFalse(self.markers.exists(), 'failure continued to SBOM or footer')
                 self.assertTrue((self.root / 'logging-errors').is_file(),
@@ -453,7 +449,7 @@ selection:
             self.assertEqual(destination.read_bytes(), b'previous image')
             self.assertEqual(destination.stat().st_mtime_ns, previous)
         self.assertEqual([call['operation'] for call in self.recorded_calls()],
-                         ['build', 'cquery', 'build', 'cquery'])
+                         ['build', 'build'])
 
     def test_unusable_cache_fails_before_bazel_and_preserves_archive(self):
         """Reject an invalid cache path before invoking Bazel or modifying the existing image and

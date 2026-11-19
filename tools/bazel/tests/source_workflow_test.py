@@ -133,6 +133,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertEqual(job["defaults"]["run"]["working-directory"], directory)
         selected = {step.get("name"): step for step in job["steps"]}
         self.assertIn("--host-agent", selected["Check host-agent build prerequisites"]["run"])
+        self.assertIn("command -v zstd", selected["Check host-agent build prerequisites"]["run"])
         self.assertIn("--build-target sonic-vs.bin",
                       selected["Check host-agent build prerequisites"]["run"])
         scripts = "\n".join(step.get("run", "") for step in job["steps"])

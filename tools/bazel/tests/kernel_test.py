@@ -498,7 +498,7 @@ class KernelBundleTest(unittest.TestCase):
         rc = (self.root / "state/consumer/.bazelrc").read_text().splitlines()
         self.assertIn("common --noslim_profile", rc)
         self.assertIn(f"build --build_event_json_file={directory}/build.bep.json "
-                      f"--execution_log_json_file={directory}/build.execution.json", rc)
+                      f"--execution_log_compact_file={directory}/build.execution.pb.zst", rc)
         for phase in ("cquery", "mod"):
             self.assertIn(f"{phase} --profile={directory}/{phase}.profile.json.gz", rc)
         self.assertTrue(kernel.ensure(self.root)["reused"])

@@ -12,6 +12,12 @@ their job containers where applicable, need network access to
 `grpc://172.16.0.4:9092`; public GitHub-hosted runners cannot reach that private
 endpoint.
 
+The trusted host-driven VS installer job explicitly enables result uploads,
+uses `--remote_timeout=600s` for large blobs, and retains `--verbose_failures`
+for publication diagnostics. Its same-repository job gate is unchanged; other
+jobs keep their existing upload policies. A successful build alone does not
+prove every new cache output was published.
+
 Private remote services are not workspace defaults. Only the five
 cache-reachable archive, source-base, event-services, Rust-listener and YANG
 jobs opt in with:
@@ -332,13 +338,24 @@ step. The `sonic-vs-bazel-timings-amd64` artifact includes the selected archive
 names, Bazel profile and export times for that step.
 
 Instrumented Make recipes retain existing JSON profiles and additionally write
-BEP (`<phase>.bep.json.gz`) and JSON spawn logs
-(`<phase>.execution.json.gz`) for Bazel build/test commands, including the nested
-kernel build. Queries keep profiles only. JSON logs are concatenated objects,
-not a JSON array, and are gzip-compressed after command timing ends even on
-failure. Capture and compression add CPU/I/O overhead; gzip saves artifact
-space, not Bazel serialization time. The existing timing artifact includes these
-files and the workflow summary reports bounded cache/timing observations.
+BEP (`<phase>.bep.json.gz`) and compact execution logs
+(`<phase>.execution.pb.zst`) for Bazel build/test commands, including the shared
+container batch and nested kernel build. Compact logs are written asynchronously
+and zstd-compressed by Bazel; there is no expanded JSON conversion or second
+compression pass for execution logs. Only BEP is gzip-compressed after command
+timing, including on failure. The reducer uses the existing `zstd` executable
+and streams spawn metadata without reconstructing shared input/output inventories.
+It also supports historical raw/gzipped JSON execution logs.
+The existing timing artifact includes these files and the workflow summary
+reports bounded cache/timing observations. Missing, truncated or oversized
+streams remain unavailable, not zero-hit observations.
+
+Standalone/private container builds, like the shared batch, resolve the built
+archives from their build's inline default BEP outputs rather than issuing
+post-build `cquery` commands. Every requested output must be a nonempty local
+file before any archive is exported. Unchanged exports retain their timestamps.
+This removes a second shared-server queue wait without changing image targets,
+owner options, native platforms or cache policies.
 Raw logs may contain action commands, paths and environment variables: avoid
 secrets in command-line/action environments and review artifact access.
 The [dashboard documentation](../../ci/build_dashboard/README.md) explains

@@ -272,8 +272,8 @@ include platform/vs/kvm-image.mk""")
         # A standalone FRR build and its output query still receive every flag.
         self.calls.unlink()
         self.assert_success(self.run_make(frr[1]))
-        build, query = self.recorded_calls()
-        for call in (build, query):
+        build, = self.recorded_calls()
+        for call in (build,):
             for option in [make_metadata, *features, version]:
                 self.assertEqual(call["arguments"].count(option), 1)
 
@@ -293,6 +293,7 @@ include platform/vs/kvm-image.mk""")
                          {name: [name.replace("-dbg.gz", ".gz"), self.labels[name]] for name in self.archives})
         self.assertIn("--noslim_profile", build["arguments"])
         self.assertIn(f"--profile={shared}/build.profile.json.gz", build["arguments"])
+        self.assertIn(f"--execution_log_compact_file={shared}/build.execution.pb.zst", build["arguments"])
         self.assertEqual(json.loads((shared / "build.timing.json").read_text())["exit_code"], 0)
         for owner, debug in (self.archives[:2], self.archives[2:]):
             directory, = (timings / owner).iterdir()
@@ -313,7 +314,7 @@ include platform/vs/kvm-image.mk""")
         self.assertEqual(len(instances), 2)
         for directory in instances:
             recipe = json.loads((directory / "recipe.json").read_text())
-            self.assertEqual(recipe["bazel"], ["build", "cquery-" + owner])
+            self.assertEqual(recipe["bazel"], ["build"])
             self.assertEqual(recipe["exports"], ["export-" + owner])
             self.assertTrue((directory / "build.timing.json").is_file())
 
@@ -334,16 +335,15 @@ include platform/vs/kvm-image.mk""")
             "process": {"memory.events": "oom_kill 2", "pids.current": "91"},
             "mount_root": {"memory.max": "4294967296", "pids.max": "128"}})
 
-    def test_standalone_timing_preserves_failed_query_and_preceding_build(self):
+    def test_standalone_timing_preserves_build_when_bep_output_is_missing(self):
         result = self.run_make(goals=["target/" + self.archives[2]], environment={
-            "SONIC_VS_IMAGE_TIMINGS": "1", "FAKE_BAZEL_MODE": "query_failure"})
+            "SONIC_VS_IMAGE_TIMINGS": "1", "FAKE_BAZEL_MODE": "missing_output"})
         self.assertNotEqual(result.returncode, 0)
         owner = self.archives[2]
         records, = (self.root / "artifacts/vs/image-timings" / owner).iterdir()
-        self.assertIn("fixture query failure", (records / "make.log").read_text())
+        self.assertIn("nonempty local archive", (records / "make.log").read_text())
         self.assertEqual(json.loads((records / "build.timing.json").read_text())["exit_code"], 0)
-        failed = json.loads((records / f"cquery-{owner}.timing.json").read_text())
-        self.assertNotEqual(failed["exit_code"], 0)
+        self.assertFalse(list(records.glob("cquery-*")))
         self.assertFalse(list(records.glob("export-*.timing.json")))
         self.assertEqual((self.target / owner).read_bytes(), b"previous image")
 
@@ -484,8 +484,8 @@ include tools/bazel/docker.mk""")
         standalone = [call for call in builds if runtime in call["archives"] or debug in call["archives"]]
         self.assertCountEqual([name for call in standalone for name in call["archives"]], [runtime, debug])
         queries = self.recorded_calls(("cquery",))
-        self.assertCountEqual([name for call in queries for name in call["archives"]], [runtime, debug])
-        for call in [*standalone, *queries]:
+        self.assertEqual(queries, [])
+        for call in standalone:
             self.assertEqual(call["arguments"].count(private), 1)
             self.assertNotIn("--config=syncd-dash", call["arguments"])
         for name in self.archives:
@@ -509,6 +509,22 @@ include tools/bazel/docker.mk""")
             self.assertEqual((self.target / name).read_bytes(), b"previous image")
         self.assertFalse(self.markers.exists())
 
+    def test_private_pair_validates_both_bep_outputs_before_export(self):
+        runtime, debug = self.archives[:2]
+        self.makefile = self.makefile.replace("include tools/bazel/docker.mk", f"""
+{runtime}_BAZEL_ARGS = --define=private=true
+{debug}_BAZEL_ARGS = --define=private=true
+include tools/bazel/docker.mk""")
+        result = self.run_make(runtime, environment={
+            "SONIC_BUILD_TARGET": "target/sonic-vs.bin", "FAKE_BAZEL_MODE": "missing_output",
+        })
+        self.assertNotEqual(result.returncode, 0)
+        build, = self.recorded_calls()
+        self.assertCountEqual(build["archives"], [runtime, debug])
+        for name in (runtime, debug):
+            self.assertEqual((self.target / name).read_bytes(), b"previous image")
+        self.assertFalse(self.markers.exists())
+
     def test_differing_owner_flags_are_rejected_instead_of_changing_runtime_config(self):
         self.makefile = self.makefile.replace("include tools/bazel/docker.mk", """
 docker-orchagent-dbg.gz_BAZEL_ARGS = --define=owner=wrong
@@ -521,7 +537,7 @@ include tools/bazel/docker.mk""")
     def test_standalone_archive_does_not_build_unrequested_debug_variant(self):
         result = self.run_make(self.archives[0])
         self.assert_success(result)
-        self.assertEqual([call["operation"] for call in self.recorded_calls()], ["build", "cquery"])
+        self.assertEqual([call["operation"] for call in self.recorded_calls()], ["build"])
         self.assertEqual((self.target / self.archives[1]).read_bytes(), b"previous image")
 
     def test_unregistered_debug_variant_is_excluded_from_batch(self):

@@ -4083,7 +4083,10 @@ jobs:
         run: python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache --runner-workspace "${{ runner.workspace }}" --remove-package-cache
 
       - name: Check host-agent build prerequisites
-        run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
+        run: |
+          set -euo pipefail
+          command -v zstd >/dev/null
+          python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
 
       - name: Require the P4 source artifact from this producer job
         env:

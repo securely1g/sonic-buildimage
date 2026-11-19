@@ -1,6 +1,7 @@
 """Check capture, bounded reduction and honest cache-coverage reporting."""
 
 import gzip
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -10,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci import bazel_telemetry as telemetry, time_vs_image
+from tools.bazel.ci import bazel_telemetry as telemetry, compact_execution_log, time_vs_image
 from tools.bazel.ci.summarize_vs_image_timings import report
 
 
@@ -29,6 +30,45 @@ def spawn(runner="remote cache hit", cached=True, elapsed="2.500s", **changes):
     return dict({"runner": runner, "cacheHit": cached, "mnemonic": "CppCompile",
                  "targetLabel": "//example:library", "metrics": {"totalTime": elapsed},
                  "exitCode": 0}, **changes)
+
+
+def varint(value):
+    value &= 2 ** 64 - 1
+    result = bytearray()
+    while value > 127:
+        result.append((value & 127) | 128)
+        value >>= 7
+    return bytes(result) + bytes([value])
+
+
+def proto_field(number, value):
+    if isinstance(value, int):
+        return varint(number << 3) + varint(value)
+    if isinstance(value, str):
+        value = value.encode()
+    return varint((number << 3) | 2) + varint(len(value)) + value
+
+
+def compact_entry(field, value):
+    entry = proto_field(field, value)
+    return varint(len(entry)) + entry
+
+
+def compact_log(spawns, extra=b""):
+    invocation = proto_field(1, "SHA-256") + proto_field(4, "test-invocation")
+    result = compact_entry(2, invocation) + extra
+    for action in spawns:
+        fields = b"".join(proto_field(number, action[key])
+                          for number, key in ((7, "targetLabel"), (8, "mnemonic"),
+                                              (9, "exitCode"), (10, "status"), (11, "runner"),
+                                              (12, "cacheHit")) if key in action and action[key])
+        elapsed = action.get("metrics", {}).get("totalTime")
+        if elapsed is not None:
+            seconds, _, fraction = elapsed[:-1].partition(".")
+            duration = proto_field(1, int(seconds)) + proto_field(2, int(fraction.ljust(9, "0")))
+            fields += proto_field(18, proto_field(1, duration))
+        result += compact_entry(7, fields)
+    return result
 
 
 class BazelTelemetryTest(unittest.TestCase):
@@ -50,6 +90,70 @@ class BazelTelemetryTest(unittest.TestCase):
 
     def summary(self):
         return telemetry.summarize([(self.root, self.plan)])
+
+    def write_compact(self, data):
+        path = self.root / "build.execution.pb.zst"
+        result = subprocess.run(["zstd", "--quiet", "--stdout"], input=data,
+                                capture_output=True, check=True)
+        path.write_bytes(result.stdout)
+        return path
+
+    def test_compact_logs_match_legacy_cache_counts_actions_and_privacy(self):
+        secret = "private-command-and-credentials"
+        actions = [
+            spawn(), spawn("disk cache hit", True, "0.100s"),
+            spawn("linux-sandbox", False, "4s", exitCode=-1, status=secret),
+            spawn("private-" + secret, False, "3s", targetLabel="/home/" + secret),
+            spawn("other-cache", True, "1s"),
+        ]
+        self.write("execution", actions)
+        legacy = self.summary()
+        self.write_compact(compact_log(actions))
+        self.assertEqual(self.summary(), legacy)
+        self.assertNotIn(secret, json.dumps(self.summary()))
+
+    def test_compact_stream_skips_large_shared_inputs_and_spawn_arguments(self):
+        inventory = compact_entry(6, proto_field(5, b"\x01" * 131072))
+        arguments = proto_field(1, "private-" * 20000)
+        action = proto_field(11, "remote cache hit") + proto_field(12, 1)
+        data = compact_log([], inventory) + compact_entry(7, arguments + action)
+        self.write_compact(data)
+        with patch.object(compact_execution_log, "MAX_VALUE", 64):
+            value = self.summary()
+        self.assertEqual((value["execution"], value["spawns"], value["remote_hits"]), (1, 1, 1))
+        with patch.object(compact_execution_log, "MAX_INPUT", 64):
+            self.assertEqual(self.summary()["execution"], 0)
+            self.assertIsNone(self.summary()["remote_hits"])
+
+    def test_compact_rejects_bad_frames_framing_metadata_and_partial_counts(self):
+        valid = compact_log([spawn()])
+        bad = [
+            b"", valid + b"\x80", valid[:-1], valid + compact_log([]),
+            valid + compact_entry(7, proto_field(12, 2)),
+            valid + compact_entry(7, proto_field(11, b"\xff")),
+            valid + compact_entry(7, proto_field(9, 2 ** 32 - 1)),
+            valid + compact_entry(7, proto_field(18, proto_field(1, proto_field(2, 10 ** 9)))),
+            valid + compact_entry(7, proto_field(18, proto_field(1, proto_field(1, -1)))),
+            valid + compact_entry(7, proto_field(11, 1)),
+            b"\x01\x00", b"\x80" * 10, compact_entry(7, proto_field(11, "local")),
+        ]
+        for data in bad:
+            with self.subTest(data=data[-30:]):
+                self.write_compact(data)
+                value = self.summary()
+                self.assertEqual(value["execution"], 0)
+                self.assertIsNone(value["spawns"])
+        path = self.write_compact(valid)
+        path.write_bytes(path.read_bytes()[:-1])
+        self.assertEqual(self.summary()["execution"], 0)
+        self.assertIsNone(self.summary()["spawns"])
+
+    def test_compact_invocation_only_means_no_spawn_not_missing_coverage(self):
+        data = compact_log([])
+        self.assertEqual(list(compact_execution_log._records(io.BytesIO(data))), [])
+        self.write_compact(data)
+        value = self.summary()
+        self.assertEqual((value["execution"], value["spawns"], value["uncached"]), (1, 0, 0))
 
     def test_separates_cache_layers_preserves_zero_and_bounds_public_actions(self):
         secret = "private-command-and-credentials"
@@ -199,7 +303,7 @@ class BazelTelemetryTest(unittest.TestCase):
 import json, pathlib, sys
 args = sys.argv[1:]
 pathlib.Path('args.json').write_text(json.dumps(args))
-for flag in ('--build_event_json_file=', '--execution_log_json_file='):
+for flag in ('--build_event_json_file=', '--execution_log_compact_file='):
     for arg in args:
         if arg.startswith(flag):
             pathlib.Path(arg[len(flag):]).write_text('{}\\\\n')
@@ -219,12 +323,17 @@ sys.exit(17 if '--fail' in args else 0)
                 timing = json.loads((directory / f"{phase}.timing.json").read_text())
                 self.assertEqual(timing["exit_code"], result.returncode)
                 args = json.loads((self.root / "args.json").read_text())
-                for kind, flag in (("bep", "--build_event_json_file="), ("execution", "--execution_log_json_file=")):
+                for kind, flag in (("bep", "--build_event_json_file="),
+                                   ("execution", "--execution_log_compact_file=")):
                     self.assertEqual(sum(arg.startswith(flag) for arg in args), int(phase in ("build", "test")))
                     if phase in ("build", "test"):
-                        self.assertFalse((directory / f"{phase}.{kind}.json").exists())
-                        with gzip.open(directory / f"{phase}.{kind}.json.gz", "rt") as stream:
-                            self.assertEqual(stream.read(), "{}\\n")
+                        if kind == "bep":
+                            self.assertFalse((directory / f"{phase}.bep.json").exists())
+                            with gzip.open(directory / f"{phase}.bep.json.gz", "rt") as stream:
+                                self.assertEqual(stream.read(), "{}\\n")
+                        else:
+                            self.assertEqual((directory / f"{phase}.execution.pb.zst").read_text(),
+                                             "{}\\n")
 
 
 if __name__ == "__main__":

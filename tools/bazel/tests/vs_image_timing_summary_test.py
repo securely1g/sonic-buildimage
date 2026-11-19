@@ -41,7 +41,8 @@ class ImageTimingSummaryTest(unittest.TestCase):
                 time_vs_image.run_phase(group, "build", command, cwd=workspace)
                 execute.assert_called_once_with(
                     [*command[:3], f"--profile={group}/build.profile.json.gz", "--noslim_profile",
-                     "--experimental_profile_include_target_label", *command[3:]],
+                     "--experimental_profile_include_target_label",
+                     *time_vs_image.telemetry_flags(group, "build"), *command[3:]],
                     check=True, cwd=workspace, env=None)
                 execute.reset_mock()
                 time_vs_image.run_phase(None, "build", command, cwd=workspace)
