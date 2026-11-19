@@ -325,7 +325,7 @@ jobs:
           PY
       - name: Configure verified source download mirrors
         run: |
-          python3 -B tools/bazel/ci/source_mirrors.py --output "$RUNNER_TEMP/dhcp-source-mirrors.cfg"
+          python3 -B tools/bazel/ci/source_mirrors.py --prefer-debian-snapshot --output "$RUNNER_TEMP/dhcp-source-mirrors.cfg"
           printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/dhcp-source-mirrors.cfg" >> .bazelrc.user
       - name: Prepare pinned submodules for image builds
         run: bash tools/bazel/ci/prepare_image_submodules.sh
