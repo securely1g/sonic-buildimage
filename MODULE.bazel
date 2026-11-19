@@ -35,8 +35,8 @@ bazel_dep(name = "rules_cc", version = "0.2.20")
 bazel_dep(name = "rules_pkg", version = "1.1.0")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
-# Share APT lock metadata across dependency sets.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.22")
+# Reuse locked APT metadata and checksum-pinned prepared repositories.
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.23")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
