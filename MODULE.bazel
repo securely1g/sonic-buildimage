@@ -141,6 +141,15 @@ pip.parse(
     python_version = "3.13",
     requirements_lock = "//src/sonic-config-engine:requirements_lock.txt",
 )
+# Build/test imports for the DHCP utilities producer. Image runtime resolution
+# is owned separately by the consuming Docker target.
+pip.parse(
+    hub_name = "dhcp_utilities_test_pip",
+    python_version = "3.13",
+    requirements_lock = "//src/sonic-dhcp-utilities:requirements_lock.txt",
+)
+use_repo(pip, "dhcp_utilities_test_pip")
+
 pip.parse(
     hub_name = "swss_config_pip",
     python_version = "3.13",
