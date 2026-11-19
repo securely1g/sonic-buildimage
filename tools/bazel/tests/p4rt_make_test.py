@@ -74,7 +74,7 @@ if command == 'info':
             directory, = (root / "artifacts/vs/image-timings/sonic-p4rt").iterdir()
             self.assertEqual(json.loads((directory / "recipe.json").read_text()),
                              {"bazel": ["build", "test", "info", "shutdown"], "profiles": ["build", "test"],
-                              "exports": ["stage-debs"]})
+                              "exports": ["stage-debs"], "telemetry": ["build", "test"]})
             for phase in ("build", "test", "info", "shutdown", "stage-debs"):
                 self.assertEqual(json.loads((directory / f"{phase}.timing.json").read_text())["exit_code"], 0)
             self.assertCountEqual([p.name for p in directory.glob("*.profile.json.gz")],

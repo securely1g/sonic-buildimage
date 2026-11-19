@@ -9,8 +9,12 @@ import html
 import json
 import math
 import re
+import sys
 from operator import itemgetter
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from tools.bazel.ci import bazel_telemetry
 
 
 PUBLIC_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,191}\Z")
@@ -233,11 +237,13 @@ def legacy_plan(owner):
 
 def read_plan(path):
     plan = json.loads(path.read_text())
-    if (not isinstance(plan, dict) or set(plan) != {"bazel", "profiles", "exports"}
+    if (not isinstance(plan, dict) or set(plan) not in (
+            {"bazel", "profiles", "exports"}, {"bazel", "profiles", "exports", "telemetry"})
             or any(not isinstance(names, list)
                    or any(not isinstance(name, str) or not PUBLIC_NAME.fullmatch(name) for name in names)
                    or len(set(names)) != len(names) for names in plan.values())
-            or set(plan["bazel"]).intersection(plan["exports"])):
+            or set(plan["bazel"]).intersection(plan["exports"])
+            or not set(plan.get("telemetry", [])) <= set(plan["profiles"]).intersection({"build", "test"})):
         raise ValueError(f"Invalid phase list in {path}")
     return plan
 
@@ -339,6 +345,9 @@ def read_owner(directory):
     details["scope"] = "build" if build["expected"] else (
         "kernel-build" if directory.name == "linux-kernel" else "unavailable")
     row["details"] = details
+    telemetry = bazel_telemetry.summarize(plans)
+    if telemetry is not None:
+        row["telemetry"] = telemetry
     return row, problems
 
 
@@ -433,6 +442,55 @@ def measured_duration(seconds):
     return readable(seconds) + (f" ({seconds:.2f}s)" if seconds is not None and seconds >= 1 else "")
 
 
+TELEMETRY_NOTE = (
+    "Build/test invocations only; queries and exports are excluded. Local persistent action-cache "
+    "checks and logged spawn hits have different denominators. Local action-cache/Skyframe reuse "
+    "can skip spawn logging entirely; zero logged spawns does not mean zero reuse. BEP actions "
+    "executed includes remote-cache hits. BEP phase times can overlap and exclude some client "
+    "overhead; they are not an elapsed-time partition. Spawn times overlap too. "
+    "These metrics do not measure repository download/prepared-cache hit rates.")
+RUNNERS = {"remote-cache": "Remote cache", "disk-cache": "Disk cache", "other-cache": "Other cache",
+           "remote": "Remote execution", "local": "Local execution", "other": "Other runner"}
+
+
+def telemetry_markdown(value):
+    lines = ["", "#### Cache and execution telemetry", ""]
+    if value is None:
+        return lines + ["BEP and execution logs were not recorded for this historical invocation."]
+
+    def count(key):
+        return "unavailable" if value[key] is None else str(value[key])
+
+    lines += [
+        f"BEP: {value['bep']}/{value['expected']} complete streams; execution logs: "
+        f"{value['execution']}/{value['expected']}. Missing coverage is not a cache miss.",
+        "", "| Cache observation | Count |", "|---|---:|",
+        f"| Local persistent action-cache hits / misses | {count('action_cache_hits')} / {count('action_cache_misses')} |",
+        f"| BEP actions executed (includes remote hits) | {count('bep_actions_executed')} |",
+        f"| Logged spawns | {count('spawns')} |",
+        f"| Remote-cache hits | {count('remote_hits')} |",
+        f"| Disk-cache hits | {count('disk_hits')} |",
+        f"| Other cache hits | {count('other_cached')} |",
+        f"| Non-cache-hit spawns | {count('uncached')} |",
+        f"| Failed spawns | {count('failed_spawns')} |",
+        "", f"Local action-cache statistics: {value['action_cache_count']}/{value['expected']} invocations.",
+        "", f"| BEP timing ({value['timing_count']}/{value['expected']} invocations) | Duration |",
+        "|---|---:|",
+        *(f"| {label} | {measured_duration(value[key])} |" for key, label in
+          (("wall_seconds", "BEP wall time"), ("analysis_seconds", "Analysis span"),
+           ("execution_seconds", "Execution span"))),
+        "", "#### Longest logged spawns (up to 3)", "",
+    ]
+    if value["top_actions"]:
+        lines += ["| Action | Target | Runner | Spawn total time |", "|---|---|---|---:|"]
+        lines += [f"| `{action['mnemonic']}` | `{action['target'] or '-'}` | "
+                  f"{RUNNERS[action['runner']]} | {measured_duration(action['seconds'])} |"
+                  for action in value["top_actions"]]
+    else:
+        lines.append("No timed spawns recorded." if value["execution"] else "Execution log unavailable.")
+    return lines + ["", TELEMETRY_NOTE]
+
+
 def target_markdown(row):
     build, details = row.get("build"), row.get("details")
     label = "LAUNCHER ELAPSED" if row["owner"] == "linux-kernel" and not build else "BUILD EXCLUDING LOCK"
@@ -447,6 +505,7 @@ def target_markdown(row):
         ])
         lines.extend(f"| {label} | {measured_duration(build[key])} |"
                      for key, label in BUILD_EVIDENCE.items() if build[key])
+    lines.extend(telemetry_markdown(row.get("telemetry")))
     if not details:
         return lines + ["", "Named spans were not recorded for this historical run.", "", "</details>"]
     lines.extend(["", f"Named evidence: {details['profiles']}/{details['expected']} build profiles. "
