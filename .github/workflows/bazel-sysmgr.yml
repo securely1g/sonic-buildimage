@@ -101,9 +101,10 @@ jobs:
           BAZELISK_GITHUB_TOKEN: ""
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Draft #235 only: restore maintained main after .23 publication.
           python3 -B src/sonic-sysmgr/bazel/ci.py \
             --startup-arg="--bazelrc=$GITHUB_WORKSPACE/.bazelrc.user" \
-            --registry https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main \
+            --registry https://raw.githubusercontent.com/yijingyan2/sonic-bazel-registry/3228bd32a80d7ad7473fc1be31e28bed2001b19c \
             --artifacts artifacts/sysmgr 2>&1 | tee artifacts/sysmgr/ci.log
       - name: Upload packages, original XML and installed-package evidence
         id: runner_cleanup_upload_0

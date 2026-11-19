@@ -77,4 +77,6 @@ class BaseReviewTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
             env.pop("SONIC_BASE_REVIEW_REGISTRY")
             ordinary = subprocess.check_output([WRAPPER, "info", "release"], env=env, text=True)
-            self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main", ordinary.splitlines())
+            registry = next(line.removeprefix("common ") for line in (ROOT / ".bazelrc").read_text().splitlines()
+                            if line.startswith("common --registry="))
+            self.assertIn(registry, ordinary.splitlines())

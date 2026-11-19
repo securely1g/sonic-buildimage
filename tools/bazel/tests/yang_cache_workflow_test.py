@@ -102,6 +102,11 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'explicit_rc': t
             ])
             subprocess.run(["bash", "-euc", "bash " + command], cwd=work, env=env, check=True)
             observed = json.loads(record.read_text())
+            registries = [line.removeprefix("common ") for line in (ROOT / ".bazelrc").read_text().splitlines()
+                          if line.startswith("common --registry=")]
+            self.assertEqual([arg for arg in observed["argv"] if arg.startswith("--registry=")], registries)
+            standalone_registry = re.search(r"(?m)^registry=(\S+)$", build)[1]
+            self.assertEqual("--registry=" + standalone_registry, registries[0])
             self.assertIn("--nohome_rc", observed["argv"])
             self.assertIn("cquery", observed["argv"])
             self.assertIn("//src/sonic-yang-models:yang_models_package_test", observed["argv"])

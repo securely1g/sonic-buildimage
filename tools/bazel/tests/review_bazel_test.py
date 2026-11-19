@@ -80,6 +80,8 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
         wrapper = self.directory / 'standalone-bazel'
         shutil.copy2(WRAPPER.with_name('libteam_draft_bazel.sh'), wrapper)
         (self.directory / 'bazel').symlink_to(self.fake)
+        default_registry = next(line.split('=', 1)[1] for line in (ROOT / '.bazelrc').read_text().splitlines()
+                                if line.startswith('common --registry='))
         for base_revision in ('', 'b' * 40):
             with self.subTest(base_revision=base_revision):
                 env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ['PATH'],
@@ -89,9 +91,10 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
                                         env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 arguments = json.loads(self.record.read_text())['arguments']
+                registry = ('https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' + base_revision
+                            if base_revision else default_registry)
                 self.assertEqual([arg for arg in arguments if arg.startswith('--registry=')], [
-                    '--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/' +
-                    (base_revision or 'main'), '--registry=https://bcr.bazel.build'])
+                    '--registry=' + registry, '--registry=https://bcr.bazel.build'])
 
     def test_read_only_flag_precedes_end_of_options(self):
         result = self.invoke(['build', '--remote_upload_local_results=true', '--', '//owner:runtime'])
