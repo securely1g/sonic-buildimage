@@ -3519,6 +3519,11 @@ jobs:
             SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
             2>&1 | tee artifacts/vs/kernel-sandbox.log
 
+      - name: Set the VS builder action memory budget
+        run: |
+          memory_option=$(python3 -B tools/bazel/ci/resources.py) || exit
+          printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "${BAZEL_CONTAINER_ARGS:-}" "$memory_option" >> "$GITHUB_ENV"
+
       - name: Build the VS installer (.bin)
         id: vs_build
         env:
@@ -3902,6 +3907,11 @@ jobs:
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
             2>&1 | tee artifacts/vs/kernel-sandbox.log
+
+      - name: Set the VS builder action memory budget
+        run: |
+          memory_option=$(python3 -B tools/bazel/ci/resources.py) || exit
+          printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "${BAZEL_CONTAINER_ARGS:-}" "$memory_option" >> "$GITHUB_ENV"
 
       - name: Build sonic-vs.bin through the host Make wrapper
         id: native_build
