@@ -732,3 +732,13 @@ pip.parse(
     environment = {"CC": "gcc", "CXX": "g++"},
 )
 use_repo(pip, "dhcp_relay_cli_test_pip")
+
+# Reuse the original cross-repository CLI test fixture at Make's gitlink.
+# This is test data only, not a host-services build or image dependency.
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(
+    name = "dhcp_relay_host_services_test_fixture",
+    urls = ["https://raw.githubusercontent.com/securely1g/sonic-host-services/b9cbca03cd08313438b742f3eff87a9416e70d14/tests/common/mock_configdb.py"],
+    sha256 = "08b4b525ead991783fd49c270c10a94aa7e07cfab0c3effb93940767aad38cd8",
+    downloaded_file_path = "mock_configdb.py",
+)
