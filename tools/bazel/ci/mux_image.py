@@ -37,7 +37,7 @@ TARGETS = {
     "debug-packages.json": OWNER + "debug_package_metadata",
     "debug.status": OWNER + "debug_installed_packages",
 }
-OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=10000"]
+OPTIONS = []
 CONFIGS = {
     "docker-init.sh": ("usr/bin/docker-init.sh", 0o755),
     "supervisord.conf": ("etc/supervisor/conf.d/supervisord.conf", 0o644),

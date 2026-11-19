@@ -104,6 +104,8 @@ sys.exit(int(os.environ.get('REVIEW_TEST_EXIT','0')))
     def test_home_and_local_cache_values_survive(self):
         (self.home / '.bazelrc').write_text('''build --disk_cache='/persistent/action cache'
 common --repository_cache=/persistent/downloads
+startup --host_jvm_args=-Xmx2048m
+build --local_ram_resources=3276
 common --registry=https://example.invalid/catalog
 build --override_module=owner=/not-accepted
 ''')
@@ -117,6 +119,8 @@ try-import /not-imported
         result = rc.configuration(self.workspace, self.home)
         parsed = [shlex.split(line, comments=True) for line in result.splitlines()]
         self.assertIn(['build', '--disk_cache=/persistent/action cache'], parsed)
+        self.assertIn(['build', '--local_ram_resources=3276'], parsed)
+        self.assertIn(['startup', '--host_jvm_args=-Xmx2048m'], parsed)
         self.assertIn(['common', '--repository_cache=/persistent/downloads'], parsed)
         self.assertLess(parsed.index(['common', '--repository_cache=/persistent/downloads']),
                         parsed.index(['common', '--repository_cache=/existing/local-downloads']))

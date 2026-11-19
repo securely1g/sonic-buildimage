@@ -75,6 +75,9 @@ def main():
     args = parser.parse_args()
     if args.command == "options":
         arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            from tools.bazel.ci.resources import build_options
+            arguments += build_options()
         try:
             # Apply the shared cache policy after caller options so Make image
             # builds cannot accidentally upload results or enable remote execution.

@@ -23,7 +23,7 @@ OWNER = "//platform/vs/docker-gbsyncd-vs:"
 SHARED = "//platform/vs/docker-syncd-vs:"
 BASE = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie"
 IMAGES = ("docker-gbsyncd-vs", "docker-gbsyncd-vs-dbg")
-OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=8000", "--config=syncd-dash"]
+OPTIONS = ["--config=syncd-dash"]
 TARGETS = {
     "source-excludes.txt": "//tools/bazel/dpkg:dpkg_excludes.txt",
     "source-includes.txt": "//tools/bazel/dpkg:oci_includes",

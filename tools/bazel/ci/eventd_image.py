@@ -34,7 +34,7 @@ TARGETS = {
     "debug-packages.json": OWNER + "debug_package_metadata",
     "debug.status": OWNER + "debug_installed_packages",
 }
-OPTIONS = ["--jobs=2", "--local_resources=cpu=2", "--local_resources=memory=10000"]
+OPTIONS = []
 CONFIGS = {"start.sh": "usr/bin/start.sh", "eventdb_wrapper.sh": "usr/bin/eventdb_wrapper.sh",
            "supervisord.conf": "etc/supervisor/conf.d/supervisord.conf",
            "critical_processes": "etc/supervisor/critical_processes"}
