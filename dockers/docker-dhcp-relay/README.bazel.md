@@ -7,7 +7,7 @@ shared, checksum-locked APT inputs in `sonic-build-infra`.
 
 | Installed component | Producer |
 | --- | --- |
-| ISC DHCP relay | `@isc_dhcp//:relay.runtime` |
+| ISC DHCP relay | `@isc_dhcp//:isc-dhcp-relay.runtime` |
 | Native DHCPv4 relay | `@sonic_dhcp_relay//dhcp4relay:runtime` |
 | DHCPv6 relay | `@sonic_dhcp_relay//dhcp6relay:runtime` |
 | DHCP monitor | `@sonic_dhcpmon//:runtime` |
