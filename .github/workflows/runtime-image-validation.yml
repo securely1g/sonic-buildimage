@@ -10,6 +10,9 @@ on:
       - tools/bazel/ci/validate_runtime.py
       - tools/bazel/tests/runtime_validation_test.py
       - tools/bazel/tests/installed_images_test.py
+      - tools/bazel/ci/frr_loaded.py
+      - tools/bazel/tests/frr_loaded_test.py
+      - tools/bazel/tests/snmp_image_test.py
       - tools/bazel/tests/image_workflow_test.py
       - tools/bazel/ci/verify_vs_oci.sh
       - tools/bazel/private_server.sh
@@ -33,6 +36,9 @@ on:
       - tools/bazel/ci/validate_runtime.py
       - tools/bazel/tests/runtime_validation_test.py
       - tools/bazel/tests/installed_images_test.py
+      - tools/bazel/ci/frr_loaded.py
+      - tools/bazel/tests/frr_loaded_test.py
+      - tools/bazel/tests/snmp_image_test.py
       - tools/bazel/tests/image_workflow_test.py
       - tools/bazel/ci/verify_vs_oci.sh
       - tools/bazel/private_server.sh
@@ -122,6 +128,8 @@ jobs:
           env -u PYTHONSAFEPATH /usr/bin/python3 -B -m unittest \
             tools.bazel.oci.tests.runtime_smoke_test \
             tools.bazel.tests.runtime_validation_test \
+            tools.bazel.tests.frr_loaded_test \
+            tools.bazel.tests.snmp_image_test \
             tools.bazel.tests.installed_images_test \
             tools.bazel.tests.vs_oci_session_test \
             tools.bazel.tests.integration.oci_inventory_test \

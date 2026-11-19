@@ -118,6 +118,31 @@ class SnmpImageBuildTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "both SNMP"):
                         snmp_loaded.run_loaded(directory)
 
+    def test_publish_preserves_snmp_receipts_and_rejects_a_recorded_environment(self):
+        receipt = {
+            "status": "passed",
+            "rootfs": {"type": "layers", "diff_ids": []},
+            "config_digest": "sha256:" + "a" * 64,
+            "parent_digest": "sha256:" + "b" * 64,
+            "manifest_digest": "sha256:" + "c" * 64,
+            "wheel_payloads": {},
+        }
+        original = (json.dumps(receipt, indent=2) + "\n").encode()
+        for name in ("docker-snmp", "docker-snmp-dbg"):
+            with self.subTest(image=name), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                report = directory / (name + ".validation.json")
+                published = directory / "public" / report.name
+                with patch("sys.argv", ["snmp_image.py", "publish", "--artifacts", temporary]):
+                    report.write_bytes(original)
+                    image.main()
+                    self.assertEqual(published.read_bytes(), original)
+
+                    report.write_text(json.dumps({**receipt, "config": {"Env": ["NAME=value"]}}))
+                    with self.assertRaisesRegex(ValueError, "diagnostic-json-field"):
+                        image.main()
+                    self.assertEqual(published.read_bytes(), original)
+
     def test_cached_archives_materialize_every_audited_layout_before_inspection(self):
         self.build()
         self.assertEqual(self.receipt["status"], "built")
