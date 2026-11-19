@@ -277,9 +277,8 @@ jobs:
           python3 -B tools/bazel/ci/checkout_identity.py \
             --expected-revision "$SOURCE_REVISION" --event-name workflow_dispatch \
             --github-output "$GITHUB_OUTPUT"
-      - name: Register post-job Bazel cleanup
-        id: bazel_cleanup_register
-        uses: ./.github/actions/bazel-post-job-cleanup
+      # The ephemeral K3s worker lifecycle owns job-local state cleanup.
+      # The shared remote cache is managed by the worker, not this workflow.
       - name: Verify native AMD64 Trixie tools and remote-only cache
         run: |
           test "$(uname -m)" = x86_64

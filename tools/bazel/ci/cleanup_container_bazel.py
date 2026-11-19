@@ -31,7 +31,7 @@ MIGRATED_JOBS = {
     "bazel-make-cache.yml": {"checks"},
     "bazel-oci.yml": {
         "checks", "source_image_inputs", "gnmi_native", "mgmt_framework_native",
-        "dash_ha_runtime", "macsec_runtime", "database_runtime", "lldp_runtime",
+        "dash_ha_runtime", "macsec_runtime", "database_runtime", "lldp_runtime", "dhcp_relay_runtime",
         "mux_runtime", "gearbox_runtime", "eventd_runtime", "swss_layer_runtime",
         "snmp_runtime", "sysmgr_runtime", "frr_runtime", "teamd_runtime",
         "gnmi_runtime", "mgmt_framework_runtime", "radv_runtime",
