@@ -4032,6 +4032,8 @@ jobs:
       # Make schedules one recipe; Bazel schedules all selected container targets.
       # Let Bazel choose its job count and CPU/memory scheduling budgets.
       BAZEL_CONTAINER_ARGS: >-
+        --remote_timeout=600s
+        --verbose_failures
         --remote_local_fallback
         --incompatible_remote_local_fallback_for_remote_cache
         --experimental_remote_downloader=grpc://172.16.0.4:9092

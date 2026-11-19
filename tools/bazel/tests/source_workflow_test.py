@@ -120,6 +120,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertEqual(job["env"]["SONIC_BAZEL_REMOTE_UPLOAD"], "y")
         self.assertEqual(job["env"]["SONIC_BUILD_JOBS"], "1")
         for flag in (
+            "--remote_timeout=600s", "--verbose_failures",
             "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
             "--experimental_remote_downloader=grpc://172.16.0.4:9092",
             "--experimental_remote_downloader_local_fallback",
