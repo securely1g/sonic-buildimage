@@ -22,8 +22,14 @@ JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-oci.yml", "checks"), ("bazel-supervisor-rust.yml", "native"),
         ("bazel-yang-models.yml", "package")]
 PRIVATE_CACHE_JOBS = {
+    ("bazel-oci.yml", "otel_archive"),
     ("bazel-oci.yml", "radv_native"),
+    ("bazel-oci.yml", "gearbox_archive"), ("bazel-oci.yml", "dash_engine_archive"),
     ("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
+    ("bazel-libteam.yml", "native"),
+    ("bazel-frr.yml", "native"), ("bazel-frr-python.yml", "packages"),
+    ("bazel-oci.yml", "gnmi_native"), ("bazel-oci.yml", "mgmt_framework_native"),
+    ("bazel-sysmgr.yml", "native"),
     ("bazel-oci.yml", "archive"), ("bazel-supervisor-rust.yml", "native"),
     ("bazel-yang-models.yml", "package"),
 }
@@ -31,6 +37,9 @@ PRIVATE_CACHE_SETTINGS = [
     "common --remote_cache=grpc://172.16.0.4:9092",
     "common --experimental_remote_downloader=grpc://172.16.0.4:9092",
     "common --experimental_remote_downloader_local_fallback",
+    "build --remote_local_fallback",
+    "build --incompatible_remote_local_fallback_for_remote_cache",
+    "build --experimental_build_event_upload_strategy=local",
 ]
 
 
@@ -60,8 +69,14 @@ class SetupBazelCacheTest(unittest.TestCase):
                 with self.subTest(workflow=path.name, job=name):
                     enabled.add((path.name, name))
                     self.assertEqual(calls, ["python3 " + HELPER + " --private-remote-cache"])
-                    if (path.name, name) == ("bazel-oci.yml", "radv_native"):
-                        self.assertEqual(job["runs-on"], ["self-hosted", "linux", "bazel-x64"])
+                    if (path.name == "bazel-sysmgr.yml" or
+                            (path.name == "bazel-oci.yml" and name in {
+                                "otel_archive", "radv_native", "gearbox_archive", "dash_engine_archive",
+                                "gnmi_native", "mgmt_framework_native"})):
+                        labels = ["self-hosted", "linux", "bazel-x64"]
+                        if name in {"gearbox_archive", "dash_engine_archive"}:
+                            labels.append("vs")
+                        self.assertEqual(job["runs-on"], labels)
                         continue
                     if path.name == "bazel-base-images.yml":
                         self.assertEqual(job["strategy"]["matrix"]["architecture"], ["amd64", "arm64"])
@@ -72,11 +87,11 @@ class SetupBazelCacheTest(unittest.TestCase):
                         continue
                     self.assertEqual(job["runs-on"], "${{ matrix.runner }}")
                     matrix = job["strategy"]["matrix"]["include"]
-                    self.assertEqual(len(matrix), 2)
-                    self.assertEqual({tuple(entry["runner"]) for entry in matrix}, {
-                        ("self-hosted", "linux", "bazel-x64"),
-                        ("self-hosted", "linux", "bazel-arm64"),
-                    })
+                    expected = {("self-hosted", "linux", "bazel-x64")}
+                    if path.name != "bazel-frr.yml":
+                        expected.add(("self-hosted", "linux", "bazel-arm64"))
+                    self.assertEqual(len(matrix), len(expected))
+                    self.assertEqual({tuple(entry["runner"]) for entry in matrix}, expected)
         self.assertEqual(enabled, PRIVATE_CACHE_JOBS)
 
     def test_explicit_private_cache_preserves_local_caches_and_upload_policy(self):
@@ -98,6 +113,52 @@ class SetupBazelCacheTest(unittest.TestCase):
                         expected.append("build --disk_cache=/disk")
                     expected += ["common --repository_cache=/repo", *PRIVATE_CACHE_SETTINGS]
                     self.assertEqual((root / ".bazelrc.user").read_text().splitlines(), expected)
+
+    def test_sysmgr_passes_read_only_cache_rc_into_nested_workspace(self):
+        document = yaml.safe_load((ROOT / ".github/workflows/bazel-sysmgr.yml").read_text())
+        steps = document["jobs"]["native"]["steps"]
+        setup = next(step for step in steps if "setup-bazel@" in step.get("uses", ""))
+        handoff = next(step for step in steps if HELPER in step.get("run", ""))
+        policy = next(step for step in steps
+                      if step.get("name") == "Configure read-only cache and local test evidence")
+        prefetch = next(step for step in steps if "github_sources.py" in step.get("run", ""))
+        build = next(step for step in steps if "src/sonic-sysmgr/bazel/ci.py" in step.get("run", ""))
+        self.assertEqual(setup["with"]["module-root"], "src/sonic-sysmgr")
+        self.assertEqual(steps.index(handoff), steps.index(setup) + 1)
+        self.assertLess(steps.index(handoff), steps.index(policy))
+        self.assertLess(steps.index(policy), steps.index(prefetch))
+        self.assertLess(steps.index(prefetch), steps.index(build))
+        for event in ("pull_request", "push"):
+            self.assertIn(HELPER, document.get("on", document.get(True))[event]["paths"])
+        with tempfile.TemporaryDirectory(prefix="sysmgr cache ") as temporary:
+            root = Path(temporary)
+            env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
+            env["GITHUB_WORKSPACE"] = str(root)
+            for step in (handoff, policy):
+                subprocess.run(["bash", "-euc", step["run"]], cwd=root, env=env, check=True)
+            recorder = root / "bin/python3"
+            recorder.write_text("""#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+Path(os.environ['RECORD']).write_text(json.dumps(sys.argv[1:]))
+""")
+            recorder.chmod(0o755)
+            subprocess.run(["bash", "-euc", prefetch["run"]], cwd=root, env=env, check=True)
+            prefetch_args = json.loads((root / "record.json").read_text())
+            self.assertEqual(prefetch_args[prefetch_args.index("--distdir") + 1],
+                             str(root / "sysmgr-distdir"))
+            self.assertEqual((root / ".bazelrc.user").read_text().splitlines(), [
+                "build --disk_cache=/disk", "common --repository_cache=/repo",
+                *PRIVATE_CACHE_SETTINGS, "build --remote_upload_local_results=false",
+                "build --experimental_build_event_upload_strategy=local",
+                f'common --distdir="{root / "sysmgr-distdir"}"',
+            ])
+            subprocess.run(["bash", "-e", "-o", "pipefail", "-c", build["run"]],
+                           cwd=root, env=env, check=True)
+            args = json.loads((root / "record.json").read_text())
+            self.assertEqual(args[:2], ["-B", "src/sonic-sysmgr/bazel/ci.py"])
+            self.assertEqual([arg for arg in args if arg.startswith("--startup-arg=")],
+                             ["--startup-arg=--bazelrc=" + str(root / ".bazelrc.user")])
 
     def test_container_jobs_repair_default_startup_state_and_keep_cache_handoff(self):
         jobs = [
@@ -174,7 +235,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
 """)
         recorder.chmod(0o755)
         return dict(os.environ, HOME=str(home), PATH=str(binary) + ":/usr/bin:/bin",
-                    RECORD=str(root / "record.json"), BASH_ENV="/dev/null", SONIC_BASE_REVIEW_REGISTRY="",
+                    RECORD=str(root / "record.json"), BASH_ENV="/dev/null",
                     RUNNER_TEMP=str(root), CI_CPU="x86_64", CI_DISTRIBUTION="trixie")
 
     def test_all_seven_workflow_calls_reach_isolated_wrapper_and_direct_native(self):

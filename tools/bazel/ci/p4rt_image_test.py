@@ -331,7 +331,7 @@ class RuntimeTest(unittest.TestCase):
         def collect(root, directory, receipt, targets, **unused):
             self.assertEqual(targets['libyang-runtime.tar'], '@libyang//:libyang_pkg')
             self.assertEqual(len(targets), 10)
-            (directory / 'common.MODULE.bazel').write_text('module(version="0.0.8-' + image.COMMON_REVISION + '")')
+            (directory / 'common.MODULE.bazel').write_text('module(version="0.0.9-' + image.COMMON_REVISION + '")')
         with patch.object(image, 'native'), patch.object(image, 'source_identity', return_value='b' * 40), \
                 patch.object(image.p4rt_handoff, 'source_identity'), \
                 patch.object(image.command_log, 'execute', return_value='bazel 8.5.1\n'), \

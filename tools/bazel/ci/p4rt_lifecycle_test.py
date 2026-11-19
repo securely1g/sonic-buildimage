@@ -89,7 +89,8 @@ class ReviewShutdownTest(unittest.TestCase):
             fake = root / 'bazel'
             fake.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             fake.chmod(0o755)
-            env = dict(os.environ, BAZEL_REAL=str(fake))
+            env = dict(os.environ, BAZEL_REAL=str(fake),
+                       SONIC_BAZEL_REGISTRY_REVISION='a' * 40)
             for args in (['--version'], ['--output_base=' + str(root / 'base'), '--host_jvm_args=-Xmx3g', 'shutdown']):
                 result = subprocess.run(['bash', str(wrapper), *args], env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

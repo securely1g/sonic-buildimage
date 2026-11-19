@@ -8,30 +8,49 @@ from tools.bazel.build_helpers import export_archive
 from tools.bazel.ci import artifact_validation, command_log
 
 
-def execution_root(events):
-    """Resolve cquery paths against the execution root recorded by this build."""
-    with events.open() as stream:
-        for line in stream:
-            event = json.loads(line)
-            if "workspaceInfo" in event:
-                root = Path(event["workspaceInfo"].get("localExecRoot", ""))
-                if not root.is_absolute() or not root.is_dir():
-                    raise ValueError("Build events lack a usable absolute execution root")
-                return root
-    raise ValueError("Build events lack the execution root")
+def execution_root_from_bep(path):
+    """Read the unique output root recorded by the accepted Bazel invocation."""
+    roots = set()
+    for line in Path(path).read_text().splitlines():
+        event = json.loads(line)
+        if "workspaceInfo" in event:
+            value = event["workspaceInfo"].get("localExecRoot")
+            if not isinstance(value, str) or not value or not Path(value).is_absolute():
+                raise ValueError("Bazel evidence requires an absolute execution root")
+            roots.add(value)
+    if len(roots) != 1:
+        raise ValueError("Expected one execution root in Bazel evidence")
+    root = Path(roots.pop()).resolve(strict=True)
+    if not root.is_dir() or root == Path(root.anchor):
+        raise ValueError("Invalid Bazel execution root")
+    return root
+
+
+execution_root = execution_root_from_bep
+
+
+def resolve_output(execution_root, output):
+    """Resolve an actual declared output without checkout convenience symlinks."""
+    relative = Path(output)
+    if not output or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("Expected an execution-root-relative Bazel output")
+    root = Path(execution_root).resolve(strict=True)
+    result = (root / relative).resolve(strict=True)
+    if not result.is_relative_to(root):
+        raise ValueError("Bazel output escapes its execution root")
+    return result
 
 
 def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=(),
-                     additional_targets=()):
+                     use_execution_root=False, allow_external_execroot=False, additional_targets=()):
     """Build filename-to-label declarations, exporting one nonempty file each.
 
     The caller owns target selection and payload validation. These are archive
     artifacts: publication uses the shared helper's mode 0644 and keeps a prior
     output intact if a query or copy fails. Commands and completed exports remain
-    in the caller's receipt on failure.
-
-    Build additional targets in the same invocation before exporting files.
-    Their outputs stay in the execution root for the caller to inspect.
+    in the caller's receipt on failure. Callers can opt into output lookup bound
+    to this build's BEP. Additional targets are built in the same invocation
+    for consumers which inspect their layouts or lock in the execution root.
     """
     if not targets or any(not name or Path(name).name != name or name in (".", "..") for name in targets):
         raise ValueError("archive declarations need nonempty, plain output filenames")
@@ -40,14 +59,24 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
     execute([bazel, "build", *options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
              *targets.values(), *additional_targets], directory, receipt, "build")
-    root = execution_root(directory / "build-events.jsonl")
+    execution_root = None
+    if use_execution_root or allow_external_execroot:
+        execution_root = execution_root_from_bep(directory / "build-events.jsonl")
+        receipt["execution_root"] = str(execution_root)
     paths = {}
     for name, target in targets.items():
         files = execute([bazel, "cquery", *options, "--output=files", target],
                         directory, receipt, name + ".query").splitlines()
         if len(files) != 1:
             raise ValueError("Expected exactly one nonempty archive output for " + target)
-        source = root / files[0]
+        if allow_external_execroot:
+            rel = Path(files[0])
+            if not files[0] or rel.is_absolute() or ".." in rel.parts:
+                raise ValueError("Expected an execution-root-relative Bazel output")
+            source = execution_root / rel
+        else:
+            source = (resolve_output(execution_root, files[0]) if use_execution_root
+                      else workspace / files[0])
         if not source.is_file() or not source.stat().st_size:
             raise ValueError("Expected exactly one nonempty archive output for " + target)
         destination = directory / name
@@ -65,13 +94,12 @@ def collect_artifacts(workspace, directory, receipt, target, *, bazel="bazel", o
     execute([bazel, "build", *options, *log_options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"), target],
             directory, receipt, "build")
-    root = execution_root(directory / "build-events.jsonl")
     files = execute([bazel, "cquery", *options, "--output=files", target],
                     directory, receipt, "artifacts.query").splitlines()
     names = [Path(name).name for name in files]
     if len(names) != len(set(names)):
         raise ValueError("CI artifacts must have unique output filenames")
-    sources = [root / name for name in files]
+    sources = [workspace / name for name in files]
     for source in sources:
         if not source.is_file() or not source.stat().st_size:
             raise ValueError("Expected a nonempty CI artifact file: " + str(source))

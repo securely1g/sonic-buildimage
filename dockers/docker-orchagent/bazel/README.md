@@ -412,8 +412,7 @@ Common twice. The source-layer guard prevents a regression to older TARs that
 used paths beneath `var/run` or other inherited directory aliases.
 Complete-image validation remains necessary. Guest
 boot, forwarding, ARM64 images and cross builds remain unvalidated. ASAN uses
-the existing Make path. Listing SWSS in `SONIC_PACKAGES_LOCAL` is rejected when
-its Bazel path is selected.
+the existing Make path.
 
 To reproduce the source-layer check in native AMD64 Trixie, install the execution
 tools listed in `.github/workflows/bazel-oci.yml`, make the pinned Bazel
@@ -515,7 +514,7 @@ and offline IPv4/IPv6 captures. It checks requested ping arguments without
 executing them. This does not test ASIC forwarding, live capture, complete
 supervisor startup, FIPS POST or a VS installer.
 
-Socat selects `1.8.0.2.sonic.6` from [registry #242](https://github.com/securely1g/sonic-bazel-registry/pull/242).
+Socat selects [`1.8.0.2.sonic.7`](https://github.com/securely1g/sonic-bazel-registry/tree/main/modules/socat/1.8.0.2.sonic.7).
 Its explicit `tar.xz` type accepts the content-addressed Debian patch archive
 URL while retaining the original source hashes. The `.3` to `.6` upgrade also
 includes the published compiler/debug prefix mapping and compiler-path

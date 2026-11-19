@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci import resolution
+from tools.bazel.ci import resolution, time_vs_image
 
 MANIFEST = "kernel-packages.json"
 PROVENANCE = "kernel-provenance.json"
@@ -34,7 +34,8 @@ REGISTRY_PREFIX = "https://raw.githubusercontent.com/securely1g/sonic-bazel-regi
 DEFAULT_REGISTRY = REGISTRY_PREFIX + "main"
 WATCHED = [
     ".gitmodules", "Makefile", "Makefile.work", "rules/linux-kernel.mk", "rules/linux-kernel.dep",
-    "tools/bazel/ci/resolution.py", "tools/bazel/ci/kernel_make_smoke.py", "rules/config",
+    "tools/bazel/ci/resolution.py", "tools/bazel/ci/time_vs_image.py",
+    "tools/bazel/ci/kernel_make_smoke.py", "rules/config",
     "tools/bazel/kernel", "build_debian.sh", "slave.mk", "Makefile.cache",
     "tools/bazel/ci/kernel_install_smoke.sh", "scripts/build_sbom.py",
     "scripts/sbom_kernel_deb.py", str(KERNEL_PATH), str(DOWNLOADER_CONFIG),
@@ -127,7 +128,7 @@ def native_architecture():
 
 
 def launcher_contract(workspace, source, architecture="amd64"):
-    names = {"BAZEL_URL", "BAZEL_SHA256", "ARCHITECTURES"}
+    names = {"BAZEL_URL", "BAZEL_SHA256", "HOST_ARCHITECTURES"}
     values = {}
     def literal(node):
         if isinstance(node, ast.Name) and node.id in values:
@@ -143,7 +144,7 @@ def launcher_contract(workspace, source, architecture="amd64"):
     require(version == (source / ".bazelversion").read_text().strip()
             and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version),
             "kernel consumer Bazel version differs from its source launcher")
-    selected = values.get("ARCHITECTURES", {}).get(architecture, {})
+    selected = values.get("HOST_ARCHITECTURES", {}).get(architecture, {})
     suffix = {"amd64": "x86_64", "arm64": "arm64"}.get(architecture)
     require(set(values) == names and suffix
             and selected.get("bazel_url") == "https://releases.bazel.build/" + version + "/release/bazel-" + version + "-linux-" + suffix
@@ -215,7 +216,8 @@ def contract(workspace, architecture=None, kernel_config=None):
     abi = version + values["KERNEL_ABISUFFIX"]
     feature = values["KERNEL_FEATURESET"]
     kernel = values["KVERSION"]
-    expected = {"schema": 3, "architecture": architecture, "platform": values["CONFIGURED_PLATFORM"],
+    expected = {"schema": 4, "architecture": architecture, "host_architecture": architecture,
+                "platform": values["CONFIGURED_PLATFORM"],
                 "kernel_version": version, "kernel_abi": kernel,
                 "package_version": release,
                 # Make signs installed boot files during image assembly, after
@@ -685,25 +687,48 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
             rc.write("try-import /run/sonic-native-apt/bazel-source.bazelrc\n")
             rc.write("startup --invocation_policy=" + shlex.quote(policy) + "\n")
     (state / "plan.json").write_text(json.dumps(prepared, indent=2, sort_keys=True) + "\n")
-    if execute is None:
-        subprocess.run(prepared["argv"], cwd=workspace, check=True)
-    else:
-        execute(prepared["argv"], workspace)
+    timings = None
+    if os.environ.get("SONIC_VS_IMAGE_TIMINGS") == "1":
+        timings = time_vs_image.start_recipe(workspace, "linux-kernel", ["launcher"],
+                                             ["build", "cquery", "mod"], ["stage-debs"])
+        # The verified launcher sets the build profile path on its command line.
+        # The queries use the private consumer workspace's RC.
+        with (consumer / ".bazelrc").open("a") as rc:
+            rc.write("\ncommon --noslim_profile\n")
+            for command in ("cquery", "mod"):
+                profile = shlex.quote(str(timings / f"{command}.profile.json.gz"))
+                rc.write(f"{command} --profile={profile}\n")
+    try:
+        with time_vs_image.time_phase(timings, "launcher"):
+            if execute is None:
+                subprocess.run(prepared["argv"], cwd=workspace, check=True)
+            else:
+                execute(prepared["argv"], workspace)
+    finally:
+        if timings is not None:
+            for name, destination in (("profile.json.gz", "build.profile.json.gz"),
+                                      ("build.log", "build.log"),
+                                      ("module-graph.stderr", "module-graph.stderr")):
+                source = state / "build" / name
+                if source.is_file() and not source.is_symlink():
+                    shutil.copyfile(source, timings / destination)
     invocation = json.loads(regular(state / "build/invocation.json").read_text())
-    require(invocation.get("schema") == 2 and invocation.get("target") == TARGET
+    require(invocation.get("schema") == 3 and invocation.get("target") == TARGET
             and invocation.get("execution_strategy") == "linux-sandbox"
             and type(invocation.get("uid")) is int and invocation["uid"] > 0
             and invocation.get("bazel_version") == prepared["source"]["launcher"]["bazel_version"]
             and invocation.get("bazel_sha256") == prepared["source"]["launcher"]["bazel_sha256"]
             and invocation.get("kernel_config") == prepared["source"]["kernel_config"]
             and invocation.get("architecture") == architecture
+            and invocation.get("host_architecture") == architecture
             and invocation.get("host_machine") == {"amd64": "x86_64", "arm64": "aarch64"}[architecture]
             and invocation.get("remote_cache") == prepared["remote_cache"]
             and invocation.get("remote_cache_read_only") is (not prepared["upload_local_results"])
             and invocation.get("disk_cache") == prepared["disk_cache"],
             "kernel launcher invocation differs from the prepared source build")
     selected = inspect_resolution(state / "build", consumer, prepared["source"], prepared["registry"], fetch=fetch)
-    result = stage_outputs(state / "build", Path(prepared["debs_directory"]), workspace, prepared["source"], selected)
+    with time_vs_image.time_phase(timings, "stage-debs"):
+        result = stage_outputs(state / "build", Path(prepared["debs_directory"]), workspace, prepared["source"], selected)
     receipt = {"schema": 1, "plan": prepared, "result": result}
     (state / "kernel-receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     return receipt

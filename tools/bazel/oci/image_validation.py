@@ -11,6 +11,7 @@ import tarfile
 
 ROOT = Path(__file__).absolute().parents[3]
 from tools.bazel.ci.artifact_validation import path_name as member_name, require, sha
+from tools.bazel.ci.validation_inputs import cached_inventory
 from tools.bazel.oci import oci_inventory
 from tools.bazel.oci.oci_inventory import assert_overlay_paths
 from tools.bazel.oci.oci_layout import validate_layout
@@ -40,12 +41,17 @@ def assert_ancestry(parent, child, description):
 def verify_unique_layer_paths(layout):
     """Docker rejects duplicate paths within a TAR, including directories."""
     for layer in layout.layers:
-        seen = set()
-        with tarfile.open(layer, "r:*") as archive:
-            for member in archive:
-                name = str(PurePosixPath(member.name))
-                require(name not in seen, "OCI layer repeats a path that Docker cannot load: " + name)
-                seen.add(name)
+        cached_inventory(layer, "oci_unique_layer_paths", lambda: _verify_unique_layer_paths(layer))
+
+
+def _verify_unique_layer_paths(layer):
+    seen = set()
+    with tarfile.open(layer, "r:*") as archive:
+        for member in archive:
+            name = str(PurePosixPath(member.name))
+            require(name not in seen, "OCI layer repeats a path that Docker cannot load: " + name)
+            seen.add(name)
+    return True
 
 
 def image_inventory(layout):
@@ -94,13 +100,14 @@ def apply_debug_tools_layer(path, files, *, alternatives=(), elf_machine=62):
             "gid": 0,
             "linkname": replacement["before"],
         }
+        require(old_link["kind"] in ("symlink", "hardlink"), "debug alternative must replace a declared link")
         new_link = {"kind": "symlink", "mode": 0o777, "uid": 0, "gid": 0, "linkname": replacement["after"]}
         for name in replacement["paths"]:
             require(files.get(name) == old_link and entries.get(name) == new_link,
                     "unexpected debug alternative: " + name)
             approved[name] = entries[name]
         inherited = oci_inventory.resolve_path(replacement["before"].lstrip("/"), files)
-        added = oci_inventory.resolve_path(replacement["after"].lstrip("/"), entries)
+        added = oci_inventory.resolve_path(replacement["after"].lstrip("/"), {**files, **entries})
         require(files.get(inherited, {}).get("elf_machine") == elf_machine and
                 entries.get(added, {}).get("elf_machine") == elf_machine,
                 "debug alternatives require binaries for the expected architecture")
@@ -178,12 +185,15 @@ def oci_filtered(files, excludes_path, includes_path):
     require(excludes and includes and all(pattern for pattern in excludes + includes),
             "OCI layer filtering requires nonempty exclude and include policies")
 
-    def matches(name, patterns):
-        return any(fnmatch.fnmatchcase(candidate, pattern)
-                   for candidate in (name, "./" + name) for pattern in patterns)
+    def matches(name, item, patterns):
+        names = (name, "./" + name)
+        if item["kind"] == "directory":
+            # bsdtar also applies patterns to directory headers with a trailing slash.
+            names += (name + "/", "./" + name + "/")
+        return any(fnmatch.fnmatchcase(candidate, pattern) for candidate in names for pattern in patterns)
 
     return {name: item for name, item in files.items()
-            if not matches(name, excludes) or matches(name, includes)}
+            if not matches(name, item, excludes) or matches(name, item, includes)}
 
 
 def expected_state(path):
@@ -345,17 +355,18 @@ def validate_images(runtime_path, debug_path, runtime_handoff, debug_handoff,
     filter_inputs = (source_layer_excludes, source_layer_includes)
     require(all(path is not None for path in filter_inputs) or all(path is None for path in filter_inputs),
             "OCI source filter inputs must be supplied together")
-    require(not any(path is not None for path in filter_inputs) or (direct_layers and has_source),
-            "OCI source filtering requires direct receipted runtime layers")
+    require(not any(path is not None for path in filter_inputs) or has_source,
+            "OCI source filtering requires a receipted runtime")
+    if direct_layers and has_source:
+        require(all(path is not None for path in filter_inputs),
+                "direct receipted runtime requires its declared OCI filter policy")
+    if has_source and all(path is not None for path in filter_inputs):
+        filtered_runtime = oci_filtered(expected_source_runtime, *filter_inputs)
+        required = {name for record in source_contract["packages"] for name in record["required_paths"]}
+        required.update(name for name, item in expected_source_runtime.items() if "elf_machine" in item)
+        require(required <= filtered_runtime.keys(), "OCI filter removes a required source path or ELF")
+        expected_source_runtime = filtered_runtime
     if direct_layers:
-        if has_source:
-            require(all(path is not None for path in filter_inputs),
-                    "direct receipted runtime requires its declared OCI filter policy")
-            filtered_runtime = oci_filtered(expected_source_runtime, *filter_inputs)
-            required = {name for record in source_contract["packages"] for name in record["required_paths"]}
-            required.update(name for name, item in expected_source_runtime.items() if "elf_machine" in item)
-            require(required <= filtered_runtime.keys(), "OCI filter removes a required source path or ELF")
-            expected_source_runtime = filtered_runtime
         declared_runtime, declared_debug = {}, {}
         for path in runtime_payload_layers:
             apply_layer(Path(path), declared_runtime)

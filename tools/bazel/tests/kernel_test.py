@@ -55,7 +55,7 @@ class KernelBundleTest(unittest.TestCase):
         (source_tools / "build.py").write_text(
             'BAZEL_URL = "https://releases.bazel.build/8.5.1/release/bazel-8.5.1-linux-x86_64"\n'
             'BAZEL_SHA256 = "' + "b" * 64 + '"\n'
-            "ARCHITECTURES = {'amd64': {'bazel_url': BAZEL_URL, 'bazel_sha256': BAZEL_SHA256}, "
+            "HOST_ARCHITECTURES = {'amd64': {'bazel_url': BAZEL_URL, 'bazel_sha256': BAZEL_SHA256}, "
             "'arm64': {'bazel_url': 'https://releases.bazel.build/8.5.1/release/bazel-8.5.1-linux-arm64', 'bazel_sha256': '" + "c" * 64 + "'}}\n"
             "raise SystemExit('fixture does not run Bazel')\n")
         (self.source / ".bazelversion").write_text("8.5.1\n")
@@ -83,7 +83,7 @@ class KernelBundleTest(unittest.TestCase):
             'bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-' + self.gitlink + '", repo_name = "sonic_linux_kernel")'))
         ci = self.root / "tools/bazel/ci"
         ci.mkdir(parents=True)
-        for name in ("resolution.py",):
+        for name in ("resolution.py", "time_vs_image.py"):
             shutil.copyfile(ROOT / "tools/bazel/ci" / name, ci / name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", ".gitmodules", "Makefile.work", "rules", "tools"], check=True)
@@ -124,6 +124,24 @@ class KernelBundleTest(unittest.TestCase):
                            "target": kernel.TARGET, "resolution": self.selected,
                            "consumer_inputs_sha256": self.state["consumer_inputs_sha256"]}
         self.write_manifest()
+
+    def test_launcher_selects_the_native_host_executable(self):
+        for architecture, digest in (("amd64", "b" * 64), ("arm64", "c" * 64)):
+            with self.subTest(architecture=architecture):
+                result = kernel.launcher_contract(self.root, self.source, architecture)
+                self.assertEqual(result["architecture"], architecture)
+                self.assertEqual(result["bazel_sha256"], digest)
+                self.assertEqual(result["bazel_version"], "8.5.1")
+
+    def test_launcher_rejects_wrong_host_binary_or_missing_digest(self):
+        launcher = self.source / "tools/bazel/build.py"
+        original = launcher.read_text()
+        for contents in (original.replace("-linux-arm64", "-linux-x86_64"),
+                         original.replace("c" * 64, "")):
+            with self.subTest(contents=contents):
+                launcher.write_text(contents)
+                with self.assertRaisesRegex(ValueError, "pin its native Bazel executable"):
+                    kernel.launcher_contract(self.root, self.source, "arm64")
 
     def write_deb(self, name, metadata):
         package_root = self.root / "package-root"
@@ -255,6 +273,9 @@ class KernelBundleTest(unittest.TestCase):
     def test_changed_contract_source_archives_tools_and_metadata_are_rejected(self):
         original = copy.deepcopy(self.manifest)
         mutations = [
+            lambda value: value.update(schema=3),
+            lambda value: value.pop("host_architecture"),
+            lambda value: value.update(host_architecture="arm64" if self.architecture == "amd64" else "amd64"),
             lambda value: value.update(kernel_abi="other-abi"),
             lambda value: value.update(signing="signed"),
             lambda value: value.update(source_tree_sha256="0" * 64),
@@ -413,6 +434,7 @@ class KernelBundleTest(unittest.TestCase):
             kernel.main()
         self.assertEqual(json.loads(output.getvalue())["manifest"], self.manifest)
 
+    @patch.dict(os.environ, {"SONIC_VS_IMAGE_TIMINGS": "1"})
     def test_producer_uses_registered_source_and_retains_evidence(self):
         prebuilt = self.bundle
         with self.assertRaisesRegex(ValueError, "must not overlap"):
@@ -434,13 +456,16 @@ class KernelBundleTest(unittest.TestCase):
             self.assertIn(kernel.DEFAULT_REGISTRY, (self.root / "tools/bazel/kernel/.bazelrc").read_text())
             outputs = workdir / "outputs"
             outputs.mkdir(parents=True)
+            (workdir / "build.log").write_text("kernel source build\n")
+            (workdir / "profile.json.gz").write_bytes(b"build profile")
             for name in [kernel.MANIFEST, *self.packages]:
                 shutil.copyfile(prebuilt / name, outputs / name)
             (workdir / "output-paths.txt").write_text("".join(
                 str(outputs / name) + "\n" for name in [kernel.MANIFEST, *self.packages]))
             metadata = self.resolution_files(workdir, consumer)
             (workdir / "invocation.json").write_text(json.dumps({
-                "schema": 2, "target": kernel.TARGET, "uid": 1000, "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
+                "schema": 3, "target": kernel.TARGET, "uid": 1000, "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
+                "host_architecture": self.architecture,
                 "kernel_config": self.state["kernel_config"], **self.state["launcher"],
                 "remote_cache": "http://127.0.0.1:8080", "remote_cache_read_only": True, "disk_cache": None}))
 
@@ -462,6 +487,36 @@ class KernelBundleTest(unittest.TestCase):
         self.assertTrue((self.root / "state/kernel-receipt.json").is_file())
         self.assertEqual((self.root / "state").stat().st_mode & 0o077, 0)
         self.assertFalse((self.root / "tools/bazel/kernel/MODULE.bazel.lock").exists())
+        directory, = (self.root / "artifacts/vs/image-timings/linux-kernel").iterdir()
+        recipe = json.loads((directory / "recipe.json").read_text())
+        self.assertEqual(recipe, {"bazel": ["launcher"], "profiles": ["build", "cquery", "mod"],
+                                  "exports": ["stage-debs"]})
+        for phase in ("launcher", "stage-debs"):
+            self.assertEqual(json.loads((directory / f"{phase}.timing.json").read_text())["exit_code"], 0)
+        self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"build profile")
+        self.assertEqual((directory / "build.log").read_text(), "kernel source build\n")
+        rc = (self.root / "state/consumer/.bazelrc").read_text().splitlines()
+        self.assertIn("common --noslim_profile", rc)
+        for phase in ("cquery", "mod"):
+            self.assertIn(f"{phase} --profile={directory}/{phase}.profile.json.gz", rc)
+        self.assertTrue(kernel.ensure(self.root)["reused"])
+        self.assertEqual(list(directory.parent.iterdir()), [directory])
+
+    @patch.dict(os.environ, {"SONIC_VS_IMAGE_TIMINGS": "1"})
+    def test_failed_kernel_launcher_retains_its_profile_and_status(self):
+        def execute(command, workspace):
+            workdir = Path(command[command.index("--work-dir") + 1])
+            workdir.mkdir(parents=True)
+            (workdir / "profile.json.gz").write_bytes(b"partial profile")
+            raise subprocess.CalledProcessError(37, command)
+
+        with self.assertRaises(subprocess.CalledProcessError) as failure:
+            kernel.build(self.root, self.root / "state", None, False, execute=execute)
+        self.assertEqual(failure.exception.returncode, 37)
+        directory, = (self.root / "artifacts/vs/image-timings/linux-kernel").iterdir()
+        self.assertEqual(json.loads((directory / "launcher.timing.json").read_text())["exit_code"], 37)
+        self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"partial profile")
+        self.assertFalse((directory / "stage-debs.timing.json").exists())
 
     def test_managed_kernel_cache_reaches_only_the_isolated_consumer(self):
         cache_rc = self.root / "worker-cache.bazelrc"
@@ -486,8 +541,10 @@ class KernelBundleTest(unittest.TestCase):
     def test_build_rejects_privileged_or_weakened_launcher_invocations(self):
         for index, override in enumerate((
             {"uid": 0}, {"uid": True}, {"execution_strategy": "local"},
-            {"schema": 1}, {"bazel_sha256": "0" * 64},
+            {"schema": 1}, {"schema": 2}, {"bazel_sha256": "0" * 64},
             {"host_machine": "aarch64" if self.architecture == "amd64" else "x86_64"},
+            {"host_architecture": "arm64" if self.architecture == "amd64" else "amd64"},
+            {"host_architecture": None},
             {"kernel_config": {}},
         )):
             with self.subTest(override=override):
@@ -495,8 +552,9 @@ class KernelBundleTest(unittest.TestCase):
                     workdir = Path(command[command.index("--work-dir") + 1])
                     workdir.mkdir(parents=True)
                     invocation = {
-                        "schema": 2, "target": kernel.TARGET, "uid": 1000, "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
-                "kernel_config": self.state["kernel_config"],
+                        "schema": 3, "target": kernel.TARGET, "uid": 1000, "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
+                        "host_architecture": self.architecture,
+                        "kernel_config": self.state["kernel_config"],
                         **self.state["launcher"], "remote_cache": None,
                         "remote_cache_read_only": True, "disk_cache": None,
                         **override,

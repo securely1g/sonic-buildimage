@@ -71,9 +71,12 @@ debug_deb=${config[DEBS_PATH]}/${config[SONIC_P4RT_DBG]}
 base_archive=${config[TARGET_PATH]}/${config[DOCKER_CONFIG_ENGINE_TRIXIE]}
 # Preserve the owner's dependency installation, freshness and cache rules.
 # Finish the legacy P4 workspace before testing the image workspace.
-# SWSS inherits this OCI base directly, so its Docker-load archive is not a
-# service-image prerequisite. Materialize it once for the shared Docker checks.
-"${make_command[@]}" --no-print-directory -j1 "$runtime_deb" "$debug_deb" "$base_archive"
+# A standalone verifier may need to materialize the base for the Docker checks.
+prerequisites=("$runtime_deb" "$debug_deb")
+# The native installer already published config-engine. Its phony Make recipe
+# would regenerate the retained image and its Make manifests in this container.
+if [[ ${SONIC_VS_REUSE_BAZEL_PRODUCERS:-} != 1 ]]; then prerequisites+=("$base_archive"); fi
+"${make_command[@]}" --no-print-directory -j1 "${prerequisites[@]}"
 for package in "$runtime_deb" "$debug_deb" "$base_archive"; do
     [[ -s $package ]] || { echo "Missing or empty P4RT prerequisite: $package" >&2; exit 1; }
 done
@@ -94,10 +97,11 @@ collect_test_results() {
     for file in test.log test.xml test.outputs/validation.json; do
         path="bazel-testlogs/tools/bazel/tests/$test_name/$file"
         if test -f "$path"; then
-            cp "$path" "$output/$(basename "$file")"
+            cp --remove-destination -- "$path" "$output/$(basename "$file")"
         fi
     done
 }
+
 # Retain each result before another Bazel invocation changes bazel-testlogs.
 test_status=0
 "${BAZEL:-bazel}" test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
@@ -113,10 +117,10 @@ if test "$test_status" -ne 0; then exit "$test_status"; fi
 # cquery alone does not materialize cached policy outputs.
 "${BAZEL:-bazel}" build "${bazel_options[@]}" //tools/bazel/tests:swss_installed_images_policy
 policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --output=files //tools/bazel/tests:swss_installed_images_policy)
-cp "$policy" artifacts/vs/swss-installed-images-policy.json
+cp --remove-destination -- "$policy" artifacts/vs/swss-installed-images-policy.json
 "${BAZEL:-bazel}" build "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_installed_images_policy
 policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" --config=syncd-dash --output=files //tools/bazel/tests:syncd_installed_images_policy)
-cp "$policy" artifacts/vs/syncd-installed-images-policy.json
+cp --remove-destination -- "$policy" artifacts/vs/syncd-installed-images-policy.json
 
 python3 -B tools/bazel/ci/verify_p4rt_debug.py \
     --runtime-deb "$runtime_deb" --debug-deb "$debug_deb" \

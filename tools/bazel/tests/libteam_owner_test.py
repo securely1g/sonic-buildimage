@@ -108,7 +108,6 @@ if pathlib.Path(sys.argv[0]).name == "bazel":
 ''')
                 recorder.chmod(0o755)
             environment = dict(os.environ, PATH=str(commands) + ":/usr/bin:/bin",
-                               SONIC_BASE_REVIEW_REGISTRY="",
                                CALLS=str(calls), OUTPUT_BASE=str(output_base),
                                CI_CPU=cpu, CI_DISTRIBUTION="trixie", RUNNER_TEMP=temporary)
             for result in ("external/libteam+/bazel/verify_rebuild.py", str(probe)):

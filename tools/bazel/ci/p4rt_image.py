@@ -27,7 +27,7 @@ OWNER = '//dockers/docker-sonic-p4rt:'
 IMAGES = ('docker-sonic-p4rt', 'docker-sonic-p4rt-dbg')
 BASE = '//dockers/docker-config-engine-trixie:docker-config-engine-trixie'
 RUNTIME_INPUTS = ('owner-test-runtime.tar',)
-COMMON_REVISION = '43598143ef4a46431eae0859915cd7d951dad1ed'
+COMMON_REVISION = '334389eae54afd1f4f5ee69f89c3a7ad2062ee61'
 OPTIONS = ['--jobs=2', '--local_resources=cpu=2', '--local_resources=memory=8000',
            '--@sonic_swss_common//tools/bazel:yang_modules=True',
            '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
@@ -178,9 +178,9 @@ def prepare_owner(args):
         prepare_manifests(execute, preparation, receipt)
         receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, list(PREPARATION_TARGETS.values()),
             workspace=ROOT, output=preparation / 'action-audit.json')
-        build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options)
+        build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options, allow_external_execroot=True)
         module = (preparation / 'common.MODULE.bazel').read_text()
-        check.require(re.search(r'version\s*=\s*[\"\']0\.0\.8-' + COMMON_REVISION + r'[\"\']', module),
+        check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
                       'The fetched Common owner differs from the selected image parent')
         prepare_repository(preparation / 'common-sdk.tar', sdk, 'amd64', {
             'producer_bazel_version': '8.5.1', 'producer_target': PREPARATION_TARGETS['common-sdk.tar'],
@@ -335,7 +335,7 @@ def build_images(args):
         layouts = [BASE, *[OWNER + name for name in layout_names]]
         receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, [*TARGETS.values(), *layouts],
             workspace=ROOT, output=directory / 'action-audit.json')
-        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=options)
+        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=options, allow_external_execroot=True)
         execute([args.bazel, 'build', *options, *layouts], directory, receipt, 'layouts')
         receipt['layouts'] = {name: execute([args.bazel, 'cquery', *options, '--output=files', OWNER + name],
             directory, receipt, name + '.layout').strip() for name in layout_names}

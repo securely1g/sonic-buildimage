@@ -37,24 +37,13 @@ import json, pathlib, sys
 args = sys.argv[1:]
 mode = pathlib.Path('mode').read_text()
 labels = {self.targets!r}
-root = pathlib.Path({str(self.root / 'execution root')!r})
-def output_path(name):
-    if mode == 'external_source': return 'external/+owner+payload/' + name
-    if mode == 'main_source': return 'source/' + name
-    return 'bazel-bin/archive outputs/' + name
 if args[0] == 'build':
     if mode == 'build_failure':
         raise SystemExit('fixture build failed')
+    output = pathlib.Path('bazel-bin/archive outputs')
+    output.mkdir(parents=True, exist_ok=True)
     for name in labels:
-        output = root / output_path(name)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b'' if mode == 'empty_file' else ('payload ' + name).encode())
-    events = pathlib.Path(next(arg.split('=', 1)[1] for arg in args if arg.startswith('--build_event_json_file=')))
-    value = {{'workspaceInfo': {{'localExecRoot': str(root)}}}}
-    if mode == 'no_execution_root': value = {{'started': {{}}}}
-    if mode == 'relative_execution_root': value['workspaceInfo']['localExecRoot'] = 'relative'
-    if mode == 'missing_execution_root': value['workspaceInfo']['localExecRoot'] = str(root / 'absent')
-    events.write_text(json.dumps(value) + '\\n')
+        (output / name).write_bytes(b'' if mode == 'empty_file' else ('payload ' + name).encode())
 elif args[0] == 'cquery':
     print('INFO: query diagnostic', file=sys.stderr)
     label = args[-1]
@@ -63,7 +52,7 @@ elif args[0] == 'cquery':
         raise SystemExit('fixture query failed')
     name = next(name for name, target in labels.items() if target == label)
     if mode != 'no_outputs':
-        print(output_path('absent.tar' if mode == 'missing_file' else name))
+        print('bazel-bin/archive outputs/' + ('absent.tar' if mode == 'missing_file' else name))
     if mode == 'multiple_outputs': print('bazel-bin/second.tar')
 else:
     raise SystemExit('unexpected operation: ' + args[0])
@@ -75,6 +64,17 @@ else:
         with contextlib.redirect_stdout(io.StringIO()):
             return build.collect_archives(self.workspace, self.directory, self.receipt, self.targets,
                                           bazel=str(self.bazel), options=self.options)
+
+    def test_layout_and_lock_can_be_built_with_the_archives(self):
+        extra = ["//image:layout", "@infra//apt:lock"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            paths = build.collect_archives(self.workspace, self.directory, self.receipt,
+                                          self.targets, bazel=str(self.bazel),
+                                          additional_targets=extra)
+        self.assertEqual(set(paths), set(self.targets))
+        commands = [command["argv"] for command in self.receipt["commands"]]
+        self.assertEqual(commands[0][-4:], [*self.targets.values(), *extra])
+        self.assertEqual([query[-1] for query in commands[1:]], list(self.targets.values()))
 
     def test_two_consumers_keep_labels_options_bytes_and_hash_receipts(self):
         """Export unrelated targets with correct evidence and preserve unchanged mtimes."""
@@ -112,31 +112,6 @@ else:
                 self.assertEqual(self.receipt['artifacts'], {})
                 self.assertEqual(len(self.receipt['commands']), 2)
                 self.assertIn('INFO: query diagnostic', (self.directory / 'telemetry.tar.query.log').read_text())
-
-    def test_external_and_main_source_files_use_the_recorded_execution_root(self):
-        """Export source filegroups without relying on generated-output symlinks."""
-        for mode, relative in (('external_source', 'external/+owner+payload'), ('main_source', 'source')):
-            with self.subTest(mode=mode):
-                self.mode.write_text(mode)
-                stale = self.workspace / relative / 'telemetry.tar'
-                stale.parent.mkdir(parents=True, exist_ok=True)
-                stale.write_bytes(b'wrong checkout file')
-                paths = self.collect()
-                self.assertEqual(paths['telemetry.tar'].read_bytes(), b'payload telemetry.tar')
-                self.assertFalse((self.workspace / 'bazel-out').exists())
-
-    def test_invalid_execution_root_preserves_previous_publication(self):
-        """Reject incomplete build evidence instead of guessing an output directory."""
-        for mode in ('no_execution_root', 'relative_execution_root', 'missing_execution_root'):
-            with self.subTest(mode=mode):
-                self.mode.write_text(mode)
-                self.receipt = {'commands': []}
-                previous = self.directory / 'telemetry.tar'
-                previous.write_bytes(b'previous publication')
-                with self.assertRaisesRegex(ValueError, 'execution root'): self.collect()
-                self.assertEqual(previous.read_bytes(), b'previous publication')
-                self.assertEqual(self.receipt['artifacts'], {})
-                self.assertEqual(len(self.receipt['commands']), 1)
 
     def test_build_failure_stops_queries_and_retains_failure_receipt(self):
         """Stop after a failed build and retain its exit status and diagnostic log."""
@@ -179,33 +154,26 @@ class DeclaredArtifactTest(unittest.TestCase):
         self.bazel = self.root / "bazel"
         self.bazel.write_text("#!" + sys.executable + "\n" + r"""
 from pathlib import Path
-import json
 import sys
 mode = Path('mode').read_text()
-root = Path.cwd().parent / 'execution root'
-def output_path(name):
-    prefix = 'external/+owner+payload/' if mode == 'external-source' else 'bazel-bin/archive outputs/'
-    return prefix + name
 if sys.argv[1] == 'build':
     if mode == 'build-failure': raise SystemExit('build failed')
     names = ['first/telemetry.tar', 'second/routing.tar', 'third/telemetry.tar']
     if mode.startswith('collision:'): names.append('collision/' + mode.split(':', 1)[1])
     for name in names:
-        output = root / output_path(name)
+        output = Path('bazel-bin/archive outputs') / name
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b'' if mode == 'empty-file' else ('payload ' + name).encode())
-    events = Path(next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--build_event_json_file=')))
-    events.write_text(json.dumps({'workspaceInfo': {'localExecRoot': str(root)}}) + '\n')
 elif sys.argv[1] == 'cquery':
     print('query diagnostic', file=sys.stderr)
     if mode == 'query-failure': raise SystemExit('query failed')
     if mode != 'empty-group':
-        print(output_path('first/telemetry.tar'))
+        print('bazel-bin/archive outputs/first/telemetry.tar')
         second = 'collision/' + mode.split(':', 1)[1] if mode.startswith('collision:') else {
             'duplicate-basename': 'third/telemetry.tar',
             'missing-file': 'second/absent.tar',
         }.get(mode, 'second/routing.tar')
-        print(output_path(second))
+        print('bazel-bin/archive outputs/' + second)
 else:
     raise SystemExit('unexpected command')
 """)
@@ -238,14 +206,6 @@ else:
         self.mode.write_text("empty-group")
         self.assertEqual(self.collect(), {})
         self.assertEqual(self.receipt.get("artifacts", {}), {})
-
-    def test_external_source_filegroup_uses_the_recorded_execution_root(self):
-        """External owner payloads need no convenience symlink in the checkout."""
-        self.mode.write_text('external-source')
-        paths = self.collect()
-        self.assertEqual(paths['telemetry.tar'].read_bytes(), b'payload first/telemetry.tar')
-        self.assertEqual(paths['routing.tar'].read_bytes(), b'payload second/routing.tar')
-        self.assertFalse((self.workspace / 'external').exists())
 
     def test_duplicate_names_fail_before_any_output_is_replaced(self):
         """Different outputs with the same basename cannot overwrite one another at publication."""

@@ -39,7 +39,8 @@ import json, os, pathlib, sys
 args = sys.argv[1:]
 with pathlib.Path('bazel-arguments.jsonl').open('a') as output:
     output.write(json.dumps(args) + '\\n')
-if args[0] == 'test':
+command = args[0]
+if command == 'test':
     target = next(arg.split(':')[1] for arg in args if arg.startswith('//'))
     output = pathlib.Path('bazel-testlogs/tools/bazel/tests') / target
     for name in ('test.log', 'test.xml', 'test.outputs/validation.json'):
@@ -48,10 +49,11 @@ if args[0] == 'test':
         path.write_text(name)
     print('image verification output')
     sys.exit(int(os.environ.get('IMAGE_STATUS', '0')))
-if args[0] == 'cquery':
-    policy = pathlib.Path('policy.json')
-    policy.write_text('{}')
-    print(policy)
+if command == 'build':
+    label = next(arg for arg in args if arg.startswith('//'))
+    pathlib.Path('policy.json').write_text(label)
+if command == 'cquery':
+    print('policy.json')
 """)
         self.bazel.chmod(0o755)
         self.make = self.directory / "make command"
@@ -116,26 +118,55 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         path = self.directory / "make-calls.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def test_separate_validation_reuses_the_published_config_engine(self):
+        switch = {"SONIC_VS_REUSE_BAZEL_PRODUCERS": "1"}
+        base = self.directory / BASE_ARCHIVE
+        base.parent.mkdir()
+        base.write_bytes(b"base used by the installer")
+        result = self.run_verifier(**switch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.producers(), DEB_PATHS)
+        self.assertEqual(base.read_bytes(), b"base used by the installer")
+        self.assertTrue((self.directory / "artifacts/vs/syncd-installed-images-policy.json").is_file())
+        self.assertTrue((self.directory / "artifacts/vs/swss-installed-images-policy.json").is_file())
+        arguments = [json.loads(line) for line in
+                     (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
+        self.assertFalse(any(arg.startswith(("--output_base=", "--output_user_root="))
+                             for args in arguments for arg in args))
+        self.assertFalse(any("shutdown" in args for args in arguments))
+
+        # A Bazel test or policy output copied during the first attempt is read-only.
+        for name in ("swss-images/test.log", "syncd-installed-images-policy.json"):
+            (self.directory / "artifacts/vs" / name).chmod(0o444)
+        result = self.run_verifier(**switch)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.directory / "target/.vs-bazel").exists())
+
     def test_verification_keeps_archive_options_logs_and_deb_inputs(self):
         cache = self.directory / "cache with spaces"
         result = self.run_verifier(BAZEL_CONTAINER_CACHE_DIR=str(cache),
                                    BAZEL_CONTAINER_ARGS="--distdir='/input with spaces' --jobs=3")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         arguments = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
-        self.assertEqual(len(arguments), 6)
+        target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
+        self.assertEqual(len(target_calls), 6)
+        self.assertFalse(any(arg.startswith(("--output_base=", "--output_user_root="))
+                             for args in target_calls for arg in args))
+        test_calls = [args[args.index("test"):] for args in target_calls if "test" in args]
         common = [f"--repository_cache={cache}/repository_cache", f"--disk_cache={cache}/disk_cache",
                   "--distdir=/input with spaces", "--jobs=3",
                   "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
                   "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
         for index, (target, flags) in enumerate((("swss_images_test", []),
                                                ("syncd_p4_images_test", ["--config=syncd-dash"]))):
-            self.assertEqual(arguments[index], ["test", *common, *flags, "//tools/bazel/tests:" + target,
+            self.assertEqual(test_calls[index], ["test", *common, *flags, "//tools/bazel/tests:" + target,
                 "--nocache_test_results", "--nozip_undeclared_test_outputs"])
         for family in ("swss-images", "syncd-p4-images"):
             for name in ("test.log", "test.xml", "validation.json"):
                 self.assertTrue((self.directory / "artifacts/vs" / family / name).is_file())
         for family in ("swss", "syncd"):
-            self.assertTrue((self.directory / "artifacts/vs" / (family + "-installed-images-policy.json")).is_file())
+            policy = self.directory / "artifacts/vs" / (family + "-installed-images-policy.json")
+            self.assertEqual(policy.read_text(), "//tools/bazel/tests:" + family + "_installed_images_policy")
         self.assertIn("image verification output", (self.directory / "artifacts/vs/syncd-p4-images.log").read_text())
         debug = json.loads((self.directory / "debug-arguments.json").read_text())
         self.assertEqual(debug[:4], ["--runtime-deb", DEB_PATHS[0], "--debug-deb", DEB_PATHS[1]])

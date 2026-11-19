@@ -32,9 +32,7 @@ class ArchiveRecipeFixture:
 import hashlib, json, os, pathlib, sys
 arguments = sys.argv[1:]
 operation = arguments[0]
-label = arguments[-1]
 labels = json.loads(os.environ['FAKE_BAZEL_LABELS'])
-archive = labels[label]
 archives = [labels[arg] for arg in arguments if arg in labels]
 prerequisites = [path for name in archives
                  for path in json.loads(os.environ['FAKE_BAZEL_PREREQUISITES'])[name]]
@@ -47,7 +45,6 @@ with pathlib.Path(os.environ['FAKE_BAZEL_CALLS']).open('a') as output:
 if not record['prerequisites_ready']:
     raise SystemExit('Make prerequisites were not prepared before Bazel')
 mode = os.environ.get('FAKE_BAZEL_MODE', '')
-source = pathlib.Path('bazel-bin/archive outputs') / archive
 if operation == 'build':
     if mode == 'build_failure':
         raise SystemExit('fixture build failure')
@@ -60,6 +57,7 @@ if operation == 'build':
             source.write_bytes(b'' if mode == 'empty_output' else
                                os.environ.get('FAKE_BAZEL_PAYLOAD', 'new ' + archive).encode())
 elif operation == 'cquery':
+    source = pathlib.Path('bazel-bin/archive outputs') / labels[arguments[-1]]
     print('INFO: fixture query diagnostic', file=sys.stderr)
     if mode == 'query_failure':
         print(source)
@@ -127,8 +125,11 @@ FOOTER = printf 'footer %s\n' '$@' >> publication-markers
             text=True, capture_output=True, check=False,
         )
 
-    def recorded_calls(self):
-        return [json.loads(line) for line in self.calls.read_text().splitlines()] if self.calls.exists() else []
+    def recorded_calls(self, operations=('build', 'cquery')):
+        if not self.calls.exists():
+            return []
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        return [call for call in calls if call['arguments'][0] in operations]
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -255,7 +256,10 @@ registered: $(SONIC_TARGET_LIST)
             self.assertLess(markers.index(sbom), markers.index(footer))
             self.assertIn('INFO: fixture query diagnostic', (self.target / (archive + '.log')).read_text())
         self.assertFalse((self.root / 'logging-errors').exists())
-        self.assertEqual(len(self.recorded_calls()), 2 * len(self.archives))
+        calls = self.recorded_calls()
+        self.assertEqual(len(calls), 2 * len(self.archives))
+        self.assertFalse(any(arg.startswith(("--output_base=", "--output_user_root="))
+                             for call in calls for arg in call["arguments"]))
 
     def test_containers_have_independent_prerequisites(self):
         """A missing input must preserve its container archive without blocking an unrelated
@@ -317,24 +321,22 @@ selection:
                 self.assertEqual(self.recorded_calls(), [])
         self.makefile = original
 
-    def test_local_packages_reject_each_selected_runtime_and_debug_archive(self):
-        """Prevent the local-package path from accepting Bazel exports whose latest-only tags do
-        not meet its contract.
-        """
+    def test_local_packages_export_each_selected_runtime_and_debug_archive(self):
+        """The installer accepts latest archives and adds the SONiC version tag."""
         original = self.makefile
         for archive in self.archives:
             with self.subTest(archive=archive):
                 self.makefile = f"SONIC_PACKAGES_LOCAL = {archive}\n" + original
+                self.calls.unlink(missing_ok=True)
                 result = self.run_make(archive)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("cannot be in SONIC_PACKAGES_LOCAL: " + archive, result.stderr)
-                self.assertEqual(self.recorded_calls(), [])
-                self.assertEqual((self.target / archive).read_bytes(), b"previous image")
+                self.assert_success(result)
+                self.assertEqual([call["arguments"][0] for call in self.recorded_calls()], ["build", "cquery"])
+                self.assertEqual((self.target / archive).read_bytes(), ("new " + archive).encode())
         self.makefile = original
 
     def test_build_and_query_share_cache_and_quoted_options_without_shell_expansion(self):
         """Keep build and query configurations identical while preserving literal arguments and
-        avoiding shared output bases.
+        retaining the shared output base.
         """
         cache = self.root / "builder's persistent cache"
         options = ["--jobs=2", "--define=message=two words", "--define=owner=builder's cache",
@@ -397,8 +399,10 @@ selection:
                 result = self.run_make(environment={'FAKE_BAZEL_MODE': mode})
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual((destination.read_bytes(), destination.stat().st_mtime_ns), previous)
-                self.assertEqual([call['arguments'][0] for call in self.recorded_calls()],
-                                 ['build'] if mode == 'build_failure' else ['build', 'cquery'])
+                expected = ['build', 'cquery']
+                if mode == 'build_failure':
+                    expected = ['build']
+                self.assertEqual([call['arguments'][0] for call in self.recorded_calls()], expected)
                 self.assertFalse([path for path in self.target.glob(archive + '.*') if path.suffix != '.log'])
                 self.assertFalse(self.markers.exists(), 'failure continued to SBOM or footer')
                 self.assertTrue((self.root / 'logging-errors').is_file(),

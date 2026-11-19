@@ -12,6 +12,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).absolute().parents[4]
 sys.path.insert(0, str(ROOT))
@@ -460,6 +462,39 @@ class ValidateImageTest(unittest.TestCase):
         self.assertEqual(result["validation_mode"], "complete")
         self.assertIn(changelog, result["source_packages"]["packages"][0]["files"])
 
+    def test_receipted_package_images_apply_the_declared_source_filter(self):
+        changelog = "usr/share/doc/example/changelog.Debian.gz"
+        notice = "usr/share/doc/example/NOTICE"
+        inputs = self.complete_receipted_layers(
+            extra_runtime=[(changelog, b"history", 0o644), (notice, b"legal notice", 0o644)],
+            omitted_runtime=[changelog])
+        inputs.pop("runtime_payload_layers")
+        inputs.pop("debug_payload_layers")
+        unfiltered = {key: value for key, value in inputs.items()
+                      if key not in ("source_layer_excludes", "source_layer_includes")}
+        with self.assertRaisesRegex(ValueError, "runtime source package payload.*changelog"):
+            self.validate_direct_images(unfiltered)
+        result = self.validate_direct_images(inputs)
+        self.assertEqual(result["validation_mode"], "complete")
+        self.assertIn(changelog, result["source_packages"]["packages"][0]["files"])
+        inputs["source_layer_excludes"].write_text("usr/share/man/*\n")
+        with self.assertRaisesRegex(ValueError, "runtime source package payload.*changelog"):
+            self.validate_direct_images(inputs)
+        inputs["source_layer_excludes"].write_text("usr/share/doc/*\nusr/lib/*\n")
+        with self.assertRaisesRegex(ValueError, "filter removes a required source path or ELF"):
+            self.validate_direct_images(inputs)
+
+    def test_oci_filter_matches_directory_headers_with_trailing_slashes(self):
+        excludes = self.root / "excludes.txt"
+        includes = self.root / "includes.txt"
+        excludes.write_text("./usr/share/doc/*\n")
+        includes.write_text("usr/share/doc/*/copyright\n")
+        files = {"usr/share/doc": {"kind": "directory"}, "usr/share/doc-link": {"kind": "file"},
+                 "usr/share/doc/package/changelog": {"kind": "file"},
+                 "usr/share/doc/package/copyright": {"kind": "file"}}
+        self.assertEqual(set(subject.oci_filtered(files, excludes, includes)),
+                         {"usr/share/doc-link", "usr/share/doc/package/copyright"})
+
     def test_receipted_layers_reject_missing_legal_notice_or_library(self):
         """Filtering must not turn absent retained files into an accepted source subset."""
         notice = "usr/share/doc/example/NOTICE"
@@ -849,12 +884,103 @@ class ValidateImageTest(unittest.TestCase):
                 self.assertEqual(files, before)
 
 
+    def vim_command_tools(self, *, new_target="/etc/alternatives/vim", replace_tiny=False):
+        path, files = self.vim_tools()
+        files["usr/bin/vim.tiny"] = files.pop("usr/bin/vim")
+        files["usr/bin/vim"] = {"kind": "hardlink", "mode": 0o755, "uid": 0, "gid": 0,
+                                "linkname": "usr/bin/vim.tiny"}
+        with tarfile.open(path, "a") as archive:
+            for name, target in (("etc/alternatives/vim", "/usr/bin/vim.basic"), ("usr/bin/vim", new_target)):
+                member = tarfile.TarInfo(name)
+                member.type, member.mode, member.linkname = tarfile.SYMTYPE, 0o777, target
+                archive.addfile(member)
+            if replace_tiny:
+                member = tarfile.TarInfo("usr/bin/vim.tiny")
+                member.mode, member.size = 0o755, 7
+                archive.addfile(member, io.BytesIO(b"changed"))
+        policy = [*DEBUG_ALTERNATIVES, {"paths": ["usr/bin/vim"], "before": "usr/bin/vim.tiny",
+                  "before_kind": "hardlink", "before_mode": 0o755, "after": "/etc/alternatives/vim"}]
+        return path, files, policy
+
+    def test_declared_vim_command_replaces_hardlink_without_changing_tiny(self):
+        path, files, policy = self.vim_command_tools()
+        original = dict(files["usr/bin/vim.tiny"])
+        with self.assertRaisesRegex(ValueError, "changes a base ELF link"):
+            subject.apply_debug_tools_layer(path, dict(files), alternatives=DEBUG_ALTERNATIVES)
+        subject.apply_debug_tools_layer(path, files, alternatives=policy)
+        self.assertEqual(files["usr/bin/vim.tiny"], original)
+        self.assertEqual(subject.oci_inventory.resolve_path("usr/bin/vim", files), "usr/bin/vim.basic")
+
+    def test_vim_command_rejects_wrong_original_metadata_and_new_target(self):
+        for key, value in (("mode", 0o777), ("uid", 1), ("kind", "symlink"), ("linkname", "usr/bin/other")):
+            path, files, policy = self.vim_command_tools()
+            files["usr/bin/vim"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "unexpected debug alternative"):
+                subject.apply_debug_tools_layer(path, files, alternatives=policy)
+        path, files, policy = self.vim_command_tools(new_target="/usr/bin/other")
+        with self.assertRaisesRegex(ValueError, "unexpected debug alternative"):
+            subject.apply_debug_tools_layer(path, files, alternatives=policy)
+
+    def test_declared_hardlink_requires_same_architecture_binaries(self):
+        path, files, policy = self.vim_command_tools()
+        files["usr/bin/vim.tiny"]["elf_machine"] = 183
+        with self.assertRaisesRegex(ValueError, "binaries for the expected architecture"):
+            subject.apply_debug_tools_layer(path, files, alternatives=policy)
+
+    def test_declared_vim_command_cannot_replace_inherited_binary(self):
+        path, files, policy = self.vim_command_tools(replace_tiny=True)
+        with self.assertRaisesRegex(ValueError, "change an inherited ELF"):
+            subject.apply_debug_tools_layer(path, files, alternatives=policy)
+
+
 class CachedValidateImageTest(ValidateImageTest):
     """Run the same success and rejection cases with scoped inventory reuse."""
 
     def validate(self, **kwargs):
         with validation_input_cache([self.root]):
             return super().validate(**kwargs)
+
+
+class CachedUniqueLayerPathsTest(unittest.TestCase):
+    def test_shared_layer_is_scanned_once_per_validation_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first, second = root / "first.tar", root / "second.tar"
+            first.write_bytes(layer([("usr/share/file", b"contents", 0o644)]))
+            second.write_bytes(first.read_bytes())
+            layout = SimpleNamespace(layers=[first, second, first])
+            with patch.object(subject, "_verify_unique_layer_paths",
+                              wraps=subject._verify_unique_layer_paths) as scan:
+                with validation_input_cache([root]):
+                    subject.verify_unique_layer_paths(layout)
+                    subject.verify_unique_layer_paths(layout)
+                    self.assertEqual(scan.call_count, 1)
+                subject.verify_unique_layer_paths(SimpleNamespace(layers=[first]))
+                self.assertEqual(scan.call_count, 2)
+
+    def test_duplicate_paths_are_rejected_on_every_attempt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "duplicate.tar"
+            path.write_bytes(layer([("./file", b"one", 0o644), ("file", b"two", 0o644)]))
+            with validation_input_cache([root]), \
+                    patch.object(subject, "_verify_unique_layer_paths",
+                                 wraps=subject._verify_unique_layer_paths) as scan:
+                for _ in range(2):
+                    with self.assertRaisesRegex(ValueError, "repeats a path"):
+                        subject.verify_unique_layer_paths(SimpleNamespace(layers=[path]))
+                self.assertEqual(scan.call_count, 2)
+
+    def test_cached_success_still_rejects_changed_layer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "layer.tar"
+            path.write_bytes(layer([("file", b"one", 0o644)]))
+            with self.assertRaisesRegex(ValueError, "validation input changed"):
+                with validation_input_cache([root]):
+                    subject.verify_unique_layer_paths(SimpleNamespace(layers=[path]))
+                    path.write_bytes(layer([("file", b"two", 0o644)]))
+                    subject.verify_unique_layer_paths(SimpleNamespace(layers=[path]))
 
 
 if __name__ == "__main__":

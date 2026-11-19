@@ -71,7 +71,9 @@ def main():
     env = dict(os.environ, USE_BAZEL_VERSION="6.4.0")
     bazel = ["bazel", "--output_base=" + str(args.output_base.resolve())]
     override = "--override_repository=sonic_swss_common=" + str(sdk)
-    options = [override, "-c", "opt", "--fission=opt", "--copt=-g",
+    mirror_cfg = source.parent / "source_mirrors.cfg"
+    mirrors = ["--experimental_downloader_config=" + str(mirror_cfg)] if mirror_cfg.is_file() else []
+    options = [override, *mirrors, "-c", "opt", "--fission=opt", "--copt=-g",
                "--copt=-gdwarf-4", "--copt=-Wno-array-bounds",
                "--copt=-Wno-stringop-overflow", "--jobs=" + str(args.jobs)]
 

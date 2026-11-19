@@ -18,6 +18,276 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class VerificationWorkflowTest(unittest.TestCase):
+    def test_self_hosted_image_runtime_jobs_prune_before_downloading_artifacts(self):
+        workflows = {
+            filename: yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
+            for filename in ("bazel-oci.yml", "bazel-base-images.yml", "sonic-slave-images.yml")
+        }
+        name = "Reclaim unused images and build cache"
+        publisher = next(step for job in workflows["sonic-slave-images.yml"]["jobs"].values()
+                         for step in job["steps"] if step.get("name") == name)
+        expected = {
+            "dash_ha_runtime", "macsec_runtime", "database_runtime", "lldp_runtime",
+            "mux_runtime", "gearbox_runtime", "eventd_runtime", "swss_layer_runtime",
+            "snmp_runtime", "sysmgr_runtime", "frr_runtime", "teamd_runtime",
+            "gnmi_runtime", "mgmt_framework_runtime", "radv_runtime",
+        }
+        jobs = workflows["bazel-oci.yml"]["jobs"]
+        selected = {
+            job_name for job_name, job in jobs.items()
+            if job_name.endswith("_runtime") and
+            any(step.get("name") == name for step in job["steps"])
+        }
+        self.assertEqual(selected, expected)
+        for job_name in sorted(expected) + ["runtime"]:
+            with self.subTest(job=job_name):
+                job = (workflows["bazel-base-images.yml"]["jobs"]["runtime"]
+                       if job_name == "runtime" else jobs[job_name])
+                self.assertNotIn("container", job)
+                self.assertIn("self-hosted", job["runs-on"])
+                steps = job["steps"]
+                cleanups = [(i, step) for i, step in enumerate(steps) if step.get("name") == name]
+                self.assertEqual(len(cleanups), 1)
+                index, cleanup = cleanups[0]
+                self.assertEqual(cleanup["run"], publisher["run"])
+                self.assertEqual(cleanup["if"], "runner.environment == 'self-hosted'")
+                download = next(i for i, step in enumerate(steps)
+                                if "download-artifact@" in step.get("uses", ""))
+                self.assertLess(index, download)
+        for job in jobs.values():
+            if "container" in job:
+                self.assertFalse(any(step.get("name") == name for step in job["steps"]))
+
+    def test_runtime_pruning_commands_stop_on_errors_without_using_a_real_daemon(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        cleanup = next(step for step in workflow["jobs"]["dash_ha_runtime"]["steps"]
+                       if step.get("name") == "Reclaim unused images and build cache")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docker = root / "docker"
+            docker.write_text("#!" + sys.executable + "\n" + textwrap.dedent("""
+                import json, os, sys
+                with open(os.environ["CALLS"], "a") as out:
+                    out.write(json.dumps(sys.argv[1:]) + "\\n")
+                if sys.argv[1:] == os.environ.get("FAIL_COMMAND", "").split():
+                    sys.exit(42)
+            """))
+            docker.chmod(0o755)
+            calls = root / "calls"
+            commands = [["system", "df"], ["image", "prune", "--all", "--force"],
+                        ["builder", "prune", "--all", "--force"], ["system", "df"]]
+            for failure in ("", "system df", "image prune --all --force",
+                            "builder prune --all --force"):
+                with self.subTest(failure=failure):
+                    calls.unlink(missing_ok=True)
+                    environment = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                                       CALLS=str(calls), FAIL_COMMAND=failure)
+                    result = subprocess.run(["bash", "-c", cleanup["run"]], env=environment,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 42 if failure else 0, result.stderr)
+                    expected = commands[:commands.index(failure.split()) + 1] if failure else commands
+                    self.assertEqual([json.loads(line) for line in calls.read_text().splitlines()],
+                                     expected)
+
+    def test_gearbox_runtime_uses_the_bazel_x64_pool_with_post_job_cleanup(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        job = workflow["jobs"]["gearbox_runtime"]
+        self.assertEqual(job["runs-on"], ["self-hosted", "linux", "bazel-x64"])
+        self.assertEqual(job["needs"], "gearbox_archive")
+        self.assertNotIn("container", job)
+        self.assertTrue(any(step.get("uses") == "./.github/actions/bazel-post-job-cleanup"
+                            for step in job["steps"]))
+        self.assertTrue(any(step.get("run") ==
+                            "python3 -B tools/bazel/ci/gbsyncd_loaded.py --artifacts artifacts/gbsyncd"
+                            for step in job["steps"]))
+
+    def test_base_runtime_downloads_the_exact_architecture_producer_artifact(self):
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/bazel-base-images.yml").read_text())
+        native = workflow["jobs"]["native"]
+        runtime = workflow["jobs"]["runtime"]
+        export = next(step for step in native["steps"] if step.get("id") == "artifact_identity")
+        upload = next(i for i, step in enumerate(native["steps"])
+                      if step.get("id") == "bazel_upload_base_images_build")
+        self.assertGreater(native["steps"].index(export), upload)
+        self.assertNotIn("if", export)
+        self.assertEqual(export["env"]["ARTIFACT_ID"],
+                         "${{ steps.bazel_upload_base_images_build.outputs.artifact-id }}")
+        self.assertEqual(set(native["outputs"]), {"amd64_artifact_id", "arm64_artifact_id"})
+        for architecture in ("amd64", "arm64"):
+            self.assertEqual(native["outputs"][architecture + "_artifact_id"],
+                             "${{ steps.artifact_identity.outputs." + architecture + "_artifact_id }}")
+        steps = runtime["steps"]
+        download = next(step for step in steps if "download-artifact@" in step.get("uses", ""))
+        identity = "${{ needs.native.outputs[format('{0}_artifact_id', matrix.architecture)] }}"
+        self.assertEqual(runtime["needs"], "native")
+        self.assertEqual(download["with"], {
+            "artifact-ids": identity, "merge-multiple": True, "path": "artifacts/base-images",
+        })
+        guard = steps[steps.index(download) - 1]
+        self.assertEqual(guard["env"]["ARTIFACT_ID"], identity)
+        verify = next(step for step in steps if step.get("name") == "Load only this run's verified image")
+        for check in ("receipt['status'] == 'passed'", "receipt['architecture']",
+                      "receipt['revision']", "receipt['artifacts'][name]['sha256']"):
+            self.assertIn(check, verify["run"])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            for architecture, artifact in (("amd64", "200"), ("arm64", "300")):
+                output.write_text("")
+                environment = dict(os.environ, ARCHITECTURE=architecture, ARTIFACT_ID=artifact,
+                                   GITHUB_OUTPUT=str(output))
+                result = subprocess.run(["bash", "-c", export["run"]], env=environment,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_text(), f"{architecture}_artifact_id={artifact}\n")
+                result = subprocess.run(["bash", "-c", guard["run"]], env=environment,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            for architecture, artifact in (("amd64", ""), ("amd64", "0"),
+                                           ("amd64", "123\nother=456"), ("other", "200")):
+                output.write_text("")
+                environment = dict(os.environ, ARCHITECTURE=architecture, ARTIFACT_ID=artifact,
+                                   GITHUB_OUTPUT=str(output))
+                result = subprocess.run(["bash", "-c", export["run"]], env=environment,
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output.read_text(), "")
+                if architecture == "amd64":
+                    result = subprocess.run(["bash", "-c", guard["run"]], env=environment,
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_image_jobs_restore_populated_submodules_on_reused_checkouts(self):
+        script = Path("tools/bazel/ci/prepare_image_submodules.sh")
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        for job in ("archive", "gearbox_archive", "dash_engine_archive", "otel_archive"):
+            self.assertIn(f"bash {script}", [step.get("run") for step in workflow["jobs"][job]["steps"]])
+        kernel_only = [
+            workflow["jobs"][name] for name in (
+                "dash_ha_runtime", "macsec_runtime", "database_runtime", "lldp_runtime",
+                "mux_runtime", "swss_layer_runtime", "sysmgr_runtime", "gnmi_native",
+                "gnmi_runtime", "mgmt_framework_runtime",
+            )
+        ]
+        for filename, name in (("bazel-frr-python.yml", "packages"), ("bazel-frr.yml", "native")):
+            kernel_only.append(yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"][name])
+        for job in kernel_only:
+            steps = job["steps"]
+            register = next(i for i, step in enumerate(steps) if step.get("id") == "runner_cleanup")
+            self.assertEqual(steps[register + 1].get("run"), f"bash {script} --kernel-only")
+
+        env = dict(os.environ, GIT_ALLOW_PROTOCOL="file")
+
+        def git(repo, *args):
+            return subprocess.check_output(
+                ["git", "-c", "user.name=Fixture", "-c", "user.email=ci@example.org", *args],
+                cwd=repo, env=env, text=True, stderr=subprocess.PIPE,
+            ).strip()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, parent, checkout = (root / name for name in ("source", "parent", "checkout"))
+            git(root, "init", "-q", str(source))
+            git(root, "init", "-q", str(parent))
+            (source / "input").write_text("old\n")
+            git(source, "add", "input")
+            git(source, "commit", "-qm", "old")
+            old = git(source, "rev-parse", "HEAD")
+            (source / "input").write_text("pinned\n")
+            git(source, "commit", "-qam", "pinned")
+            pinned = git(source, "rev-parse", "HEAD")
+
+            # Pin a nested copy of the original repository before the top-level
+            # source gains a submodule of its own.
+            nested = root / "nested source"
+            git(root, "clone", "-q", str(source), str(nested))
+            git(source, "submodule", "add", "-q", str(nested), "nested module")
+            git(source, "commit", "-qm", "pin nested module")
+            nested_pin = pinned
+            pinned = git(source, "rev-parse", "HEAD")
+
+            gnoi, pins, unused = "src/sonic-sysmgr/gnoi", "src/sonic-p4rt/sonic-pins", "unused module"
+            kernel = "src/sonic-linux-kernel"
+            for path in (gnoi, pins, unused, kernel):
+                git(parent, "submodule", "add", "-q", str(source), path)
+            git(parent, "commit", "-qm", "pin submodules")
+            git(root, "clone", "-q", str(parent), str(checkout))
+            git(checkout, "submodule", "init", "--", unused)
+
+            def prepare(*args, check=True, protocol="file"):
+                return subprocess.run(["bash", ROOT / script, *args], cwd=checkout,
+                                      env=dict(env, GITHUB_WORKSPACE=str(checkout), GIT_ALLOW_PROTOCOL=protocol),
+                                      capture_output=True, text=True, check=check)
+
+            prepare("--kernel-only", protocol="")
+            self.assertFalse((checkout / kernel / ".git").exists())
+            self.assertFalse((checkout / gnoi / ".git").exists())
+            git(checkout, "submodule", "update", "--init", "--", kernel)
+            prepare("--kernel-only", protocol="")
+            retained_kernel = checkout / kernel
+            git(retained_kernel, "checkout", "-q", old)
+            git(checkout, "config", "--remove-section", f"submodule.{kernel}")
+            (retained_kernel / "new.txt").write_text("keep untracked work\n")
+            self.assertNotEqual(prepare("--kernel-only", check=False).returncode, 0)
+            self.assertEqual((retained_kernel / "new.txt").read_text(), "keep untracked work\n")
+            (retained_kernel / "new.txt").unlink()
+            (retained_kernel / "input").write_text("keep local edits\n")
+            git(retained_kernel, "add", "input")
+            self.assertNotEqual(prepare("--kernel-only", check=False).returncode, 0)
+            self.assertEqual(git(retained_kernel, "show", ":input"), "keep local edits")
+            self.assertEqual(git(retained_kernel, "rev-parse", "HEAD"), old)
+            git(retained_kernel, "restore", "--staged", "--worktree", "input")
+            git(checkout, "add", kernel)
+            self.assertNotEqual(prepare("--kernel-only", check=False).returncode, 0)
+            self.assertEqual(git(checkout, "rev-parse", f":{kernel}"), old)
+            git(checkout, "restore", "--staged", kernel)
+            prepare("--kernel-only", protocol="")
+            self.assertEqual(git(retained_kernel, "rev-parse", "HEAD"), pinned)
+            self.assertFalse((checkout / gnoi / ".git").exists())
+
+            # A newly pinned revision may only be available from the kernel remote.
+            (source / "input").write_text("new kernel\n")
+            git(source, "commit", "-qam", "next kernel")
+            next_kernel = git(source, "rev-parse", "HEAD")
+            git(checkout, "update-index", "--cacheinfo", "160000", next_kernel, kernel)
+            git(checkout, "commit", "-qm", "pin new kernel")
+            prepare("--kernel-only")
+            self.assertEqual(git(retained_kernel, "rev-parse", "HEAD"), next_kernel)
+
+            prepare()
+            self.assertEqual(git(checkout / gnoi, "rev-parse", "HEAD"), pinned)
+            self.assertFalse((checkout / pins / ".git").exists())
+            self.assertFalse((checkout / unused / ".git").exists())
+
+            git(checkout, "submodule", "update", "--init", "--", pins)
+            git(checkout / pins, "checkout", "-q", old)
+            git(checkout, "reset", "--hard", "HEAD")
+            self.assertIn(pins, git(checkout, "diff", "--name-only", "--ignore-submodules=none", "HEAD"))
+            # A populated worktree can also lose its local registration.
+            git(checkout, "config", "--remove-section", f"submodule.{pins}")
+            prepare()
+            self.assertEqual(git(checkout / pins, "rev-parse", "HEAD"), pinned)
+            self.assertEqual(git(checkout, "diff", "--ignore-submodules=none", "HEAD"), "")
+            self.assertFalse((checkout / unused / ".git").exists())
+
+            git(checkout / pins, "submodule", "update", "--init", "--", "nested module")
+            retained = checkout / pins / "nested module"
+            git(retained, "checkout", "-q", old)
+            git(checkout / pins, "config", "--remove-section", "submodule.nested module")
+            prepare()
+            self.assertEqual(git(retained, "rev-parse", "HEAD"), nested_pin)
+            self.assertEqual(git(checkout, "diff", "--ignore-submodules=none", "HEAD"), "")
+
+            # Already-pinned local edits remain visible to the strict build check.
+            (checkout / gnoi / "input").write_text("local edit\n")
+            prepare()
+            self.assertIn(gnoi, git(checkout, "diff", "--name-only", "--ignore-submodules=none", "HEAD"))
+            git(checkout / pins, "checkout", "-q", old)
+            (checkout / pins / "input").write_text("conflicting edit\n")
+            self.assertNotEqual(prepare(check=False).returncode, 0)
+            self.assertEqual((checkout / pins / "input").read_text(), "conflicting edit\n")
+
     def run_sysmgr_public_evidence(self, directory):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         step = next(step for step in workflow["jobs"]["archive"]["steps"]
@@ -74,10 +344,27 @@ class VerificationWorkflowTest(unittest.TestCase):
         archive = jobs["archive"]
         gate = jobs["eventd_runtime"]
         self.assertEqual(gate["name"], "Container archive (AMD64)")
-        self.assertIn("archive", gate["needs"])
-        self.assertIn("p4rt_native", gate["needs"])
-        self.assertIn("p4rt_runtime", gate["needs"])
-        self.assertNotIn("p4rt_native", archive.get("needs", []))
+        self.assertEqual(gate["needs"], [
+            "archive", "database_acceptance", "frr_runtime", "teamd_runtime",
+            "radv_acceptance", "lldp_runtime", "mux_runtime", "gearbox_runtime", "macsec_runtime",
+            "otel_runtime", "dash_engine_runtime", "p4rt_native", "p4rt_runtime",
+        ])
+        self.assertEqual(jobs["otel_runtime"]["needs"], "otel_archive")
+        dash = jobs["dash_engine_archive"]
+        self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(dash["timeout-minutes"], 360)
+        self.assertEqual(shlex.split(dash["env"]["SONIC_CONTAINER_BAZEL_OPTIONS"]), [
+            "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
+            "--experimental_build_event_upload_strategy=local",
+        ])
+        self.assertNotIn("needs", dash)
+        self.assertEqual(jobs["dash_engine_runtime"]["needs"], "dash_engine_archive")
+        self.assertEqual(jobs["dash_engine_runtime"]["runs-on"], "ubuntu-24.04")
+        self.assertTrue(any("dash_engine_loaded.py" in step.get("run", "")
+                            for step in jobs["dash_engine_runtime"]["steps"]))
+        self.assertEqual(jobs["macsec_runtime"]["needs"], "archive")
+        self.assertTrue(any("macsec_loaded.py" in step.get("run", "")
+                            for step in jobs["macsec_runtime"]["steps"]))
         self.assertEqual(gate["if"], "always() && (" + archive["if"] + ")")
         build = next(step for step in archive["steps"] if step.get("id") == "eventd_build")
         self.assertEqual(build["if"], "matrix.architecture == 'amd64'")
@@ -100,6 +387,13 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertTrue(any("eventd_loaded.py" in step.get("run", "") for step in gate["steps"]))
         guard = gate["steps"][0]
         self.assertEqual(guard["env"]["JOB_RESULTS"], "${{ toJSON(needs.*.result) }}")
+        self.assertNotIn("continue-on-error", guard)
+        self.assertNotIn("if", guard)
+        for malformed_or_empty in ("[]", "null", "not-json"):
+            with self.subTest(results=malformed_or_empty):
+                result = subprocess.run(["bash", "-ec", guard["run"]], capture_output=True,
+                                        env=dict(os.environ, JOB_RESULTS=malformed_or_empty))
+                self.assertNotEqual(result.returncode, 0)
         for position in range(len(gate["needs"])):
             for status in ("success", "failure", "skipped", "cancelled"):
                 with self.subTest(job=gate["needs"][position], status=status):
@@ -136,7 +430,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                     cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch), SONIC_BAZEL_JOB_TEMP=str(scratch)),
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(artifacts.exists())
@@ -151,7 +445,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                env=dict(os.environ, RUNNER_TEMP=str(scratch), SONIC_BAZEL_JOB_TEMP=str(scratch)),
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(set(scratch.glob("pre-sysmgr-artifacts.*")), set(destinations))
@@ -161,7 +455,8 @@ class VerificationWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing"),
+                         SONIC_BAZEL_JOB_TEMP=str(root / "missing")),
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
@@ -183,7 +478,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 return subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                     cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(directory)),
+                    env=dict(os.environ, RUNNER_TEMP=str(directory), SONIC_BAZEL_JOB_TEMP=str(directory)),
                 )
 
             for value in ("first", "second"):
@@ -228,7 +523,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 return subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                     cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(directory)),
+                    env=dict(os.environ, RUNNER_TEMP=str(directory), SONIC_BAZEL_JOB_TEMP=str(directory)),
                 )
 
             destinations = []
@@ -295,7 +590,7 @@ class VerificationWorkflowTest(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                     cwd=root, capture_output=True, text=True,
-                    env=dict(os.environ, RUNNER_TEMP=str(scratch)),
+                    env=dict(os.environ, RUNNER_TEMP=str(scratch), SONIC_BAZEL_JOB_TEMP=str(scratch)),
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertFalse(artifacts.exists())
@@ -313,7 +608,8 @@ class VerificationWorkflowTest(unittest.TestCase):
             result = subprocess.run(
                 ["bash", "-e", "-o", "pipefail", "-c", preserve["run"]],
                 cwd=root, capture_output=True, text=True,
-                env=dict(os.environ, RUNNER_TEMP=str(root / "missing")),
+                env=dict(os.environ, RUNNER_TEMP=str(root / "missing"),
+                         SONIC_BAZEL_JOB_TEMP=str(root / "missing")),
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((artifacts / "receipt").read_text(), "keep on failure")
@@ -406,7 +702,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(runtime["steps"][0], repair)
         self.assertTrue(runtime["steps"][1]["uses"].startswith("actions/checkout@"))
         self.assertTrue(
-            runtime["steps"][2]["uses"].startswith("actions/download-artifact@")
+            runtime["steps"][4]["uses"].startswith("actions/download-artifact@")
         )
 
     def test_eventd_startup_diagnostics_probe_writes_and_preserve_bazel_failure(self):
@@ -476,7 +772,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         for step in native["steps"]:
             self.assertNotIn("/runner-unused/", step.get("run", ""))
 
-    def test_self_hosted_archives_do_not_mount_or_delete_host_sdks(self):
+    def test_archive_container_reaps_child_processes_and_preserves_host_sdks(self):
         workflow = yaml.safe_load(
             (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         )
@@ -489,6 +785,7 @@ class VerificationWorkflowTest(unittest.TestCase):
              "arm64": ["self-hosted", "linux", "bazel-arm64"]},
         )
         self.assertFalse(archive["container"].get("volumes"))
+        self.assertIn("--init", archive["container"]["options"].split())
         self.assertNotIn(
             "Allocate source-build space on this disposable runner",
             [step.get("name") for step in archive["steps"]],
@@ -529,8 +826,8 @@ class VerificationWorkflowTest(unittest.TestCase):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / source, destination)
             calls = directory / "calls.jsonl"
-            policy = directory / "policy.json"
-            policy.write_text("{}\n")
+            # A stale convenience link must never supply validation results.
+            (directory / "bazel-testlogs").symlink_to(directory / "stale")
             bazel = directory / "bazel"
             bazel.write_text(f"#!{sys.executable}\n" + textwrap.dedent('''\
                 import json, os, sys
@@ -538,15 +835,18 @@ class VerificationWorkflowTest(unittest.TestCase):
                 args = sys.argv[1:]
                 with Path(os.environ['CALLS']).open('a') as output:
                     output.write(json.dumps(args) + '\\n')
+                command = args[0]
                 config = 'dash' if '--config=syncd-dash' in args else 'default'
                 logs = Path('testlogs') / config
                 logs.mkdir(parents=True, exist_ok=True)
                 link = Path('bazel-testlogs')
                 link.unlink(missing_ok=True)
                 link.symlink_to(logs, target_is_directory=True)
-                if args[0] == 'cquery':
-                    print(os.environ['POLICY'])
-                if args[0] == 'test':
+                if command == 'build':
+                    Path('policy.json').write_text(config)
+                if command == 'cquery':
+                    print('policy.json')
+                if command == 'test':
                     target = next(arg.split(':')[1] for arg in args if arg.startswith('//'))
                     status = int(os.environ['SYNCD_EXIT' if config == 'dash' else 'SWSS_EXIT'])
                     report = logs / 'tools/bazel/tests' / target
@@ -562,9 +862,9 @@ class VerificationWorkflowTest(unittest.TestCase):
             bazel.chmod(0o755)
             for swss_exit, syncd_exit in ((0, 0), (13, 0), (0, 17), (13, 17)):
                 with self.subTest(swss_exit=swss_exit, syncd_exit=syncd_exit):
-                    self.check_static_workflow(directory, script, bazel, calls, policy, swss_exit, syncd_exit)
+                    self.check_static_workflow(directory, script, bazel, calls, swss_exit, syncd_exit)
 
-    def check_static_workflow(self, directory, script, bazel, calls, policy, swss_exit, syncd_exit):
+    def check_static_workflow(self, directory, script, bazel, calls, swss_exit, syncd_exit):
         calls.unlink(missing_ok=True)
         for name in ("testlogs", "artifacts/vs/swss-images", "artifacts/vs/syncd-p4-images"):
             shutil.rmtree(directory / name, ignore_errors=True)
@@ -574,13 +874,14 @@ class VerificationWorkflowTest(unittest.TestCase):
             output.unlink(missing_ok=True)
         result = subprocess.run(["bash", "-c", script], cwd=directory,
                                 env=dict(os.environ, BAZEL=str(bazel), CALLS=str(calls),
-                                         POLICY=str(policy), SWSS_EXIT=str(swss_exit), SYNCD_EXIT=str(syncd_exit)),
+                                         SWSS_EXIT=str(swss_exit), SYNCD_EXIT=str(syncd_exit)),
                                 capture_output=True, text=True)
         failure = syncd_exit or swss_exit
         self.assertEqual(result.returncode, failure, result.stderr)
         arguments = [json.loads(line) for line in calls.read_text().splitlines()]
-        self.assertEqual(len(arguments), 2 if failure else 6)
-        for invocation in arguments:
+        target_calls = [args for args in arguments if any(arg.startswith("//") for arg in args)]
+        self.assertEqual(len(target_calls), 2 if failure else 6)
+        for invocation in target_calls:
             target = next(arg for arg in invocation if arg.startswith("//"))
             self.assertEqual("--config=syncd-dash" in invocation, "syncd" in target)
         for output in outputs:

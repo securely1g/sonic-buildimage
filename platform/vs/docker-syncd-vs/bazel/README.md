@@ -74,8 +74,8 @@ bazel build --config=syncd-dash \
 | Syncd and the DASH-enabled daemon | `@sonic_sairedis//syncd:syncd_pkg` |
 | FIPS OpenSSH client | `@sonic_fips//openssh:openssh_client_pkg` |
 | libnl development files | Source-owned headers, static libraries and link/pkg-config files matching the two Make development packages. |
-| PI | `@p4lang_pi//:runtime` |
-| BMv2 | `@p4lang_bmv2//:runtime` |
+| PI | `@p4lang_pi//:p4lang-pi.runtime` |
+| BMv2 | `@p4lang_bmv2//:p4lang-bmv2.runtime` |
 | P4C | `@p4c//:p4c_pkg` |
 | DASH SAI | `@sonic_dash//:runtime` |
 
@@ -100,10 +100,11 @@ library. Those Z3 objects have no DWARF; matching symbols cover the rebuilt
 P4C/testgen code. The other shipped P4C programs do not link Z3, and ARM64
 disables testgen.
 
-PI's `pi_CLI_dummy` launcher imports `main` from `libpicli.so.0`; it has no
-source objects of its own. Validation checks the launcher's build ID and
-debug link, its imported function and required library, and the provider's
-matching DWARF. Installed GDB must resolve that function to `main.c` and fail
+PI's `pi_CLI_dummy` launcher imports `main` from `libpicli.so.0` and links
+three utility sources, `lib/_assert.c`, `lib/read_file.c` and `lib/vector.c`.
+Validation checks these three compilation units in the launcher's split DWARF,
+its build ID and debug link, its imported function and required library, and
+the provider's matching DWARF. Installed GDB must resolve that function to `main.c` and fail
 the same source lookup when the packaged symbols are unavailable.
 
 The checked source receipt binds the reviewed controls, resolved module
