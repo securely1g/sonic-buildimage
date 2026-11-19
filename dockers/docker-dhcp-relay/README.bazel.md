@@ -51,7 +51,8 @@ startup, DHCP utilities and debug symbol lookup using a private Redis fixture.
 It does not change host networking or use an external DHCP server.
 
 The `Bazel OCI` workflow's `source_image=dhcp-relay` dispatch runs the DHCP utility
-tests, both image builds, content/incremental checks, and installed-runtime checks.
+tests and original CLI plugin suite, both image builds, content/incremental checks,
+and installed-runtime checks.
 Set `source_revision` to the full reviewed commit. The K3s build uses the remote
 Bazel cache; it does not require a persistent local cache. This dedicated dispatch
 does not select the full VS installer or other container builds.

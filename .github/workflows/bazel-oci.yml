@@ -329,14 +329,16 @@ jobs:
           printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/dhcp-source-mirrors.cfg" >> .bazelrc.user
       - name: Prepare pinned submodules for image builds
         run: bash tools/bazel/ci/prepare_image_submodules.sh
-      - name: Check the DHCP utilities owner tests without DEB generation
+      - name: Check DHCP utilities and CLI tests without DEB generation
         id: dhcp_utility_tests
         run: &dhcp_utility_tests |
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
             --output artifacts/dhcp-relay/utility-action.validation.json \
-            //src/sonic-dhcp-utilities:upstream_tests //src/sonic-dhcp-utilities:installed_wheel_test
+            //src/sonic-dhcp-utilities:upstream_tests //src/sonic-dhcp-utilities:installed_wheel_test \
+            //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests
           "$BAZEL" test //src/sonic-dhcp-utilities:upstream_tests \
-            //src/sonic-dhcp-utilities:installed_wheel_test --nocache_test_results \
+            //src/sonic-dhcp-utilities:installed_wheel_test \
+            //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests --nocache_test_results \
             --build_event_json_file="$PWD/artifacts/dhcp-relay/utility-test-events.json"
       - name: Build DHCP relay runtime and debug images from source owners
         id: dhcp_relay_build
@@ -1653,7 +1655,7 @@ jobs:
             mv artifacts "$preserved/artifacts"
           fi
 
-      - name: Check the DHCP utilities owner tests without DEB generation
+      - name: Check DHCP utilities and CLI tests without DEB generation
         if: matrix.architecture == 'amd64'
         run: *dhcp_utility_tests
       - name: Build DHCP relay runtime and debug images from source owners
