@@ -165,7 +165,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             self.assertIn(f"bash {script}", [step.get("run") for step in workflow["jobs"][job]["steps"]])
         kernel_only = [
             workflow["jobs"][name] for name in (
-                "dash_ha_runtime", "macsec_runtime", "database_runtime", "lldp_runtime",
+                "dash_ha_runtime", "macsec_runtime", "database_runtime", "lldp_runtime", "dhcp_relay_runtime",
                 "mux_runtime", "swss_layer_runtime", "sysmgr_runtime", "gnmi_native",
                 "gnmi_runtime", "mgmt_framework_runtime",
             )
@@ -346,7 +346,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(gate["name"], "Container archive (AMD64)")
         self.assertEqual(gate["needs"], [
             "archive", "database_acceptance", "frr_runtime", "teamd_runtime",
-            "radv_acceptance", "lldp_runtime", "mux_runtime", "gearbox_runtime", "macsec_runtime",
+            "radv_acceptance", "lldp_runtime", "dhcp_relay_runtime", "mux_runtime", "gearbox_runtime", "macsec_runtime",
             "otel_runtime", "dash_engine_runtime",
         ])
         self.assertEqual(jobs["otel_runtime"]["needs"], "otel_archive")

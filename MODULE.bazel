@@ -54,8 +54,14 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.38-0baa4acc9eac9ccc793b81104b1580d530271cbe",
+    version = "0.0.39-5dd692e1573f634d1f97a1930069253e50dbd4f2",
     repo_name = "sonic_build_infra",
+)
+# Select the wheel metadata adapter while its source/registry change is reviewed.
+# Transitive consumers select the previous .39 snapshot, which sorts above this one.
+single_version_override(
+    module_name = "sonic-build-infra",
+    version = "0.0.39-5dd692e1573f634d1f97a1930069253e50dbd4f2",
 )
 bazel_dep(name = "grub", version = "2.12.sonic.1")
 bazel_dep(
@@ -366,6 +372,9 @@ source_modules(
     name = "image_source_modules",
     modules = {
         "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
+        "@isc_dhcp//:MODULE.bazel": "isc-dhcp",
+        "@sonic_dhcpmon//:MODULE.bazel": "sonic-dhcpmon",
+        "@sonic_dhcp_relay//:MODULE.bazel": "sonic-dhcp-relay",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
         "@libteam//:MODULE.bazel": "libteam",
@@ -694,3 +703,21 @@ source_modules(
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
     },
 )
+
+# DHCP relay consumes native owner TARs and the shared locked runtime inputs.
+bazel_dep(name = "isc-dhcp", version = "4.4.3.sonic.1", repo_name = "isc_dhcp")
+bazel_dep(name = "sonic-dhcpmon", version = "0.1.0-b824589b2ba49a8ba59142289bfb04bb3ca68875", repo_name = "sonic_dhcpmon")
+bazel_dep(name = "sonic-dhcp-relay", version = "0.1.0-2c2fd81332a1e99bc5ae95cd6121cefcd2518f43", repo_name = "sonic_dhcp_relay")
+use_repo(apt, "dhcp_relay_runtime_debian", "dhcp_relay_test_debian")
+
+apt_inputs(
+    name = "dhcp_relay_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)
+
+pip.parse(
+    hub_name = "dhcp_relay_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-dhcp-relay/python:requirements_lock.txt",
+)
+use_repo(pip, "dhcp_relay_pip")
