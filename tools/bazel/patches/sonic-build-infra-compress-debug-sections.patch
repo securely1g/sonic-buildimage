@@ -1,0 +1,30 @@
+diff --git a/binary/strip_binary.bzl b/binary/strip_binary.bzl
+index 804adf6..c397750 100644
+--- a/binary/strip_binary.bzl
++++ b/binary/strip_binary.bzl
+@@ -97,8 +97,8 @@ _strip_binary_rule = rule(
+             doc = "Reads the ELF build-id using the declared execution runtime.",
+         ),
+         "compress_debug_sections": attr.bool(
+-            default = False,
+-            doc = "Compress extracted DWARF with GNU objcopy before computing the runtime debuglink. Default preserves the existing uncompressed format.",
++            default = True,
++            doc = "Compress extracted DWARF with GNU objcopy before computing the runtime debuglink, as Debhelper does for dbgsym packages. Set False to keep uncompressed sections.",
+         ),
+         "install_rpath": attr.string(
+             default = "",
+diff --git a/tar/sonic_deploy_tar.bzl b/tar/sonic_deploy_tar.bzl
+index 0c2aa15..75503cb 100644
+--- a/tar/sonic_deploy_tar.bzl
++++ b/tar/sonic_deploy_tar.bzl
+@@ -140,8 +140,8 @@ The binary will then be replaced with its stripped version behind the scenes. Mi
+             configurable = False,
+         ),
+         "compress_debug_sections": attr.bool(
+-            default = False,
+-            doc = "Compress extracted DWARF before pairing runtime ELF and symbols. Enable when the original installation contract requires compressed debug sections.",
++            default = True,
++            doc = "Compress extracted DWARF before pairing runtime ELF and symbols, as Debhelper does for dbgsym packages. Set False when the original installation ships uncompressed debug sections.",
+         ),
+         "install_rpath": attr.string(
+             default = "",
