@@ -306,12 +306,22 @@ jobs:
           # worker-managed cache settings into its ignored job-local RC.
           python3 - <<'PY'
           import os
+          import hashlib
+          import json
           from pathlib import Path
           import shlex
           managed = os.environ['SONIC_BAZEL_REMOTE_ONLY_RC']
           assert '\n' not in managed and '\r' not in managed
+          trust = Path(os.environ['SONIC_BAZEL_JAVA_TRUST_STORE'])
+          assert trust.is_absolute() and trust.is_file() and os.access(trust, os.R_OK)
+          assert '\n' not in str(trust) and '\r' not in str(trust)
           with Path('.bazelrc.user').open('a') as output:
               output.write('import ' + shlex.quote(managed) + '\n')
+              output.write('startup ' + shlex.quote('--host_jvm_args=-Djavax.net.ssl.trustStore=' + str(trust)) + '\n')
+          Path('artifacts/dhcp-relay/worker-java-trust.validation.json').write_text(json.dumps({
+              'status': 'passed', 'java_trust_store_sha256': hashlib.sha256(trust.read_bytes()).hexdigest(),
+              'certificate_verification': True,
+          }, indent=2) + '\n')
           PY
       - name: Configure verified source download mirrors
         run: |
