@@ -13,7 +13,6 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-CATALOG = "main"
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-supervisor-rust.yml", "native"), ("bazel-yang-models.yml", "package"),
         ("bazel-oci.yml", "archive"), ("bazel-oci.yml", "checks")]
@@ -107,7 +106,9 @@ class SwssOwnerWorkflowTest(unittest.TestCase):
                                     env=dict(os.environ, PATH=str(root)+":/usr/bin:/bin"), capture_output=True, text=True, check=True)
             args = json.loads(result.stdout)
             self.assertIn("--nohome_rc", args)
-            self.assertIn("--registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"+CATALOG, args)
+            registry = next(line.removeprefix("common ") for line in (ROOT / ".bazelrc").read_text().splitlines()
+                            if line.startswith("common --registry="))
+            self.assertIn(registry, args)
             self.assertEqual(args[-2:], ["--disk_cache=/private/disk", "@sonic_swss//crates/countersyncd:common_rust_test"])
 
     def test_amd64_archive_attempts_keep_caches_and_get_fresh_owner_trees(self):

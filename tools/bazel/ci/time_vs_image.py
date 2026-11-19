@@ -2,8 +2,10 @@
 
 import argparse
 from contextlib import contextmanager
+import gzip
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,12 +18,37 @@ def start_recipe(workspace, owner, bazel, profiles, exports):
     directory = Path(tempfile.mkdtemp(dir=root, prefix="recipe-"))
     (directory / "recipe.json").write_text(json.dumps({
         "bazel": bazel, "profiles": profiles, "exports": exports,
+        "telemetry": [phase for phase in profiles if phase in ("build", "test")],
     }) + "\n")
     return directory
 
 
 def exit_status(returncode):
     return returncode if returncode >= 0 else 128 - returncode
+
+
+def telemetry_flags(directory, phase):
+    return [f"--build_event_json_file={directory / (phase + '.bep.json')}",
+            f"--execution_log_json_file={directory / (phase + '.execution.json')}"]
+
+
+def compress_telemetry(directory, phase):
+    for kind in ("bep", "execution"):
+        path = directory / f"{phase}.{kind}.json"
+        temporary = path.with_suffix(".json.gz.tmp")
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as source, gzip.open(temporary, "wb", compresslevel=1) as output:
+                shutil.copyfileobj(source, output)
+            temporary.replace(path.with_suffix(".json.gz"))
+            path.unlink()
+        except OSError as error:
+            print(f"Telemetry compression unavailable for {phase}/{kind}: {error}", file=sys.stderr)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 @contextmanager
@@ -72,6 +99,8 @@ def main(arguments):
         # Nested workspaces can have Bazel startup options before the command.
         index = command.index(phase.split("-")[0], 1) + 1
         command[index:index] = [f"--profile={profile}", "--noslim_profile"]
+        if phase in ("build", "test"):
+            command[index + 2:index + 2] = telemetry_flags(directory, phase)
     try:
         with time_phase(directory, phase):
             subprocess.run(command, check=True)
@@ -80,6 +109,9 @@ def main(arguments):
     except FileNotFoundError as error:
         print(error, file=sys.stderr)
         return 127
+    finally:
+        if phase in ("build", "test"):
+            compress_telemetry(directory, phase)
     return 0
 
 

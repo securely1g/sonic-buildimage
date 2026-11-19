@@ -28,6 +28,11 @@ on:
         description: Skip the full VS image build
         type: boolean
         default: true
+      repository_cache_mode:
+        description: VS NFS repository cache mode (leave skip_vs unchecked)
+        type: choice
+        options: ['off', downloads, downloads-and-contents]
+        default: downloads-and-contents
 
 permissions:
   contents: read
@@ -3772,11 +3777,12 @@ jobs:
       # Use the explicitly selected gRPC service, not the legacy HTTPS override.
       BAZEL_REMOTE_AUTH: ""
       SONIC_BAZEL_REMOTE_CACHE: grpc://172.16.0.4:9092
-      SONIC_BAZEL_REMOTE_UPLOAD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}
+      SONIC_BAZEL_REMOTE_UPLOAD: "y"
       SONIC_CONFIG_USE_DOCKER_CACHE: "y"
       SONIC_DPKG_CACHE_METHOD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'rwcache' || 'rcache' }}
       SONIC_DPKG_CACHE_SOURCE: /nfs/dpkg_cache/vs
       SONIC_BUILD_JOBS: "4"
+      NOBOOKWORM: "1"
       ENABLE_DOCKER_BASE_PULL: "y"
       REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
       ACR_REGISTRY_NAME: sonicdev
@@ -3789,9 +3795,12 @@ jobs:
       SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
+      SONIC_VS_REPOSITORY_CACHE_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.repository_cache_mode || 'downloads-and-contents' }}
       # Image recipes serialize through one Bazel server on this runner.
       BAZEL_CONTAINER_ARGS: >-
         --jobs=4 --local_resources=memory=12288
+        --remote_timeout=600s
+        --verbose_failures
         --remote_local_fallback
         --incompatible_remote_local_fallback_for_remote_cache
         --experimental_remote_downloader=grpc://172.16.0.4:9092
@@ -3894,15 +3903,36 @@ jobs:
           make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             2>&1 | tee artifacts/vs/configure.log
-          for build_env in bookworm trixie; do
-            make -f Makefile.work BLDENV="$build_env" docker-start \
-              SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-              2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
-          done
+          make -f Makefile.work BLDENV=trixie docker-start \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            2>&1 | tee artifacts/vs/docker-start-trixie.log
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
             2>&1 | tee artifacts/vs/kernel-sandbox.log
+
+      - name: Configure NFS repository caches
+        run: |
+          set -euo pipefail
+          case "$SONIC_VS_REPOSITORY_CACHE_MODE" in
+            off)
+              python3 -B tools/bazel/ci/nfs_repository_cache.py \
+                --mode off --github-env "$GITHUB_ENV" \
+                --receipt artifacts/vs/nfs-repository-cache.json
+              ;;
+            downloads|downloads-and-contents)
+              prepare="python3 -B tools/bazel/ci/nfs_repository_cache.py --mode $SONIC_VS_REPOSITORY_CACHE_MODE"
+              prepare+=" --github-env artifacts/vs/nfs-repository-cache.env --receipt artifacts/vs/nfs-repository-cache.json"
+              make -f Makefile.work BLDENV=trixie sonic-slave-run \
+                SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL --mount type=bind,source=/nfs/bazel/repository-caches,target=/nfs/bazel/repository-caches" \
+                SONIC_RUN_CMDS="$prepare"
+              cat artifacts/vs/nfs-repository-cache.env >> "$GITHUB_ENV"
+              ;;
+            *)
+              printf 'Unsupported NFS repository cache mode: %s\n' "$SONIC_VS_REPOSITORY_CACHE_MODE" >&2
+              exit 2
+              ;;
+          esac
 
       - name: Build sonic-vs.bin through the host Make wrapper
         id: native_build

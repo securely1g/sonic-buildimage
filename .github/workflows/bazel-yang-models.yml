@@ -123,10 +123,11 @@ jobs:
           test "$(uname -m)" = '${{ matrix.machine }}'
           test ! -e MODULE.bazel.lock
           git check-ignore MODULE.bazel.lock
-          registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+          # Draft #235 only: restore maintained main after .23 publication.
+          registry=https://raw.githubusercontent.com/yijingyan2/sonic-bazel-registry/3228bd32a80d7ad7473fc1be31e28bed2001b19c
           options=(--registry="$registry" --registry=https://bcr.bazel.build --lockfile_mode=update)
           mkdir -p artifacts
-          # The standalone module and image root use the same maintained registry.
+          # The standalone module and image root use the same registry.
           (cd ../.. && tools/bazel/ci/libteam_draft_bazel.sh cquery --lockfile_mode=update \
             //src/sonic-yang-models:yang_models_package_test) > artifacts/image-root-targets.txt
           git rev-parse HEAD > artifacts/revision.txt

@@ -42,6 +42,7 @@ goal = next((arg for arg in args if arg in (
     "target/sonic-vs.bin", "bookworm", "sonic-slave-run", "docker-cleanup")), None)
 with pathlib.Path("calls.jsonl").open("a") as output:
     output.write(json.dumps({"action": action, "goal": goal, "args": args,
+        "no_bookworm": os.environ.get("NOBOOKWORM"),
         "bazel_args": os.environ.get("BAZEL_CONTAINER_ARGS"),
         "override_build_vars": os.environ.get("SONIC_OVERRIDE_BUILD_VARS"),
         "build_vars": os.environ.get("SONIC_BUILD_VARS"),
@@ -315,6 +316,30 @@ else:
         self.assertLess(job["steps"].index(summary), job["steps"].index(upload))
         self.assertLess(job["steps"].index(upload), job["steps"].index(validation))
         self.assertIn("steps.vs_image_timings_upload.outcome == 'success'", job["steps"][-1]["if"])
+
+    def test_host_job_prepares_only_trixie_and_skips_bookworm_validation_setup(self):
+        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
+        prepare = next(step for step in job["steps"]
+                       if step.get("name") == "Prepare the host-driven SONiC slave")
+        self.prepare_build()
+        environment = dict(self.environment, NOBOOKWORM=job["env"].get("NOBOOKWORM", "0"))
+        result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", prepare["run"]],
+                                cwd=self.root, env=environment, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(calls[0]["args"], ["init"])
+        self.assertEqual(calls[1]["args"][:3], ["configure", "PLATFORM=vs", "PLATFORM_ARCH=amd64"])
+        self.assertEqual([call["args"][:4] for call in calls[2:]], [
+            ["-f", "Makefile.work", "BLDENV=trixie", "docker-start"],
+            ["-f", "Makefile.work", "BLDENV=trixie", "sonic-slave-run"],
+        ])
+        self.assertTrue(all(call["no_bookworm"] == "1" for call in calls))
+        (self.root / "calls.jsonl").unlink()
+        result = self.run_script("validate_vs.sh", NOBOOKWORM=environment["NOBOOKWORM"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([call["goal"] or call["action"] for call in self.calls()],
+                         ["capture-pairs", "sonic-slave-run", "docker-cleanup", "verify-pairs"])
 
     def test_dashboard_reads_measurements_from_the_real_summary_step(self):
         job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]

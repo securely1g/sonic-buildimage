@@ -91,8 +91,8 @@ jobs:
           CI_ARCHITECTURE: ${{ matrix.architecture }}
           CI_CPU: ${{ matrix.cpu }}
           CI_DISTRIBUTION: ${{ matrix.distribution }}
-          # Use the canonical maintained registry.
-          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+          # Draft #235 only: restore maintained main after .23 publication.
+          SONIC_BAZEL_REGISTRY: https://raw.githubusercontent.com/yijingyan2/sonic-bazel-registry/3228bd32a80d7ad7473fc1be31e28bed2001b19c
         run: |
           set -euo pipefail
           mkdir -p artifacts

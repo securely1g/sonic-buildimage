@@ -490,13 +490,15 @@ class KernelBundleTest(unittest.TestCase):
         directory, = (self.root / "artifacts/vs/image-timings/linux-kernel").iterdir()
         recipe = json.loads((directory / "recipe.json").read_text())
         self.assertEqual(recipe, {"bazel": ["launcher"], "profiles": ["build", "cquery", "mod"],
-                                  "exports": ["stage-debs"]})
+                                  "exports": ["stage-debs"], "telemetry": ["build"]})
         for phase in ("launcher", "stage-debs"):
             self.assertEqual(json.loads((directory / f"{phase}.timing.json").read_text())["exit_code"], 0)
         self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"build profile")
         self.assertEqual((directory / "build.log").read_text(), "kernel source build\n")
         rc = (self.root / "state/consumer/.bazelrc").read_text().splitlines()
         self.assertIn("common --noslim_profile", rc)
+        self.assertIn(f"build --build_event_json_file={directory}/build.bep.json "
+                      f"--execution_log_json_file={directory}/build.execution.json", rc)
         for phase in ("cquery", "mod"):
             self.assertIn(f"{phase} --profile={directory}/{phase}.profile.json.gz", rc)
         self.assertTrue(kernel.ensure(self.root)["reused"])

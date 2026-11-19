@@ -1,5 +1,7 @@
 # Module versions, source commits and package snapshots remain pinned.
-common --registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+# Draft #235 only: test the unpublished .23 prepared-APT-cache candidate.
+# Restore the maintained registry's main URL after .23 is published.
+common --registry=https://raw.githubusercontent.com/yijingyan2/sonic-bazel-registry/3228bd32a80d7ad7473fc1be31e28bed2001b19c
 common --registry=https://bcr.bazel.build
 import %workspace%/tools/bazel/common.bazelrc
 

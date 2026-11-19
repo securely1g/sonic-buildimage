@@ -1,5 +1,88 @@
 # Shared Bazel CI helpers
 
+## VS NFS repository-cache trial
+
+The Bazel OCI workflow's manual `repository_cache_mode` input has three modes:
+`off`, `downloads`, and `downloads-and-contents` (the default).
+Select `source_image=none` and `skip_vs=false` to run the full VS build.
+VS push and same-repository pull-request builds also use
+`downloads-and-contents`. This is a direct-NFS experiment, not snapshot
+publication/restoration or pre-generated APT metadata.
+
+Provision `/nfs/bazel/repository-caches` on the existing NFS mount, with capacity
+and permissions allowing the slave's build UID to create its cache namespaces.
+After slave initialization, Docker bind-mounts that root at the same path into
+a preparation slave. The helper runs there as the actual unprivileged builder,
+not on the host or as container root. It requires actual NFS backing, checks
+write/read access and a POSIX record lock on a temporary file, and never changes
+existing ownership or modes. Container-generated exports return through the
+checkout's artifacts directory; the host need not traverse the NFS parent paths.
+A missing mount or unusable cache fails the enabled run instead of silently
+creating a local substitute. The mounted root and its cache subdirectories must
+allow traversal by the builder inside the slave.
+Use consistent builder UIDs across disposable agents for cross-agent reuse.
+
+The host-driven VS installer job prepares only the Trixie slave and sets
+`NOBOOKWORM=1` for configuration, the outer build wrapper and validation. Its
+Bookworm image aggregate has no selected outputs; P4 runtime/debug packages are
+resolved in Trixie. Other jobs and generic Bookworm build support are unchanged.
+
+| Host directory beneath that root | Slave mount | Used by |
+| --- | --- | --- |
+| `downloads/uid-<uid>` | `/bazel_cache/repository_cache` | Both enabled modes |
+| `contents/bazel-8.5.1/vs-amd64/uid-<uid>` | `/bazel_cache/repo_contents_cache` | `downloads-and-contents` only |
+
+`Makefile.work` mounts these separately using
+`SONIC_BAZEL_REPOSITORY_CACHE_SOURCE` and
+`SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE`. Both default to empty and require the
+normal `SONIC_BAZEL_CACHE_SOURCE` mount. Action `disk_cache`, Bazelisk and Bazel
+output bases/server state are not moved to NFS. Local cache and checkout cleanup
+does not delete these separately mounted host directories.
+Repository bind sources use Docker `--mount`, which requires existing sources
+instead of silently creating root-owned directories. Docker's daemon checks
+those paths; an unprivileged host `test -d/-w` would incorrectly reject caches
+whose protected parent directories are bypassed by the container bind mount.
+Separate repository source paths must not contain commas.
+`build_helpers.py` enables prepared contents only for the image build/query
+invocations that consume its options, not globally in the system rc: nested
+projects can use older Bazel versions. Explicit caller flags can disable it.
+This does not change remote cache uploads or Make's dpkg cache.
+
+The setup step creates/checks the NFS cache directories after local cleanup and
+slave initialization, but before the image build. Bazel writes downloaded
+archives to the download cache as it fetches them during the build.
+After an eligible repository rule completes
+successfully, Bazel moves its prepared files into the contents cache and links
+the output-base repository to that cache entry. These are direct NFS writes:
+there is no end-of-job upload or snapshot stage. Valid warm entries are reused.
+
+Compare the same revision/configuration in `off`, `downloads`, then two
+`downloads-and-contents` runs, ideally on fresh agents with the same UID. The
+first prepared-cache run populates eligible entries; the next tests reuse.
+Keep `artifacts/vs/nfs-repository-cache.json`, the existing per-target profiles
+and job duration. Compare repository preparation and total elapsed time, not
+overlapping spans added together. The normal VS installer/runtime/debug checks,
+including LLVM-dependent builds, remain enabled. The record-lock probe is not
+a multi-client NFS correctness test; validate the server's locking and rename
+behavior across agents before broader use.
+
+Bazel 8.5.1 only admits nonlocal repositories whose implementation reports
+`repo_metadata(reproducible=True)` to its contents cache. Enabling the flag does
+not make other rules eligible, and archive download hits alone do not eliminate
+APT metadata discovery. Actual Syncd savings and the earlier LLVM missing-package
+failure still need CI validation; no improvement is assumed. Choose `downloads`
+or `off` for a manual run without prepared-cache use or shared-data deletion.
+To roll back automatic builds too, change the workflow's automatic fallback.
+The versioned namespace is only an isolation aid: Bazel still validates each
+repository's declared and recorded inputs.
+
+These are writable caches for mutually trusted jobs. Neither the workflow input
+nor the checksum-keyed download layout makes the prepared cache safe against
+untrusted writers; enforce NFS permissions and restrict who can run cache-enabled
+code. Retention and capacity management belong to the cache administrator.
+Never delete a live prepared cache: Bazel may retain symlinks into it between
+commands. Coordinate maintenance with users of that namespace.
+
 ## Remote cache uploads
 
 The [native event services](../../../.github/workflows/bazel-eventd.yml),
@@ -320,6 +403,19 @@ checks belong to `target/sonic-vs.img.gz` and are not exercised by this `.bin`
 CI path. The separate VM target retains those checks.
 The build records its starting Git revision; validation requires that revision
 before checks and again before writing its timing summary.
+
+Instrumented Make recipes retain existing JSON profiles and additionally write
+BEP (`<phase>.bep.json.gz`) and JSON spawn logs
+(`<phase>.execution.json.gz`) for Bazel build/test commands, including the nested
+kernel build. Queries keep profiles only. JSON logs are concatenated objects,
+not a JSON array, and are gzip-compressed after command timing ends even on
+failure. Capture and compression add CPU/I/O overhead; gzip saves artifact
+space, not Bazel serialization time. The existing timing artifact includes these
+files and the workflow summary reports bounded cache/timing observations.
+Raw logs may contain action commands, paths and environment variables: avoid
+secrets in command-line/action environments and review artifact access.
+The [dashboard documentation](../../ci/build_dashboard/README.md) explains
+source coverage, distinct cache layers and the limitations of these counts.
 
 [`validate_vs.sh`](validate_vs.sh) runs in the separate **Validate VS container
 pairs and P4 debug symbols** step after a successful build, using the same

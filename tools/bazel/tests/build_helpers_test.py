@@ -45,6 +45,27 @@ class BuildHelpersTest(unittest.TestCase):
         self.assertEqual(build_helpers.cache_options(None), [])
         self.assertEqual(build_helpers.cache_options(""), [])
 
+    def test_prepared_cache_is_opt_in_and_does_not_move_action_cache(self):
+        contents = self.root / "prepared"
+        contents.mkdir()
+        local = self.root / "local"
+        with patch.dict(build_helpers.os.environ, SONIC_BAZEL_REPO_CONTENTS_CACHE=str(contents)):
+            self.assertEqual(build_helpers.cache_options(str(local)), [
+                f"--repository_cache={local}/repository_cache",
+                f"--disk_cache={local}/disk_cache",
+                f"--repo_contents_cache={contents}",
+            ])
+            self.assertEqual(build_helpers.cache_options(None),
+                             [f"--repo_contents_cache={contents}"])
+
+    def test_prepared_cache_requires_an_existing_absolute_mount(self):
+        for contents in ("relative", str(self.root / "not-mounted")):
+            with self.subTest(contents=contents), patch.dict(
+                    build_helpers.os.environ, SONIC_BAZEL_REPO_CONTENTS_CACHE=contents):
+                with self.assertRaisesRegex(ValueError, "existing writable absolute"):
+                    build_helpers.cache_options(None)
+        self.assertFalse((self.root / "not-mounted").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

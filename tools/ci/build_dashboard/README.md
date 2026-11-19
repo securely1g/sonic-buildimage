@@ -129,12 +129,36 @@ not an exhaustive causal partition. Historical runs without these details say so
 The workflow summary uses GitHub-native collapsible sections and the same evidence
 tables; GitHub does not support the dashboard's custom styling or JavaScript controls.
 
+New instrumented build/test invocations also record BEP and JSON execution logs.
+Each card and workflow-summary disclosure shows BEP analysis/execution spans,
+local persistent action-cache hits/misses, logged remote/disk-cache hits,
+non-cache-hit/failed spawns, and up to three longest timed spawns. Coverage counts
+identify missing or incomplete streams; older runs say telemetry was not recorded.
+Local action-cache checks and logged spawns have different denominators. Actions
+reused in Skyframe or the local persistent action cache may have no spawn record,
+and BEP's actions-executed count includes remote-cache hits. Do not derive a
+whole-build cache-hit percentage by combining these counters. BEP phase times
+can overlap and exclude client overhead; profiles remain the detailed timeline.
+These measurements do not establish download/prepared-repository cache hit rates.
+
 Open the upload log linked from the timings to download
 `sonic-vs-bazel-timings-amd64` during its 14-day retention period. Open a
 Bazel profile in Perfetto to inspect individual actions within a recipe. The
 dashboard keeps the numeric breakdown and validated, bounded named evidence in build history. Earlier instrumented
 runs keep their four-image reports, and pre-profiling runs keep their original
 Make timings.
+The same artifact retains `<phase>.bep.json.gz` and
+`<phase>.execution.json.gz` for build/test phases, including failed invocations
+when Bazel produced the files. Queries retain their existing profiles only.
+JSON execution logs avoid a converter dependency but cost more I/O than compact
+logs; fast gzip runs after each timed command, so compare full job time too.
+Raw telemetry can contain command lines, input paths and action environment
+variables. Review artifact access and avoid secrets in action environments or
+command-line options. The public dashboard/history retains only validated
+numeric data, fixed runner categories and bounded public target/mnemonic fields,
+never the raw BEP or execution logs. Reporting reads at most 512 MiB of
+uncompressed input per source and 16 MiB per JSON record; oversized, malformed or
+unfinished sources are unavailable, not zero-hit observations.
 
 Open **Step timings**, then expand the Make VS image-build step marked
 **Measured breakdown**. Each section covers one sequential Make target, including its

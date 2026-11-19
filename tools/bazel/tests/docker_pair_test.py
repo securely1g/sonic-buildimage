@@ -111,7 +111,8 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
             commands = profiles
             exports = ["export-" + owner, "export-" + debug]
             self.assertEqual(json.loads((directory / "recipe.json").read_text()),
-                             {"bazel": commands, "profiles": profiles, "exports": exports})
+                             {"bazel": commands, "profiles": profiles, "exports": exports,
+                              "telemetry": ["build"]})
             for phase in commands + exports:
                 record = json.loads((directory / (phase + ".timing.json")).read_text())
                 self.assertEqual((record["phase"], record["exit_code"]), (phase, 0))
@@ -124,6 +125,8 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
             args = call["arguments"]
             self.assertIn("--noslim_profile", args)
             profiles.extend(arg for arg in args if arg.startswith("--profile="))
+            for flag in ("--build_event_json_file=", "--execution_log_json_file="):
+                self.assertEqual(sum(arg.startswith(flag) for arg in args), int("build" in args))
         self.assertCountEqual(profiles, expected_profiles)
 
     def test_timed_standalone_archive_preserves_every_invocation(self):

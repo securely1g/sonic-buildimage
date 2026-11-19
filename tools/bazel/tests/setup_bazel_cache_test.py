@@ -20,7 +20,7 @@ WRAPPER = "tools/bazel/ci/" + OWNER + "_draft_bazel.sh"
 JOBS = [("bazel-base-images.yml", "native"), ("bazel-eventd.yml", "native"),
         ("bazel-" + OWNER + ".yml", "native"), ("bazel-oci.yml", "archive"),
         ("bazel-oci.yml", "checks"), ("bazel-supervisor-rust.yml", "native"),
-        ("bazel-yang-models.yml", "package")]
+        ("bazel-yang-models.yml", "package"), ("bazel-frr.yml", "native")]
 PRIVATE_CACHE_JOBS = {
     ("bazel-oci.yml", "otel_archive"),
     ("bazel-oci.yml", "radv_native"),
@@ -238,7 +238,9 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                     RECORD=str(root / "record.json"), BASH_ENV="/dev/null",
                     RUNNER_TEMP=str(root), CI_CPU="x86_64", CI_DISTRIBUTION="trixie")
 
-    def test_all_seven_workflow_calls_reach_isolated_wrapper_and_direct_native(self):
+    def test_workflow_calls_preserve_caches_and_select_the_image_registry(self):
+        registries = [line.removeprefix("common ") for line in (ROOT / ".bazelrc").read_text().splitlines()
+                      if line.startswith("common --registry=")]
         for filename, job_name in JOBS:
             with self.subTest(workflow=filename, job=job_name), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -271,7 +273,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                 prior = "common --experimental_downloader_config=/verified/transport.cfg"
                 env = self.prepare(root, home, prior)
                 subprocess.run(["bash", "-eu", "-c", handoff["run"]], cwd=root, env=env, check=True)
-                if filename == "bazel-" + OWNER + ".yml":
+                if filename in ("bazel-" + OWNER + ".yml", "bazel-frr.yml"):
                     build = next(s for s in steps if "run_bazel()" in s.get("run", ""))
                     script = build["run"]
                     options = re.search(r"(?ms)^options=\(\n.*?^\)", script).group()
@@ -283,6 +285,8 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                     command = "bash " + WRAPPER + " info repository_cache"
                 subprocess.run(["bash", "-eu", "-c", command], cwd=root, env=env, check=True)
                 observed = json.loads((root / "record.json").read_text())
+                self.assertEqual([arg for arg in observed["argv"] if arg.startswith("--registry=")],
+                                 registries)
                 user = observed["user"]
                 self.assertTrue(user.startswith(prior + "\n"))
                 self.assertIn("common --repository_cache=/retained/repository\n", user)

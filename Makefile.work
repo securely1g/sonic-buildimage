@@ -87,6 +87,10 @@
 #  *                 action and Bazelisk caches for all Bazel builds.
 #  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
 #  *                 BUILD_WITH_BAZEL_WHEN_AVAILABLE. Empty disables the mount.
+#  * SONIC_BAZEL_REPOSITORY_CACHE_SOURCE: Optional separate dependency-download
+#  *                 cache mounted over /bazel_cache/repository_cache.
+#  * SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE: Optional Bazel 8.5.1 prepared cache.
+#  *                 Both require SONIC_BAZEL_CACHE_SOURCE and default to empty.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -530,6 +534,30 @@ DOCKER_RUN := mkdir -p -- $(SONIC_BAZEL_CACHE_QUOTED) && test -w $(SONIC_BAZEL_C
 	-v $(SONIC_BAZEL_CACHE_QUOTED):/bazel_cache:rw \
 	-e BAZELISK_HOME=/bazel_cache/bazelisk \
 	-v '$(subst ','"'"',$(PWD)/tools/bazel/slave.bazelrc)':/etc/bazel.bazelrc:ro
+endif
+
+# Keep optional shared repositories separate from the local action/Bazelisk mount.
+ifneq ($(strip $(SONIC_BAZEL_REPOSITORY_CACHE_SOURCE)$(SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE)),)
+ifeq ($(strip $(SONIC_BAZEL_CACHE_SOURCE)),)
+$(error Separate repository caches require SONIC_BAZEL_CACHE_SOURCE)
+endif
+endif
+ifneq ($(strip $(SONIC_BAZEL_REPOSITORY_CACHE_SOURCE)),)
+ifneq ($(findstring $(comma),$(SONIC_BAZEL_REPOSITORY_CACHE_SOURCE)),)
+$(error Separate repository cache paths cannot contain commas)
+endif
+SONIC_BAZEL_REPOSITORY_CACHE_ABS := $(shell realpath -m -- '$(subst ','"'"',$(SONIC_BAZEL_REPOSITORY_CACHE_SOURCE))')
+SONIC_BAZEL_REPOSITORY_CACHE_QUOTED := '$(subst ','"'"',$(SONIC_BAZEL_REPOSITORY_CACHE_ABS))'
+DOCKER_RUN += --mount type=bind,source=$(SONIC_BAZEL_REPOSITORY_CACHE_QUOTED),target=/bazel_cache/repository_cache
+endif
+ifneq ($(strip $(SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE)),)
+ifneq ($(findstring $(comma),$(SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE)),)
+$(error Separate repository cache paths cannot contain commas)
+endif
+SONIC_BAZEL_REPO_CONTENTS_CACHE_ABS := $(shell realpath -m -- '$(subst ','"'"',$(SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE))')
+SONIC_BAZEL_REPO_CONTENTS_CACHE_QUOTED := '$(subst ','"'"',$(SONIC_BAZEL_REPO_CONTENTS_CACHE_ABS))'
+DOCKER_RUN += --mount type=bind,source=$(SONIC_BAZEL_REPO_CONTENTS_CACHE_QUOTED),target=/bazel_cache/repo_contents_cache \
+	-e SONIC_BAZEL_REPO_CONTENTS_CACHE=/bazel_cache/repo_contents_cache
 endif
 
 # User name and tag for "docker-*" images created by native dockerd mode.

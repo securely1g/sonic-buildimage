@@ -24,13 +24,14 @@ if [[ $# == 1 && "$1" == --version ]]; then
   exec bazel --version
 fi
 
-registry=https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/main
+# Draft #235 only: restore maintained main with .bazelrc after .23 publication.
+registry=https://raw.githubusercontent.com/yijingyan2/sonic-bazel-registry/3228bd32a80d7ad7473fc1be31e28bed2001b19c
 if "$source_review" || [[ -n "$revision" ]]; then
   if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
     echo 'Expected a full lowercase registry commit for review.' >&2
     exit 2
   fi
-  registry="${registry%/main}/$revision"
+  registry="https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/$revision"
 fi
 
 startup_options=()

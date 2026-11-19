@@ -903,7 +903,7 @@ test("the recipe evidence link opens this job's successful timing artifact uploa
   job.steps.push(upload);
   const links = () => descendants(renderRecipeTimings(job, repository), node => node.tagName === "a");
   assert.equal(links()[0].href, job.url + "#step:16:1");
-  assert.match(links()[0].textContent, /Profiles and Make logs/);
+  assert.match(links()[0].textContent, /Profiles, BEP, execution and Make logs/);
   job.steps[1] = {...upload, name: "Preserve VS Bazel profiles, timings and Make logs"};
   assert.equal(links()[0].href, job.url + "#step:16:1");
   for (const change of [{number: 0}, {number: "16"}, {name: "A different artifact"}, {conclusion: "failure"}]) {
@@ -961,6 +961,48 @@ test("legacy snapshots keep their step duration without requiring a breakdown", 
   const row = renderStep(step);
   assert.equal(descendants(row, node => node.tagName === "details").length, 0);
   assert.match(row.textContent, /Make VS image.*success.*1m 41s/);
+}));
+
+test("cache telemetry distinguishes action-cache checks, spawn reuse, timing spans and missing coverage", () => withDocument(() => {
+  const telemetry = {
+    expected: 2, bep: 1, execution: 1, timing_count: 1, action_cache_count: 1,
+    wall_seconds: 10, analysis_seconds: 7, execution_seconds: 5,
+    action_cache_hits: 100, action_cache_misses: 40, bep_actions_executed: 40,
+    spawns: 4, remote_hits: 2, disk_hits: 1, uncached: 1, other_cached: 0, failed_spawns: 0,
+    top_actions: [{mnemonic: "CppCompile", target: "//example:library",
+      runner: "remote-cache", cache_hit: true, seconds: 2.5}],
+  };
+  const base = recipeJob().image_recipe_timings.images[0];
+  const row = {...base, bazel_expected: 3, profiles_expected: 3, exports_expected: 2, telemetry};
+  const value = {version: 2, status: "available", recipes: [row]};
+  const text = renderBuildExplanations(recipeRows(value)).textContent;
+  assert.match(text, /BEP: 1\/2 complete streams; execution logs: 1\/2/);
+  assert.match(text, /Local persistent action-cache hits \/ misses100 \/ 40/);
+  assert.match(text, /Remote-cache hits2Disk-cache hits1/);
+  assert.match(text, /BEP timing \(1\/2 invocations\)/);
+  assert.match(text, /Analysis span7s/);
+  assert.match(text, /CppCompile\/\/example:libraryRemote cache3s \(2.50s\)/);
+  assert.match(text, /different denominators/);
+  assert.match(text, /do not measure repository download\/prepared-cache hit rates/);
+  for (const change of [{bep: 3}, {execution: 2}, {timing_count: 2}, {remote_hits: 3},
+    {failed_spawns: 5}, {remote_hits: "2"}, {spawns: true}, {wall_seconds: Infinity},
+    {argv: ["private"]}, {top_actions: Array(4).fill(telemetry.top_actions[0])}]) {
+    row.telemetry = {...telemetry, ...change};
+    assert.equal(recipeRows(value), null);
+  }
+  for (const change of [{target: "/home/private"}, {target: "//example:../private"},
+    {mnemonic: "--token=private"}, {runner: "private-runner"}, {cache_hit: false},
+    {argv: ["private"]}]) {
+    row.telemetry = {...telemetry, top_actions: [{...telemetry.top_actions[0], ...change}]};
+    assert.equal(recipeRows(value), null);
+  }
+  row.telemetry = {...telemetry, spawns: 0, remote_hits: 0, disk_hits: 0, uncached: 0, top_actions: []};
+  assert.match(renderBuildExplanations(recipeRows(value)).textContent, /zero logged spawns does not mean zero reuse/);
+  row.telemetry = {...telemetry, bep: 0, execution: 0, timing_count: 0, action_cache_count: 0, top_actions: [],
+    ...Object.fromEntries(["wall_seconds", "analysis_seconds", "execution_seconds", "action_cache_hits",
+      "action_cache_misses", "bep_actions_executed", "spawns", "remote_hits", "disk_hits", "uncached",
+      "other_cached", "failed_spawns"].map(key => [key, null]))};
+  assert.match(renderBuildExplanations(recipeRows(value)).textContent, /Remote-cache hitsUnavailable/);
 }));
 
 test("unavailable or malformed details do not turn unknown timing into zero", () => withDocument(() => {
