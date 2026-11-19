@@ -356,6 +356,9 @@ source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "so
 source_modules(
     name = "image_source_modules",
     modules = {
+        "@isc_dhcp//:MODULE.bazel": "isc-dhcp",
+        "@sonic_dhcpmon//:MODULE.bazel": "sonic-dhcpmon",
+        "@sonic_dhcp_relay//:MODULE.bazel": "sonic-dhcp-relay",
         "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
@@ -685,3 +688,26 @@ source_modules(
         "@sonic_fips//:MODULE.bazel": "sonic-fips",
     },
 )
+
+
+# Daemons and installed package metadata for the DHCP relay local package.
+bazel_dep(name = "isc-dhcp", version = "4.4.3.sonic.1", repo_name = "isc_dhcp")
+bazel_dep(name = "sonic-dhcpmon", version = "0.1.0-b824589b2ba49a8ba59142289bfb04bb3ca68875", repo_name = "sonic_dhcpmon")
+bazel_dep(name = "sonic-dhcp-relay", version = "0.1.0-89b18b54b2552dea86e2292bd1a9d848733551c3", repo_name = "sonic_dhcp_relay")
+
+# Draft source for registry #235. Remove this override and select its published
+# module version once the native PcapPlusPlus owner revision is registered.
+archive_override(
+    module_name = "sonic-dhcp-relay",
+    urls = ["https://github.com/securely1g/sonic-dhcp-relay/archive/89b18b54b2552dea86e2292bd1a9d848733551c3.tar.gz"],
+    integrity = "sha256-1b9FL1LBgtS8fhT7/c0PsXrd8uf/wUbRJ7n1igDaew4=",
+    strip_prefix = "sonic-dhcp-relay-89b18b54b2552dea86e2292bd1a9d848733551c3",
+)
+
+use_repo(apt, "dhcp_relay_runtime_debian")
+pip.parse(
+    hub_name = "dhcp_relay_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-dhcp-relay:requirements_lock.txt",
+)
+use_repo(pip, "dhcp_relay_pip")

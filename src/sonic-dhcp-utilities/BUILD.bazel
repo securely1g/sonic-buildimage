@@ -1,0 +1,29 @@
+load("@rules_python//python:packaging.bzl", "py_wheel")
+
+filegroup(
+    name = "wheel_payload",
+    srcs = glob([
+        "dhcp_utilities/common/*.py",
+        "dhcp_utilities/dhcprelayd/*.py",
+        "dhcp_utilities/dhcpservd/*.py",
+    ]) + ["dhcp_utilities/dhcpservd/dhcp_option.csv"],
+)
+
+py_wheel(
+    name = "dhcp_utilities_wheel",
+    author = "SONiC Team",
+    author_email = "yaqiangzhu@microsoft.com",
+    distribution = "sonic-dhcp-utilities",
+    entry_points = {"console_scripts": [
+        "dhcprelayd = dhcp_utilities.dhcprelayd.dhcprelayd:main",
+        "dhcpservd = dhcp_utilities.dhcpservd.dhcpservd:main",
+    ]},
+    homepage = "https://github.com/Azure/sonic-buildimage",
+    python_tag = "py3",
+    requires = ["psutil", "freezegun"],
+    strip_path_prefixes = ["src/sonic-dhcp-utilities/"],
+    summary = "Module of SONiC built-in dhcp_utilities",
+    version = "1.0",
+    visibility = ["//visibility:public"],
+    deps = [":wheel_payload"],
+)

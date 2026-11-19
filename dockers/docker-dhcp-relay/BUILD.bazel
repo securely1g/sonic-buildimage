@@ -1,0 +1,294 @@
+"""AMD64 Trixie DHCP relay package installed by sonic-package-manager."""
+
+load("@base_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
+load("@dhcp_relay_pip//:requirements.bzl", "whl_requirement")
+load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@sonic_build_infra//oci:accounts.bzl", "account_layer")
+load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
+load("@sonic_build_infra//oci:installed_packages.bzl", "installed_packages")
+load("@sonic_build_infra//python:wheel_layer.bzl", "wheel_layer")
+load("@tar.bzl", "tar")
+load("//tools/bazel/dpkg:defs.bzl", "sonic_layer")
+load("//tools/bazel/oci:apt_layer.bzl", "apt_layer")
+load("//tools/bazel/oci:manifest_labels.bzl", "manifest_labels")
+load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["requirements_lock.txt"])
+
+# Config-engine tests render these templates, including Dockerfile.j2. A glob
+# in the parent Bazel package cannot cross this image's BUILD boundary.
+filegroup(
+    name = "config_engine_test_data",
+    testonly = True,
+    srcs = glob(["*.j2"]),
+    visibility = ["//dockers:__pkg__"],
+)
+
+_BASE = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie"
+_LOCK = "@sonic_build_infra//apt:apt.lock.json"
+_COMPATIBLE = [
+    "@platforms//os:linux",
+    "@platforms//cpu:x86_64",
+    "@sonic_build_infra//platforms:trixie",
+]
+_POLICY = {
+    "architecture": "amd64",
+    "distribution": "trixie",
+    "features": {},
+    "image": "docker-dhcp-relay",
+    "retained_source": "none",
+    "schema": 1,
+}
+
+_SOURCE_TARS = {
+    "isc-dhcp-relay": "@isc_dhcp//:isc-dhcp-relay.runtime",
+    "sonic-dhcp4relay": "@sonic_dhcp_relay//dhcp4relay:runtime",
+    "sonic-dhcp6relay": "@sonic_dhcp_relay//dhcp6relay:runtime",
+    "sonic-dhcpmon": "@sonic_dhcpmon//:runtime",
+}
+
+sonic_layer(
+    name = "daemons",
+    tars = _SOURCE_TARS.values(),
+)
+
+# Config-engine supplies Common's C++ and Python installs and sonic-py-common.
+wheel_layer(
+    name = "python_runtime",
+    headers = "/usr/local/include/python3.13",
+    site_packages = "/usr/local/lib/python3.13/dist-packages",
+    wheels = ["//src/sonic-dhcp-utilities:dhcp_utilities_wheel"] + [
+        whl_requirement(wheel)
+        for wheel in ["freezegun", "psutil", "python-dateutil", "six"]
+    ],
+)
+
+_SCRIPTS = ["docker_init.sh", "start.sh"]
+_TEMPLATES = [
+    "dhcp-relay.monitors.j2",
+    "dhcp-relay.programs.j2",
+    "dhcpv4-relay.agents.j2",
+    "dhcpv4-sonic-relay.agents.j2",
+    "dhcpv6-relay.agents.j2",
+    "docker-dhcp-relay.supervisord.conf.j2",
+    "port-name-alias-map.txt.j2",
+    "wait_for_intf.sh.j2",
+]
+_CLI = [
+    "cli/clear/plugins/clear_dhcp_relay.py",
+    "cli/config/plugins/dhcp_relay.py",
+    "cli/show/plugins/show_dhcp_relay.py",
+]
+
+_FILES = (
+    {s: ("usr/bin/" + s, "0755") for s in _SCRIPTS} |
+    {s: ("usr/share/sonic/templates/" + s, "0644") for s in _TEMPLATES} |
+    {s: (s, "0644") for s in _CLI} |
+    {
+        "critical_processes": ("etc/supervisor/critical_processes", "0644"),
+        "isc-dhcp-relay.default": ("etc/default/isc-dhcp-relay", "0644"),
+    }
+)
+
+tar(
+    name = "configuration",
+    srcs = _FILES.keys(),
+    mtree = [
+        path + " uid=0 gid=0 mode=" + mode + " time=0 type=file content=$(location " + src + ")"
+        for src, (path, mode) in _FILES.items()
+    ] + [
+        # update-rc.d creates these links when Make installs isc-dhcp-relay.
+        "etc/rc" + level + ".d/" + action + "01isc-dhcp-relay uid=0 gid=0 mode=0777 time=0 type=link link=../init.d/isc-dhcp-relay"
+        for level, action in [("0", "K"), ("1", "K"), ("2", "S"), ("3", "S"), ("4", "S"), ("5", "S"), ("6", "K")]
+    ],
+)
+
+[
+    manifest_labels(
+        name = "labels" + suffix,
+        manifest = "//tools/bazel/image/vs/metadata:docker-dhcp-relay" + suffix + ".manifest",
+    )
+    for suffix in ["", "-dbg"]
+]
+
+apt_layer(
+    name = "debian_runtime",
+    base = _BASE,
+    dependency_set = "dhcp_relay_runtime_debian",
+    lock = _LOCK,
+    packages = APT_INPUTS["dhcp_relay_runtime_debian"]["amd64"],
+    policy = _POLICY,
+    variant = "runtime",
+)
+
+sonic_layer(
+    name = "debian_payload",
+    tars = [":debian_runtime"],
+)
+
+filegroup(
+    name = "runtime_selection",
+    srcs = [":debian_runtime"],
+    output_group = "selection",
+)
+
+installed_packages(
+    name = "installed_packages",
+    apt_receipt = ":runtime_selection",
+    architecture = "amd64",
+    base = _BASE,
+    controls = [label + ":control" for label in APT_INPUTS["dhcp_relay_runtime_debian"]["amd64"].values()],
+    owner_metadata = [
+        "@isc_dhcp//:runtime_packages.json",
+        "@sonic_dhcp_relay//:dhcp4_metadata",
+        "@sonic_dhcp_relay//:dhcp6_metadata",
+        "@sonic_dhcpmon//:monitor_metadata",
+    ],
+    source_modules = {
+        name: "@image_source_modules//:" + name + ".MODULE.bazel"
+        for name in ["isc-dhcp", "sonic-dhcp-relay", "sonic-dhcpmon"]
+    },
+    source_spec = "source_paths.json",
+    sources = _SOURCE_TARS,
+)
+
+filegroup(
+    name = "receipt",
+    srcs = [":installed_packages"],
+    output_group = "metadata",
+)
+
+tar(
+    name = "installed_state",
+    srcs = [":installed_packages", ":receipt"],
+    mtree = [
+        "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :installed_packages)",
+        "usr/share/sonic/bazel/dhcp-relay-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :receipt)",
+    ],
+)
+
+oci_image(
+    name = "docker-dhcp-relay",
+    base = _BASE,
+    entrypoint = ["/usr/bin/docker_init.sh"],
+    env = "//tools/bazel/image/vs/metadata:docker-dhcp-relay.environment",
+    labels = ":labels",
+    target_compatible_with = _COMPATIBLE,
+    tars = [":debian_payload", ":daemons", ":python_runtime", ":configuration", ":installed_state"],
+)
+
+debug_symbols_layer(
+    name = "docker-dhcp-relay.debug_symbols",
+    image = ":docker-dhcp-relay",
+)
+
+apt_layer(
+    name = "debian_debug",
+    base = ":docker-dhcp-relay",
+    dependency_set = "sysmgr_debug_debian",
+    lock = _LOCK,
+    packages = APT_INPUTS["sysmgr_debug_debian"]["amd64"],
+    policy = _POLICY,
+    variant = "debug",
+)
+
+# Activate full Vim over the source base's vim.tiny hardlink.
+tar(
+    name = "debug_vim_link",
+    mtree = ["usr/bin/vim uid=0 gid=0 mode=0777 time=0 type=link link=/etc/alternatives/vim"],
+)
+
+sonic_layer(
+    name = "debug_tools",
+    tars = [
+        ":debian_debug",
+        "@sonic_build_infra//deps/vim:vim_alternatives_pkg",
+        ":debug_vim_link",
+    ],
+)
+
+sonic_layer(
+    name = "debug_client",
+    tars = ["@sonic_fips//openssh:openssh_client_pkg"],
+)
+
+debug_symbols_layer(
+    name = "debug_client_symbols",
+    image = ":debug_client",
+)
+
+# Match the selected FIPS OpenSSH owner's ssh-agent group contract.
+account_layer(
+    name = "debug_accounts",
+    architecture = "amd64",
+    base = ":docker-dhcp-relay",
+    groups = [{
+        "name": "_ssh",
+        "password": "x",
+        "gid": 104,
+    }],
+)
+
+filegroup(
+    name = "debug_apt_selection",
+    srcs = [":debian_debug"],
+    output_group = "selection",
+)
+
+installed_packages(
+    name = "debug_installed_packages",
+    apt_receipt = ":debug_apt_selection",
+    architecture = "amd64",
+    base = ":docker-dhcp-relay",
+    controls = [label + ":control" for label in APT_INPUTS["sysmgr_debug_debian"]["amd64"].values()],
+    owner_metadata = ["@sonic_fips//:runtime_packages.json"],
+    source_modules = {"sonic-fips": "@image_source_modules//:sonic-fips.MODULE.bazel"},
+    source_spec = "//dockers/docker-dhcp-relay:debug_source_paths.json",
+    sources = {"openssh-client": "@sonic_fips//openssh:openssh_client_pkg"},
+)
+
+filegroup(
+    name = "debug_package_metadata",
+    srcs = [":debug_installed_packages"],
+    output_group = "metadata",
+)
+
+tar(
+    name = "debug_package_state",
+    srcs = [
+        ":debug_installed_packages",
+        ":debug_package_metadata",
+    ],
+    mtree = [
+        "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :debug_installed_packages)",
+        "usr/share/sonic/bazel/dhcp-relay-debug-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :debug_package_metadata)",
+    ],
+)
+
+oci_image(
+    name = "docker-dhcp-relay-dbg",
+    base = ":docker-dhcp-relay",
+    labels = ":labels-dbg",
+    target_compatible_with = _COMPATIBLE,
+    tars = [
+        ":debug_tools",
+        ":docker-dhcp-relay.debug_symbols",
+        ":debug_client",
+        ":debug_client_symbols",
+        ":debug_accounts",
+        ":debug_package_state",
+    ],
+)
+
+[
+    sonic_docker_archive(
+        name = "docker-dhcp-relay" + suffix + ".gz",
+        image = ":docker-dhcp-relay" + suffix,
+    )
+    for suffix in [
+        "",
+        "-dbg",
+    ]
+]

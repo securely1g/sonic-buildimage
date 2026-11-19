@@ -936,7 +936,8 @@ class VerificationWorkflowTest(unittest.TestCase):
             record = (f"#!{sys.executable}\nimport os, sys\nfrom pathlib import Path\n"
                       "name = Path(sys.argv[0]).name\n"
                       "stage = 'daemon' if name == 'make' else ('prepare' if any("
-                      "arg.endswith('/prepare_nested_docker.py') for arg in sys.argv) else 'probe')\n"
+                      "arg.endswith('/prepare_nested_docker.py') for arg in sys.argv) else ('relay' if any("
+                      "arg.endswith('/verify_dhcp_relay.py') for arg in sys.argv) else 'probe'))\n"
                       "with Path(os.environ['CALLS']).open('a') as output: output.write(stage + '\\n')\n"
                       "sys.exit(int(os.environ['PREPARE_EXIT']) if stage == 'prepare' else 0)\n")
             make.write_text(record)
@@ -946,7 +947,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             sudo = commands / "sudo"
             sudo.write_text('#!/bin/sh\nexec "$@"\n')
             sudo.chmod(0o755)
-            for failure, expected in (("0", ["prepare", "daemon", "probe"]), ("23", ["prepare"])):
+            for failure, expected in (("0", ["prepare", "daemon", "probe", "relay"]), ("23", ["prepare"])):
                 calls.unlink(missing_ok=True)
                 result = subprocess.run(["bash", "-c", common["SONIC_RUN_CMDS"]], cwd=directory,
                                         env=dict(environment, CALLS=str(calls), PREPARE_EXIT=failure),
@@ -993,7 +994,8 @@ class VerificationWorkflowTest(unittest.TestCase):
             sudo.chmod(0o755)
             python = directory / "python3"
             python.write_text(f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
-                              "Path('docker-call.json').write_text(json.dumps({'args': sys.argv[1:], "
+                              "relay = any(arg.endswith('/verify_dhcp_relay.py') for arg in sys.argv)\n"
+                              "Path('relay-call.json' if relay else 'docker-call.json').write_text(json.dumps({'args': sys.argv[1:], "
                               "'docker_host': os.environ.get('DOCKER_HOST')}))\n"
                               "sys.exit(int(os.environ['PROBE_EXIT']))\n")
             python.chmod(0o755)
@@ -1031,7 +1033,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             linkage_report = directory / "artifacts/vs/tlm-teamd-linkage.txt"
             for name, probe_exit, docker_exit, output, expected_status in cases:
                 with self.subTest(name=name):
-                    for path in (directory / "docker-call.json", linkage_call, linkage_report):
+                    for path in (directory / "docker-call.json", directory / "relay-call.json", linkage_call, linkage_report):
                         path.unlink(missing_ok=True)
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
                         env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
@@ -1047,6 +1049,13 @@ class VerificationWorkflowTest(unittest.TestCase):
                         "--images-policy", "artifacts/vs/swss-installed-images-policy.json",
                         "--images-policy", "artifacts/vs/syncd-installed-images-policy.json", "--target", "target",
                         "--output", "artifacts/vs/installed-images.json"])
+                    relay_call = directory / "relay-call.json"
+                    self.assertEqual(relay_call.exists(), not probe_exit)
+                    if not probe_exit:
+                        self.assertEqual(json.loads(relay_call.read_text()), {
+                            "args": ["-B", "tools/bazel/ci/verify_dhcp_relay.py"],
+                            "docker_host": "unix:///worker-private.sock",
+                        })
                     if probe_exit:
                         self.assertFalse(linkage_call.exists())
                         self.assertFalse(linkage_report.exists())
