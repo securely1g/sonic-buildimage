@@ -113,6 +113,46 @@ class BazelTelemetryTest(unittest.TestCase):
         self.write("bep", events)
         self.assertEqual(self.summary()["bep"], 0)
 
+    def test_large_spawn_inventories_do_not_require_large_record_buffers(self):
+        payload = spawn(inputs=[{"path": "source/" + "x" * 100,
+                                 "digest": {"hash": "a" * 64, "sizeBytes": "1"}}] * 10000)
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed):
+                path = self.write("execution", [payload, spawn("linux-sandbox", False)],
+                                  compressed=compressed)
+                with patch.object(telemetry, "MAX_RECORD", 65536), \
+                        patch.object(telemetry, "MAX_INPUT", 65536):
+                    counts, _ = telemetry.spawn_metrics(path)
+                    value = self.summary()
+                self.assertEqual((counts["spawns"], counts["remote_hits"], counts["uncached"]),
+                                 (2, 1, 1))
+                self.assertEqual((value["bep"], value["execution"], value["remote_hits"]), (1, 1, 1))
+
+    def test_filtered_spawn_stream_handles_chunk_boundaries_and_concatenated_objects(self):
+        secret = '{"runner":"disk cache hit","cacheHit":true}'
+        path = self.root / "build.execution.json"
+        path.write_text(json.dumps(spawn(
+            commandArgs=[secret], inputs=[{"path": 'a"b\\c\n', "digest": {"sizeBytes": "123"}}],
+            unused=[123456789, -123456789, 1.23456789012345e200],
+        ), indent=2) + json.dumps(spawn("linux-sandbox", False, elapsed="3s")))
+        for chunk in (1, 2, 7, 64):
+            with self.subTest(chunk=chunk), patch.object(telemetry, "READ_CHUNK", chunk):
+                counts, actions = telemetry.spawn_metrics(path)
+                self.assertEqual((counts["spawns"], counts["remote_hits"], counts["disk_hits"],
+                                  counts["uncached"]), (2, 1, 0, 1))
+                self.assertNotIn(secret, json.dumps(actions))
+
+    def test_filtered_spawn_stream_rejects_invalid_discarded_payloads_and_input_overflow(self):
+        path = self.root / "build.execution.json"
+        for payload in ('[{"path":"x"}', '[{"path":"x"},]', '[{"path":}]', '[01]', '[1e]'):
+            with self.subTest(payload=payload):
+                path.write_text(json.dumps(spawn())[:-1] + ',"inputs":' + payload + "}")
+                self.assertEqual(self.summary()["execution"], 0)
+                self.assertIsNone(self.summary()["remote_hits"])
+        self.write("execution", [spawn()])
+        with patch.object(telemetry, "MAX_EXECUTION_INPUT", 32):
+            self.assertEqual(self.summary()["execution"], 0)
+
     def test_complete_failed_build_retains_observed_spawns_and_missing_groups_stay_null(self):
         self.write("bep", [{"finished": {"exitCode": {"code": 1}}}, {"lastMessage": True}])
         self.write("execution", [spawn("linux-sandbox", False, exitCode=-1)])

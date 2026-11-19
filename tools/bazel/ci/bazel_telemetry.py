@@ -8,6 +8,8 @@ import re
 
 MAX_RECORD = 16 * 1024 * 1024
 MAX_INPUT = 512 * 1024 * 1024
+MAX_EXECUTION_INPUT = 32 * 1024 * 1024 * 1024
+READ_CHUNK = 65536
 MAX_ACTIONS = 3
 MAX_NUMBER = 2 ** 53 - 1
 MNEMONIC = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}\Z")
@@ -16,6 +18,9 @@ TARGET = re.compile(
 COUNTS = ("action_cache_hits", "action_cache_misses", "bep_actions_executed",
           "spawns", "remote_hits", "disk_hits", "uncached", "other_cached", "failed_spawns")
 TIMES = ("wall_seconds", "analysis_seconds", "execution_seconds")
+SPAWN_FIELDS = frozenset(("runner", "cacheHit", "exitCode", "status", "mnemonic",
+                          "targetLabel", "metrics"))
+VALUE_END = re.compile(r"[ \t\r\n,\]}]")
 
 
 def number(value):
@@ -39,35 +44,111 @@ def duration(value):
     return number(float(value[:-1]))
 
 
-def records(path):
-    """Read concatenated JSON objects, including Bazel's pretty-printed spawns."""
-    opener = gzip.open if path.suffix == ".gz" else open
-    decoder = json.JSONDecoder()
-    with opener(path, "rt", encoding="utf-8") as stream:
-        buffer, total, chunk, eof = "", 0, 65536, False
+class _JsonStream:
+    def __init__(self, stream, limit):
+        self.stream, self.limit = stream, limit
+        self.buffer, self.offset, self.total, self.eof = "", 0, 0, False
+        self.decoder = json.JSONDecoder()
+
+    def read_more(self, size):
+        if self.eof:
+            return False
+        block = self.stream.read(size)
+        self.eof = not block
+        self.total += len(block)
+        if self.total > self.limit:
+            raise ValueError("Telemetry input exceeds reporting limit")
+        self.buffer = self.buffer[self.offset:] + block
+        self.offset = 0
+        return bool(block)
+
+    def peek(self):
         while True:
-            buffer = buffer.lstrip()
-            if buffer:
-                try:
-                    value, end = decoder.raw_decode(buffer)
-                except json.JSONDecodeError:
-                    if eof:
-                        raise
+            self.offset = json.decoder.WHITESPACE.match(self.buffer, self.offset).end()
+            if self.offset < len(self.buffer):
+                return self.buffer[self.offset]
+            if not self.read_more(READ_CHUNK):
+                return ""
+
+    def expect(self, character):
+        if self.peek() != character:
+            raise ValueError("Invalid telemetry JSON")
+        self.offset += 1
+
+    def value(self):
+        self.peek()
+        chunk = READ_CHUNK
+        while True:
+            try:
+                value, end = self.decoder.raw_decode(self.buffer, self.offset)
+            except json.JSONDecodeError:
+                if len(self.buffer) - self.offset > MAX_RECORD:
+                    raise ValueError("Telemetry value exceeds reporting limit")
+                if not self.read_more(chunk):
+                    raise
+                chunk = min(chunk * 2, 1024 * 1024)
+            else:
+                if end - self.offset > MAX_RECORD:
+                    raise ValueError("Telemetry value exceeds reporting limit")
+                if type(value) in (int, float):
+                    # A numeric prefix can decode before the rest of its token arrives.
+                    boundary = VALUE_END.search(self.buffer, self.offset)
+                    if boundary is None and not self.eof:
+                        if len(self.buffer) - self.offset > MAX_RECORD:
+                            raise ValueError("Telemetry value exceeds reporting limit")
+                        self.read_more(chunk)
+                        chunk = min(chunk * 2, 1024 * 1024)
+                        continue
+                    if boundary is not None and boundary.start() != end:
+                        raise ValueError("Invalid telemetry JSON number")
+                self.offset = end
+                return value
+
+    def skip(self):
+        # Spawn input/output inventories can be huge; validate and discard each
+        # element instead of retaining or repeatedly decoding the whole array.
+        if self.peek() != "[":
+            self.value()
+            return
+        self.expect("[")
+        if self.peek() != "]":
+            while True:
+                self.value()
+                if self.peek() == "]":
+                    break
+                self.expect(",")
+        self.expect("]")
+
+    def object(self, fields):
+        self.expect("{")
+        result = {}
+        if self.peek() != "}":
+            while True:
+                key = self.value()
+                if not isinstance(key, str):
+                    raise ValueError("Invalid telemetry JSON key")
+                self.expect(":")
+                if key in fields:
+                    result[key] = self.value()
                 else:
-                    if not isinstance(value, dict):
-                        raise ValueError("Expected a JSON object")
-                    yield value
-                    buffer, chunk = buffer[end:], 65536
-                    continue
-            elif eof:
-                return
-            block = stream.read(chunk)
-            total += len(block)
-            buffer += block
-            if total > MAX_INPUT or len(buffer) > MAX_RECORD:
-                raise ValueError("Telemetry input exceeds reporting limit")
-            eof = not block
-            chunk = min(chunk * 2, 1024 * 1024)
+                    self.skip()
+                if self.peek() == "}":
+                    break
+                self.expect(",")
+        self.expect("}")
+        return result
+
+
+def records(path, fields=None):
+    """Stream JSON objects, optionally retaining only selected spawn fields."""
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "rt", encoding="utf-8") as stream:
+        reader = _JsonStream(stream, MAX_INPUT if fields is None else MAX_EXECUTION_INPUT)
+        while reader.peek():
+            value = reader.value() if fields is None else reader.object(fields)
+            if not isinstance(value, dict):
+                raise ValueError("Expected a JSON object")
+            yield value
 
 
 def logfile(directory, phase, kind):
@@ -109,7 +190,7 @@ def spawn_metrics(path):
     result = dict.fromkeys(("spawns", "remote_hits", "disk_hits", "uncached",
                            "other_cached", "failed_spawns"), 0)
     longest = []
-    for spawn in records(path):
+    for spawn in records(path, SPAWN_FIELDS):
         if not isinstance(spawn.get("runner"), str) or type(spawn.get("cacheHit")) is not bool:
             raise ValueError("Invalid spawn record")
         hit, runner = spawn["cacheHit"], spawn["runner"]

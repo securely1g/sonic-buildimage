@@ -101,7 +101,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                            if step.get("name") == "Prepare the host-driven SONiC slave")
         self.assertLess(configure_index, build_index)
 
-    def test_vs_jobs_share_the_master_push_upload_policy(self):
+    def test_disabled_vs_job_retains_the_master_push_upload_policy(self):
         workflow_jobs = jobs()
         flag = ("--remote_upload_local_results=${{ github.event_name == 'push'"
                 " && github.ref == 'refs/heads/master' }}")
@@ -117,9 +117,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertNotIn("EXPECTED_MANAGER_REVISION", job["env"])
         self.assertEqual(job["env"]["BAZEL_REMOTE_AUTH"], "")
         self.assertEqual(job["env"]["SONIC_BAZEL_REMOTE_CACHE"], "grpc://172.16.0.4:9092")
-        self.assertEqual(
-            job["env"]["SONIC_BAZEL_REMOTE_UPLOAD"],
-            "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}")
+        self.assertEqual(job["env"]["SONIC_BAZEL_REMOTE_UPLOAD"], "y")
         self.assertEqual(job["env"]["SONIC_BUILD_JOBS"], "1")
         for flag in (
             "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
