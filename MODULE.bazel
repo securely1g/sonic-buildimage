@@ -54,14 +54,14 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.39-5dd692e1573f634d1f97a1930069253e50dbd4f2",
+    version = "0.0.39-6f32af5649f08819bf97499e8a0c5435a161f0ef",
     repo_name = "sonic_build_infra",
 )
 # Select the wheel metadata adapter while its source/registry change is reviewed.
 # Transitive consumers select the previous .39 snapshot, which sorts above this one.
 single_version_override(
     module_name = "sonic-build-infra",
-    version = "0.0.39-5dd692e1573f634d1f97a1930069253e50dbd4f2",
+    version = "0.0.39-6f32af5649f08819bf97499e8a0c5435a161f0ef",
 )
 bazel_dep(name = "grub", version = "2.12.sonic.1")
 bazel_dep(
