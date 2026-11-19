@@ -2,8 +2,10 @@
 
 import argparse
 from contextlib import contextmanager
+import gzip
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,12 +18,37 @@ def start_recipe(workspace, owner, bazel, profiles, exports):
     directory = Path(tempfile.mkdtemp(dir=root, prefix="recipe-"))
     (directory / "recipe.json").write_text(json.dumps({
         "bazel": bazel, "profiles": profiles, "exports": exports,
+        "telemetry": [phase for phase in profiles if phase in ("build", "test")],
     }) + "\n")
     return directory
 
 
 def exit_status(returncode):
     return returncode if returncode >= 0 else 128 - returncode
+
+
+def telemetry_flags(directory, phase):
+    return [f"--build_event_json_file={directory / (phase + '.bep.json')}",
+            f"--execution_log_json_file={directory / (phase + '.execution.json')}"]
+
+
+def compress_telemetry(directory, phase):
+    for kind in ("bep", "execution"):
+        path = directory / f"{phase}.{kind}.json"
+        temporary = path.with_suffix(".json.gz.tmp")
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            with path.open("rb") as source, gzip.open(temporary, "wb", compresslevel=1) as output:
+                shutil.copyfileobj(source, output)
+            temporary.replace(path.with_suffix(".json.gz"))
+            path.unlink()
+        except OSError as error:
+            print(f"Telemetry compression unavailable for {phase}/{kind}: {error}", file=sys.stderr)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 @contextmanager
@@ -48,6 +75,7 @@ def time_phase(directory, phase):
 
 
 def run_phase(directory, phase, command, *, cwd=None, env=None):
+    telemetry = directory is not None and phase in ("build", "test")
     if directory is not None and (phase in ("build", "test") or phase.startswith("cquery-")):
         # Nested workspaces may pass startup flags before the Bazel command.
         index = command.index(phase.split("-", 1)[0], 1) + 1
@@ -55,9 +83,25 @@ def run_phase(directory, phase, command, *, cwd=None, env=None):
         flags = [f"--profile={profile}", "--noslim_profile"]
         if directory.parent.name == "vs-container-images":
             flags.append("--experimental_profile_include_target_label")
+        if telemetry:
+            flags.extend(telemetry_flags(directory.resolve(), phase))
         command = [*command[:index], *flags, *command[index:]]
-    with time_phase(directory, phase):
-        return subprocess.run(command, check=True, cwd=cwd, env=env)
+    try:
+        with time_phase(directory, phase):
+            return subprocess.run(command, check=True, cwd=cwd, env=env)
+    finally:
+        if telemetry:
+            # The batch also consumes its own BEP for retries and publication.
+            events = next(Path(arg.split("=", 1)[1]) for arg in reversed(command)
+                          if arg.startswith("--build_event_json_file="))
+            events = Path(cwd or Path.cwd()) / events
+            destination = directory.resolve() / f"{phase}.bep.json"
+            if events != destination and events.is_file():
+                try:
+                    shutil.copyfile(events, destination)
+                except OSError as error:
+                    print(f"Telemetry capture unavailable for {phase}: {error}", file=sys.stderr)
+            compress_telemetry(directory, phase)
 
 
 def main(arguments):

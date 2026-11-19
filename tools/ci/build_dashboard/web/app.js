@@ -769,6 +769,7 @@ function recipeRows(value) {
     }
     if (Object.hasOwn(raw, "build") && (legacy || !validBuildEvidence(raw.build, row))) return null;
     if (Object.hasOwn(raw, "details") && (legacy || !validNamedEvidence(raw.details, row))) return null;
+    if (Object.hasOwn(raw, "telemetry") && (legacy || !validTelemetry(raw.telemetry, row))) return null;
     owners.add(row.owner);
     // Only Bazel commands and the separate exports contribute to this sum.
     const recorded = row.bazel_phases || row.exports ? (row.bazel_seconds ?? 0) + (row.export_seconds ?? 0) : null;
@@ -789,7 +790,66 @@ function validBuildEvidence(build, row) {
   for (const [count, keys] of [["timings", ["seconds"]], ["profiles", metrics]]) {
     if (keys.some(key => build[count] ? seconds(build[key]) === null || build[key] > Number.MAX_SAFE_INTEGER : build[key] !== null)) return false;
   }
+
   return build.timings !== build.expected || build.profiles !== build.expected || build.lock_seconds <= build.seconds;
+}
+
+const TELEMETRY_COUNTS = ["action_cache_hits", "action_cache_misses", "bep_actions_executed", "spawns",
+  "remote_hits", "disk_hits", "uncached", "other_cached", "failed_spawns"];
+const TELEMETRY_TIMES = ["wall_seconds", "analysis_seconds", "execution_seconds"];
+const TELEMETRY_RUNNERS = {"remote-cache": "Remote cache", "disk-cache": "Disk cache", "other-cache": "Other cache",
+  remote: "Remote execution", local: "Local execution", other: "Other runner"};
+
+function validTelemetry(value, row) {
+  const coverage = ["expected", "bep", "execution", "timing_count", "action_cache_count"];
+  if (!evidenceFields(value, [...coverage, ...TELEMETRY_COUNTS, ...TELEMETRY_TIMES, "top_actions"]) ||
+      coverage.some(key => !Number.isInteger(value[key]) || value[key] < 0 || value[key] > 65535) ||
+      value.expected < 1 || value.expected > row.profiles_expected || value.bep > value.expected ||
+      value.execution > value.bep || value.timing_count > value.bep || value.action_cache_count > value.bep) return false;
+  for (const [count, keys] of [["timing_count", TELEMETRY_TIMES],
+    ["action_cache_count", TELEMETRY_COUNTS.slice(0, 3)], ["execution", TELEMETRY_COUNTS.slice(3)]]) {
+    if (keys.some(key => value[count] ? seconds(value[key]) === null || value[key] > Number.MAX_SAFE_INTEGER ||
+      TELEMETRY_COUNTS.includes(key) && !Number.isSafeInteger(value[key]) : value[key] !== null)) return false;
+  }
+  if (value.execution && (value.spawns !== value.remote_hits + value.disk_hits + value.uncached + value.other_cached ||
+      value.failed_spawns > value.spawns)) return false;
+  return Array.isArray(value.top_actions) && value.top_actions.length <= Math.min(3, value.spawns ?? 0) &&
+    value.top_actions.every(action => evidenceFields(action, ["mnemonic", "target", "runner", "cache_hit", "seconds"]) &&
+      typeof action.mnemonic === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(action.mnemonic) &&
+      publicTarget(action.target) && Object.hasOwn(TELEMETRY_RUNNERS, action.runner) &&
+      typeof action.cache_hit === "boolean" &&
+      action.cache_hit === ["remote-cache", "disk-cache", "other-cache"].includes(action.runner) &&
+      seconds(action.seconds) !== null && action.seconds <= Number.MAX_SAFE_INTEGER);
+}
+
+function renderTelemetry(value) {
+  const section = el("section", "target-telemetry");
+  section.append(el("h3", "", "Cache and execution telemetry"));
+  if (!value) {
+    section.append(el("p", "stage-note", "BEP and execution logs were not recorded for this historical invocation."));
+    return section;
+  }
+  const count = key => value[key] === null ? "Unavailable" : recipeNumber.format(value[key]);
+  section.append(
+    el("p", "stage-note", `BEP: ${value.bep}/${value.expected} complete streams; execution logs: ${value.execution}/${value.expected}. Missing coverage is not a cache miss.`),
+    evidenceTable("Cache observations", ["Observation", "Count"], [
+      ["Local persistent action-cache hits / misses", `${count("action_cache_hits")} / ${count("action_cache_misses")}`],
+      ["BEP actions executed (includes remote hits)", count("bep_actions_executed")],
+      ["Logged spawns", count("spawns")], ["Remote-cache hits", count("remote_hits")],
+      ["Disk-cache hits", count("disk_hits")], ["Other cache hits", count("other_cached")],
+      ["Non-cache-hit spawns", count("uncached")], ["Failed spawns", count("failed_spawns")],
+    ], ""),
+    el("p", "stage-note", `Local action-cache statistics: ${value.action_cache_count}/${value.expected} invocations.`),
+    evidenceTable(`BEP timing (${value.timing_count}/${value.expected} invocations)`, ["Measurement", "Duration"], [
+      ["BEP wall time", measuredDuration(value.wall_seconds)], ["Analysis span", measuredDuration(value.analysis_seconds)],
+      ["Execution span", measuredDuration(value.execution_seconds)],
+    ], ""),
+    evidenceTable("Longest logged spawns (up to 3)", ["Action", "Target", "Runner", "Spawn total time"],
+      value.top_actions.map(action => [action.mnemonic, action.target ?? "—",
+        TELEMETRY_RUNNERS[action.runner], measuredDuration(action.seconds)]),
+      value.execution ? "No timed spawns recorded." : "Execution log unavailable."),
+    el("p", "stage-note", "Build/test invocations only; queries and exports are excluded. Local action-cache checks and logged spawn hits have different denominators. Local action-cache/Skyframe reuse can skip spawn logging entirely; zero logged spawns does not mean zero reuse. BEP actions executed includes remote-cache hits. BEP phase times can overlap and exclude some client overhead; they are not an elapsed-time partition. Spawn times overlap too. These metrics do not measure repository download/prepared-cache hit rates."));
+  return section;
 }
 
 function buildNonlock(row) {
@@ -944,6 +1004,7 @@ function renderBuildExplanations(rows, context = "") {
           Object.entries(BUILD_EVIDENCE).filter(([key]) => build[key] > 0).map(([key, label]) => [label, measuredDuration(build[key])]),
           "No matching work-category spans recorded."));
     }
+    body.append(renderTelemetry(row.telemetry));
     if (details) {
       body.append(el("p", "stage-note", `Named evidence: ${details.profiles}/${details.expected} build profiles. Up to eight longest recognized repository/action spans are retained, not an exhaustive partition.${details.scope === "kernel-build" ? " Kernel spans describe its build profile only, not the whole launcher." : ""}`),
         evidenceTable("Longest repository spans", ["Repository", "Span", "Nested reads/waits"],
@@ -1106,7 +1167,7 @@ function renderRecipeTimings(job, repository) {
   if (upload && jobUrl) {
     const url = new URL(jobUrl);
     url.hash = `step:${upload.number}:1`;
-    box.append(link("Profiles and Make logs · upload log ↗", url.href, repository));
+    box.append(link("Profiles, BEP, execution and Make logs · upload log ↗", url.href, repository));
   }
   return box;
 }

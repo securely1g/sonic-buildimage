@@ -331,6 +331,19 @@ same revision and compare the **Build sonic-vs.bin through the host Make wrapper
 step. The `sonic-vs-bazel-timings-amd64` artifact includes the selected archive
 names, Bazel profile and export times for that step.
 
+Instrumented Make recipes retain existing JSON profiles and additionally write
+BEP (`<phase>.bep.json.gz`) and JSON spawn logs
+(`<phase>.execution.json.gz`) for Bazel build/test commands, including the nested
+kernel build. Queries keep profiles only. JSON logs are concatenated objects,
+not a JSON array, and are gzip-compressed after command timing ends even on
+failure. Capture and compression add CPU/I/O overhead; gzip saves artifact
+space, not Bazel serialization time. The existing timing artifact includes these
+files and the workflow summary reports bounded cache/timing observations.
+Raw logs may contain action commands, paths and environment variables: avoid
+secrets in command-line/action environments and review artifact access.
+The [dashboard documentation](../../ci/build_dashboard/README.md) explains
+source coverage, distinct cache layers and the limitations of these counts.
+
 [`validate_vs.sh`](validate_vs.sh) runs in the separate **Validate VS container
 pairs and P4 debug symbols** step after a successful build, using the same
 checkout and configuration. It first checks

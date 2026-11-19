@@ -302,6 +302,49 @@ class BazelRecipeTimingsTest(unittest.TestCase):
         self.assertEqual(self.parse([self.line(obj) for obj in [*over_limit, {"count": len(over_limit)}]])["reason"],
                          "invalid-timing")
 
+    def test_cache_telemetry_survives_history_with_bounded_actions_and_strict_coverage(self):
+        telemetry = {
+            "expected": 2, "bep": 1, "execution": 1, "timing_count": 1, "action_cache_count": 1,
+            "wall_seconds": 10, "analysis_seconds": 7, "execution_seconds": 5,
+            "action_cache_hits": 100, "action_cache_misses": 40, "bep_actions_executed": 40,
+            "spawns": 4, "remote_hits": 2, "disk_hits": 1, "uncached": 1, "other_cached": 0,
+            "failed_spawns": 0, "top_actions": [
+                {"mnemonic": "CppCompile", "target": "//example:library",
+                 "runner": "remote-cache", "cache_hit": True, "seconds": 2.5}],
+        }
+        row = dict(self.row("docker-example.gz"), telemetry=telemetry)
+        lines = [self.line({"recipe": row}), self.line({"count": 1})]
+        self.assertEqual(self.parse(lines)["recipes"], [row])
+        saved = collector.collect(
+            api_with(host_job(summary_step=self.summary_step), log(lines)), REPO, empty())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "history.json"
+            collector.write_atomic(path, saved)
+            self.assertEqual(collector.load_history(path, REPO), saved)
+        for edits in ({"argv": ["private"]}, {"bep": 3}, {"execution": 2},
+                      {"timing_count": 2}, {"action_cache_count": 2}, {"remote_hits": 3},
+                      {"failed_spawns": 5}, {"spawns": True}, {"remote_hits": "2"},
+                      {"wall_seconds": float("inf")}, {"top_actions": telemetry["top_actions"] * 4}):
+            with self.subTest(edits=edits):
+                candidate = dict(row, telemetry=dict(telemetry, **edits))
+                self.assertEqual(self.parse([self.line({"recipe": candidate}),
+                                            self.line({"count": 1})])["reason"], "invalid-timing")
+        for edits in ({"target": "/home/private"}, {"mnemonic": "--token=private"},
+                      {"runner": "private-runner"}, {"cache_hit": False}, {"argv": ["private"]}):
+            candidate = copy.deepcopy(row)
+            candidate["telemetry"]["top_actions"][0].update(edits)
+            self.assertEqual(self.parse([self.line({"recipe": candidate}),
+                                        self.line({"count": 1})])["reason"], "invalid-timing")
+        longest = copy.deepcopy(row)
+        longest["owner"] = "x" * 192
+        longest["telemetry"]["top_actions"] = [{
+            "mnemonic": "M" * 64, "target": "//example:".ljust(240, "p"),
+            "runner": "remote-cache", "cache_hit": True, "seconds": 9007199254740991,
+        }] * 3
+        self.assertLess(len(self.line({"recipe": longest}).encode()) + 192, 4096)
+        self.assertEqual(self.parse([self.line({"recipe": longest}),
+                                    self.line({"count": 1})])["recipes"], [longest])
+
     def test_named_evidence_requires_complete_groups_and_survives_history(self):
         row = dict(self.row("linux-kernel"), bazel_phases=1, bazel_expected=1, exports=0,
                    exports_expected=0, export_seconds=None, build=None, details={

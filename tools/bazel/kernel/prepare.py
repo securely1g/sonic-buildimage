@@ -706,6 +706,8 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
         # The queries use the private consumer workspace's RC.
         with (consumer / ".bazelrc").open("a") as rc:
             rc.write("\ncommon --noslim_profile\n")
+            rc.write("build " + " ".join(shlex.quote(flag) for flag in
+                                       time_vs_image.telemetry_flags(timings, "build")) + "\n")
             for command in ("cquery", "mod"):
                 profile = shlex.quote(str(timings / f"{command}.profile.json.gz"))
                 rc.write(f"{command} --profile={profile}\n")
@@ -723,6 +725,7 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
                 source = state / "build" / name
                 if source.is_file() and not source.is_symlink():
                     shutil.copyfile(source, timings / destination)
+            time_vs_image.compress_telemetry(timings, "build")
     invocation = json.loads(regular(state / "build/invocation.json").read_text())
     require(invocation.get("schema") == 3 and invocation.get("target") == TARGET
             and invocation.get("execution_strategy") == "linux-sandbox"

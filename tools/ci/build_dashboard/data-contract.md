@@ -161,6 +161,33 @@ file, without dropping records or replacing the previous output on overflow.
   must arrive once for every detailed recipe; missing, duplicate, oversized or
   unbound groups invalidate the receipt. Each marker remains at most 4096 bytes.
   Old count-only trailers and rows without named evidence remain valid.
+  Version 2 rows may additionally contain `telemetry`, covering declared build
+  and test invocations only:
+  - `expected`, `bep`, `execution`, `timing_count`, `action_cache_count` count
+    expected invocations, complete BEP streams, execution logs bound to complete
+    BEP streams, and source coverage for the two BEP metric groups.
+  - `wall_seconds`, `analysis_seconds`, `execution_seconds` sum BEP timing
+    metrics for `timing_count` invocations. These are not an additive partition
+    and need not equal the wrapper's client-side elapsed time.
+  - `action_cache_hits`, `action_cache_misses`, `bep_actions_executed` sum the
+    action-cache metric group for `action_cache_count` invocations. The first
+    two are local persistent action-cache checks, not remote/disk hit counts.
+    BEP actions executed includes remote-cache hits.
+  - `spawns`, `remote_hits`, `disk_hits`, `uncached`, `other_cached`,
+    `failed_spawns` describe `execution` observed spawn logs. The four cache/
+    non-cache categories partition the logged spawn count; failures can overlap
+    these categories. Spawns skipped by local action-cache/Skyframe reuse are
+    not recorded, so this is not a whole-build cache-hit denominator.
+  - `top_actions` contains up to three longest timed spawns: `mnemonic`
+    (ASCII identifier, at most 64 characters), `target` (null or a validated
+    public target), `runner` (`remote-cache`, `disk-cache`, `other-cache`,
+    `remote`, `local`, `other`), `cache_hit` (consistent boolean), and `seconds`.
+    No commands, environment variables, raw runner names or input lists survive.
+  Numeric observations are null when their source coverage is zero. Counts are
+  nonnegative integers; all numbers fit the JavaScript safe-integer magnitude.
+  Missing source coverage is not a cache miss. Older rows without telemetry
+  remain valid and do not receive invented measurements. Repository download/
+  prepared-cache reuse is not inferred from any of these counters.
 - Each step: `number`, `name`, `status`, `conclusion`, `started_at`,
   `completed_at`, `duration_seconds`, `phase`.
   An optional `breakdown` provides nested Make build timings without changing

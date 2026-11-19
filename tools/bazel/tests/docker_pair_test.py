@@ -285,7 +285,8 @@ include platform/vs/kvm-image.mk""")
                          {"vs-container-images", *self.archives[::2]})
         shared, = (timings / "vs-container-images").iterdir()
         recipe = json.loads((shared / "recipe.json").read_text())
-        self.assertEqual(recipe, {"bazel": ["build"], "profiles": ["build"], "exports": []})
+        self.assertEqual(recipe, {"bazel": ["build"], "profiles": ["build"], "exports": [],
+                                  "telemetry": ["build"]})
         build, = self.recorded_calls()
         self.assertIn("--experimental_profile_include_target_label", build["arguments"])
         self.assertEqual(json.loads((shared / "batch-targets.json").read_text()),

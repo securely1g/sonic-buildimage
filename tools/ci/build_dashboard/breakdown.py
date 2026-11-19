@@ -155,6 +155,51 @@ CRITICAL_KINDS = {
     "ValidatePackages", "ValidateSource", "GoCompilePkg", "GoLink", "GoStdlib",
     "GoToolchainBinaryBuild", "PackageControls", "Unpack", "KernelBuild", "KernelTools", "Genrule",
 }
+TELEMETRY_COUNTS = (
+    "action_cache_hits", "action_cache_misses", "bep_actions_executed", "spawns",
+    "remote_hits", "disk_hits", "uncached", "other_cached", "failed_spawns",
+)
+TELEMETRY_TIMES = ("wall_seconds", "analysis_seconds", "execution_seconds")
+TELEMETRY_RUNNERS = {"remote-cache", "disk-cache", "other-cache", "remote", "local", "other"}
+
+
+def valid_telemetry(value, row):
+    coverage = {"expected", "bep", "execution", "timing_count", "action_cache_count"}
+    if (not isinstance(value, dict)
+            or set(value) != coverage | set(TELEMETRY_COUNTS + TELEMETRY_TIMES) | {"top_actions"}
+            or any(type(value[key]) is not int or not 0 <= value[key] <= 65535 for key in coverage)
+            or not 1 <= value["expected"] <= row["profiles_expected"]
+            or value["bep"] > value["expected"] or value["execution"] > value["bep"]
+            or value["timing_count"] > value["bep"] or value["action_cache_count"] > value["bep"]):
+        return False
+    for count, keys in (("timing_count", TELEMETRY_TIMES),
+                        ("action_cache_count", TELEMETRY_COUNTS[:3]), ("execution", TELEMETRY_COUNTS[3:])):
+        for key in keys:
+            if value[count]:
+                if (not finite_seconds(value[key]) or value[key] > 2 ** 53 - 1
+                        or key in TELEMETRY_COUNTS and type(value[key]) is not int):
+                    return False
+            elif value[key] is not None:
+                return False
+    if value["execution"] and (
+            value["spawns"] != sum(value[key] for key in ("remote_hits", "disk_hits", "uncached", "other_cached"))
+            or value["failed_spawns"] > value["spawns"]):
+        return False
+    if (not isinstance(value["top_actions"], list)
+            or len(value["top_actions"]) > min(3, value["spawns"] or 0)):
+        return False
+    for action in value["top_actions"]:
+        if (not isinstance(action, dict)
+                or set(action) != {"mnemonic", "target", "runner", "cache_hit", "seconds"}
+                or not isinstance(action["mnemonic"], str)
+                or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", action["mnemonic"])
+                or not valid_target(action["target"])
+                or not isinstance(action["runner"], str) or action["runner"] not in TELEMETRY_RUNNERS
+                or type(action["cache_hit"]) is not bool
+                or action["cache_hit"] != (action["runner"] in {"remote-cache", "disk-cache", "other-cache"})
+                or not finite_seconds(action["seconds"]) or action["seconds"] > 2 ** 53 - 1):
+            return False
+    return True
 
 
 def valid_target(value):
@@ -275,7 +320,8 @@ def valid_recipes(value):
     owners = set()
     fields = RECIPE_FIELDS if version == 1 else RECIPE_FIELDS | set(RECIPE_EXPECTED.values())
     for row in value[key]:
-        if (not isinstance(row, dict) or set(row) - ({"build", "details"} if version == 2 else set()) != fields
+        if (not isinstance(row, dict)
+                or set(row) - ({"build", "details", "telemetry"} if version == 2 else set()) != fields
                 or type(row["failed"]) is not bool
                 or not isinstance(row["owner"], str) or not RECIPE_OWNER.fullmatch(row["owner"])
                 or row["owner"] in owners):
@@ -296,6 +342,8 @@ def valid_recipes(value):
         if "build" in row and not valid_build_evidence(row["build"], row):
             return False
         if "details" in row and not valid_named_evidence(row["details"], row):
+            return False
+        if "telemetry" in row and not valid_telemetry(row["telemetry"], row):
             return False
     if "container_breakdown" in value:
         return valid_container_breakdown(value["container_breakdown"], value[key])
