@@ -57,6 +57,16 @@ bazel_dep(
     version = "0.0.38-0baa4acc9eac9ccc793b81104b1580d530271cbe",
     repo_name = "sonic_build_infra",
 )
+
+# Draft measurement only, do not merge: apply securely1g/sonic-build-infra#123
+# (compress extracted DWARF by default) on top of the pinned release.
+single_version_override(
+    module_name = "sonic-build-infra",
+    version = "0.0.38-0baa4acc9eac9ccc793b81104b1580d530271cbe",
+    patch_strip = 1,
+    patches = ["//tools/bazel/patches:sonic-build-infra-compress-debug-sections.patch"],
+)
+
 bazel_dep(name = "grub", version = "2.12.sonic.1")
 bazel_dep(
     name = "sonic-dash-api",
