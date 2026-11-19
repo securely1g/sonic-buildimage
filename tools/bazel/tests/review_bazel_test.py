@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unittest
 
-from tools.bazel.build_container_batch import EXPORT_POLICY
+from tools.bazel.build_helpers import EXPORT_POLICY
 from tools.bazel.ci import review_bazel_rc as rc
 
 ROOT = Path(__file__).resolve().parents[3]
