@@ -3002,6 +3002,9 @@ jobs:
     needs: archive
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 45
+    env:
+      SWSS_IMAGE: sonic-swss-layer-check:${{ github.run_id }}-${{ github.run_attempt }}
+      SWSS_CONTAINER: sonic-swss-layer-check-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - *restore_workspace_access
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -3030,9 +3033,10 @@ jobs:
           name: swss-layer-amd64
           path: artifacts/swss-layer
       - name: Verify and load this run's archive
+        id: load_swss
         run: |
           python3 - <<'PY'
-          import hashlib, json, subprocess
+          import hashlib, json, os, subprocess
           from pathlib import Path
           from tools.bazel.ci.validate_runtime import load_archive, verify_loaded_image
           root = Path('artifacts/swss-layer')
@@ -3042,7 +3046,8 @@ jobs:
           name = 'docker-swss-layer-trixie.gz'
           assert hashlib.sha256((root / name).read_bytes()).hexdigest() == receipt['artifacts'][name]['sha256']
           report = json.loads((root / 'validation.json').read_text())
-          actual, config, _ = load_archive(root / name, report['archive']['tag'], report['config_digest'])
+          assert report['archive']['tag'] == 'docker-swss-layer-trixie:latest'
+          actual, config, _ = load_archive(root / name, os.environ['SWSS_IMAGE'], report['config_digest'])
           verify_loaded_image(actual, config, report['config_digest'])
           assert actual['Architecture'] == report['architecture'] == 'amd64'
           assert actual['RootFS']['Layers'] == report['rootfs']['diff_ids']
@@ -3050,14 +3055,23 @@ jobs:
       - name: Verify installed source hashes and complete loader closure
         run: |
           set -o pipefail
-          docker run --rm --network=none --cap-drop=ALL --security-opt=no-new-privileges \
+          docker run --rm --name "$SWSS_CONTAINER" --pull=never --network=none --cap-drop=ALL --security-opt=no-new-privileges \
             --read-only --pids-limit=128 --memory=4g --cpus=2 \
             --tmpfs /tmp:rw,nosuid,nodev,noexec,size=128m \
             --mount "type=bind,src=$PWD/tools/bazel/oci/swss_layer_runtime.py,dst=/probe/swss_layer_runtime.py,readonly" \
             --mount "type=bind,src=$PWD/tools/bazel/oci/runtime_smoke.py,dst=/probe/runtime_smoke.py,readonly" \
             --mount "type=bind,src=$PWD/artifacts/swss-layer/validation.json,dst=/probe/validation.json,readonly" \
-            --entrypoint /usr/bin/python3 docker-swss-layer-trixie:latest \
+            --entrypoint /usr/bin/python3 "$SWSS_IMAGE" \
             -B /probe/swss_layer_runtime.py /probe/validation.json | tee artifacts/swss-layer/runtime-smoke.json
+      - name: Remove this run's SWSS container and image tag
+        if: always() && steps.load_swss.outcome != 'skipped'
+        run: |
+          if docker container inspect "$SWSS_CONTAINER" >/dev/null 2>&1; then
+            docker rm --force "$SWSS_CONTAINER"
+          fi
+          if docker image inspect "$SWSS_IMAGE" >/dev/null 2>&1; then
+            docker image rm "$SWSS_IMAGE"
+          fi
       - name: Retain installed-image evidence
         id: runner_cleanup_upload_0
         if: always()
