@@ -137,12 +137,16 @@ runs, use `rcache` (read entries only).
 Matching dependency/configuration keys are required for hits. This does not
 replace Bazel's remote cache or resolve its connection failures.
 
-The VS job sets `SONIC_BUILD_JOBS=4` for concurrent Make recipes. Per-package
-compilation parallelism remains at its existing default, and Bazel retains its
-separate `--jobs=4` and 12-GiB local-memory budget. Image recipes use the normal
-shared workspace server, so their commands serialize; increasing Make concurrency
-does not bypass that lock. No per-image server lifecycle or custom shared-server
-wrapper is added. P4RT and kernel workspaces retain their independent launchers.
+The VS job sets `SONIC_BUILD_JOBS=1`, so Make schedules one recipe at a time.
+The selected VS container archives share one Bazel build command, allowing Bazel
+to schedule their common dependencies and independent actions together. Bazel
+uses `--jobs=HOST_CPUS --local_resources=cpu=HOST_CPUS` and
+`--local_resources=memory=HOST_RAM*.8`: the CPU budget follows the runner's
+visible capacity, and 20% of visible memory remains available for the Bazel
+server and operating system. These are scheduling estimates, not hard memory
+limits. Per-package compilation keeps its existing default. Standalone archive
+goals retain their individual entry points. P4RT and kernel workspaces retain
+their independent launchers. Cache settings remain unchanged.
 
 Before local cache cleanup, the job uses noninteractive `sudo` to check that the
 cache directory exists and is NFS-backed. The `stat --file-system` probe triggers
