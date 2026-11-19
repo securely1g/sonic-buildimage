@@ -265,7 +265,8 @@ def prepare_execution_network(artifacts):
 
 def prepare_validation_tools(artifacts):
     """Install only missing execution tools in the disposable slave container."""
-    packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils", "objcopy": "binutils"}
+    packages = {"bsdtar": "libarchive-tools", "gdb": "gdb", "readelf": "binutils",
+                "objcopy": "binutils", "file": "file", "j2": "j2cli"}
     missing = sorted({package for tool, package in packages.items() if shutil.which(tool) is None})
     if missing:
         prepare_execution_network(artifacts)
