@@ -140,12 +140,9 @@ replace Bazel's remote cache or resolve its connection failures.
 The VS job sets `SONIC_BUILD_JOBS=1`, so Make schedules one recipe at a time.
 The selected VS container archives share one Bazel build command, allowing Bazel
 to schedule their common dependencies and independent actions together. Bazel
-uses `--jobs=HOST_CPUS --local_resources=cpu=HOST_CPUS` and
-`--local_resources=memory=HOST_RAM*.8`: the CPU budget follows the runner's
-visible capacity, and 20% of visible memory remains available for the Bazel
-server and operating system. These are scheduling estimates, not hard memory
-limits. Per-package compilation keeps its existing default. Standalone archive
-goals retain their individual entry points. P4RT and kernel workspaces retain
+uses its default job count and CPU/memory scheduling budgets. Action resource
+estimates remain owned by their build rules. Per-package compilation keeps its
+existing default. Standalone archive goals retain their individual entry points. P4RT and kernel workspaces retain
 their independent launchers. Cache settings remain unchanged.
 
 Before local cache cleanup, the job uses noninteractive `sudo` to check that the

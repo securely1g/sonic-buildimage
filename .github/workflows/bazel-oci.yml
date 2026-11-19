@@ -3792,9 +3792,8 @@ jobs:
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
       # Make schedules one recipe; Bazel schedules all selected container targets.
-      # Use this runner's CPUs and reserve 20% of RAM for the server and OS.
+      # Let Bazel choose its job count and CPU/memory scheduling budgets.
       BAZEL_CONTAINER_ARGS: >-
-        --jobs=HOST_CPUS --local_resources=cpu=HOST_CPUS --local_resources=memory=HOST_RAM*.8
         --remote_local_fallback
         --incompatible_remote_local_fallback_for_remote_cache
         --experimental_remote_downloader=grpc://172.16.0.4:9092
