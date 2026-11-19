@@ -83,11 +83,12 @@ sonic_layer(
     tars = _SOURCE_TARS.values(),
 )
 
-# The utility owner preserves wheel metadata, scripts and data; this checked
-# installation also binds its external Python dependencies to the locked set.
-alias(
+# Keep the checked installation as a prerequisite. Its merged package TAR can
+# repeat shared directories; an OCI layer must contain each path only once.
+flatten(
     name = "python_runtime",
-    actual = "//dockers/docker-dhcp-relay/python:runtime",
+    deduplicate = True,
+    tars = ["//dockers/docker-dhcp-relay/python:runtime"],
 )
 
 installed_packages(
