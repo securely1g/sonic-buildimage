@@ -538,7 +538,7 @@ jobs:
             --architecture "${{ matrix.architecture }}" \
             --bazel "$BAZEL" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }}
           git diff --exit-code
 
       - name: Check local cache reuse across fresh checkouts
