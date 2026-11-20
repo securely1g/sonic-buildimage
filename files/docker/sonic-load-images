@@ -45,13 +45,13 @@ def load_images(store, inventory, wait=False):
 
     with (store / ".sonic-image-load.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if wait:
+            wait_for_daemon()
         if not bundle.is_file():
             if receipt.is_file() and receipt.read_text().strip() == digest:
                 return
             raise RuntimeError(f"missing {bundle} and its completed import receipt")
 
-        if wait:
-            wait_for_daemon()
         start = time.monotonic()
         print(f"Loading {bundle.stat().st_size} bytes from {bundle}; "
               f"{shutil.disk_usage(store).free} bytes free", flush=True)
@@ -63,8 +63,9 @@ def load_images(store, inventory, wait=False):
         if ids != list(expected.values()):
             raise RuntimeError("imported Docker image IDs differ from the SONiC image inventory")
 
-        # Record success durably before releasing the source. A partial load
-        # leaves the bundle in place so restarting Docker retries the import.
+        # Docker's successful response can precede disk writeback. Flush
+        # image data before recording success and removing the offline source.
+        subprocess.run(["/bin/sync", "-f", str(store)], check=True)
         with receipt.open("w") as out:
             out.write(digest + "\n")
             out.flush()
