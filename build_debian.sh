@@ -1015,7 +1015,7 @@ fi
 if [ "$BUILD_REDUCE_IMAGE_SIZE" = "y" ]; then
     pushd $FILESYSTEM_ROOT && sudo tar -I pzstd -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
 else
-    pushd $FILESYSTEM_ROOT && sudo tar -I pigz -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
+    pushd $FILESYSTEM_ROOT && sudo tar -I 'pigz -5' -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
 fi
 
 if [[ -n ${SONIC_IMAGE_TIMING_FILE:-} && ${IMAGE_TYPE:-} == onie ]]; then
