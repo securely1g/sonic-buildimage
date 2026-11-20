@@ -2,6 +2,10 @@
 
 // Public CI metadata only. Text is rendered through DOM textContent, never HTML.
 const IMAGE_KINDS = new Set(["make-vs", "bazel-vs"]);
+const PENDING_JOB_TEXT = {
+  queued: "is queued for a runner", in_progress: "is running", requested: "has been requested",
+  waiting: "is waiting to start", pending: "is pending",
+};
 const KIND_LABELS = {"make-vs": "Make VS", "bazel-vs": "Bazel VS installer", container: "Container", source: "Source", checks: "Checks", other: "Other"};
 const PHASES = ["setup", "build", "validation", "upload", "other"];
 const HOST_VS_BUILD_STEP = "Build sonic-vs.bin through the host Make wrapper";
@@ -329,7 +333,7 @@ function imageResult(jobs) {
   const outcomes = jobs.filter(imageJob).map(result);
   if (!outcomes.length) return "unmeasured";
   if (outcomes.some(value => ["failure", "timed_out", "startup_failure"].includes(value))) return "failure";
-  if (outcomes.some(value => ["in_progress", "queued", "requested", "waiting", "pending"].includes(value))) return "pending";
+  if (outcomes.some(value => Object.hasOwn(PENDING_JOB_TEXT, value))) return "pending";
   // An unknown or incomplete job result must not turn into a successful or skipped PR.
   if (outcomes.some(value => !["success", "cancelled", "skipped"].includes(value))) return "unmeasured";
   if (outcomes.includes("cancelled")) return "cancelled";
@@ -559,6 +563,13 @@ function svgEl(tag, attrs, text) {
   if (text !== undefined) node.textContent = String(text);
   return node;
 }
+function pendingCommitImage() {
+  if (byId("source-filter").value !== "master" || byId("commit-filter").value === "all") return null;
+  const images = job => imageJob(job) && matchesJob(job);
+  const run = state.data.runs.filter(item => matchesRun(item) && item.jobs.some(images)).sort(latestRunFirst)[0];
+  const job = run?.jobs.find(item => images(item) && Object.hasOwn(PENDING_JOB_TEXT, result(item)));
+  return job ? {run, job} : null;
+}
 function renderTrend() {
   const measurements = imageMeasurements(state.data);
   const all = measurements.records.filter(item => matchesRun(item.run) && matchesJob(item.job));
@@ -592,9 +603,26 @@ function renderTrend() {
   }
   legend.hidden = !points.length;
   const preview = byId("trend-preview");
-  preview.replaceChildren(el("p", "", "Hover or focus a point to inspect its measurement, source revision and breakdown availability. Select it to open the full run details."));
-  byId("trend-note").textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching verified image executions. Carried retries count once. ${unverified} unverified records are omitted. ${select.value === "all" ? "Select one measurement series to see its trend." : "Each line follows one build source, path, architecture and measured step."} Date ranges use execution start times and end at the published snapshot.`;
-  if (!points.length) { container.append(el("p", "empty", "No successful image measurements with verified execution times match these filters.\nFailed, skipped, pending, and unverified records remain visible below.")); return all[0]; }
+  const note = byId("trend-note");
+  preview.hidden = !points.length;
+  preview.replaceChildren();
+  if (!points.length) {
+    const pending = !all.length && !unverified && byId("date-filter").value === "all" ? pendingCommitImage() : null;
+    const message = el("p", "empty");
+    if (pending) {
+      const job = pending.job;
+      message.append(link(job.name, job.url), document.createTextNode(` ${PENDING_JOB_TEXT[result(job)]}. No build duration yet.`));
+    } else {
+      message.textContent = "No successful image measurements with verified execution times match these filters. Failed, skipped, pending, and unverified records remain visible in run history.";
+    }
+    container.append(message);
+    note.hidden = !unverified;
+    note.textContent = unverified ? `${unverified} unverified records are omitted.` : "";
+    return pending || all[0];
+  }
+  preview.append(el("p", "", "Hover or focus a point to inspect its measurement, source revision and breakdown availability. Select it to open the full run details."));
+  note.hidden = false;
+  note.textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching verified image executions. Carried retries count once. ${unverified} unverified records are omitted. ${select.value === "all" ? "Select one measurement series to see its trend." : "Each line follows one build source, path, architecture and measured step."} Date ranges use execution start times and end at the published snapshot.`;
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
   const height = width < 520 ? 250 : 265;

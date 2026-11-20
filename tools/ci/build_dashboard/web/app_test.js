@@ -661,7 +661,7 @@ function chartFixture(points, width = 1100) {
   context.document = {getElementById: id => nodes[id], createElement: tag => new TestElement(tag),
     createElementNS: (_, tag) => new TestElement(tag), createTextNode: text => ({textContent: text})};
   context.snapshot = {repository: "securely1g/sonic-buildimage", generated_at: "2026-11-12T00:00:00Z",
-    runs: points.map(point => ({...point.run, jobs: [point.job]}))};
+    runs: points.map(point => ({...point.run, jobs: point.jobs || [point.job]}))};
   const render = () => vm.runInContext("state.data = snapshot; renderTrend();", context);
   render();
   return {nodes, render};
@@ -718,8 +718,45 @@ test("unknown boundaries never gain trend lines and empty filters clear stale ch
   assert.match(nodes.trend.textContent, /No successful image measurements/);
   assert.equal(nodes["history-legend"].children.length, 0);
   assert.equal(nodes["history-legend"].hidden, true);
-  assert.match(nodes["trend-preview"].textContent, /Hover or focus a point/);
+  assert.ok(nodes["trend-preview"].hidden || !nodes["trend-preview"].textContent.includes("Hover or focus a point"));
   assert.doesNotMatch(nodes.trend.textContent, /NaN|Infinity/);
+});
+
+test("a selected master commit with a pending installer explains the missing duration and links to that job", () => {
+  const sha = "a".repeat(40), point = datedPoint(2, "2026-11-11T18:00:00Z");
+  Object.assign(point.run, {source_sha: sha, event: "push", status: "in_progress", conclusion: null, completed_at: null});
+  const job = {...point.job, name: "VS installer in SONiC slave (AMD64)", status: "queued", conclusion: null,
+    completed_at: null, image_build_seconds: null, steps: []};
+  const skipped = {...job, name: "Make VS with Bazel SWSS (AMD64)", job_id: 3, status: "completed",
+    conclusion: "skipped", url: job.url.replace("/job/2", "/job/3")};
+  point.jobs = [skipped, job];
+  const {nodes, render} = chartFixture([point]);
+  nodes["source-filter"].value = "master";
+  nodes["commit-filter"].value = sha;
+  for (const [status, expected] of [["queued", /queued|waiting for a runner/i], ["in_progress", /running|in progress/i]]) {
+    job.status = status;
+    render();
+    assert.match(nodes.trend.textContent, expected);
+    assert.ok(descendants(nodes.trend, el => el.tagName === "a").some(link => link.href === job.url));
+    assert.equal(descendants(nodes.trend, el => el.attributes?.class === "chart-point").length, 0);
+    assert.ok(nodes["trend-preview"].hidden || !nodes["trend-preview"].textContent.includes("Hover or focus a point"));
+  }
+
+  const success = datedPoint(1, "2026-11-01T00:00:00Z");
+  success.run.source_sha = sha;
+  const dated = chartFixture([success, point]);
+  dated.nodes["source-filter"].value = "master";
+  dated.nodes["commit-filter"].value = sha;
+  dated.nodes["date-filter"].value = "7";
+  dated.render();
+  assert.match(dated.nodes.trend.textContent, /match.*filters/i);
+  assert.equal(descendants(dated.nodes.trend, el => el.tagName === "a").length, 0);
+  assert.equal(descendants(dated.nodes.trend, el => el.attributes?.class === "chart-point").length, 0);
+  dated.nodes["date-filter"].value = "all";
+  dated.render();
+  assert.equal(descendants(dated.nodes.trend, el => el.attributes?.class === "chart-point").length, 1);
+  assert.equal(dated.nodes["trend-preview"].hidden, false);
+  assert.match(dated.nodes["trend-preview"].textContent, /Hover or focus a point/);
 });
 
 async function loadDashboard(points, pullRequests = []) {

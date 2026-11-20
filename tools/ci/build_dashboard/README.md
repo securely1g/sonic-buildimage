@@ -19,6 +19,8 @@ generate a package, modify a runner, or clear a cache.
   date. For example, look for **9bbd301c1212 · Wait for the Framework REST
   binary before checking its certificate** to find that commit's VS installer
   build. Older records without a title show the SHA and date.
+  If the selected commit's image job is still queued or running, the empty
+  duration chart links to that job so you can check its progress.
   **All master commits** restores the branch history. Architecture and date
   filters apply independently of the status summary.
 - Keep every collected run attempt and job outcome. Skipped or incomplete work
