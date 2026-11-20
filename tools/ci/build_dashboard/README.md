@@ -19,13 +19,12 @@ generate a package, modify a runner, or clear a cache.
 - Show the explicit image-build step separately from job setup, checks, uploads,
   and the complete job duration. Parallel job times must not be added together
   to claim elapsed workflow time.
-- Keep the Make VS and Bazel installer paths separate. The current Make VS step
-  builds the `sonic-vs.bin` ONIE installer and the Orchagent/Syncd runtime and
-  debug archives. It excludes VM disk generation and BIOS/UEFI guest boot checks.
-  `VS installer in SONiC slave (AMD64)` builds the same installer directly with
-  `slave.mk` and retains the matching runtime/debug archive pairs.
-  Post-build archive and P4 validation have their own CI step and are excluded
-  from the image-build duration.
+- Keep the Make VS and Bazel installer paths separate. The active
+  `VS installer in SONiC slave (AMD64)` job builds `sonic-vs.bin` and the
+  Orchagent/Syncd runtime archives by default. A manual run with
+  `enable_debug_layer` also builds their debug archives. Compare timings for
+  the same archive selection. The image-build duration excludes post-build
+  validation, VM disk generation and BIOS/UEFI guest boot checks.
 - Record the run's source commit separately from the current PR head. Historical
   evidence does not establish that the latest PR revision passed.
 - Resolve each PR's selected base branch independently of historical PR metadata.
@@ -50,9 +49,10 @@ A workflow dispatched on a feature branch with a recorded PR association also
 appears in the PR view. Other branch builds appear in gray in **Other branches**.
 
 Select one **Measurement series** to see trend lines. Each line follows one
-build source, path, architecture and measured step. The host-Make installer and
-paired archives have their own **Host Make .bin + archives** series. Unknown
-step boundaries appear as isolated points. Date ranges end at snapshot time and
+build source, path, architecture and measured step. The **Host Make .bin + archives** series
+includes both runtime-only and paired installer builds. Recognized steps use
+their measurement label. Unrecognized steps appear as isolated **Boundary
+unknown** points. Date ranges end at snapshot time and
 use verified image execution starts. Carried retries count once at the original
 execution time. The chart shows the newest 60 measurements by default. Choose
 **Show all** to remove that limit. Hover or focus a point to see its measurement
