@@ -656,7 +656,7 @@ function chartFixture(points, width = 1100) {
     "series-filter", "path-filter", "arch-filter", "source-filter", "commit-filter", "pr-filter", "date-filter", "limit-filter"]
     .map(id => [id, new TestElement(id.endsWith("filter") ? "select" : "div")]));
   for (const node of Object.values(nodes)) node.value = "all";
-  nodes["source-filter"].value = "combined";
+  nodes["source-filter"].value = "master";
   nodes["limit-filter"].value = "10";
   nodes.trend.clientWidth = width;
   const context = vm.createContext({module: {exports: {}}, URL, getComputedStyle: () => ({paddingLeft: "17px", paddingRight: "17px"})});
@@ -766,8 +766,10 @@ async function loadDashboard(points, pullRequests = []) {
   const html = readFileSync(require.resolve("./index.html"), "utf8");
   const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new TestElement("div")]));
   for (const node of Object.values(nodes)) node.value = "all";
-  nodes["source-filter"].value = "combined";
-  nodes["limit-filter"].value = "10";
+  for (const [, id, options] of html.matchAll(/<select id="([^"]+)">([\s\S]*?)<\/select>/g)) {
+    const choices = [...options.matchAll(/<option value="([^"]+)"( selected)?>/g)];
+    nodes[id].value = (choices.find(choice => choice[2]) || choices[0])[1];
+  }
   nodes.trend.clientWidth = 1100;
   const snapshot = () => ({schema_version: 1, repository: "securely1g/sonic-buildimage", generated_at: "2026-11-12T00:00:00Z",
     pull_requests: pullRequests, runs: points.map(point => ({...point.run, jobs: [point.job]}))});
@@ -828,6 +830,12 @@ test("build source filters the chart and run history, including PR events withou
   const markers = () => descendants(nodes.trend, node => node.attributes?.class === "chart-marker");
   const runs = () => nodes["runs-body"].children.map(row => descendants(row, node => node.tagName === "button")[0]?.textContent);
   const green = "#187247", yellow = "#facc15", ochre = "#805f00";
+  assert.equal(nodes["source-filter"].value, "master");
+  assert.equal(nodes["commit-filter"].value, "all");
+  assert.equal(nodes["limit-filter"].value, "10");
+  assert.deepEqual(runs(), ["Workflow 3", "Workflow 1"]);
+  assert.deepEqual(markers().map(marker => marker.attributes.fill), [green, green]);
+  select("source-filter", "combined");
   assert.deepEqual(runs(), ["Workflow 6", "Workflow 4", "Workflow 3", "Workflow 2", "Workflow 1"]);
   assert.deepEqual(markers().map(marker => marker.attributes.fill), [green, yellow, green, yellow]);
   assert.match(nodes["history-legend"].textContent, /Master/i);
@@ -892,8 +900,6 @@ test("choosing a master commit scopes status, chart, history and details to the 
   const commits = nodes["commit-filter"];
   const chartPoints = () => descendants(nodes.trend, node => node.attributes?.class === "chart-point");
   const history = () => descendants(nodes["runs-body"], node => node.tagName === "button").map(node => node.textContent);
-  assert.ok(nodes["commit-filter-label"].hidden);
-  select("source-filter", "master");
   assert.equal(nodes["commit-filter-label"].hidden, false);
   assert.ok(nodes["pr-filter-label"].hidden);
   assert.deepEqual(commits.options.map(option => option.value), ["all", checksOnly, succeeded, failed]);
@@ -979,6 +985,8 @@ test("a master build associated with a merge keeps the PR's own image result", a
   pr.job.conclusion = "failure";
   Object.assign(merge.run, {event: "push", branch: "master", pr_numbers: [19]});
   const nodes = await loadDashboard([merge, pr], [{number: 19, title: "Image test"}]);
+  nodes["source-filter"].value = "combined";
+  nodes["source-filter"].listeners.change();
   assert.match(nodes["latest-branch-status"].textContent, /success/);
   assert.match(nodes["coverage-summary"].textContent, /Success0Failed1/);
 });

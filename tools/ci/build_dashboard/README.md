@@ -7,10 +7,11 @@ generate a package, modify a runner, or clear a cache.
 
 ## Measurements
 
-- **Image build status** appears above the chart. The default **Master + pull
-  requests** view shows the latest master image result and counts each PR's
-  latest image result once. The selector also filters the chart and run history.
-  Select **Master** for master builds, **Pull requests** for PR builds, or
+- **Image build status** opens on **Master** with **All master commits**
+  selected. The latest master image result appears above the chart.
+  The source selector also filters the chart and run history. Select
+  **Master + pull requests** to include each PR's latest image result,
+  **Pull requests** for PR builds, or
   **Other branches** for runs on branches with no recorded PR association.
   Under **Master**, choose a **Master commit** to see that revision's latest
   image result, successful timings, run history, and details. Each commit

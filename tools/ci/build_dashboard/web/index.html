@@ -46,20 +46,20 @@
             <label class="source-select">Build source
               <select id="source-filter">
                 <option value="combined">Master + pull requests</option>
-                <option value="master">Master</option>
+                <option value="master" selected>Master</option>
                 <option value="pr">Pull requests</option>
                 <option value="other">Other branches</option>
               </select>
             </label>
-            <label id="commit-filter-label" class="source-select" hidden>Master commit
+            <label id="commit-filter-label" class="source-select">Master commit
               <select id="commit-filter">
-                <option value="all">All master commits</option>
+                <option value="all" selected>All master commits</option>
               </select>
             </label>
           </div>
         </div>
         <p id="latest-branch-status" class="status-line"></p>
-        <div id="pr-build-status">
+        <div id="pr-build-status" hidden>
           <p class="status-line">
             <strong>Pull requests</strong>
             <span id="coverage-count" class="count-pill"></span>
@@ -93,7 +93,7 @@
               <option value="unknown">Unknown</option>
             </select>
           </label>
-          <label id="pr-filter-label">Pull request
+          <label id="pr-filter-label" hidden>Pull request
             <select id="pr-filter">
               <option value="all">All pull requests</option>
             </select>
