@@ -885,6 +885,31 @@ test("choosing a master commit scopes status, chart, history and details to the 
   assert.deepEqual(history(), ["Workflow 6", "Workflow 4", "Workflow 3", "Workflow 2", "Workflow 1"]);
 });
 
+test("master commit labels pair each revision with its own title and latest run date", async () => {
+  const installer = "1".repeat(40), kernel = "2".repeat(40), untitled = "3".repeat(40);
+  const points = [installer, kernel, untitled, installer, untitled, untitled].map((sha, index) => {
+    const id = index + 1;
+    const point = datedPoint(id, `2026-11-0${id}T18:00:00Z`);
+    Object.assign(point.run, {source_sha: sha, workflow_name: "VS workflow", event: "push"});
+    return point;
+  });
+  points[0].run.source_commit_title = "Build <installer> from the shared archive";
+  points[1].run.source_commit_title = "Update the kernel configuration";
+  Object.assign(points[4].run, {event: "pull_request", source_commit_title: "PR title"});
+  Object.assign(points[5].run, {branch: "topic", source_commit_title: "Feature branch title"});
+  const nodes = await loadDashboard(points);
+  nodes["source-filter"].value = "master";
+  nodes["source-filter"].listeners.change();
+  const commits = nodes["commit-filter"].options;
+  assert.deepEqual(commits.map(option => option.value), ["all", installer, untitled, kernel]);
+  const label = sha => commits.find(option => option.value === sha).textContent;
+  const runDate = point => new Date(point.run.started_at).toLocaleString(undefined,
+    {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short"});
+  assert.equal(label(installer), `111111111111 · Build <installer> from the shared archive · ${runDate(points[3])}`);
+  assert.equal(label(kernel), `222222222222 · Update the kernel configuration · ${runDate(points[1])}`);
+  assert.equal(label(untitled), `333333333333 · ${runDate(points[2])}`);
+});
+
 test("refresh preserves a selected master commit until it leaves the retained history", async () => {
   const kept = datedPoint(1, "2026-11-01T18:00:00Z"), removed = datedPoint(2, "2026-11-02T18:00:00Z");
   kept.run.source_sha = "1".repeat(40);
@@ -896,8 +921,10 @@ test("refresh preserves a selected master commit until it leaves the retained hi
   const commits = nodes["commit-filter"];
   commits.value = removed.run.source_sha;
   commits.listeners.change();
+  removed.run.source_commit_title = "Refresh the base image";
   await nodes.refresh.listeners.click();
   assert.equal(commits.value, removed.run.source_sha);
+  assert.match(commits.options.find(option => option.value === commits.value).textContent, /Refresh the base image/);
   assert.equal(nodes["runs-body"].children.length, 1);
   points.pop();
   await nodes.refresh.listeners.click();

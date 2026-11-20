@@ -535,17 +535,20 @@ function renderFilters() {
   const revisions = new Map(), prefixCounts = new Map();
   for (const run of masterRuns) {
     const sha = run.source_sha;
-    if (revisions.has(sha)) continue;
-    revisions.set(sha, run);
-    const prefix = sha.slice(0, 12);
-    prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
+    if (!revisions.has(sha)) {
+      revisions.set(sha, {latest: run, title: ""});
+      const prefix = sha.slice(0, 12);
+      prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
+    }
+    if (typeof run.source_commit_title === "string") revisions.get(sha).title ||= run.source_commit_title.trim();
   }
-  for (const [sha, run] of revisions) {
+  for (const [sha, {latest, title}] of revisions) {
     const prefix = sha.slice(0, 12);
     const label = prefixCounts.get(prefix) > 1 ? sha : prefix;
-    const option = el("option", "", `${label} · ${dateTime(run.started_at || run.completed_at)}`);
+    const date = dateTime(latest.started_at || latest.completed_at);
+    const option = el("option", "", [label, title, date].filter(Boolean).join(" · "));
     option.value = sha;
-    option.title = sha;
+    option.title = title ? `${sha} · ${title}` : sha;
     commits.append(option);
   }
   commits.value = revisions.has(previous) ? previous : "all";

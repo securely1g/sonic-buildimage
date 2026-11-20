@@ -27,7 +27,13 @@ file, without dropping records or replacing the previous output on overflow.
   `event`, `status`, `conclusion`, `pr_numbers`, `pr_association`, `pr_association_note`, `started_at`, `started_at_source`,
   `completed_at`, `updated_at`, `url`, `jobs`, `event_bases`.
   `source_sha` is GitHub's run `head_sha`; it is not replaced by the current PR
-  head. `pr_association` is `github` (run's explicit PR links), `commit` (exact
+  head. For master builds, optional `source_commit_title` contains the first
+  line of GitHub's `head_commit.message` when `head_commit.id` matches the
+  run's full `source_sha`. The collector normalizes whitespace and bounds the
+  title to 256 characters. A normal refresh also fills in earlier master runs
+  at the same SHA using the workflow metadata it already reads. A revision
+  without a verified title keeps its SHA and date in the picker.
+  `pr_association` is `github` (run's explicit PR links), `commit` (exact
   current same-repository PR head, or a unique exact fork repository/branch/head
   match for a `pull_request` event), `branch` (unique same-repository feature
   branch, additionally verified through GitHub's commit-to-PR endpoint), or

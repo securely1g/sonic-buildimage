@@ -15,7 +15,10 @@ generate a package, modify a runner, or clear a cache.
   Under **Master**, choose a **Master commit** to see that revision's latest
   image result, successful timings, run history, and details. Each commit
   appears once, newest run first, including revisions with only failed or
-  pending runs. For example, select `9bbd301c` to find its VS installer build.
+  pending runs. The picker shows the short SHA, commit title, and latest run
+  date. For example, look for **9bbd301c1212 · Wait for the Framework REST
+  binary before checking its certificate** to find that commit's VS installer
+  build. Older records without a title show the SHA and date.
   **All master commits** restores the branch history. Architecture and date
   filters apply independently of the status summary.
 - Keep every collected run attempt and job outcome. Skipped or incomplete work
