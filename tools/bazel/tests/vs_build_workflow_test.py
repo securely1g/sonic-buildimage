@@ -86,7 +86,7 @@ else:
         for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "FAIL_ACTION",
                      "FORBID_VALIDATION", "CHANGE_REVISION_ACTION", "NOBOOKWORM", "NOTRIXIE",
                      "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL",
-                     "SONIC_VS_IMAGE_TIMINGS", "SONIC_VS_RETRY_GO_FETCH", "SONIC_ENABLE_DEBUG_LAYER"):
+                     "SONIC_VS_IMAGE_TIMINGS", "SONIC_VS_RETRY_GO_FETCH", "SONIC_ENABLE_DEBUG_LAYER", "SONIC_HOSTBASE_MODE"):
             self.environment.pop(name, None)
 
     def run_script(self, name, *args, **environment):
@@ -118,6 +118,14 @@ else:
     def assert_profile(self, call, target, debug_layer):
         self.assertEqual(call["args"], [target, *self.profile_options(), f"SONIC_ENABLE_DEBUG_LAYER={debug_layer}"])
         self.assertEqual(call["bazel_args"], self.environment["BAZEL_CONTAINER_ARGS"])
+
+    def test_two_worker_trial_selects_only_the_whole_host_base_on_the_cold_worker(self):
+        for mode, goal in [("cold", "target/sonic-vs.bin__vs__rfs.squashfs"),
+                           ("warm", "target/sonic-vs.bin")]:
+            with self.subTest(mode=mode):
+                result = self.run_script("build_vs.sh", SONIC_HOSTBASE_MODE=mode)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assert_profile(self.calls()[-1], goal, "n")
 
     def test_build_records_revision_before_one_make_without_validation_receipts(self):
         result = self.run_script("build_vs.sh", FORBID_VALIDATION="1")

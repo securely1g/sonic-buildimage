@@ -4200,7 +4200,6 @@ jobs:
             [[ "$trial" =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]
             test "${BASH_REMATCH[1]}" = "$SEED_RUN"
             test "$(jq -er .worker_id "$receipt")" != "$machine"
-            rm -f artifacts/vs/hostbase-experiment/personalization.json
           fi
           image=$(make -s -f Makefile.work BLDENV=trixie showtag | tail -n 1)
           digest=$(docker image inspect --format '{{.Id}}' "$image")
@@ -4220,17 +4219,36 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/vs/image-timings
           bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
-          test -s target/sonic-vs.bin
-          test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+          if [[ ${SONIC_HOSTBASE_MODE:-} == cold ]]; then
+            test -s target/sonic-vs.bin__vs__rfs.squashfs
+            test -s artifacts/vs/hostbase-experiment/cold-receipt.json
+          else
+            test -s target/sonic-vs.bin
+            test -s target/sonic-vs.bin.dockers
+            if [[ ${SONIC_HOSTBASE_MODE:-} == warm ]]; then
+              test -s artifacts/vs/hostbase-experiment/warm-receipt.json
+              test -s artifacts/vs/hostbase-experiment/personalization.json
+            fi
+          fi
 
-      - name: Preserve the whole-target cache receipt
-        if: ${{ !cancelled() && (env.SONIC_HOSTBASE_MODE == 'cold' || env.SONIC_HOSTBASE_MODE == 'warm') }}
+      - name: Publish the cold host-base receipt for the restore worker
+        id: cold_hostbase_receipt
+        if: env.SONIC_HOSTBASE_MODE == 'cold'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: vs-hostbase-${{ env.SONIC_HOSTBASE_MODE }}-receipt
+          name: vs-hostbase-cold-receipt
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment/cold-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve the warm restore receipt and personalization timing
+        if: ${{ !cancelled() && env.SONIC_HOSTBASE_MODE == 'warm' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-hostbase-warm-receipt
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment/${{ env.SONIC_HOSTBASE_MODE }}-receipt.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment/warm-receipt.json
             vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment/personalization.json
           if-no-files-found: error
           retention-days: 14
@@ -4278,6 +4296,7 @@ jobs:
           retention-days: 14
 
       - name: Validate the installer release and selected container archives
+        if: env.SONIC_HOSTBASE_MODE != 'cold'
         run: |
           set -euo pipefail
           python3 -B scripts/validate_sonic_version.py target/sonic-vs.bin \
@@ -4297,18 +4316,19 @@ jobs:
           sha256sum target/sonic-vs.bin "${archives[@]}" > artifacts/vs/outputs.sha256
 
       - name: Validate the installer and retained container pairs
-        if: env.SONIC_ENABLE_DEBUG_LAYER == 'y'
+        if: env.SONIC_HOSTBASE_MODE != 'cold' && env.SONIC_ENABLE_DEBUG_LAYER == 'y'
         run: |
           set -euo pipefail
           bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
 
       - name: Prepare runtime-only installed image checks
-        if: env.SONIC_ENABLE_DEBUG_LAYER == 'n'
+        if: env.SONIC_HOSTBASE_MODE != 'cold' && env.SONIC_ENABLE_DEBUG_LAYER == 'n'
         run: |
           set -euo pipefail
           bash tools/bazel/ci/validate_vs.sh --runtime-only 2>&1 | tee artifacts/vs/validation.log
 
       - name: Verify installed base, SWSS and Syncd images
+        if: env.SONIC_HOSTBASE_MODE != 'cold'
         timeout-minutes: 20
         run: |
           set -euo pipefail
@@ -4339,6 +4359,7 @@ jobs:
 
       - name: Publish the installer and matching container archives
         id: vs_installer_upload
+        if: env.SONIC_HOSTBASE_MODE != 'cold'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-slave-amd64
@@ -4371,7 +4392,7 @@ jobs:
 
       - name: Retain shared image validation evidence
         id: vs_validation_upload
-        if: always()
+        if: always() && env.SONIC_HOSTBASE_MODE != 'cold'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-image-validation-amd64
@@ -4420,7 +4441,8 @@ jobs:
           always() && steps.vs_container_cleanup.outcome == 'success' &&
           steps.vs_image_timings_upload.outcome == 'success' &&
           steps.vs_receipts_upload.outcome == 'success' &&
-          steps.vs_validation_upload.outcome == 'success' &&
+          (steps.vs_validation_upload.outcome == 'success' ||
+           (env.SONIC_HOSTBASE_MODE == 'cold' && steps.cold_hostbase_receipt.outcome == 'success')) &&
           (steps.vs_installer_upload.outcome == 'success' ||
            steps.vs_installer_upload.outcome == 'skipped')
         working-directory: ${{ github.workspace }}
@@ -4618,7 +4640,7 @@ jobs:
 
   gnmi_acceptance:
     name: gNMI acceptance (AMD64)
-    if: always() && !cancelled()
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.source_image != 'vs-hostbase')
     needs: [gnmi_native, gnmi_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 5
@@ -4795,7 +4817,7 @@ jobs:
 
   mgmt_framework_acceptance:
     name: Framework acceptance (AMD64)
-    if: always() && !cancelled()
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.source_image != 'vs-hostbase')
     needs: [mgmt_framework_native, mgmt_framework_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 5

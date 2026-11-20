@@ -81,7 +81,7 @@ def vm(args, log):
     child.logfile_read = log
     try:
         yield child
-    except (pexpect.EOF, pexpect.TIMEOUT):
+    except (pexpect.EOF, pexpect.TIMEOUT) as exc:
         # pexpect's default exception includes its last send (which could be a password).
         raise RuntimeError(f"serial console {type(exc).__name__}; see serial log") from None
     finally:
