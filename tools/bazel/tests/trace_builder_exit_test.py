@@ -88,3 +88,39 @@ else:
         self.assertEqual(events, {})
         self.assertEqual(trace_builder_exit.intervals({"collector_finished": 1, "docker_die": 1000000001}),
                          {"collector_finished_to_docker_die": 1.0})
+
+    def test_host_outputs_are_private_per_builder_and_bound_to_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp).resolve()
+            checkout = workspace / "vs-123-2"
+            checkout.mkdir()
+            env = {"GITHUB_WORKSPACE": str(workspace), "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2"}
+            with mock.patch.dict(os.environ, env), contextlib.chdir(checkout):
+                first = trace_builder_exit.prepare_host_outputs()
+                second = trace_builder_exit.prepare_host_outputs()
+                self.assertNotEqual(first, second)
+                self.assertEqual(first.parent, checkout / ".vs-bazel-outputs")
+                self.assertEqual(first.stat().st_mode & 0o777, 0o700)
+                self.assertFalse(trace_builder_exit.output_evidence(first)["bazel_execroot_present"])
+                (first / "bazel/_bazel_fixture/1/execroot").mkdir(parents=True)
+                (first / "p4rt/execroot").mkdir()
+                proof = trace_builder_exit.output_evidence(first)
+                self.assertTrue(proof["bazel_execroot_present"])
+                self.assertTrue(proof["p4rt_execroot_present"])
+                with mock.patch.object(trace_builder_exit, "docker_field", return_value="bind true " + str(first)):
+                    self.assertTrue(trace_builder_exit.check_output_mount("fixture", first))
+                    self.assertFalse(trace_builder_exit.check_output_mount("fixture", second))
+            with mock.patch.dict(os.environ, env), contextlib.chdir(workspace):
+                with self.assertRaisesRegex(ValueError, "run-specific"):
+                    trace_builder_exit.prepare_host_outputs()
+
+    def test_host_outputs_refuse_redirected_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp).resolve()
+            checkout = workspace / "vs-1-1"
+            checkout.mkdir()
+            (checkout / ".vs-bazel-outputs").symlink_to(workspace, target_is_directory=True)
+            env = {"GITHUB_WORKSPACE": str(workspace), "GITHUB_RUN_ID": "1", "GITHUB_RUN_ATTEMPT": "1"}
+            with mock.patch.dict(os.environ, env), contextlib.chdir(checkout):
+                with self.assertRaisesRegex(ValueError, "private directory"):
+                    trace_builder_exit.prepare_host_outputs()

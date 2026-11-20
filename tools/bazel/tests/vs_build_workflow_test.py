@@ -152,6 +152,8 @@ else:
             self.assertIn('"${installer_options[@]}"', verify["run"])
             self.assertEqual(build["env"]["SONIC_VS_BUILDER_EXIT_TRACE"],
                              "${{ startsWith(inputs.source_image, 'vs-exit-') && '1' || '0' }}")
+            self.assertEqual(build["env"]["SONIC_VS_HOST_BAZEL_OUTPUTS"],
+                             "${{ inputs.source_image == 'vs-exit-y-host' && '1' || '0' }}")
             self.assertIn("test -s artifacts/vs/builder-exit.json", build["run"])
             self.assertIn('["self-hosted","linux","bazel-x64","vs","vs-exit-bench-266-005"]',
                           job["runs-on"])

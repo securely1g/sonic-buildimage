@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated source-image worker or paired VS builder-exit benchmark
         type: choice
-        options: [none, preflight, vs-exit-n, vs-exit-y, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
+        options: [none, preflight, vs-exit-n, vs-exit-y, vs-exit-y-host, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
@@ -4019,7 +4019,8 @@ jobs:
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' &&
        ((inputs.source_image == 'none' && !inputs.skip_vs) ||
-        inputs.source_image == 'vs-exit-n' || inputs.source_image == 'vs-exit-y'))
+        inputs.source_image == 'vs-exit-n' || inputs.source_image == 'vs-exit-y' ||
+        inputs.source_image == 'vs-exit-y-host'))
     runs-on: >-
       ${{ fromJSON(startsWith(inputs.source_image, 'vs-exit-') &&
           '["self-hosted","linux","bazel-x64","vs","vs-exit-bench-266-005"]' ||
@@ -4181,6 +4182,7 @@ jobs:
         id: native_build
         env:
           SONIC_VS_BUILDER_EXIT_TRACE: ${{ startsWith(inputs.source_image, 'vs-exit-') && '1' || '0' }}
+          SONIC_VS_HOST_BAZEL_OUTPUTS: ${{ inputs.source_image == 'vs-exit-y-host' && '1' || '0' }}
           SONIC_VS_IMAGE_TIMINGS: "1"
           SONIC_VS_RETRY_GO_FETCH: "1"
           TERM: dumb
@@ -4369,6 +4371,8 @@ jobs:
           (steps.vs_installer_upload.outcome == 'success' ||
            steps.vs_installer_upload.outcome == 'skipped')
         working-directory: ${{ github.workspace }}
+        env:
+          TIME_CHECKOUT_CLEANUP: ${{ startsWith(inputs.source_image, 'vs-exit-') && '1' || '0' }}
         run: |
           set -euo pipefail
           checkout="$GITHUB_WORKSPACE/vs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -4380,7 +4384,11 @@ jobs:
             printf 'No VS checkout to remove: %s\n' "$checkout"
             exit 0
           fi
-          python3 -B "$checkout/tools/bazel/ci/cleanup_vs_workspace.py" \
+          timing_options=()
+          if [[ ${TIME_CHECKOUT_CLEANUP:-0} == 1 ]]; then
+            timing_options+=(--timings)
+          fi
+          python3 -B "$checkout/tools/bazel/ci/cleanup_vs_workspace.py" "${timing_options[@]}" \
             --workspace "$GITHUB_WORKSPACE" \
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
 

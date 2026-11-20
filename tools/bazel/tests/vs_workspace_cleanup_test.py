@@ -1,5 +1,7 @@
 """Check VS run cleanup without touching Docker or using privileged deletion."""
 
+import contextlib
+import io
 import json
 from pathlib import Path
 import shutil
@@ -58,6 +60,24 @@ class VsWorkspaceCleanupTest(unittest.TestCase):
         self.clean()
         self.docker.assert_not_called()
         self.remove.assert_not_called()
+
+    def test_timing_includes_output_tree_until_checkout_is_removed(self):
+        self.remove.side_effect = lambda command, check: shutil.rmtree(command[-1])
+        for hosted in (False, True):
+            with self.subTest(hosted=hosted):
+                self.checkout.mkdir(exist_ok=True)
+                if hosted:
+                    (self.checkout / ".vs-bazel-outputs").mkdir()
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    cleanup.cleanup(self.workspace, "123", "2", timings=True)
+                marker = "[ vs timing ] [ checkout-cleanup ] "
+                receipt = json.loads(output.getvalue().splitlines()[-1].removeprefix(marker))
+                self.assertEqual(receipt["host_bazel_outputs_present_before"], hosted)
+                self.assertTrue(receipt["checkout_removed"])
+                self.assertFalse(self.checkout.exists())
+                self.assertGreaterEqual(receipt["elapsed_seconds"], receipt["remove_seconds"])
+                self.assertGreaterEqual(receipt["finished_epoch_ns"], receipt["started_epoch_ns"])
 
     def test_rejects_redirected_checkout_including_dangling_symlink(self):
         self.checkout.rmdir()

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import time
 
 
 def checkout_path(workspace, run_id, run_attempt):
@@ -45,7 +46,10 @@ def check_container_users(checkout):
                 raise ValueError(f"A Docker container still references the cleanup path: {source}")
 
 
-def cleanup(workspace, run_id, run_attempt):
+def cleanup(workspace, run_id, run_attempt, *, timings=False):
+    if timings:
+        started_epoch_ns = time.time_ns()
+        started = time.monotonic()
     checkout = checkout_path(workspace, run_id, run_attempt)
     if not checkout.exists():
         print(f"No VS checkout to remove: {checkout}")
@@ -57,13 +61,29 @@ def cleanup(workspace, run_id, run_attempt):
     if (identity.st_dev, identity.st_ino) != (current.st_dev, current.st_ino):
         raise ValueError("VS checkout changed during cleanup checks")
     print(f"Removing this run's VS checkout: {checkout}", flush=True)
+    if timings:
+        output_dir = checkout / ".vs-bazel-outputs"
+        had_outputs = not output_dir.is_symlink() and output_dir.is_dir()
+        remove_started = time.monotonic()
     # Builders may leave root-owned files. Do not chmod files that could be
     # hardlinked into retained caches, and do not cross filesystem boundaries.
     subprocess.run(
         ["sudo", "-n", "rm", "--recursive", "--force", "--one-file-system", "--", str(checkout)],
         check=True)
+    if timings:
+        remove_seconds = time.monotonic() - remove_started
     if checkout.exists() or checkout.is_symlink():
         raise ValueError(f"VS checkout still exists after cleanup: {checkout}")
+    if timings:
+        print("[ vs timing ] [ checkout-cleanup ]", json.dumps({
+            "schema_version": 1,
+            "started_epoch_ns": started_epoch_ns,
+            "finished_epoch_ns": time.time_ns(),
+            "elapsed_seconds": time.monotonic() - started,
+            "remove_seconds": remove_seconds,
+            "host_bazel_outputs_present_before": had_outputs,
+            "checkout_removed": True,
+        }), flush=True)
 
 
 def main():
@@ -71,9 +91,10 @@ def main():
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
+    parser.add_argument("--timings", action="store_true", help="Print the verified cleanup timing in the job log")
     args = parser.parse_args()
     try:
-        cleanup(args.workspace, args.run_id, args.run_attempt)
+        cleanup(args.workspace, args.run_id, args.run_attempt, timings=args.timings)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"VS checkout cleanup failed: {error}\n")
 

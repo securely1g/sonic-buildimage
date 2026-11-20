@@ -456,6 +456,7 @@ endif
 vs_docker_run := docker run
 ifeq ($(SONIC_VS_BUILDER_EXIT_TRACE):$(SONIC_VS_IMAGE_TIMINGS):$(BLDENV):$(MAKECMDGOALS),1:1:trixie:target/sonic-vs.bin)
 vs_docker_run := python3 -B tools/bazel/ci/trace_builder_exit.py
+vs_host_bazel_outputs := $(SONIC_VS_HOST_BAZEL_OUTPUTS)
 endif
 DOCKER_RUN := $(vs_docker_run) --rm=true $(DOCKER_PRIVMODE) --init \
     -v $(DOCKER_BUILDER_MOUNT) \
@@ -641,6 +642,13 @@ DOCKER_USER_COMMANDS = \
 	su $(USER) -c 'git config --global user.name $(USER)' && \
 	su $(USER) -c 'git config --global user.email $(USER)@contoso.com' && \
 	echo '$(USER) ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+
+# Keep the normal home, startup files and Bazel output names. Mounting in the
+# home before useradd -m would leave its parent owned by root.
+ifeq ($(vs_host_bazel_outputs),1)
+DOCKER_USER_COMMANDS += && install -d -o $(USER) -g g$(USER) /var/$(USER)/.cache /var/$(USER)/.cache/bazel \
+    && mount --bind /sonic-vs-bazel-outputs/bazel /var/$(USER)/.cache/bazel
+endif
 
 ifeq ($(SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD), y)
 ifneq ($(MULTIARCH_QEMU_ENVIRON), y)

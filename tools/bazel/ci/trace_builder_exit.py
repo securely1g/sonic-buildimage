@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import select
+import stat
 import subprocess
 import sys
 import tempfile
@@ -13,9 +14,15 @@ import time
 import uuid
 
 
+# Direct script entry also works when the host sets PYTHONSAFEPATH.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cleanup_vs_workspace import checkout_path
+
+
 REPORT = Path("artifacts/vs/builder-exit.json")
 STORAGE_HELPER = Path(__file__).with_name("trace_builder_storage.py")
 MARKER_IN_BUILDER = "/run/sonic-vs-builder-exit-marker"
+OUTPUT_MOUNT = "/sonic-vs-bazel-outputs"
 ACTIONS = ("create", "start", "die", "destroy")
 
 
@@ -41,7 +48,42 @@ def docker_field(*args):
     return proc.stdout.strip()
 
 
-def observe_init(work, events, started, stopped, status):
+def prepare_host_outputs():
+    workspace = Path(os.environ["GITHUB_WORKSPACE"])
+    checkout = checkout_path(workspace, os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"])
+    if Path.cwd() != checkout:
+        raise ValueError("Host Bazel outputs require the run-specific VS checkout")
+    parent = checkout / ".vs-bazel-outputs"
+    parent.mkdir(mode=0o700, exist_ok=True)
+    item = parent.lstat()
+    if not stat.S_ISDIR(item.st_mode) or item.st_uid != os.getuid() or stat.S_IMODE(item.st_mode) != 0o700:
+        raise ValueError("Host Bazel output parent must be a private directory owned by the runner")
+    # Each invocation starts empty, including a retry within this checkout.
+    source = Path(tempfile.mkdtemp(prefix="builder-", dir=parent))
+    for component in ("bazel", "p4rt"):
+        (source / component).mkdir(mode=0o700)
+    return source
+
+
+def check_output_mount(container, source):
+    mount = docker_field("inspect", "--format",
+                         '{{range .Mounts}}{{if eq .Destination "' + OUTPUT_MOUNT +
+                         '"}}{{.Type}} {{.RW}} {{.Source}}{{end}}{{end}}', container)
+    return mount == "bind true " + str(source)
+
+
+def output_evidence(source):
+    # Only inspect well-known shallow paths, never walk the measured execroots.
+    device = source.stat().st_dev
+    return {
+        "relative_source": str(source.relative_to(Path.cwd())),
+        "filesystem_device": f"{os.major(device)}:{os.minor(device)}",
+        "bazel_execroot_present": any(p.is_dir() for p in (source / "bazel").glob("_bazel_*/*/execroot")),
+        "p4rt_execroot_present": (source / "p4rt/execroot").is_dir(),
+    }
+
+
+def observe_init(work, events, started, stopped, status, output_source):
     # The start event supplies the exact ID even when unrelated builders share the daemon.
     while not started:
         if stopped.wait(0.1):
@@ -55,6 +97,8 @@ def observe_init(work, events, started, stopped, status):
             raise ValueError("no live container init PID")
         status["container_id"] = container
         status["init_host_pid"] = pid
+        if output_source is not None:
+            status["host_bazel_outputs"]["docker_bind_verified"] = check_output_mount(container, output_source)
         if STORAGE_HELPER.is_file():
             path = REPORT.with_name("builder-exit-storage.json").absolute()
             path.write_text("")
@@ -111,6 +155,14 @@ def main(argv):
     except (OSError, subprocess.SubprocessError) as exc:
         status["host_metadata_error"] = type(exc).__name__
 
+    output_source = None
+    output_args = []
+    if os.environ.get("SONIC_VS_HOST_BAZEL_OUTPUTS") == "1":
+        output_source = prepare_host_outputs()
+        output_args = ["--mount", f"type=bind,src={output_source},dst={OUTPUT_MOUNT}",
+                       "--env", f"P4RT_BAZEL_OUTPUT_BASE={OUTPUT_MOUNT}/p4rt"]
+        status["host_bazel_outputs"] = {"docker_bind_verified": False}
+
     with tempfile.TemporaryDirectory(prefix="sonic-vs-builder-exit-") as tmp:
         work = Path(tmp)
         marker = work / "marker"
@@ -130,7 +182,7 @@ def main(argv):
         reader = threading.Thread(target=read_events,
                                   args=(subscription.stdout, events, started, destroyed), daemon=True)
         observer = threading.Thread(target=observe_init,
-                                    args=(work, events, started, stopped, status), daemon=True)
+                                    args=(work, events, started, stopped, status, output_source), daemon=True)
         reader.start()
         observer.start()
         try:
@@ -139,7 +191,7 @@ def main(argv):
             result = subprocess.run([
                 "docker", "run", "--label", tag, "--mount",
                 f"type=bind,src={marker},dst={MARKER_IN_BUILDER}",
-                "--env", f"SONIC_VS_BUILDER_EXIT_MARKER={MARKER_IN_BUILDER}", *argv])
+                "--env", f"SONIC_VS_BUILDER_EXIT_MARKER={MARKER_IN_BUILDER}", *output_args, *argv])
             events["docker_run_returned"] = time.time_ns()
             status["docker_run_exit_code"] = result.returncode
         finally:
@@ -159,9 +211,15 @@ def main(argv):
             raw_marker = marker.read_text().strip()
             if raw_marker.isdigit():
                 events["collector_finished"] = int(raw_marker)
+            if output_source is not None:
+                status["host_bazel_outputs"].update(output_evidence(output_source))
             status["seconds"] = intervals(events)
             REPORT.write_text(json.dumps(status, indent=2) + "\n")
             print("[ vs timing ] [ builder-exit trace ]", json.dumps(status["seconds"]), flush=True)
+    if result.returncode == 0 and output_source is not None:
+        proof = status["host_bazel_outputs"]
+        if not all(proof[key] for key in ("docker_bind_verified", "bazel_execroot_present", "p4rt_execroot_present")):
+            raise RuntimeError("Host Bazel output benchmark lacks mounted execroot evidence")
     return result.returncode if result.returncode >= 0 else 128 - result.returncode
 
 

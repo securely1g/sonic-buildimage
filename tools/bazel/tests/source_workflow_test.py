@@ -228,6 +228,9 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertEqual(containers["id"], "vs_container_cleanup")
         self.assertLess(job["steps"].index(containers), job["steps"].index(cleanup))
         self.assertEqual(cleanup["name"], "Remove only this run's checkout")
+        self.assertEqual(cleanup["env"]["TIME_CHECKOUT_CLEANUP"],
+                         "${{ startsWith(inputs.source_image, 'vs-exit-') && '1' || '0' }}")
+        self.assertIn("timing_options+=(--timings)", cleanup["run"])
         self.assertIn("always() && steps.vs_container_cleanup.outcome == 'success'", cleanup["if"])
         for upload in ("vs_receipts_upload", "vs_validation_upload", "vs_installer_upload"):
             self.assertIn(f"steps.{upload}.outcome == 'success'", cleanup["if"])
