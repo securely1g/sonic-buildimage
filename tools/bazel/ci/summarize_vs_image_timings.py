@@ -515,7 +515,43 @@ def telemetry_markdown(value):
     return lines + ["", TELEMETRY_NOTE]
 
 
-def target_markdown(row):
+def container_markdown(members, breakdown):
+    lines = ["", "#### Images in the shared Bazel command", "",
+             "These images share the build above; they do not have separate build wall times."]
+    if not members:
+        return lines + ["No per-image measurements were recorded for this batch."]
+    by_owner = {row["owner"]: row for row in members}
+    if breakdown is not None:
+        lines += ["", "| Image | Actions | Action wall (s) | OCI tar (s) | Compression (s) | "
+                  "Cache fetch (s) | Export (s) |", "|---|---:|---:|---:|---:|---:|---:|"]
+        rows = sorted(breakdown["rows"], key=lambda row: (-row["action_seconds"], row["owner"]))
+    else:
+        lines += ["", "Per-image action times are unavailable; only recorded exports are shown.",
+                  "", "| Image | Export (s) |", "|---|---:|"]
+        rows = members
+    for row in rows:
+        recipe = by_owner.get(row["owner"])
+        if recipe is None:
+            continue
+        name = recipe["owner"] + (" (command failed)" if recipe["failed"] else "")
+        values = [name]
+        if breakdown is not None:
+            values += [str(row["actions"]), *(f"{row[key]:.2f}" for key in
+                       ("action_seconds", "archive_seconds", "compress_seconds", "fetch_seconds"))]
+        exported = measured(recipe["export_seconds"], recipe["exports"], recipe["exports_expected"])
+        values.append(f"{exported} ({recipe['exports']}/{recipe['exports_expected']})"
+                      + (" (all invocations)" if recipe["bazel_expected"] or recipe["profiles_expected"] else ""))
+        lines.append("| " + " | ".join(values) + " |")
+    if breakdown is not None:
+        lines += ["", "Image rows can overlap. OCI tar, compression and cache fetch are included in "
+                  "action wall time, not measured standalone build durations. Exports occur after Bazel returns.",
+                  f"Images ran concurrently for {breakdown['parallel_seconds']:.2f}s. "
+                  f"Only shared or unattributed actions ran for {breakdown['other_action_seconds']:.2f}s. "
+                  f"No action was recorded for {breakdown['no_action_seconds']:.2f}s."]
+    return lines
+
+
+def target_markdown(row, *, members=None, breakdown=None):
     build, details = row.get("build"), row.get("details")
     label = "LAUNCHER ELAPSED" if row["owner"] == "linux-kernel" and not build else "BUILD EXCLUDING LOCK"
     lines = ["<details>", f"<summary><strong>{html.escape(row['owner'])}</strong> - "
@@ -530,6 +566,8 @@ def target_markdown(row):
         lines.extend(f"| {label} | {measured_duration(build[key])} |"
                      for key, label in BUILD_EVIDENCE.items() if build[key])
     lines.extend(telemetry_markdown(row.get("telemetry")))
+    if members is not None:
+        lines.extend(container_markdown(members, breakdown))
     if not details:
         return lines + ["", "Named spans were not recorded for this historical run.", "", "</details>"]
     lines.extend(["", f"Named evidence: {details['profiles']}/{details['expected']} build profiles. "
@@ -628,9 +666,22 @@ def report(root):
         lines.extend(["", "### Why each target took its time", "",
                       "Expand a target for its repository spans, critical-path actions and command receipts. "
                       "Ordered by build elapsed excluding lock; kernel launcher elapsed is shown separately in scope."])
-        for row in sorted(recipes, key=lambda row: (
+        group = next((row for row in recipes if row["owner"] == "vs-container-images"), None)
+        members = None
+        if group is not None:
+            owners = ({row["owner"] for row in breakdown["rows"]} if breakdown is not None else
+                      {row["owner"] for row in recipes if row["owner"].startswith("docker-")
+                       and row["bazel_expected"] == row["profiles_expected"] == 0})
+            members = [row for row in recipes if row["owner"] in owners
+                       and row["owner"].endswith(".gz") and row["exports_expected"] > 0]
+            lines.extend(["", "Expand `vs-container-images` for the shared profile and per-image action/export times. "
+                          "Export-only members are not ranked as independent builds."])
+        export_only = {row["owner"] for row in members or []
+                       if row["bazel_expected"] == row["profiles_expected"] == 0}
+        for row in sorted((row for row in recipes if row["owner"] not in export_only), key=lambda row: (
                 card_time(row) is None, -(card_time(row) or 0), row["owner"])):
-            lines.extend(["", *target_markdown(row)])
+            lines.extend(["", *target_markdown(row, members=members if row is group else None,
+                                               breakdown=breakdown)])
         lines.extend(["", "Build excluding lock requires matching build receipts and profiles; output-query waits "
                       "remain in the all-command totals above. Evidence spans overlap and must not be added. "
                       "Repository reads may wait for other repositories; they do not prove CPU parsing or disk slowness. "
@@ -644,17 +695,6 @@ def report(root):
     receipt = {"version": 2, "recipes": recipes}
     if breakdown is not None:
         receipt["container_breakdown"] = breakdown
-        lines.extend(["", "### Images in the shared Bazel command", "",
-                      "| Image | Actions | Action wall (s) | OCI tar (s) | Compression (s) | Cache fetch (s) |",
-                      "|---|---:|---:|---:|---:|---:|"])
-        for row in sorted(breakdown["rows"], key=lambda r: (-r["action_seconds"], r["owner"])):
-            lines.append("| {owner} | {actions} | {action_seconds:.2f} | {archive_seconds:.2f} | "
-                         "{compress_seconds:.2f} | {fetch_seconds:.2f} |".format(**row))
-        lines.extend(["", "Image rows can overlap. OCI tar, compression and cache fetch are included in "
-                      "action wall time. Archive exports are measured separately.",
-                      f"Images ran concurrently for {breakdown['parallel_seconds']:.2f}s. "
-                      f"Only shared or unattributed actions ran for {breakdown['other_action_seconds']:.2f}s. "
-                      f"No action was recorded for {breakdown['no_action_seconds']:.2f}s."])
     return receipt, "\n".join(lines) + "\n"
 
 

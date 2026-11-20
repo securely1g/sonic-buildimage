@@ -970,17 +970,18 @@ function evidenceTable(title, columns, rows, empty) {
   return section;
 }
 
-function renderBuildExplanations(rows, context = "") {
+function renderBuildExplanations(rows, context = "", detail) {
   const box = el("section", "recipe-explanations");
+  const {group, batch, topRows} = groupedRecipes(rows, detail);
   const heading = el("div", "target-analysis-heading"), title = el("div"), actions = el("div", "target-actions"), cards = [];
   title.append(el("h2", "", "Why each target took its time"),
-    el("p", "stage-note", `${context ? context + " · " : ""}${rows.length} targets · ordered by build elapsed excluding lock. Kernel launcher elapsed has a different scope.`));
+    el("p", "stage-note", `${context ? context + " · " : ""}${topRows.length} targets · ordered by build elapsed excluding lock. Kernel launcher elapsed has a different scope.${group ? " Expand vs-container-images for per-image action/export times; export-only members are not independent builds." : ""}`));
   for (const [label, open] of [["Expand visible", true], ["Collapse visible", false]]) {
     const button = el("button", "", label); button.type = "button";
     button.addEventListener("click", () => { for (const card of cards) card.open = open; }); actions.append(button);
   }
   heading.append(title, actions); box.append(heading);
-  for (const row of [...rows].sort((a, b) => (cardTime(b) ?? -1) - (cardTime(a) ?? -1) || a.owner.localeCompare(b.owner))) {
+  for (const row of [...topRows].sort((a, b) => (cardTime(b) ?? -1) - (cardTime(a) ?? -1) || a.owner.localeCompare(b.owner))) {
     const card = el("details", "target-card"), summary = el("summary", "target-card-summary"), name = el("span", "target-name");
     const build = row.build, details = row.details, scope = row.owner === "linux-kernel" && !build ? "Launcher elapsed" : "Build excluding lock";
     name.append(el("strong", "", row.owner + (row.owner === "linux-kernel" ? " *" : "")), el("span", "diagnosis-badge", buildDiagnosis(row)));
@@ -1005,6 +1006,7 @@ function renderBuildExplanations(rows, context = "") {
           "No matching work-category spans recorded."));
     }
     body.append(renderTelemetry(row.telemetry));
+    if (row === group) body.append(renderContainerMembers(batch, row.bazel_seconds));
     if (details) {
       body.append(el("p", "stage-note", `Named evidence: ${details.profiles}/${details.expected} build profiles. Up to eight longest recognized repository/action spans are retained, not an exhaustive partition.${details.scope === "kernel-build" ? " Kernel spans describe its build profile only, not the whole launcher." : ""}`),
         evidenceTable("Longest repository spans", ["Repository", "Span", "Nested reads/waits"],
@@ -1105,6 +1107,14 @@ function renderContainerMembers({profile, members}, wallSeconds) {
   return box;
 }
 
+function groupedRecipes(rows, detail) {
+  const group = rows.find(row => row.owner === "vs-container-images");
+  const batch = group && containerMembers(rows, detail);
+  const exportsInBatch = new Set(batch?.members.filter(({recipe}) =>
+    recipe.bazel_expected === 0 && recipe.profiles_expected === 0).map(({recipe}) => recipe.owner));
+  return {group, batch, topRows: rows.filter(row => !exportsInBatch.has(row.owner))};
+}
+
 function renderRecipeRows(rows, legacy, detail) {
   const box = el("section", "recipe-list");
   box.append(el("h3", "", legacy ? "Bazel timings for four image recipes" : "Bazel build breakdown"));
@@ -1113,11 +1123,7 @@ function renderRecipeRows(rows, legacy, detail) {
     return box;
   }
   box.append(el("p", "stage-note", "Recipes are ordered by recorded Bazel and export command time. Expand a recipe for its breakdown."));
-  const list = el("ol"), group = rows.find(row => row.owner === "vs-container-images");
-  const batch = group && containerMembers(rows, detail);
-  const exportsInBatch = new Set(batch?.members.filter(({recipe}) =>
-    recipe.bazel_expected === 0 && recipe.profiles_expected === 0).map(({recipe}) => recipe.owner));
-  const topRows = rows.filter(row => !exportsInBatch.has(row.owner));
+  const list = el("ol"), {group, batch, topRows} = groupedRecipes(rows, detail);
   for (const row of topRows) {
     const item = el("li"), details = el("details");
     details.open = row === topRows[0];
@@ -1234,7 +1240,8 @@ function renderDetails() {
   if (recipes) box.append(recipes);
   const targetRows = recipes && recipeRows(job.image_recipe_timings);
   if (analysis && targetRows?.length) {
-    analysis.append(renderBuildExplanations(targetRows, `Run ${run.run_id} · ${job.name}`));
+    analysis.append(renderBuildExplanations(targetRows, `Run ${run.run_id} · ${job.name}`,
+      job.image_recipe_timings.container_breakdown));
     analysis.hidden = false;
   }
   const steps = el("details", "steps"); steps.append(el("summary", "", `Step timings · ${job.steps.length} steps`));

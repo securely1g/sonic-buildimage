@@ -940,6 +940,36 @@ test("per-target explanations rank build-only time and keep query locks and hist
   }
 }));
 
+test("build explanations nest shared image actions and exports without hiding independent invocations", () => withDocument(() => {
+  const base = recipeJob().image_recipe_timings.images[0];
+  const group = {...base, owner: "vs-container-images", bazel_seconds: 120, bazel_phases: 1, bazel_expected: 1,
+    profiles: 1, profiles_expected: 1, exports: 0, exports_expected: 0, export_seconds: null};
+  const image = {...base, owner: "docker-export.gz", bazel_seconds: null, bazel_phases: 0, bazel_expected: 0,
+    profiles: 0, profiles_expected: 0, lock_seconds: null, compile_seconds: null, foreign_seconds: null,
+    fetch_seconds: null, exports: 1, exports_expected: 2, export_seconds: 2};
+  const independent = {...group, owner: "docker-independent.gz", bazel_seconds: 7,
+    exports: 1, exports_expected: 1, export_seconds: 1};
+  const profile = {rows: [image, independent].map(row => ({owner: row.owner, actions: 2,
+    action_seconds: 3, archive_seconds: 1, compress_seconds: 2, fetch_seconds: 0.5})),
+    other_action_seconds: 1, no_action_seconds: 2, parallel_seconds: 1};
+  const value = {version: 2, status: "available", recipes: [group, image, independent]};
+  const rows = recipeRows(value);
+  const view = renderBuildExplanations(rows, "", profile);
+  const cards = descendants(view, node => node.className === "target-card");
+  assert.equal(cards.length, 2);
+  const batchCard = cards.find(card => card.textContent.startsWith("vs-container-images"));
+  assert.match(batchCard.textContent, /Containers \(2\)/);
+  assert.match(batchCard.textContent, /docker-export.gz23s0.5s1s2s2s \(1\/2\)/);
+  assert.ok(cards.some(card => card.textContent.startsWith("docker-independent.gz")));
+  assert.equal(descendants(renderBuildExplanations(rows.slice(1)), node => node.className === "target-card").length, 2);
+  for (const detail of [undefined, {...profile, parallel_seconds: NaN}]) {
+    const fallback = renderBuildExplanations(rows, "", detail);
+    assert.equal(descendants(fallback, node => node.className === "target-card").length, 2);
+    assert.match(fallback.textContent, /Containers \(1\)/);
+    assert.match(fallback.textContent, /Per-container Bazel action times are unavailable/);
+  }
+}));
+
 test("the recipe evidence link opens this job's successful timing artifact upload", () => withDocument(() => {
   const repository = "securely1g/sonic-buildimage", job = recipeJob();
   job.url = `https://github.com/${repository}/actions/runs/123/job/456`;

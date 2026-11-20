@@ -129,6 +129,13 @@ Cache writes do not establish remote publication. The same section is written
 to the VS workflow's job summary. Partial build coverage leaves the non-lock
 duration unavailable; historical runs are not assigned invented explanations.
 The isolated kernel launcher remains explicitly incomparable with an image build.
+For shared container builds, export-only images are nested under
+`vs-container-images` in both the dashboard and workflow summary, rather than
+displayed as independent builds with unavailable profiles. Expand that card for
+the per-image action/export table. Observed image action time is not a standalone
+build wall duration. Genuine independent image invocations retain their own cards;
+missing batch profiles leave action attribution unavailable while preserving
+recorded exports.
 This section uses full-width, initially collapsed cards with diagnosis badges,
 readable durations and **Expand visible / Collapse visible** controls. Each card
 includes the eight longest recognized named repository spans (with nested read

@@ -120,12 +120,19 @@ class ImageTimingSummaryTest(unittest.TestCase):
             record["args"]["target"] = "//example:demo"
             with gzip.open(group / "build.profile.json.gz", "wt") as stream:
                 json.dump({"traceEvents": [record]}, stream)
-            time_vs_image.start_recipe(workspace, "demo.gz", [], [], ["export-demo.gz"])
+            image = time_vs_image.start_recipe(workspace, "demo.gz", [], [], ["export-demo.gz"])
+            (image / "export-demo.gz.timing.json").write_text(json.dumps({
+                "phase": "export-demo.gz", "elapsed_seconds": 2, "exit_code": 0}))
             root = group.parent.parent
             script = Path(__file__).resolve().parents[1] / "ci/summarize_vs_image_timings.py"
             run = subprocess.run([sys.executable, "-B", script, str(root), "--github-actions"],
                                  capture_output=True, text=True, check=True)
             receipt = json.loads((root / "summary.json").read_text())
+            markdown = (root / "summary.md").read_text()
+            self.assertNotIn("<summary><strong>demo.gz</strong>", markdown)
+            self.assertIn("| demo.gz | 1 | 3.00 |", markdown)
+            self.assertLess(markdown.index("#### Images in the shared Bazel command"),
+                            markdown.index("</details>"))
             v1 = [json.loads(line.split(" ", 1)[1]) for line in run.stdout.splitlines()
                   if line.startswith("SONIC_VS_CONTAINER_TIMINGS_V1 ")]
             self.assertEqual(v1[0], {"row": receipt["container_breakdown"]["rows"][0]})
@@ -140,6 +147,38 @@ class ImageTimingSummaryTest(unittest.TestCase):
             self.assertEqual(phase_evidence[0][0]["seconds"], 7)
             (group / "build.profile.json.gz").unlink()
             self.assertNotIn("container_breakdown", report(root)[0])
+
+    def test_shared_export_cards_are_grouped_without_hiding_independent_builds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            group = time_vs_image.start_recipe(workspace, "vs-container-images", ["build"], ["build"], [])
+            (group / "build.timing.json").write_text(
+                '{"phase":"build","elapsed_seconds":20,"exit_code":0}')
+            for name in ("docker-export.gz", "docker-missing.gz", "docker-independent.gz"):
+                image = time_vs_image.start_recipe(workspace, name, [], [], ["export"])
+                if name != "docker-missing.gz":
+                    (image / "export.timing.json").write_text(
+                        '{"phase":"export","elapsed_seconds":2,"exit_code":0}')
+            independent = time_vs_image.start_recipe(
+                workspace, "docker-independent.gz", ["build"], ["build"], [])
+            (independent / "build.timing.json").write_text(
+                '{"phase":"build","elapsed_seconds":5,"exit_code":0}')
+            root = group.parent.parent
+            receipt, markdown = report(root)
+            self.assertEqual(len(receipt["recipes"]), 4)
+            self.assertEqual(markdown.count("<summary>"), 2)
+            self.assertIn("<summary><strong>docker-independent.gz</strong>", markdown)
+            self.assertNotIn("<summary><strong>docker-export.gz</strong>", markdown)
+            self.assertNotIn("<summary><strong>docker-missing.gz</strong>", markdown)
+            self.assertIn("| docker-export.gz | 2.00 (1/1) |", markdown)
+            self.assertIn("| docker-missing.gz | unavailable (0/1) |", markdown)
+            self.assertIn("Per-image action times are unavailable", markdown)
+            group_owner = group.parent
+            for path in group.iterdir():
+                path.unlink()
+            group.rmdir()
+            group_owner.rmdir()
+            self.assertIn("<summary><strong>docker-export.gz</strong>", report(root)[1])
 
     def test_compilation_counts_running_processes_and_unions_parallel_workers(self):
         events = [
