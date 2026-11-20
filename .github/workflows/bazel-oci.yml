@@ -4060,6 +4060,29 @@ jobs:
         --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
         --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
     steps:
+      - name: Wait for the producing worker to publish its host-base receipt
+        if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' && inputs.vs_hostbase_phase == 'warm'
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 12
+        env:
+          SEED_RUN: ${{ inputs.vs_hostbase_seed_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SEED_RUN" =~ ^[1-9][0-9]{0,19}$ ]]
+          url="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$SEED_RUN"
+          for ((i=0; i<30; i++)); do
+            if curl -fsS --retry 2 -H "Authorization: Bearer $GH_TOKEN" "$url/artifacts?per_page=100" |
+              jq -e 'any(.artifacts[]; .name == "vs-hostbase-cold-receipt" and (.expired | not))' >/dev/null; then
+              exit 0
+            fi
+            status=$(curl -fsS --retry 2 -H "Authorization: Bearer $GH_TOKEN" "$url" | jq -er .status)
+            if [[ "$status" == completed ]]; then break; fi
+            sleep 20
+          done
+          echo 'The producer has not published a cold host-base receipt.' >&2
+          exit 1
+
       - name: Download the independent cold-worker receipt
         if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' && inputs.vs_hostbase_phase == 'warm'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
