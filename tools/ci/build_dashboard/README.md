@@ -12,8 +12,12 @@ generate a package, modify a runner, or clear a cache.
   latest image result once. The selector also filters the chart and run history.
   Select **Master** for master builds, **Pull requests** for PR builds, or
   **Other branches** for runs on branches with no recorded PR association.
-  Chart controls such as architecture and date range leave the status counts
-  scoped to the selected build source.
+  Under **Master**, choose a **Master commit** to see that revision's latest
+  image result, successful timings, run history, and details. Each commit
+  appears once, newest run first, including revisions with only failed or
+  pending runs. For example, select `9bbd301c` to find its VS installer build.
+  **All master commits** restores the branch history. Architecture and date
+  filters apply independently of the status summary.
 - Keep every collected run attempt and job outcome. Skipped or incomplete work
   is not a zero-second build; failed builds are not faster successful builds.
 - Show the explicit image-build step separately from job setup, checks, uploads,

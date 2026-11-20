@@ -42,14 +42,21 @@
       <section class="panel" aria-labelledby="coverage-title">
         <div class="panel-heading status-heading">
           <h2 id="coverage-title">Image build status</h2>
-          <label class="source-select">Build source
-            <select id="source-filter">
-              <option value="combined">Master + pull requests</option>
-              <option value="master">Master</option>
-              <option value="pr">Pull requests</option>
-              <option value="other">Other branches</option>
-            </select>
-          </label>
+          <div class="source-filters">
+            <label class="source-select">Build source
+              <select id="source-filter">
+                <option value="combined">Master + pull requests</option>
+                <option value="master">Master</option>
+                <option value="pr">Pull requests</option>
+                <option value="other">Other branches</option>
+              </select>
+            </label>
+            <label id="commit-filter-label" class="source-select" hidden>Master commit
+              <select id="commit-filter">
+                <option value="all">All master commits</option>
+              </select>
+            </label>
+          </div>
         </div>
         <p id="latest-branch-status" class="status-line"></p>
         <div id="pr-build-status">
@@ -86,7 +93,7 @@
               <option value="unknown">Unknown</option>
             </select>
           </label>
-          <label>Pull request
+          <label id="pr-filter-label">Pull request
             <select id="pr-filter">
               <option value="all">All pull requests</option>
             </select>
@@ -133,7 +140,7 @@
           <div>
             <p class="eyebrow">RECORDED WORKFLOWS</p>
             <h2 id="runs-title">Run history</h2>
-            <p>Includes failed, skipped, and pending runs. The build path, architecture, build source, and pull request filters apply here.</p>
+            <p>Includes failed, skipped, and pending runs for the selected source, revision, build path, and architecture.</p>
           </div>
           <span id="run-count" class="count-pill"></span>
         </div>

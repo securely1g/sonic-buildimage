@@ -478,6 +478,10 @@ function matchesRun(run) {
   const source = buildSource(run);
   const selectedSource = byId("source-filter").value;
   if (selectedSource === "combined" ? source === "other" : source !== selectedSource) return false;
+  if (selectedSource === "master") {
+    const commit = byId("commit-filter").value;
+    return commit === "all" || run.source_sha === commit;
+  }
   const selectedPr = byId("pr-filter").value;
   return selectedPr === "all" || (source === "pr" && prNumbers(run).includes(Number(selectedPr)));
 }
@@ -521,6 +525,30 @@ function renderFilters() {
     select.append(option);
   }
   select.value = [...select.options].some(option => option.value === old) ? old : "all";
+
+  const commits = byId("commit-filter"), previous = commits.value;
+  const allCommits = el("option", "", "All master commits");
+  allCommits.value = "all";
+  commits.replaceChildren(allCommits);
+  const masterRuns = state.data.runs.filter(run => buildSource(run) === "master" &&
+    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(run.source_sha)).sort(latestRunFirst);
+  const revisions = new Map(), prefixCounts = new Map();
+  for (const run of masterRuns) {
+    const sha = run.source_sha;
+    if (revisions.has(sha)) continue;
+    revisions.set(sha, run);
+    const prefix = sha.slice(0, 12);
+    prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
+  }
+  for (const [sha, run] of revisions) {
+    const prefix = sha.slice(0, 12);
+    const label = prefixCounts.get(prefix) > 1 ? sha : prefix;
+    const option = el("option", "", `${label} · ${dateTime(run.started_at || run.completed_at)}`);
+    option.value = sha;
+    option.title = sha;
+    commits.append(option);
+  }
+  commits.value = revisions.has(previous) ? previous : "all";
 }
 function svgEl(tag, attrs, text) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -623,8 +651,11 @@ function renderCoverage() {
   latest.hidden = source === "pr";
   if (!latest.hidden) {
     const branchSource = source === "other" ? "other" : "master";
-    const run = state.data.runs.filter(item => buildSource(item) === branchSource && item.jobs.some(imageJob)).sort(latestRunFirst)[0];
+    const commit = source === "master" ? byId("commit-filter").value : "all";
+    const run = state.data.runs.filter(item => buildSource(item) === branchSource &&
+      (commit === "all" || item.source_sha === commit) && item.jobs.some(imageJob)).sort(latestRunFirst)[0];
     latest.replaceChildren(el("strong", "", branchSource === "master" ? "Latest master image build" : "Latest image build on other branches"));
+    if (commit !== "all") latest.append(link(commit.slice(0, 12), `https://github.com/${state.data.repository}/commit/${commit}`));
     if (run) {
       latest.append(badge(imageResult(run.jobs)), link(run.workflow_name || "Workflow run", run.url));
       if (branchSource === "other") latest.append(el("span", "", run.branch || "Unknown branch"));
@@ -1349,7 +1380,11 @@ function renderDetails() {
 function renderFiltered() {
   const latest = renderTrend(), runs = visibleRuns();
   if (!runs.some(run => runKey(run) === state.selectedRun)) {
-    const run = latest?.run || runs[0];
+    let run = latest?.run;
+    if (!run && byId("commit-filter").value !== "all") {
+      run = runs.find(item => item.jobs.some(job => imageJob(job) && matchesJob(job)));
+    }
+    run ??= runs[0];
     state.selectedRun = run ? runKey(run) : null;
     state.selectedJob = latest?.job.job_id || null;
   }
@@ -1360,6 +1395,9 @@ function applyBuildSource() {
   const pr = byId("pr-filter"), source = byId("source-filter").value;
   pr.disabled = source === "master" || source === "other";
   if (pr.disabled) pr.value = "all";
+  byId("pr-filter-label").hidden = pr.disabled;
+  byId("commit-filter-label").hidden = source !== "master";
+  if (source !== "master") byId("commit-filter").value = "all";
   renderCoverage();
   renderFiltered();
 }
@@ -1388,6 +1426,7 @@ async function refresh() {
 if (typeof document !== "undefined") {
   byId("refresh").addEventListener("click", refresh);
   byId("source-filter").addEventListener("change", () => { if (state.data) applyBuildSource(); });
+  byId("commit-filter").addEventListener("change", () => { if (state.data) applyBuildSource(); });
   for (const id of ["path-filter", "arch-filter", "pr-filter"]) byId(id).addEventListener("change", () => { if (state.data) renderFiltered(); });
   for (const id of ["series-filter", "date-filter", "limit-filter"]) byId(id).addEventListener("change", () => { if (state.data) renderTrend(); });
   let chartWidth = 0;

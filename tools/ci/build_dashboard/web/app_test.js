@@ -650,7 +650,7 @@ function descendants(node, predicate) {
 }
 function chartFixture(points, width = 1100) {
   const nodes = Object.fromEntries(["trend", "trend-note", "trend-preview", "history-legend",
-    "series-filter", "path-filter", "arch-filter", "source-filter", "pr-filter", "date-filter", "limit-filter"]
+    "series-filter", "path-filter", "arch-filter", "source-filter", "commit-filter", "pr-filter", "date-filter", "limit-filter"]
     .map(id => [id, new TestElement(id.endsWith("filter") ? "select" : "div")]));
   for (const node of Object.values(nodes)) node.value = "all";
   nodes["source-filter"].value = "combined";
@@ -729,8 +729,8 @@ async function loadDashboard(points, pullRequests = []) {
   nodes["source-filter"].value = "combined";
   nodes["limit-filter"].value = "60";
   nodes.trend.clientWidth = 1100;
-  const snapshot = {schema_version: 1, repository: "securely1g/sonic-buildimage", generated_at: "2026-11-12T00:00:00Z",
-    pull_requests: pullRequests, runs: points.map(point => ({...point.run, jobs: [point.job]}))};
+  const snapshot = () => ({schema_version: 1, repository: "securely1g/sonic-buildimage", generated_at: "2026-11-12T00:00:00Z",
+    pull_requests: pullRequests, runs: points.map(point => ({...point.run, jobs: [point.job]}))});
   const context = vm.createContext({
     document: {getElementById: id => nodes[id], createElement: tag => new TestElement(tag),
       createElementNS: (_, tag) => new TestElement(tag), createTextNode: text => ({textContent: text})},
@@ -738,7 +738,7 @@ async function loadDashboard(points, pullRequests = []) {
     ResizeObserver: class { observe() {} },
     setInterval() {}, URL, AbortSignal,
     window: {location: {href: "https://example.test/"}},
-    fetch: async () => ({ok: true, json: async () => snapshot}),
+    fetch: async () => ({ok: true, json: async () => snapshot()}),
   });
   vm.runInContext(readFileSync(require.resolve("./app.js"), "utf8"), context);
   await new Promise(resolve => setImmediate(resolve));
@@ -832,6 +832,78 @@ test("build source filters the chart and run history, including PR events withou
   select("source-filter", "combined");
   assert.equal(nodes["pr-filter"].disabled, false);
   assert.equal(markers().length, 4);
+});
+
+test("choosing a master commit scopes status, chart, history and details to the exact revision", async () => {
+  const succeeded = "0123456789ab" + "1".repeat(28), failed = "0123456789ab" + "2".repeat(28);
+  const checksOnly = "a".repeat(40), prOnly = "b".repeat(40);
+  const points = [succeeded, failed, succeeded, checksOnly, prOnly, null].map((sha, index) => {
+    const id = index + 1;
+    const point = datedPoint(id, `2026-11-0${id}T18:00:00Z`);
+    Object.assign(point.run, {source_sha: sha, event: "push", workflow_name: `Workflow ${id}`,
+      url: `https://github.com/securely1g/sonic-buildimage/actions/runs/${id}`});
+    return point;
+  });
+  points[1].job.conclusion = points[1].run.conclusion = "failure";
+  points[3].job.kind = "checks";
+  points[4].run.event = "pull_request"; // A PR can also come from a branch named master.
+  const nodes = await loadDashboard(points);
+  const select = (id, value) => { nodes[id].value = value; nodes[id].listeners.change(); };
+  const commits = nodes["commit-filter"];
+  const chartPoints = () => descendants(nodes.trend, node => node.attributes?.class === "chart-point");
+  const history = () => descendants(nodes["runs-body"], node => node.tagName === "button").map(node => node.textContent);
+  assert.ok(nodes["commit-filter-label"].hidden);
+  select("source-filter", "master");
+  assert.equal(nodes["commit-filter-label"].hidden, false);
+  assert.ok(nodes["pr-filter-label"].hidden);
+  assert.deepEqual(commits.options.map(option => option.value), ["all", checksOnly, succeeded, failed]);
+  const optionLabel = sha => commits.options.find(option => option.value === sha).textContent;
+  for (const sha of [succeeded, failed]) assert.ok(optionLabel(sha).includes(sha.slice(0, 13)), "colliding SHA prefixes must be distinguishable");
+
+  select("commit-filter", succeeded);
+  assert.deepEqual(history(), ["Workflow 3", "Workflow 1"]);
+  assert.equal(chartPoints().length, 2);
+  assert.match(nodes["latest-branch-status"].textContent, /success/i);
+  assert.ok(descendants(nodes["latest-branch-status"], node => node.href === points[2].run.url).length);
+  assert.match(nodes.details.textContent, /Workflow 3/);
+  select("commit-filter", failed);
+  assert.deepEqual(history(), ["Workflow 2"]);
+  assert.equal(chartPoints().length, 0);
+  assert.match(nodes["latest-branch-status"].textContent, /fail/i);
+  assert.match(nodes.details.textContent, /Workflow 2/);
+  select("commit-filter", checksOnly);
+  assert.deepEqual(history(), ["Workflow 4"]);
+  assert.match(nodes["latest-branch-status"].textContent, /no image build/i);
+  assert.match(nodes.details.textContent, /Workflow 4/);
+
+  select("source-filter", "pr");
+  assert.ok(nodes["commit-filter-label"].hidden);
+  assert.equal(commits.value, "all");
+  assert.equal(nodes["pr-filter-label"].hidden, false);
+  assert.deepEqual(history(), ["Workflow 5"]);
+  select("source-filter", "master");
+  assert.deepEqual(history(), ["Workflow 6", "Workflow 4", "Workflow 3", "Workflow 2", "Workflow 1"]);
+});
+
+test("refresh preserves a selected master commit until it leaves the retained history", async () => {
+  const kept = datedPoint(1, "2026-11-01T18:00:00Z"), removed = datedPoint(2, "2026-11-02T18:00:00Z");
+  kept.run.source_sha = "1".repeat(40);
+  removed.run.source_sha = "2".repeat(40);
+  const points = [kept, removed];
+  const nodes = await loadDashboard(points);
+  nodes["source-filter"].value = "master";
+  nodes["source-filter"].listeners.change();
+  const commits = nodes["commit-filter"];
+  commits.value = removed.run.source_sha;
+  commits.listeners.change();
+  await nodes.refresh.listeners.click();
+  assert.equal(commits.value, removed.run.source_sha);
+  assert.equal(nodes["runs-body"].children.length, 1);
+  points.pop();
+  await nodes.refresh.listeners.click();
+  assert.equal(commits.value, "all");
+  assert.deepEqual(commits.options.map(option => option.value), ["all", kept.run.source_sha]);
+  assert.match(nodes.details.textContent, /Source 111111111111/);
 });
 
 test("a master build associated with a merge keeps the PR's own image result", async () => {
