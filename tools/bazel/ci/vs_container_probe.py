@@ -13,9 +13,40 @@ sys.path.insert(0, str(ROOT))
 
 from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import vs_container_validation as common
+from tools.bazel.ci import vs_package_stages
 from tools.bazel.ci import vs_probe_policy as policy
 from tools.bazel.ci.vs_archive_reuse import verify_execution_settings
 from tools.bazel.oci.oci_inventory import resolve_path
+
+
+# These services' install contracts require their detached debug payload to be
+# absent from the runtime image. Read only owner inputs selected by this VS build.
+DEBUG_ONLY_PAYLOADS = {
+    **dict.fromkeys(("docker-database", "docker-eventd", "docker-lldp", "docker-mux", "docker-router-advertiser",
+                     "docker-sonic-gnmi", "docker-sonic-mgmt-framework"), ("all-debug.tar",)),
+    "docker-orchagent": ("openssh.source.tar",),
+    "docker-sonic-p4rt": ("p4rt.debug.tar", "sairedis.source.tar", "saimetadata.source.tar"),
+}
+
+
+def verify_debug_separation(image, variant, native, owners, runtime_paths):
+    payloads = DEBUG_ONLY_PAYLOADS.get(image, ())
+    if not payloads:
+        return
+    if variant == "debug":
+        paths = {path for name in payloads for path in owners[name]}
+    elif image == "docker-orchagent":
+        policy = json.loads((ROOT / "dockers/docker-orchagent/bazel/debug_source_paths.json").read_bytes())
+        paths = policy["packages"]["openssh-client"]["required_paths"]
+    else:
+        # The debug-disabled build still knows the build IDs of its runtime owners.
+        paths = {f"usr/lib/debug/.build-id/{build_id[:2]}/{build_id[2:]}.debug"
+                 for item in native.values() if (build_id := item["build_id"])}
+    if variant == "runtime" and image == "docker-sonic-p4rt":
+        paths |= {"usr/lib/x86_64-linux-gnu/" + name for name in
+                  ("libsairedis.so.0.0.0", "libsaimeta.so.0.0.0", "libsaimetadata.so.0.0.0")}
+    leaked = set(paths).intersection(runtime_paths)
+    check.require(not leaked, image + " runtime contains debug-only files: " + ", ".join(sorted(leaked)))
 
 
 def artifact_records(directory, bundle):
@@ -58,7 +89,13 @@ def native_expectations(directory, bundle, variant, files, evidence):
             continue
         for path, item in members.items():
             installed = files.get(path, {})
-            keys = ("kind", "uid", "gid", "sha256", "mode") if item["kind"] == "file" else ("kind", "uid", "gid", "linkname")
+            keys = ("kind", "uid", "gid")
+            if item["kind"] == "file":
+                keys += ("sha256", "mode")
+            elif item["kind"] == "directory":
+                keys += ("mode",)
+            else:
+                keys += ("linkname",)
             check.require(all(installed.get(key) == item.get(key) for key in keys),
                           product + " owner payload differs in the VS image: " + path)
     source_metadata = {row["sha256"] for path, row in files.items()
@@ -78,6 +115,26 @@ def native_expectations(directory, bundle, variant, files, evidence):
                 check.require(all(files.get(path, {}).get(key) == row[key] for key in ("sha256", "mode", "uid", "gid")),
                               name + " declares a missing or changed source ELF: " + path)
     return native, pairs
+
+
+def verify_service_installation(image, variant, directory, config, files):
+    """Check metadata the runtime probe cannot see underneath its writable mounts."""
+    package_record = {
+        "docker-database": variant + "-packages.json",
+        "docker-lldp": "runtime-packages.json",
+        "docker-mux": "runtime-packages.json",
+        "docker-router-advertiser": "config-engine-packages.json",
+        "docker-snmp": "config-engine.packages.json",
+    }.get(image)
+    if package_record:
+        packages = json.loads((directory / package_record).read_bytes())["dependency_check"]["packages"]
+        check.verify_swss_component_labels(config["Labels"], packages)
+    if image == "docker-database":
+        from tools.bazel.ci.database_image import verify_redis_permissions
+        verify_redis_permissions(files)
+    elif image == "docker-snmp":
+        from tools.bazel.ci import snmp_image
+        snmp_image.verify_state_directory(files)
 
 
 def p4rt_expectations(owner, revision, files, symbols, native):
@@ -117,10 +174,23 @@ def runtime_report(directory, bundle):
         name = spec["file"].removesuffix(".gz")
         inventory = common.read_oci(directory, variant)
         files = inventory["files"]
+        verify_service_installation(image, variant, directory, inventory["config"]["config"], files)
         check.require(all(item.get("elf_machine") == 62 for item in files.values() if item.get("elf_type") in (2, 3)),
                       "OCI image contains a non-AMD64 executable or shared library: " + name)
         owners = json.loads((directory / (variant + ".owners.json")).read_text())
+        vs_package_stages.verify(directory, bundle, variant, inventory, owners)
+        if image in policy.FAMILIES:
+            from tools.bazel.ci.vs_family_parent import verify_parent
+            verify_parent(directory, image, policy.FAMILIES[image], variant, inventory, owners)
         native, pairs = native_expectations(directory, bundle, variant, files, owners)
+        if variant == "runtime":
+            runtime_paths = set(files)
+        verify_debug_separation(image, variant, native, owners["owners"], runtime_paths)
+        if image == "docker-snmp":
+            from tools.bazel.ci import snmp_image
+            for filename in snmp_image.TARGETS:
+                if filename.endswith(".whl"):
+                    snmp_image.wheel_payload(files, directory / filename)
         if image in policy.FAMILIES:
             check.require(native, image + " is missing source-owner expectations")
         if variant == "runtime":
@@ -151,7 +221,9 @@ def runtime_report(directory, bundle):
             report["include_system_eventd"] = env["INCLUDE_SYSTEM_EVENTD"]
             report["own_debug_pairs"] = [p for p in pairs if p["path"] in owners["owners"]["source-runtime.tar"]]
         if image == "docker-sonic-gnmi":
-            report["dialout_enabled"] = "usr/sbin/dialout_client_cli" in native
+            from tools.bazel.ci.gnmi_image import verify_dialout
+            verify_dialout(files, bundle["dialout_enabled"])
+            report["dialout_enabled"] = bundle["dialout_enabled"]
         if image == "docker-orchagent":
             from tools.bazel.ci.orchagent_image import verify_scapy
             report["scapy_files"] = verify_scapy(files, directory / "scapy-2.6.1.dev0-py3-none-any.whl")
@@ -161,6 +233,8 @@ def runtime_report(directory, bundle):
             revision = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD:src/sonic-p4rt/sonic-pins"],
                                                text=True).strip()
             report["owner_revision"] = source_identity(owner, revision)
+            handoff = json.loads((directory / "handoff.json").read_bytes())
+            check.require(handoff["source_revision"] == revision, "P4RT handoff differs from the selected Git owner")
             report["p4rt_owner_test_sha256"] = check.sha(owner / "p4rt_app/runtime_package_test.py")
             if variant == "debug":
                 report["p4rt_debug_pairs"] = p4rt_expectations(owner, revision, files, owners["owners"]["p4rt.debug.tar"], native)

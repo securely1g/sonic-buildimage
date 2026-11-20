@@ -1,7 +1,10 @@
 """Prove that VS service probes honor the build selection and independent owner bytes."""
 
+import hashlib
+import io
 import json
 from pathlib import Path
+import tarfile
 import tempfile
 import unittest
 
@@ -43,6 +46,30 @@ class VSProbePolicyTest(unittest.TestCase):
                 targets = policy.preparation_targets(image, False)
                 self.assertFalse([name for name in targets if "debug" in name or "symbols" in name])
         self.assertIn("p4rt.debug.tar", policy.preparation_targets("docker-sonic-p4rt", True))
+
+    def test_p4rt_projects_only_selected_owner_packages_and_records_whole_tar_hashes(self):
+        image = "docker-sonic-p4rt"
+        debug_tar = "p4rt.owner-debug.tar"
+        self.assertEqual(policy.preparation_targets(image, True)[debug_tar],
+                         "@p4rt_owner_payload//:p4rt_runtime_debug.tar")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            inputs = {}
+            files = {"p4rt.source.tar": "usr/share/p4rt/main.json", debug_tar: "usr/lib/debug/main.dwp"}
+            for name, member in files.items():
+                inputs[name] = root / name
+                with tarfile.open(inputs[name], "w") as output:
+                    info = tarfile.TarInfo(member)
+                    info.size = 1
+                    output.addfile(info, io.BytesIO(b"x"))
+            for variant, expected in (("runtime", {"p4rt.source.tar"}), ("debug", set(inputs))):
+                result = policy.prepare(image, "test", variant, None, inputs, root)
+                self.assertFalse(result.keys() & inputs.keys())
+                report = json.loads(result[variant + ".owners.json"].read_bytes())
+                self.assertEqual(set(report["owners"]), expected)
+                for name in expected:
+                    self.assertEqual(report["source_sha256"][name], hashlib.sha256(inputs[name].read_bytes()).hexdigest())
+                    self.assertEqual(report["owners"][name][files[name]]["sha256"], hashlib.sha256(b"x").hexdigest())
 
     def test_runtime_only_bundle_never_runs_a_companion_probe(self):
         with tempfile.TemporaryDirectory() as temporary:

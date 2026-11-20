@@ -50,40 +50,82 @@ class BundleSelectionTest(unittest.TestCase):
         """Every inherited path, including a file outside the sampled files, is available to the selected children."""
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            groups = b"root:x:0:\nusers:x:100:\n"
-            group_hash = hashlib.sha256(groups).hexdigest()
+            accounts = {"etc/group": b"root:x:0:\nusers:x:100:\n", "etc/passwd": b"root:x:0:0:root:/root:/bin/sh\n"}
+            digests = {name: hashlib.sha256(data).hexdigest() for name, data in accounts.items()}
+            account_paths = {name: {"sha256": digest} for name, digest in digests.items()}
             layer = root / "parent.tar"
             with tarfile.open(layer, "w") as archive:
-                member = tarfile.TarInfo("etc/group")
-                member.size = len(groups)
-                archive.addfile(member, io.BytesIO(groups))
-            for name in ("docker-config-engine-trixie", "docker-swss-layer-trixie"):
+                for name, data in accounts.items():
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+            origins = {(name, digest): layer for name, digest in digests.items()}
+            for name in set(bundles.PARENT_IMAGES.values()):
                 owner = root / name
                 owner.mkdir()
                 inventory = owner / "runtime.oci.json.gz"
                 inventory.write_bytes(gzip.compress(json.dumps({
-                    "files": {"usr/share/doc/README": {"sha256": "a" * 64}, "etc/group": {"sha256": group_hash}},
+                    "files": {"usr/share/doc/README": {"sha256": "a" * 64}, **account_paths},
                 }).encode()))
                 digest = bundles.sha(inventory)
                 (owner / "bundle.json").write_text(json.dumps({"fixtures": {inventory.name: digest}}))
-            for image in (*sorted(bundles.FULL_PARENT_INVENTORY), "docker-orchagent"):
-                child = root / image
-                child.mkdir(exist_ok=True)
-                parent = bundles.PARENT_IMAGES[image]
-                reference = {"image": parent, "files": {"etc/group": {"sha256": group_hash}}}
-                fixtures = bundles.stage_parent(child, image, {parent: reference}, {group_hash: layer})
-                if image == "docker-teamd":
-                    self.assertEqual((child / "parent.group").read_bytes(), groups)
-                    self.assertEqual(fixtures["parent.group"], group_hash)
-                else:
-                    self.assertNotIn("parent.group", fixtures)
-                self.assertEqual(json.loads((child / "parent.json").read_text())["image"], parent)
+            for image, parent in bundles.PARENT_IMAGES.items():
+                with self.subTest(image=image):
+                    child = root / image
+                    child.mkdir(exist_ok=True)
+                    reference = {"image": parent, "files": account_paths}
+                    fixtures = bundles.stage_parent(child, image, {parent: reference}, origins)
+                    self.assertEqual(json.loads((child / "parent.json").read_text())["image"], parent)
+                    if image in bundles.GROUP_CHECKS | {"docker-teamd"}:
+                        self.assertEqual((child / "parent.group").read_bytes(), accounts["etc/group"])
+                        self.assertEqual(fixtures["parent.group"], digests["etc/group"])
+                    else:
+                        self.assertNotIn("parent.group", fixtures)
+                    if image == "docker-sonic-otel":
+                        self.assertEqual((child / "parent.passwd").read_bytes(), accounts["etc/passwd"])
+                    else:
+                        self.assertNotIn("parent.passwd", fixtures)
+                    if image in bundles.FULL_PARENT_INVENTORY:
+                        inherited = child / "parent.oci.json.gz"
+                        self.assertTrue(inherited.samefile(root / parent / "runtime.oci.json.gz"))
+                        self.assertEqual(fixtures[inherited.name], bundles.sha(inherited))
+                    else:
+                        self.assertNotIn("parent.oci.json.gz", fixtures)
+
+    def test_only_the_selected_p4rt_debug_image_publishes_its_symbols_parent(self):
+        """The P4RT intermediate is reused from debug's graph without adding it to Make's archives."""
+        image = bundles.P4RT
+        target = "//dockers/" + image + ":" + image
+        archive, debug = image + ".gz", image + "-dbg.gz"
+        with patch("tools.bazel.ci.vs_probe_policy.preparation_targets", return_value={}):
+            runtime = bundles.validation_targets({archive: target + ".gz"}, {debug}, False)
+            paired = bundles.validation_targets({archive: target + ".gz", debug: target + "-dbg.gz"}, {debug}, True)
+            self.assertNotIn(bundles.P4RT_SYMBOLS, bundles.extra_targets(runtime))
+            self.assertIn(bundles.P4RT_SYMBOLS, bundles.extra_targets(paired))
+            self.assertEqual(set(paired[image]["members"]), {"runtime", "debug"})
+
+    def test_apt_evidence_comes_from_each_selected_stage_and_the_original_owner(self):
+        """Runtime-only builds omit the debug APT graph, P4RT DWP contract and symbols-stage receipt."""
+        for image in sorted(bundles.APT_REPORT_FAMILIES):
+            with self.subTest(image=image), patch("tools.bazel.ci.vs_probe_policy.preparation_targets", return_value={}):
+                package = "//dockers/" + image + ":"
+                runtime, debug = image + ".gz", image + "-dbg.gz"
+                images = {runtime: package + runtime}
+                plain = bundles.validation_targets(images, {debug}, False)[image]
+                self.assertEqual(plain["sources"]["runtime-apt.json"], package + "runtime_apt_selection")
+                self.assertNotIn("debug-apt.json", plain["sources"])
+                self.assertNotIn("symbols-apt.json", plain["sources"])
+                self.assertNotIn("p4rt_runtime_debug_contract.json", plain["sources"])
+                paired = bundles.validation_targets({**images, debug: package + debug}, {debug}, True)[image]
+                self.assertEqual(paired["sources"]["debug-apt.json"], package + "debug_apt_selection")
+                if image == bundles.P4RT:
+                    self.assertEqual(paired["sources"]["symbols-apt.json"], package + "symbols_apt_selection")
+                    for name in ("p4rt_runtime_contract.json", "p4rt_runtime_debug_contract.json", "handoff.json"):
+                        self.assertEqual(paired["sources"][name], "@p4rt_owner_payload//:" + name)
                 if image == "docker-orchagent":
-                    self.assertNotIn("parent.oci.json.gz", fixtures)
-                else:
-                    inherited = child / "parent.oci.json.gz"
-                    self.assertTrue(inherited.samefile(root / parent / "runtime.oci.json.gz"))
-                    self.assertEqual(fixtures[inherited.name], bundles.sha(inherited))
+                    self.assertEqual(plain["sources"]["libteam-source-receipt.json"], package + "libteam_source_receipt")
+                if image == "docker-dash-engine":
+                    self.assertEqual(plain["apt_lock"], bundles.DASH_LOCK)
 
     def test_registered_companion_only_requested_when_debug_is_enabled(self):
         runtime = {"docker-unit.gz": "//unit:docker-unit.gz"}

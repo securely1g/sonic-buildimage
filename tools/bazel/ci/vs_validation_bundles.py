@@ -23,25 +23,42 @@ from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci import oci_inventory
 from tools.bazel.oci.package_state import file_bytes
 
+BASE = "docker-base-trixie"
+CONFIG = "docker-config-engine-trixie"
+SWSS = "docker-swss-layer-trixie"
+P4RT = "docker-sonic-p4rt"
+P4RT_SYMBOLS = "//dockers/docker-sonic-p4rt:p4rt_with_symbols"
 # Standalone parent probes also run on the original parents used by this build.
-PARENTS = ("docker-base-trixie", "docker-swss-layer-trixie")
+PARENTS = (BASE, SWSS)
+GNMI_DIALOUT = "@sonic_gnmi//tools/bazel:enable_dialout"
+DASH_LOCK = "@sonic_build_infra//apt:apt.lock.json"
+APT_REPORT_FAMILIES = {"docker-orchagent", "docker-sonic-gnmi", "docker-sonic-otel", "docker-dash-engine", P4RT}
 
-
+# The baseline is the owner's declared runtime OCI parent. A debug companion
+# also has the selected runtime inventory in its own bundle.
 PARENT_IMAGES = {
-    "docker-config-engine-trixie": "docker-base-trixie",
-    "docker-swss-layer-trixie": "docker-config-engine-trixie",
-    "docker-orchagent": "docker-config-engine-trixie",
-    "docker-syncd-vs": "docker-config-engine-trixie",
-    "docker-fpm-frr": "docker-swss-layer-trixie",
-    "docker-teamd": "docker-swss-layer-trixie",
+    CONFIG: BASE, "docker-dash-engine": BASE,
+    SWSS: CONFIG, "docker-database": CONFIG, "docker-eventd": CONFIG, "docker-gbsyncd-vs": CONFIG,
+    "docker-lldp": CONFIG, "docker-mux": CONFIG, "docker-orchagent": CONFIG,
+    "docker-router-advertiser": CONFIG, "docker-snmp": CONFIG, "docker-sonic-gnmi": CONFIG,
+    "docker-sonic-mgmt-framework": CONFIG, "docker-sonic-otel": CONFIG, P4RT: CONFIG,
+    "docker-syncd-vs": CONFIG, "docker-sysmgr": CONFIG,
+    "docker-dash-ha": SWSS, "docker-fpm-frr": SWSS, "docker-macsec": SWSS,
+    "docker-sflow": SWSS, "docker-teamd": SWSS,
 }
-# These owners check every inherited file, including preserved file metadata.
-FULL_PARENT_INVENTORY = {"docker-swss-layer-trixie", "docker-fpm-frr", "docker-teamd"}
+FULL_PARENT_INVENTORY = PARENT_IMAGES.keys() - {CONFIG, "docker-syncd-vs"}
 
+# These owners validate the contents of allowed account merges. The remaining
+# files, including gshadow, are compared using the complete filesystem hashes.
+GROUP_CHECKS = {
+    "docker-dash-engine", "docker-dash-ha", "docker-gbsyncd-vs", "docker-macsec", "docker-orchagent", "docker-sflow",
+    "docker-sonic-gnmi", "docker-sonic-mgmt-framework", "docker-sonic-otel", P4RT, "docker-sysmgr",
+}
+ACCOUNT_PATHS = ("etc/group", "etc/passwd")
 COMMON_FILES = (
     "run/redis/sonic-db/database_config.json",
     "usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0",
-    "etc/group",
+    *ACCOUNT_PATHS,
 )
 
 
@@ -75,6 +92,22 @@ def validation_targets(archives, registered_debug, debug_enabled, validation_onl
         require(set(entry["members"]) == ({"runtime", "debug"} if with_debug else {"runtime"}),
                 f"{image}: VS batch differs from debug selection")
         entry["sources"] = vs_probe_policy.preparation_targets(image, with_debug)
+        package = entry["members"]["runtime"][1].rsplit(":", 1)[0]
+        if image in APT_REPORT_FAMILIES:
+            for stage in entry["members"]:
+                entry["sources"][stage + "-apt.json"] = f"{package}:{stage}_apt_selection"
+        if image == "docker-orchagent":
+            entry["sources"]["libteam-source-receipt.json"] = package + ":libteam_source_receipt"
+        if image == "docker-dash-engine":
+            entry["apt_lock"] = DASH_LOCK
+        if image == P4RT:
+            for name in ["handoff.json", "p4rt_runtime_contract.json"]:
+                entry["sources"][name] = "@p4rt_owner_payload//:" + name
+        if image == P4RT and with_debug:
+            entry["sources"]["p4rt_runtime_debug_contract.json"] = "@p4rt_owner_payload//:p4rt_runtime_debug_contract.json"
+            entry["sources"]["symbols-apt.json"] = package + ":symbols_apt_selection"
+            # This layout is already an input of the selected debug archive.
+            entry["symbols_layout"] = P4RT_SYMBOLS
     return families
 
 
@@ -86,6 +119,9 @@ def extra_targets(families):
         for _, archive, layout in entry["members"].values():
             labels.update((archive, layout))
         labels.update(entry["sources"].values())
+        for field in ("symbols_layout", "apt_lock"):
+            if field in entry:
+                labels.add(entry[field])
     return sorted(labels)
 
 
@@ -165,11 +201,11 @@ def layout_metadata(directory):
     index = json.loads((directory / "index.json").read_bytes())
     manifest_descriptor, = index["manifests"]
     manifest = metadata(manifest_descriptor)
-    return manifest, metadata(manifest["config"]), [blob(item) for item in manifest["layers"]]
+    return manifest_descriptor, manifest, metadata(manifest["config"]), [blob(item) for item in manifest["layers"]]
 
 
-def write_inventory(directory, variant, bundle, prefixes, *, group_layers, retain=False):
-    manifest, config, layers = layout_metadata(directory)
+def write_inventory(directory, variant, bundle, prefixes, *, account_layers, retain=False):
+    descriptor, manifest, config, layers = layout_metadata(directory)
     digests = tuple(layer["digest"] for layer in manifest["layers"])
     # The installer emits many siblings with identical immutable parent layers.
     # Start with the longest already-indexed parent and apply only the suffix.
@@ -177,12 +213,13 @@ def write_inventory(directory, variant, bundle, prefixes, *, group_layers, retai
     files = prefixes.get(prefix, {}).copy()
     for layer in layers[len(prefix):]:
         entries = oci_inventory.apply_layer(layer, files)
-        group = entries.get("etc/group", {})
-        if retain and group.get("kind") == "file":
-            group_layers[group["sha256"]] = layer
+        for name in ACCOUNT_PATHS:
+            item = entries.get(name, {})
+            if item.get("kind") == "file":
+                account_layers[name, item["sha256"]] = layer
     if retain:
         prefixes[digests] = files
-    report = {"config": config, "config_digest": manifest["config"]["digest"],
+    report = {"config": config, "config_digest": manifest["config"]["digest"], "manifest_digest": descriptor["digest"],
               "layers": manifest["layers"], "files": files}
     path = bundle / (variant + ".oci.json.gz")
     with path.open("wb") as raw, gzip.GzipFile(
@@ -225,7 +262,27 @@ def stage_probe_fixtures(image, artifacts, bundle):
     return artifacts
 
 
-def stage_parent(bundle, image, references, group_layers):
+@lru_cache(maxsize=128)
+def account_bytes(layer, path):
+    return file_bytes(layer, {path})[path]
+
+
+def stage_accounts(bundle, image, variant, files, layers):
+    if image not in GROUP_CHECKS and not (image == "docker-teamd" and variant == "parent"):
+        return {}
+    fixtures = {}
+    paths = ACCOUNT_PATHS if image == "docker-sonic-otel" else ("etc/group",)
+    for path in paths:
+        # Read the effective member from the exact layer that supplied its
+        # inventory entry. Shared parent account tables are tiny and cacheable.
+        digest = files[path]["sha256"]
+        output = bundle / (variant + "." + Path(path).name)
+        output.write_bytes(account_bytes(layers[path, digest], path))
+        fixtures[output.name] = digest
+    return fixtures
+
+
+def stage_parent(bundle, image, references, account_layers):
     parent = PARENT_IMAGES.get(image)
     if parent is None:
         return {}
@@ -241,17 +298,11 @@ def stage_parent(bundle, image, references, group_layers):
         filename = "runtime.oci.json.gz"
         copy_output(source / filename, bundle / "parent.oci.json.gz")
         fixtures["parent.oci.json.gz"] = parent_manifest["fixtures"][filename]
-    if image == "docker-teamd":
-        # Its debug image may append _ssh. Give the validator the actual
-        # inherited rows to compare with the loaded container's /etc/group.
-        digest = references[parent]["files"]["etc/group"]["sha256"]
-        original = bundle / "parent.group"
-        original.write_bytes(file_bytes(group_layers[digest], {"etc/group"})["etc/group"])
-        fixtures[original.name] = digest
+    fixtures.update(stage_accounts(bundle, image, "parent", references[parent]["files"], account_layers))
     return fixtures
 
 
-def write_bundles(args, families, paths, version):
+def write_bundles(args, families, paths, version, *, dialout=None):
     from tools.bazel.ci import vs_probe_policy
 
     destination = args.validation_directory
@@ -260,7 +311,7 @@ def write_bundles(args, families, paths, version):
     with TemporaryDirectory(prefix=".vs-bundles-", dir=destination.parent) as work:
         staged = Path(work) / "containers"
         staged.mkdir()
-        prefixes, references, group_layers = {}, {}, {}
+        prefixes, references, account_layers = {}, {}, {}
         parents = ["docker-base-trixie", "docker-config-engine-trixie", "docker-swss-layer-trixie"]
         for image in [name for name in parents if name in families] + sorted(families.keys() - set(parents)):
             entry = families[image]
@@ -268,13 +319,32 @@ def write_bundles(args, families, paths, version):
             bundle.mkdir()
             source_paths = {name: paths[label] for name, label in entry["sources"].items()}
             archive_specs = {}
-            fixtures = stage_parent(bundle, image, references, group_layers)
+            settings = {}
+            if image == "docker-sonic-gnmi":
+                require(dialout in ("true", "false"), "missing Make-selected gNMI dialout setting")
+                settings["dialout_enabled"] = dialout == "true"
+            if "apt_lock" in entry:
+                settings["apt_lock_sha256"] = sha(paths[entry["apt_lock"]])
+                settings["apt_layers"] = {}
+            fixtures = stage_parent(bundle, image, references, account_layers)
+            # Only P4RT has a separate symbols layout between runtime and
+            # final debug. Reuse its own runtime inventory while indexing both.
+            image_prefixes = prefixes.copy() if "symbols_layout" in entry else prefixes
             for variant in sorted(entry["members"], key=lambda name: name == "debug"):
                 archive, label, layout_label = entry["members"][variant]
                 layout_path = paths[layout_label]
                 parent = image in parents and variant == "runtime"
+                if variant == "debug" and "symbols_layout" in entry:
+                    symbols, *_ = write_inventory(paths[entry["symbols_layout"]], "symbols", bundle, image_prefixes,
+                                                  account_layers=account_layers, retain=True)
+                    fixtures[symbols.name] = sha(symbols)
                 inventory, manifest, config, common_files = write_inventory(
-                    layout_path, variant, bundle, prefixes, group_layers=group_layers, retain=parent)
+                    layout_path, variant, bundle, image_prefixes, account_layers=account_layers,
+                    retain=parent or (variant == "runtime" and "symbols_layout" in entry))
+                fixtures.update(stage_accounts(bundle, image, variant, common_files, account_layers))
+                if "apt_lock" in entry:
+                    payload = source_paths["engine.runtime-apt.tar" if variant == "runtime" else "engine.debug-tools.tar"]
+                    settings["apt_layers"][variant] = {"digest": "sha256:" + sha(payload), "size": payload.stat().st_size}
                 if parent:
                     references[image] = {"image": image, "diff_ids": config["rootfs"]["diff_ids"],
                                          "files": common_files}
@@ -302,7 +372,7 @@ def write_bundles(args, families, paths, version):
             (bundle / "bundle.json").write_text(json.dumps({
                 "image": image, "revision": revision, "build_version": version, "architecture": args.architecture,
                 "debug_enabled": args.validation_debug == "y", "supports_debug": entry["supports_debug"],
-                "archives": archive_specs, "fixtures": fixtures,
+                "archives": archive_specs, "fixtures": fixtures, **settings,
             }, sort_keys=True) + "\n")
         (staged / "selection.json").write_text(json.dumps({
             "revision": revision, "build_version": version, "architecture": args.architecture,

@@ -129,6 +129,13 @@ class VerificationWorkflowTest(unittest.TestCase):
         script = Path("tools/bazel/ci/prepare_image_submodules.sh")
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         self.assertIn(f"bash {script}", [step.get("run") for step in workflow["jobs"]["archive"]["steps"]])
+        matrix_steps = workflow["jobs"]["validate_container"]["steps"]
+        restore = next(i for i, step in enumerate(matrix_steps) if step.get("run") == f"bash {script} --populated-only")
+        self.assertTrue(matrix_steps[restore - 1].get("uses", "").startswith("actions/checkout@"))
+        self.assertNotIn("if", matrix_steps[restore])
+        self.assertEqual([step["if"] for step in matrix_steps[restore + 1:]
+                          if "git submodule update" in step.get("run", "")],
+                         ["matrix.image == 'docker-sonic-p4rt'", "matrix.image == 'docker-sysmgr'"])
         kernel_only = []
         for filename, name in (("bazel-frr-python.yml", "packages"), ("bazel-frr.yml", "native")):
             kernel_only.append(yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())["jobs"][name])
@@ -180,6 +187,10 @@ class VerificationWorkflowTest(unittest.TestCase):
                                       env=dict(env, GITHUB_WORKSPACE=str(checkout), GIT_ALLOW_PROTOCOL=protocol),
                                       capture_output=True, text=True, check=check)
 
+            # A fresh artifact validator needs no unrelated clones, even with all transports disabled.
+            prepare("--populated-only", protocol="")
+            for submodule in (kernel, pins, gnoi, unused):
+                self.assertFalse((checkout / submodule / ".git").exists())
             prepare("--kernel-only", protocol="")
             self.assertFalse((checkout / kernel / ".git").exists())
             self.assertFalse((checkout / gnoi / ".git").exists())
@@ -226,7 +237,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             self.assertIn(pins, git(checkout, "diff", "--name-only", "--ignore-submodules=none", "HEAD"))
             # A populated worktree can also lose its local registration.
             git(checkout, "config", "--remove-section", f"submodule.{pins}")
-            prepare()
+            prepare("--populated-only", protocol="")
             self.assertEqual(git(checkout / pins, "rev-parse", "HEAD"), pinned)
             self.assertEqual(git(checkout, "diff", "--ignore-submodules=none", "HEAD"), "")
             self.assertFalse((checkout / unused / ".git").exists())

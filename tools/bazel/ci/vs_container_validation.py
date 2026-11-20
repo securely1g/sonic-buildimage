@@ -54,6 +54,22 @@ def verify_startup(image, settings):
         require(not settings.get("ExposedPorts"), "Unexpected exposed ports in " + image)
 
 
+def parent_with_make_settings(directory, variant, parent_config):
+    """Overlay the Make-declared key/value inputs before checking other inherited OCI settings."""
+    config = dict(parent_config)
+    for filename, key in (("components.labels", "Labels"), ("image.env", "Env")):
+        path = directory / (variant + ".make." + filename)
+        if not path.exists():
+            continue
+        declared = dict(line.split("=", 1) for line in path.read_text().splitlines())
+        if key == "Labels":
+            config[key] = {**config.get(key, {}), **declared}
+        else:
+            inherited = dict(row.split("=", 1) for row in config.get(key, []))
+            config[key] = [name + "=" + value for name, value in (inherited | declared).items()]
+    return config
+
+
 def read_oci(directory, variant):
     """Read the file inventory and config taken from the producer's OCI layout."""
     with gzip.open(directory / (variant + ".oci.json.gz"), "rt", encoding="utf-8") as stream:

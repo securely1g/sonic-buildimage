@@ -21,6 +21,17 @@ def sha(path):
     return sha256(path)
 
 
+def verify_apt_binding(selection, base_digest, *, metadata=None, selection_sha=None):
+    """Require APT and installed-package records from the same completed OCI base."""
+    records = (selection,) if metadata is None else (selection, metadata)
+    for record in records:
+        require(record.get("base_manifest_digest") == base_digest, "package stage uses a different completed OCI base")
+        require(record.get("dependency_check", {}).get("status") == "satisfied", "unsatisfied stage package dependencies")
+    if metadata is not None:
+        require(selection_sha and metadata.get("apt_selection_sha256") == selection_sha,
+                "package state does not bind the checked APT selection")
+
+
 def verify_make_archives(inputs):
     for variant in ("runtime", "debug"):
         archive = inputs[f"make_{variant}_archive"]
@@ -75,7 +86,7 @@ def file_metadata(stream, name):
 
 
 def verify_swss_component_labels(labels, packages):
-    """FRR and Teamd inherit both version labels from their SONiC base packages."""
+    """Verify the version labels inherited from the installed SONiC base packages."""
     for name in ("libswsscommon", "sonic-supervisord-utilities-rs"):
         require(labels.get("com.azure.sonic.versions." + name) == packages[name]["Version"],
                 "Inherited component label differs: " + name)

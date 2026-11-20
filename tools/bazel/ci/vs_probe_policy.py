@@ -29,6 +29,16 @@ EXTRA_OWNERS = {"source-runtime.tar", "mux-source.tar", "eventd-runtime.tar", "s
                 "sflowtool-runtime.tar", "psample-runtime.tar", "hsflowd-runtime.tar"}
 
 
+# These install TARs receive full file verification in the original image jobs.
+# Other native source TARs are projected to their ELF metadata for the runtime probes.
+FULL_INSTALL_TARS = {
+    "docker-snmp": {"snmp_install.tar"},
+    "docker-sonic-gnmi": {"gnmi-runtime.tar", "common-runtime.tar"},
+    "docker-sonic-p4rt": {"p4rt.source.tar", "p4rt.owner-debug.tar", "sairedis.source.tar", "saimetadata.source.tar"},
+    "docker-sonic-mgmt-framework": {"framework-runtime.tar", "common-runtime.tar", "python-runtime.tar"},
+}
+
+
 def owner_archive(name):
     return name in EXTRA_OWNERS or name.endswith((".source.tar", "-source.tar"))
 
@@ -40,8 +50,16 @@ def preparation_targets(image, debug_selected):
     if image not in FAMILIES:
         return result
     module = import_module("tools.bazel.ci." + FAMILIES[image] + "_image")
+    if image in {"docker-eventd", "docker-sonic-gnmi", "docker-sonic-mgmt-framework"}:
+        result["config-files.tar"] = "//dockers/" + image + "/config:files"
+    if image == "docker-dash-engine":
+        result.update({name: module.TARGETS[name] for name in ("runtime-apt.json", "engine.runtime-apt.tar")})
+        if debug_selected:
+            result["debug-apt.json"] = module.TARGETS["debug-apt.json"]
     if image == "docker-teamd":
         result["runtime-apt.json"] = module.TARGETS["runtime-apt.json"]
+    if image == "docker-sonic-p4rt" and debug_selected:
+        result["p4rt.owner-debug.tar"] = "@p4rt_owner_payload//:p4rt_runtime_debug.tar"
     if image == "docker-gbsyncd-vs":
         result.update({"base.source.tar": "//dockers/docker-base-trixie:source_runtime",
                        **{n: module.TARGETS[n] for n in ("source-contract.json", "source-receipt.json")}})
@@ -59,10 +77,14 @@ def preparation_targets(image, debug_selected):
         if image in ("docker-fpm-frr", "docker-teamd") and (
                 name == "frr.python.tar" or debug_selected and name.endswith(".debug-tools.tar")):
             result[name] = target
+        if debug_selected and target_name in {"debug_tools", "debug_accounts"}:
+            result[name] = target
         if target_name in {"files", "ci_config"} and name.endswith(".tar"):
             result[name] = target
         if not debug_selected and image == "docker-sonic-p4rt" and name.startswith(("sairedis", "saimetadata")):
             continue
+        if name in FULL_INSTALL_TARS.get(image, ()) or image == "docker-snmp" and name.endswith(".whl"):
+            result[name] = target
         if name in FIXTURES or owner_archive(name) or name.endswith((".status", "packages.json")):
             result[name] = target
     return result
@@ -93,7 +115,8 @@ def source_members(archive):
 def prepare(image, version, variant, layout_dir, source_paths, bundle_dir, *, make_manifests=None):
     """Export independent owner expectations; the per-container job compares them to the image."""
     from tools.bazel.ci.vs_standalone_probes import extra_standalone_targets
-    native, owned, artifacts = {}, {}, {}
+    native, owned, artifacts, source_sha256 = {}, {}, {}, {}
+    full_install = FULL_INSTALL_TARS.get(image, ())
     standalone = extra_standalone_targets(image, variant == "debug")
     if make_manifests is not None:
         # Both DASH engine targets explicitly use the runtime :labels target.
@@ -107,9 +130,27 @@ def prepare(image, version, variant, layout_dir, source_paths, bundle_dir, *, ma
             artifacts[name] = path
         if name.startswith("openssh") and variant == "runtime":
             continue
-        if image == "docker-sonic-p4rt" and name.startswith(("sairedis", "saimetadata")) and variant == "runtime":
+        if image == "docker-sonic-p4rt" and variant == "runtime" and (
+                name.startswith(("sairedis", "saimetadata")) or name == "p4rt.owner-debug.tar"):
             continue
-        if owner_archive(name):
+        if name == "engine.runtime-apt.tar":
+            if variant == "runtime":
+                # Only selected Debian replacements can change a base file. Ship their
+                # independent TAR records, instead of uploading the entire APT payload.
+                selection = json.loads(source_paths["runtime-apt.json"].read_bytes())
+                payload = check.payload(path, require_root=False)
+                owned[name] = {row["path"]: payload[row["path"]]
+                               for row in selection["changed_non_elf_base_paths"]}
+            continue
+        if name in full_install:
+            if image == "docker-sonic-p4rt":
+                source_sha256[name] = check.sha(path)
+            if owner_archive(name):
+                native.update(source_members(path))
+            payload = check.payload(path)
+            owned[name] = {key: item for key, item in payload.items()
+                           if item["kind"] != "directory" or image == "docker-snmp"}
+        elif owner_archive(name):
             owned[name] = source_members(path)
             native.update(owned[name])
         elif name == "frr.python.tar" or name.endswith(("files.tar", "config.tar")) or ("debug" in name and name.endswith(".tar")):
@@ -121,8 +162,11 @@ def prepare(image, version, variant, layout_dir, source_paths, bundle_dir, *, ma
         elif name not in FIXTURES and name != "p4rt.debug.tar":
             artifacts[name] = path
     out = bundle_dir / (variant + ".owners.json")
-    out.write_text(json.dumps({"native": native, "owners": {name: list(rows) if owner_archive(name)
-                                 else rows for name, rows in owned.items()}}, sort_keys=True) + "\n")
+    report = {"native": native, "owners": {name: list(rows) if owner_archive(name) and name not in full_install
+                                           else rows for name, rows in owned.items()}}
+    if source_sha256:
+        report["source_sha256"] = source_sha256
+    out.write_text(json.dumps(report, sort_keys=True) + "\n")
     artifacts[out.name] = out
     return artifacts
 

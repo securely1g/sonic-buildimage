@@ -1356,6 +1356,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Restore populated submodules to the installer revision
+        run: bash tools/bazel/ci/prepare_image_submodules.sh --populated-only
       - name: Check out the P4RT runtime test at the installer revision
         if: matrix.image == 'docker-sonic-p4rt'
         run: git submodule update --init --depth 1 -- src/sonic-p4rt/sonic-pins
