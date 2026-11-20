@@ -340,12 +340,15 @@ names, Bazel profile and export times for that step.
 Instrumented Make recipes retain existing JSON profiles and additionally write
 BEP (`<phase>.bep.json.gz`) and compact execution logs
 (`<phase>.execution.pb.zst`) for Bazel build/test commands, including the shared
-container batch and nested kernel build. Compact logs are written asynchronously
-and zstd-compressed by Bazel; there is no expanded JSON conversion or second
-compression pass for execution logs. Only BEP is gzip-compressed after command
-timing, including on failure. The reducer uses the existing `zstd` executable
-and streams spawn metadata without reconstructing shared input/output inventories.
-It also supports historical raw/gzipped JSON execution logs.
+container batch. Compact logs are written asynchronously and zstd-compressed by
+Bazel; there is no expanded JSON conversion or second
+compression pass for compact execution logs. BEP is gzip-compressed after command
+timing, including on failure. The pinned kernel launcher retains its own JSON
+execution log and BEP; the bridge collects and gzip-compresses these files rather
+than requesting a second execution-log format. The reducer uses the existing
+`zstd` executable and streams spawn metadata without reconstructing shared
+input/output inventories.
+It also supports raw/gzipped JSON execution logs.
 The existing timing artifact includes these files and the workflow summary
 reports bounded cache/timing observations. Missing, truncated or oversized
 streams remain unavailable, not zero-hit observations.

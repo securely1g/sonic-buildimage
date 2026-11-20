@@ -5,6 +5,7 @@ import base64
 import copy
 import concurrent.futures
 from contextlib import redirect_stderr, redirect_stdout
+import gzip
 import hashlib
 import io
 import json
@@ -23,6 +24,7 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.kernel import prepare as kernel
+from tools.bazel.ci import bazel_telemetry
 from tools.bazel.ci import kernel_scratch as kernel_cleanup
 
 
@@ -437,6 +439,14 @@ class KernelBundleTest(unittest.TestCase):
     @patch.dict(os.environ, {"SONIC_VS_IMAGE_TIMINGS": "1"})
     def test_producer_uses_registered_source_and_retains_evidence(self):
         prebuilt = self.bundle
+        telemetry = {
+            "bep.json": json.dumps({"finished": {"exitCode": {"code": 0}}}) + "\n"
+                        + json.dumps({"lastMessage": True, "buildMetrics": {
+                            "actionSummary": {"actionsExecuted": 1,
+                                              "actionCacheStatistics": {"hits": 0, "misses": 1}}}}) + "\n",
+            "execution.json": json.dumps({"runner": "remote cache hit", "cacheHit": True,
+                                         "mnemonic": "SonicKernelBuild", "exitCode": 0}) + "\n",
+        }
         with self.assertRaisesRegex(ValueError, "must not overlap"):
             kernel.plan(self.root, self.bundle / "state", None, False)
         calls = []
@@ -448,7 +458,9 @@ class KernelBundleTest(unittest.TestCase):
             self.assertEqual(workspace, self.root)
             consumer = Path(command[command.index("--workspace") + 1])
             workdir = Path(command[command.index("--work-dir") + 1])
-            self.assertIn(kernel.DEFAULT_REGISTRY, (consumer / ".bazelrc").read_text())
+            rc = (consumer / ".bazelrc").read_text()
+            self.assertIn(kernel.DEFAULT_REGISTRY, rc)
+            self.assertNotIn("--execution_log_", rc, "the producer already selects JSON execution logging")
             self.assertIn("common --downloader_config=debian_mirrors.cfg",
                           (consumer / ".bazelrc").read_text().splitlines())
             self.assertEqual((consumer / kernel.DOWNLOADER_CONFIG.name).read_bytes(),
@@ -458,6 +470,8 @@ class KernelBundleTest(unittest.TestCase):
             outputs.mkdir(parents=True)
             (workdir / "build.log").write_text("kernel source build\n")
             (workdir / "profile.json.gz").write_bytes(b"build profile")
+            for name, contents in telemetry.items():
+                (workdir / name).write_text(contents)
             for name in [kernel.MANIFEST, *self.packages]:
                 shutil.copyfile(prebuilt / name, outputs / name)
             (workdir / "output-paths.txt").write_text("".join(
@@ -495,10 +509,15 @@ class KernelBundleTest(unittest.TestCase):
             self.assertEqual(json.loads((directory / f"{phase}.timing.json").read_text())["exit_code"], 0)
         self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"build profile")
         self.assertEqual((directory / "build.log").read_text(), "kernel source build\n")
+        for name, contents in telemetry.items():
+            with gzip.open(directory / ("build." + name + ".gz"), "rt") as stream:
+                self.assertEqual(stream.read(), contents)
+            self.assertEqual((self.root / "state/build" / name).read_text(), contents)
+        coverage = bazel_telemetry.summarize([(directory, recipe)])
+        self.assertEqual((coverage["expected"], coverage["bep"], coverage["execution"]), (1, 1, 1))
+        self.assertEqual((coverage["spawns"], coverage["remote_hits"]), (1, 1))
         rc = (self.root / "state/consumer/.bazelrc").read_text().splitlines()
         self.assertIn("common --noslim_profile", rc)
-        self.assertIn(f"build --build_event_json_file={directory}/build.bep.json "
-                      f"--execution_log_compact_file={directory}/build.execution.pb.zst", rc)
         for phase in ("cquery", "mod"):
             self.assertIn(f"{phase} --profile={directory}/{phase}.profile.json.gz", rc)
         self.assertTrue(kernel.ensure(self.root)["reused"])
@@ -510,6 +529,8 @@ class KernelBundleTest(unittest.TestCase):
             workdir = Path(command[command.index("--work-dir") + 1])
             workdir.mkdir(parents=True)
             (workdir / "profile.json.gz").write_bytes(b"partial profile")
+            for name in ("bep.json", "execution.json"):
+                (workdir / name).write_text('{"incomplete":')
             raise subprocess.CalledProcessError(37, command)
 
         with self.assertRaises(subprocess.CalledProcessError) as failure:
@@ -518,6 +539,9 @@ class KernelBundleTest(unittest.TestCase):
         directory, = (self.root / "artifacts/vs/image-timings/linux-kernel").iterdir()
         self.assertEqual(json.loads((directory / "launcher.timing.json").read_text())["exit_code"], 37)
         self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"partial profile")
+        for name in ("bep.json", "execution.json"):
+            with gzip.open(directory / ("build." + name + ".gz"), "rt") as stream:
+                self.assertEqual(stream.read(), '{"incomplete":')
         self.assertFalse((directory / "stage-debs.timing.json").exists())
 
     def test_managed_kernel_cache_reaches_only_the_isolated_consumer(self):

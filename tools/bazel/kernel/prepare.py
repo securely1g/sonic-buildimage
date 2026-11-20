@@ -702,12 +702,10 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
     if os.environ.get("SONIC_VS_IMAGE_TIMINGS") == "1":
         timings = time_vs_image.start_recipe(workspace, "linux-kernel", ["launcher"],
                                              ["build", "cquery", "mod"], ["stage-debs"])
-        # The verified launcher sets the build profile path on its command line.
-        # The queries use the private consumer workspace's RC.
+        # The pinned launcher owns build profiles, BEP and JSON execution logging.
+        # Only queries need additional profile flags in the private consumer RC.
         with (consumer / ".bazelrc").open("a") as rc:
             rc.write("\ncommon --noslim_profile\n")
-            rc.write("build " + " ".join(shlex.quote(flag) for flag in
-                                       time_vs_image.telemetry_flags(timings, "build")) + "\n")
             for command in ("cquery", "mod"):
                 profile = shlex.quote(str(timings / f"{command}.profile.json.gz"))
                 rc.write(f"{command} --profile={profile}\n")
@@ -720,6 +718,8 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
     finally:
         if timings is not None:
             for name, destination in (("profile.json.gz", "build.profile.json.gz"),
+                                      ("bep.json", "build.bep.json"),
+                                      ("execution.json", "build.execution.json"),
                                       ("build.log", "build.log"),
                                       ("module-graph.stderr", "module-graph.stderr")):
                 source = state / "build" / name
