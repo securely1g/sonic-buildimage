@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - tools/bazel/ci/resources.py
+      - tools/bazel/ci/test_suites.py
       - tools/bazel/image/**
       - tools/bazel/build_container_batch.py
       - tools/bazel/common.bazelrc
@@ -17,6 +18,7 @@ on:
     branches: [master]
     paths:
       - tools/bazel/ci/resources.py
+      - tools/bazel/ci/test_suites.py
       - tools/bazel/image/**
       - tools/bazel/build_container_batch.py
       - tools/bazel/common.bazelrc
@@ -26,6 +28,12 @@ on:
       - MODULE.bazel
       - .github/workflows/bazel-image-rules.yml
   workflow_dispatch:
+    inputs:
+      test_suite:
+        description: TAR/runtime checks, or explicitly requested Debian package fixture tests
+        type: choice
+        options: [tar-runtime, deb-fixtures]
+        default: tar-runtime
 
 permissions:
   contents: read
@@ -45,6 +53,8 @@ jobs:
             platform: aarch64_trixie
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    env:
+      SONIC_BAZEL_CI_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.test_suite || 'tar-runtime' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,15 +81,10 @@ jobs:
           mkdir -p artifacts/image-rule-actions
           git rev-parse HEAD > artifacts/image-rule-actions/revision.txt
           test ! -e MODULE.bazel.lock
-          disk_targets=()
-          if [ '${{ matrix.architecture }}' = amd64 ]; then
-            disk_targets=(//tools/bazel/image/action_test:disk_action_test)
-          fi
-          bazel test //tools/bazel/image:assembly_formats_test \
-            //tools/bazel/image:mkinitramfs_test \
-            //tools/bazel/image:kernel_deb_test \
-            //tools/bazel/image/tar_split_json:format_test \
-            //tools/bazel/image/action_test:action_test "${disk_targets[@]}" \
+          selected=$(python3 -B tools/bazel/ci/test_suites.py image-targets --architecture '${{ matrix.architecture }}')
+          mapfile -t image_targets <<< "$selected"
+          printf '%s\n' "$SONIC_BAZEL_CI_SUITE" > artifacts/image-rule-actions/test-suite.txt
+          bazel test "${image_targets[@]}" \
             --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --spawn_strategy=processwrapper-sandbox --nocache_test_results \
@@ -95,25 +100,28 @@ jobs:
           retained = resolution.collect(Path.cwd(), directory)
           (directory / 'resolution.json').write_text(json.dumps(retained, indent=2) + '\n')
           PY
-          for target in assembly_formats_test mkinitramfs_test kernel_deb_test tar_split_json/format_test action_test/action_test; do
-            directory="artifacts/image-rule-actions/${target%%/*}"
+          # Retain exactly the tests selected above, including opt-in fixtures.
+          for target in "${image_targets[@]}"; do
+            test_path="${target#//tools/bazel/image}"
+            test_path="${test_path#:}"
+            test_path="${test_path#/}"
+            test_path="${test_path/:/\/}"
+            name="${test_path%%/*}"
+            if [[ "$test_path" = action_test/disk_action_test ]]; then
+              name=disk_action_test
+            fi
+            directory="artifacts/image-rule-actions/$name"
             mkdir -p "$directory"
-            cp "bazel-testlogs/tools/bazel/image/$target/test.log" "$directory/"
-            cp "bazel-testlogs/tools/bazel/image/$target/test.xml" "$directory/"
+            cp "bazel-testlogs/tools/bazel/image/$test_path/test.log" "$directory/"
+            cp "bazel-testlogs/tools/bazel/image/$test_path/test.xml" "$directory/"
+            test -s "$directory/test.log"
+            test -s "$directory/test.xml"
           done
           cp bazel-testlogs/tools/bazel/image/action_test/action_test/test.outputs/action-receipt.json artifacts/image-rule-actions/
-          if [ '${{ matrix.architecture }}' = amd64 ]; then
-            mkdir -p artifacts/image-rule-actions/disk_action_test
-            cp bazel-testlogs/tools/bazel/image/action_test/disk_action_test/test.{log,xml} artifacts/image-rule-actions/disk_action_test/
-          fi
           test -s artifacts/image-rule-actions/MODULE.bazel.lock
           test -s artifacts/image-rule-actions/module-graph.json
           test -s artifacts/image-rule-actions/module-graph-inspection.json
           test -s artifacts/image-rule-actions/resolution.json
-          for target in assembly_formats_test mkinitramfs_test kernel_deb_test tar_split_json action_test; do
-            test -s "artifacts/image-rule-actions/$target/test.log"
-            test -s "artifacts/image-rule-actions/$target/test.xml"
-          done
           test -s artifacts/image-rule-actions/action-receipt.json
           git diff --exit-code
       - name: Retain public rule action evidence

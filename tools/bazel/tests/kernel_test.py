@@ -1093,9 +1093,9 @@ class KernelWorkflowTest(unittest.TestCase):
             r"^      - name: ([^\n]+)\n(.*?)(?=^      - |\Z)",
             self.workflow, re.MULTILINE | re.DOTALL))
 
-    def test_self_hosted_kernel_ci_accepts_all_same_repository_prs(self):
+    def test_production_kernel_debs_require_explicit_dispatch(self):
         self.assertEqual(re.findall(r"^    if: (.+)$", self.workflow, re.MULTILINE), [
-            "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
+            "github.event_name == 'workflow_dispatch'",
         ])
 
     def test_shared_cache_defaults_and_optional_cold_proof(self):
@@ -1105,9 +1105,7 @@ class KernelWorkflowTest(unittest.TestCase):
         self.assertIn("KERNEL_REMOTE_CACHE: ${{ " + cold
                       + " && 'http://127.0.0.1:8080' || 'grpc://172.16.0.4:9092' }}",
                       self.workflow)
-        self.assertIn("UPLOAD_KERNEL_CACHE: ${{ (" + cold
-                      + ") || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}",
-                      self.workflow)
+        self.assertIn("UPLOAD_KERNEL_CACHE: ${{ inputs.verify_cold_cache }}", self.workflow)
         for name in ("Start a disposable cache for optional cold-build verification",
                      "Verify a fresh output directory reuses the kernel action"):
             self.assertIn("if: " + cold, self.steps[name])

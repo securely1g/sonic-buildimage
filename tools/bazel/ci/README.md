@@ -1,5 +1,33 @@
 # Shared Bazel CI helpers
 
+## TAR/runtime and package test scopes
+
+The OCI helper checks and image-rule action checks default to `tar-runtime`.
+For example, DHCP relay's source TARs and OCI images do not need a newly built
+kernel Debian package. Normal CI retains kernel configuration/workflow checks,
+Make mappings, public-artifact checks, and the existing TAR/image action tests.
+
+```sh
+python3 -B tools/bazel/ci/test_suites.py unit
+python3 -B tools/bazel/ci/test_suites.py image-targets --architecture amd64
+```
+
+The `test_suite` input on the Bazel OCI and Image assembly rule contracts
+manual workflows accepts `deb-fixtures` for explicitly requested sample-package
+tests. This includes the full normal suite, plus the existing kernel bundle,
+inventory/publication and DEB-unpacking fixtures. Both image-rule architectures
+retain evidence for exactly their selected tests. New tests that create Debian
+packages must be assigned to this explicit suite.
+
+The separate **Bazel kernel DEBs** workflow is manually dispatched and retains
+the full AMD64/ARM64 kernel builds, package checks and optional cold-cache proof.
+The automatic tools/contracts suite does not claim to compile a kernel.
+
+The full **VS installer in SONiC slave (AMD64)** job and required branch check
+are unchanged. Its Make recipe can still create Debian packages; selecting
+`tar-runtime` does not turn that full image build into a package-free build.
+A targeted source-image dispatch is separate from the required full VS check.
+
 ## Remote cache uploads
 
 The [native event services](../../../.github/workflows/bazel-eventd.yml),

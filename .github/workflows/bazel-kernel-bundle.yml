@@ -1,9 +1,7 @@
 name: Bazel kernel DEBs
 
 on:
-  pull_request:
-  push:
-    branches: [master]
+  # Production kernel packages and sample-package tests require an explicit run.
   workflow_dispatch:
     inputs:
       verify_cold_cache:
@@ -31,13 +29,13 @@ jobs:
           - arch: arm64
             runner: [self-hosted, linux, bazel-arm64]
             cache_sha256: 295e54fd58841211b00fb204cafc13affc6a13d8946a4520c0ecdce22626ef93
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
     env:
       KERNEL_RUN_TEMP: /mnt/build/k
       KERNEL_REMOTE_CACHE: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache && 'http://127.0.0.1:8080' || 'grpc://172.16.0.4:9092' }}
-      UPLOAD_KERNEL_CACHE: ${{ (github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache) || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}
+      UPLOAD_KERNEL_CACHE: ${{ inputs.verify_cold_cache }}
     steps:
       - name: Restore workspace access before checkout
         working-directory: ${{ runner.temp }}

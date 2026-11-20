@@ -331,7 +331,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
         steps = document["jobs"]["checks"]["steps"]
         commands = [(index, step, line) for index, step in enumerate(steps)
                     for line in step.get("run", "").splitlines()
-                    if "-m unittest discover -s tools/bazel/tests" in line]
+                    if "tools/bazel/ci/test_suites.py unit" in line]
         self.assertEqual(len(commands), 1)
         index, step, command = commands[0]
         self.assertNotIn("if", step)
@@ -340,6 +340,9 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
             root = Path(temporary)
             tests = root / "tools/bazel/tests"
             tests.mkdir(parents=True)
+            helper = root / "tools/bazel/ci/test_suites.py"
+            helper.parent.mkdir(parents=True)
+            shutil.copyfile(ROOT / "tools/bazel/ci/test_suites.py", helper)
             names = ("setup_bazel_cache_test", "kernel_test")
             for name in names:
                 (tests / (name + ".py")).write_text(

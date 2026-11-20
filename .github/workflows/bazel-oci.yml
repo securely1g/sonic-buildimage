@@ -6,6 +6,11 @@ on:
     branches: [master]
   workflow_dispatch:
     inputs:
+      test_suite:
+        description: TAR/runtime checks, or explicitly requested Debian package fixture tests
+        type: choice
+        options: [tar-runtime, deb-fixtures]
+        default: tar-runtime
       source_image:
         description: Dedicated source-image worker task
         type: choice
@@ -43,6 +48,7 @@ concurrency:
 
 env:
   BAZEL: bazel
+  SONIC_BAZEL_CI_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.test_suite || 'tar-runtime' }}
 
 jobs:
   source_image_inputs:
@@ -590,7 +596,7 @@ jobs:
 
       - name: Check shared Make rules with unrelated container targets
         run: |
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          python3 -B tools/bazel/ci/test_suites.py unit
           python3 -B tools/bazel/ci/verify_make_archive.py \
             --artifacts artifacts/archive/make-export \
             --bazel "$BAZEL" \
@@ -3779,7 +3785,7 @@ jobs:
       - name: Check Make handoff and archive validation
         run: |
           PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/ci -p 'p4rt_*_test.py'
-          python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
+          python3 -B tools/bazel/ci/test_suites.py unit
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
           python3 -B tools/bazel/ci/configure_runner_cache_test.py
