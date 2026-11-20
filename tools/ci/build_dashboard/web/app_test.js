@@ -407,6 +407,8 @@ test("chart limits expose the newest measurements and show-all preserves the ent
   const direct = selectTrendPoints(points, {series: imageSeries(points[1].job).key, limit: "all"});
   assert.equal(direct.points.length, 42);
   assert.ok(direct.points.every(point => point.job.steps[0].name.includes("directly")));
+  const ten = selectTrendPoints(points, {series: imageSeries(points[1].job).key, limit: "10"});
+  assert.deepEqual(ten.points, direct.points.slice(-10));
   assert.deepEqual(points, before);
 });
 

@@ -64,8 +64,9 @@ their measurement label. Unrecognized steps appear as isolated **Boundary
 unknown** points. Date ranges end at snapshot time and
 use verified image execution starts. Carried retries count once at the original
 execution time. The chart shows the newest 60 measurements by default. Choose
-**Show all** to remove that limit. Hover or focus a point to see its measurement
-and revision. Select it to open the full-width **Run details**.
+**Newest 10** for a shorter view or **Show all** for the full history. Hover or
+focus a point to see its measurement and revision. Select it to open the
+full-width **Run details**.
 
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
