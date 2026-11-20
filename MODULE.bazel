@@ -22,6 +22,7 @@ bazel_dep(name = "gawk", version = "5.3.2.sonic.1")
 bazel_dep(name = "googletest", version = "1.16.0")
 bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "redis-dump-load", version = "1.1.sonic.2", repo_name = "redis_dump_load")
 
 # PI and BMv2 export their native Bazel outputs as installation TARs.
 bazel_dep(name = "p4lang-pi", version = "0.1.3.sonic.6", repo_name = "p4lang_pi")
@@ -68,6 +69,12 @@ bazel_dep(
     version = "0.0.5-33443ea1666a23812365d03fb959066ee84c9aa0",
     repo_name = "sonic_sairedis",
 )
+bazel_dep(
+    name = "sonic-bmp",
+    version = "0.1.0-5548176381e6ea889276859b6dbf8a535e4c5182",
+    repo_name = "sonic_bmp",
+)
+
 bazel_dep(name = "sonic-swss", version = "0.0.3-9c3797990d4b5a79100a40fe7689927c18212361", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
 bazel_dep(name = "sonic-snmpagent", version = "2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9", repo_name = "sonic_snmpagent")
@@ -123,13 +130,6 @@ python.toolchain(python_version = "3.11")
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 
-# Keep the Redis dump behavior identical to Make by reusing its existing patch.
-# The second Make patch only changes setup.py, which is not part of the wheel.
-pip.override(
-    file = "redis_dump_load-1.1-py3-none-any.whl",
-    patch_strip = 1,
-    patches = ["//src/redis-dump-load.patch:0001-Use-pipelines-when-dumping-52.patch"],
-)
 pip.parse(
     # bitarray 2.8.1 builds from source on Python 3.13. Use the native GCC
     # execution tools installed by CI rather than standalone Python's clang.
@@ -295,7 +295,7 @@ oci.pull(
 use_repo(oci, "debian_trixie", "debian_trixie_linux_amd64", "debian_trixie_linux_arm64_v8")
 
 # Select the base and config-engine sets from the same canonical lock.
-use_repo(apt, "base_debian", "base_debug_debian", "config_engine_debian", "radv_runtime_debian")
+use_repo(apt, "bmp_runtime_debian", "base_debian", "base_debug_debian", "config_engine_debian", "radv_runtime_debian")
 
 apt_inputs(
     name = "base_apt_inputs",
@@ -359,6 +359,7 @@ source_modules(
         "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
+        "@sonic_bmp//:MODULE.bazel": "sonic-bmp",
         "@libteam//:MODULE.bazel": "libteam",
         "@sonic_dash_api//:MODULE.bazel": "sonic-dash-api",
         "@sonic_dash_ha//:MODULE.bazel": "sonic-dash-ha",
