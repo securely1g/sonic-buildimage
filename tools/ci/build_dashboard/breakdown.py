@@ -129,8 +129,15 @@ VS_TIMING_LABELS = {
     "bookworm-cleanup": "Bookworm cleanup invocation"
 }
 TASK_LABELS.update(VS_TIMING_LABELS)
+TASK_LABELS.update({
+    "device-data": "SONiC device data package",
+    "config-engine-load": "Load the config-engine base image",
+    "swss-layer-load": "Load the SWSS base image",
+})
 
 DISTRO_CONTAINER = re.compile(r"target/docker-(base|config-engine|swss-layer)-(bookworm|trixie)\.gz\Z")
+BASE_IMAGE_LOAD = re.compile(r"target/docker-(config-engine|swss-layer)-(?:bookworm|trixie)\.gz-load\Z")
+DEVICE_DATA = re.compile(r"target/debs/(?:trixie|bookworm)/sonic-device-data_[0-9][A-Za-z0-9.+~:-]{0,63}_all\.deb\Z")
 P4RT = re.compile(r"target/files/(?:bookworm|trixie)/sonic-p4rt(-dbgsym)?_[0-9][A-Za-z0-9.+~:-]{0,63}_amd64\.tar\.bz2\Z")
 P4RT_DEB = re.compile(r"target/debs/(?:bookworm|trixie)/sonic-p4rt(-dbgsym)?_[0-9][A-Za-z0-9.+~:-]{0,63}_amd64\.deb\Z")
 STAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z) (.*)$")
@@ -543,6 +550,11 @@ def target_kind(target):
     match = DISTRO_CONTAINER.fullmatch(target)
     if match:
         return match[1]
+    match = BASE_IMAGE_LOAD.fullmatch(target)
+    if match:
+        return f"{match[1]}-load"
+    if DEVICE_DATA.fullmatch(target):
+        return "device-data"
     match = P4RT.fullmatch(target) or P4RT_DEB.fullmatch(target)
     if match:
         return "p4rt-debug" if match[1] else "p4rt-runtime"

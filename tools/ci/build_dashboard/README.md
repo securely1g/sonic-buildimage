@@ -7,10 +7,13 @@ generate a package, modify a runner, or clear a cache.
 
 ## Measurements
 
-- In **Pull requests**, list only PRs whose latest associated image result is
-  successful or failed. Summarize success, failure, cancellation and skipping
-  across all collected PRs, counting each PR once. Pending and unmeasured PRs
-  are noted separately. These counts do not follow the chart filters.
+- **Image build status** appears above the chart. The default **Master + pull
+  requests** view shows the latest master image result and counts each PR's
+  latest image result once. The selector also filters the chart and run history.
+  Select **Master** for master builds, **Pull requests** for PR builds, or
+  **Other branches** for runs on branches with no recorded PR association.
+  Chart controls such as architecture and date range leave the status counts
+  scoped to the selected build source.
 - Keep every collected run attempt and job outcome. Skipped or incomplete work
   is not a zero-second build; failed builds are not faster successful builds.
 - Show the explicit image-build step separately from job setup, checks, uploads,
@@ -39,29 +42,29 @@ Point tooltips, job details and the latest measurement identify the timing
 boundary. Unknown boundaries remain
 isolated points, and historical durations are preserved.
 
-The chart starts as a scatter overview with a legend for the visible measurement
-scopes. Select one **Measurement series** to show its trend without connecting
-different build paths, architectures or measured steps. Date ranges end at the
-published snapshot time and use verified image execution starts, not retry
-attempt starts. Carried retry records count once and retain their original
-execution date. The default view shows the newest 60 matching points;
-choose **Show all** to remove that display limit. These chart-only controls do
-not filter PR coverage or run history. Hover or focus a point to inspect its
-measured scope, source revision and breakdown availability.
+The chart starts with one point per measured image execution. Master builds
+are green and PR builds are blue. Point labels and the legend name the source.
+For example, a push to `master` after merging PR #253 is a master build. A
+`pull_request` workflow remains a PR build even if GitHub omits its PR number.
+A workflow dispatched on a feature branch with a recorded PR association also
+appears in the PR view. Other branch builds appear in gray in **Other branches**.
 
-Host-Make installer and paired-archive builds have their own **Host Make .bin +
-archives** series and color. Recognized measurement boundaries without an
-explicit style use their measurement label and a neutral color rather than
-breaking chart rendering. Unrecognized boundaries remain **Boundary unknown**;
-the fallback does not infer a measurement scope or change recorded timings.
+Select one **Measurement series** to see trend lines. Each line follows one
+build source, path, architecture and measured step. The host-Make installer and
+paired archives have their own **Host Make .bin + archives** series. Unknown
+step boundaries appear as isolated points. Date ranges end at snapshot time and
+use verified image execution starts. Carried retries count once at the original
+execution time. The chart shows the newest 60 measurements by default. Choose
+**Show all** to remove that limit. Hover or focus a point to see its measurement
+and revision. Select it to open the full-width **Run details**.
 
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
 skipped contributes only to **Skipped**. The latest associated run containing
 an image job supplies the result; a later run without an image job does not
 replace that evidence. Same-time reruns prefer the higher attempt. A newer
-skipped or cancelled image result removes an older successful result from the
-PR table. All attempts remain available in run history.
+skipped or cancelled image result moves that PR into the corresponding
+status count. All attempts remain available in run history.
 
 If a run has multiple image jobs, any failure (including a timeout or startup
 failure) makes the PR failed. Otherwise, pending work takes precedence, followed
@@ -69,14 +72,14 @@ by an unknown result, cancellation, success, and skipping. Success requires at
 least one successful image job and all other image jobs successful or skipped;
 **Skipped** requires every image job to be skipped. Missing or unknown image
 evidence is **Unmeasured**, never an inferred success or skip. Historical results
-retain their source revision and current-head annotation.
+retain their source revision in Run details.
 
 The collector covers `bazel-swss-oci.yml`, `bazel-oci.yml`,
 `bazel-vs-unprivileged.yml`, and `bazel.yml`. The unprivileged workflow's final
 `sonic-vs.bin` assembly job uses the Bazel installer path; its explicit build
 step includes installer verification. Native preparation remains a separate
 job and does not supply an image result. If all image-build steps pass and a
-later check fails or the job is cancelled, the PR row and job details still show
+later check fails or the job is cancelled, the job details still show
 the completed build time. The job keeps its recorded outcome. Only successful
 image jobs enter the performance chart.
 
@@ -184,18 +187,26 @@ The historical example above has only the boundaries of its 18m 00s final
 recipe. Its internal phase times were not recorded, so the dashboard shows that
 limitation instead of estimating a split. Adding the instrumentation cannot
 recover those missing measurements; a subsequent image build supplies them.
-The native `sonic-vs.bin` build step shows five wall-clock intervals when its
-log contains the shared container batch and final installer boundaries. With
-`SONIC_VS_IMAGE_TIMINGS=1` the same step also records kernel preparation,
-P4RT preparation (including graph audit, SDK, source build and handoff), and
-the time spent collecting version metadata, returning from the disposable
-builder, and cleaning up in the Trixie and Bookworm Make invocations.
-Within the intermediate root filesystem target, the build times preparation,
-the first-stage `mksquashfs` command, and the cache save when writes are enabled.
-These measurements and the P4RT substeps are included in their parent totals. Expand **Final VS image recipe**
-for the installer phase timeline, including Docker load/tag/inspect,
-filesystem compression, Docker store compression, payload ZIP packaging
-and ONIE wrapping. Older builds retain their observed outer durations.
+On a native host-Make build with both the shared container batch and final
+installer markers, **Run details → Image build steps** opens directly above the
+separate **Bazel build breakdown**. Each of the five headings expands
+independently. For example, the master build at `9bbd301c` took 1h 55m 30s.
+
+| Image build step | Time in that run | What to look for when expanded |
+| --- | ---: | --- |
+| Prepare kernel, packages and P4RT | 33m 44s | Device data, kernel preparation and P4RT dependency audit, SDK, source build and handoff |
+| Build and export Bazel container images | 46m 57s | Shared Bazel command and recorded export times by container |
+| Finish Make containers and stage the root filesystem | 14m 32s | Make container builds, cached targets, base image loads and intermediate SquashFS |
+| Assemble the final ONIE installer | 15m 20s | Docker image loading, filesystem and store compression, payload ZIP and ONIE wrapping |
+| Finish the Make invocation | 4m 57s | Version metadata, builder exit and Trixie and Bookworm cleanup |
+
+The headings use each run's elapsed time. Inner rows require measurements from
+that run. For example, the historical log recorded the ONIE recipe's total but
+lacked its internal phase markers. Recent instrumented runs can show those phases.
+Overlapping tasks count once when calculating uncovered wall time, and nested
+P4RT and root filesystem subtasks are included in the parent duration. The
+separate Bazel breakdown still reports compiler, cache and lock-wait time and the
+per-container activity in the shared command.
 
 The host Make step uses `TERM=dumb` to emit build and finish markers. Historical
 direct-slave terminal redraws lack task end times. A Make `cached` marker alone

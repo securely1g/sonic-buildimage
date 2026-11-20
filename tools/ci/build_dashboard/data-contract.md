@@ -61,7 +61,7 @@ file, without dropping records or replacing the previous output on overflow.
   not guaranteed to partition job wall time (runner overhead is separate).
   `image_build_seconds` is populated only for successful, explicitly recognized
   image-build steps; `image_build_elapsed_seconds` also records a failed image
-  build's elapsed time. The PR table and job details keep a completed build's timing
+  build's elapsed time. Run details keeps a completed build's timing
   when later validation fails. The performance chart requires a successful job.
   Exact recognized step names identify the measurement scope. In particular,
   `Build the VS installer (.bin)` excludes VM generation and boot checks;
@@ -239,7 +239,7 @@ evidence because there is no earlier attempt in that run. Duplicate run or job
 identities remain in raw history and are unverified. Colliding metric keys are
 deduplicated only when the execution signatures match.
 
-PR coverage and run details label image step time, job execution time and retry
+Run details labels image step time, job execution time and retry
 attempt start separately. Verified carried records link to the original job.
 Performance counts and trends count each verified origin once and use the image
 step's execution start, or a labeled job start when step identities are absent.

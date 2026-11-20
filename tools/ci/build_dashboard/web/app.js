@@ -17,16 +17,21 @@ const IMAGE_STEP_LABELS = {
   "Build Bazel VS installer": "Build Bazel VS installer",
   "Build and verify sonic-vs.bin with Bazel": "Build and verify sonic-vs.bin with Bazel",
 };
-const IMAGE_SERIES_STYLES = {
-  [HOST_VS_BUILD_STEP]: ["Host Make .bin + archives", "#b02c45"],
-  "Build the VS installer (.bin)": ["Outer Make .bin", "#007f78"],
-  "Build sonic-vs.bin directly with slave.mk": ["Direct slave .bin", "#a34d12"],
-  "Build the VS image": ["Legacy VM image", "#7458a6"],
-  "Build the VS image with Bazel SWSS archives": ["Legacy VM + SWSS archives", "#8d4773"],
-  "Build the VS image and both OCI container variants": ["Legacy image + OCI validation", "#536775"],
-  "Build the Bazel VS installer": ["Installer build", "#23548a"],
-  "Build Bazel VS installer": ["Installer build (earlier step)", "#356aa0"],
-  "Build and verify sonic-vs.bin with Bazel": ["Installer + verification", "#5165a0"],
+const IMAGE_SERIES_LABELS = {
+  [HOST_VS_BUILD_STEP]: "Host Make .bin + archives",
+  "Build the VS installer (.bin)": "Outer Make .bin",
+  "Build sonic-vs.bin directly with slave.mk": "Direct slave .bin",
+  "Build the VS image": "Legacy VM image",
+  "Build the VS image with Bazel SWSS archives": "Legacy VM + SWSS archives",
+  "Build the VS image and both OCI container variants": "Legacy image + OCI validation",
+  "Build the Bazel VS installer": "Installer build",
+  "Build Bazel VS installer": "Installer build (earlier step)",
+  "Build and verify sonic-vs.bin with Bazel": "Installer + verification",
+};
+const BUILD_SOURCES = {
+  master: {label: "Master", color: "#187247"},
+  pr: {label: "Pull request", color: "#175caa"},
+  other: {label: "Other branch", color: "#536775"},
 };
 // Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
 const SECTION_LABELS = {
@@ -37,6 +42,9 @@ const SECTION_LABELS = {
   "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
 };
 const TASK_LABELS = {
+  "device-data": "SONiC device data package",
+  "config-engine-load": "Load the config-engine base image",
+  "swss-layer-load": "Load the SWSS base image",
   "kernel-prep": "Kernel package preparation",
   "p4rt-prep": "P4RT source and SDK preparation",
   "p4rt-audit": "P4RT dependency graph audit",
@@ -118,12 +126,12 @@ const BUILD_EVIDENCE = {
 const state = {data: null, selectedRun: null, selectedJob: null, loading: false};
 
 function seconds(value) { return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null; }
-function duration(value) {
+function duration(value, includeSeconds = false) {
   const number = seconds(value);
   if (number === null) return "—";
   if (number < 60) return `${Math.round(number)}s`;
   const rounded = Math.round(number);
-  return rounded >= 3600 ? `${Math.floor(rounded / 3600)}h ${Math.floor(rounded % 3600 / 60)}m` : `${Math.floor(rounded / 60)}m ${rounded % 60}s`;
+  return rounded >= 3600 ? `${Math.floor(rounded / 3600)}h ${Math.floor(rounded % 3600 / 60)}m${includeSeconds ? ` ${rounded % 60}s` : ""}` : `${Math.floor(rounded / 60)}m ${rounded % 60}s`;
 }
 function timestamp(value) { const parsed = Date.parse(value || ""); return Number.isFinite(parsed) ? parsed : null; }
 function dateTime(value, short = false) {
@@ -132,12 +140,6 @@ function dateTime(value, short = false) {
 }
 function result(item) { return item.conclusion || item.status || "unknown"; }
 function resultLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
-function prStateLabel(pr) {
-  if (pr.merged_at) return "Merged";
-  if (pr.state === "closed") return "Closed";
-  if (pr.state === "open" && pr.draft) return "Draft";
-  return resultLabel(pr.state);
-}
 function runKey(run) { return `${run.run_id}:${run.attempt}`; }
 function verifiedAttemptStart(run) { return run.started_at_source === "run_started_at" && timestamp(run.started_at) !== null; }
 function attemptTimeLabel(run) {
@@ -165,7 +167,7 @@ function imageTrendGroups(points) {
   for (const item of points) {
     const signature = imageMeasurement(item.job).signature;
     // Unknown boundaries are isolated points, even when path and architecture match.
-    const key = signature === null ? item : JSON.stringify([item.job.kind, item.job.architecture || "unknown", signature]);
+    const key = signature === null ? item : JSON.stringify([buildSource(item.run), item.job.kind, item.job.architecture || "unknown", signature]);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   }
@@ -295,13 +297,11 @@ function imageMeasurements(snapshot) {
 function imageSeries(job) {
   const measurement = imageMeasurement(job);
   const names = measurement.signature === null ? [] : JSON.parse(measurement.signature);
-  const styles = names.map(name => Object.hasOwn(IMAGE_SERIES_STYLES, name) ?
-    IMAGE_SERIES_STYLES[name] : [IMAGE_STEP_LABELS[name] ?? "Unknown image step", "#536775"]);
-  const label = styles.length ? styles.map(style => style[0]).join(" + ") : "Boundary unknown";
+  const labels = names.map(name => Object.hasOwn(IMAGE_SERIES_LABELS, name) ? IMAGE_SERIES_LABELS[name] : IMAGE_STEP_LABELS[name]);
+  const label = labels.length ? labels.join(" + ") : "Boundary unknown";
   return {
     key: JSON.stringify([job.kind, job.architecture || "unknown", measurement.signature]),
     label: `${kindLabel(job)} · ${label} · ${architecture(job)}`,
-    color: styles.length === 1 ? styles[0][1] : "#536775",
   };
 }
 function selectTrendPoints(points, {series = "all", days = "all", limit = "60", reference = Date.now()} = {}) {
@@ -337,7 +337,7 @@ function imageResult(jobs) {
   return "skipped";
 }
 function prCoverage(snapshot) {
-  const imageRuns = snapshot.runs.filter(run => run.jobs.some(imageJob)).sort((a, b) => runTime(b) - runTime(a) || b.attempt - a.attempt || b.run_id - a.run_id);
+  const imageRuns = snapshot.runs.filter(run => run.jobs.some(imageJob)).sort(latestRunFirst);
   return [...snapshot.pull_requests].sort((a, b) => b.number - a.number).map(pr => {
     const latestImageRun = imageRuns.find(run => prNumbers(run).includes(pr.number)) || null;
     const jobs = latestImageRun ? latestImageRun.jobs.filter(imageJob) : [];
@@ -352,6 +352,7 @@ function summarizePrCoverage(coverage) {
 function kindLabel(job) { return KIND_LABELS[job.kind] || "Other"; }
 function architecture(job) { return job.architecture ? String(job.architecture).toUpperCase() : "Unknown architecture"; }
 function runTime(run) { return timestamp(run.started_at) || timestamp(run.completed_at) || 0; }
+function latestRunFirst(a, b) { return runTime(b) - runTime(a) || b.attempt - a.attempt || b.run_id - a.run_id; }
 function baseSummary(pr, run) {
   const selected = pr.base_branch ? `${pr.base_branch}@${String(pr.base_target_sha || "unavailable").slice(0, 12)}` : "unavailable";
   const event = (run?.event_bases || []).find(base => base.number === pr.number);
@@ -457,7 +458,7 @@ function el(tag, className, text) {
 }
 function byId(id) { return document.getElementById(id); }
 function badge(value, label) {
-  const allowed = new Set(["success", "failure", "timed_out", "action_required", "startup_failure", "in_progress", "queued", "requested", "waiting", "pending", "current"]);
+  const allowed = new Set(["success", "failure", "timed_out", "action_required", "startup_failure", "in_progress", "queued", "requested", "waiting", "pending"]);
   return el("span", `badge${allowed.has(value) ? ` ${value}` : ""}`, label || resultLabel(value));
 }
 function link(text, url, repository = state.data.repository) {
@@ -467,21 +468,27 @@ function link(text, url, repository = state.data.repository) {
   anchor.href = safe;
   return anchor;
 }
-function prNumbers(run) { return run.pr_numbers.filter(number => Number.isSafeInteger(number)); }
+function prNumbers(run) { return (run?.pr_numbers || []).filter(Number.isSafeInteger); }
+function buildSource(run) {
+  if (run?.event === "pull_request" || run?.event === "pull_request_target") return "pr";
+  if (run?.branch === "master") return "master";
+  return prNumbers(run).length ? "pr" : "other";
+}
 function matchesRun(run) {
+  const source = buildSource(run);
+  const selectedSource = byId("source-filter").value;
+  if (selectedSource === "combined" ? source === "other" : source !== selectedSource) return false;
   const selectedPr = byId("pr-filter").value;
-  return selectedPr === "all" || prNumbers(run).includes(Number(selectedPr));
+  return selectedPr === "all" || (source === "pr" && prNumbers(run).includes(Number(selectedPr)));
 }
 function matchesJob(job) {
   const path = byId("path-filter").value;
   const arch = byId("arch-filter").value;
   return (path === "all" || job.kind === path) && (arch === "all" || (job.architecture || "unknown") === arch);
 }
-function successfulImages() { return imageMeasurements(state.data).records; }
 function setSelected(run, jobId) {
   state.selectedRun = runKey(run);
   state.selectedJob = jobId || null;
-  renderCoverage();
   renderRuns();
   renderDetails();
 }
@@ -505,7 +512,7 @@ function renderMetrics() {
 function renderFilters() {
   const select = byId("pr-filter");
   const old = select.value;
-  const all = el("option", "", "All pull requests & branches");
+  const all = el("option", "", "All pull requests");
   all.value = "all";
   select.replaceChildren(all);
   for (const pr of [...state.data.pull_requests].sort((a, b) => b.number - a.number)) {
@@ -541,15 +548,20 @@ function renderTrend() {
   const container = byId("trend");
   container.replaceChildren();
   const legend = byId("history-legend"); legend.replaceChildren();
-  for (const value of series.filter(value => points.some(item => imageSeries(item.job).key === value.key))) {
-    const item = el("span"), dot = el("i"); dot.style.backgroundColor = value.color; dot.setAttribute("aria-hidden", "true");
-    item.append(dot, document.createTextNode(value.label)); legend.append(item);
+  const visible = new Map();
+  for (const {run, job} of points) {
+    const source = BUILD_SOURCES[buildSource(run)], scope = imageSeries(job);
+    visible.set(`${source.label} · ${scope.label}`, source.color);
+  }
+  for (const [label, color] of [...visible].sort(([a], [b]) => a.localeCompare(b))) {
+    const item = el("span"), dot = el("i"); dot.style.backgroundColor = color; dot.setAttribute("aria-hidden", "true");
+    item.append(dot, document.createTextNode(label)); legend.append(item);
   }
   legend.hidden = !points.length;
   const preview = byId("trend-preview");
   preview.replaceChildren(el("p", "", "Hover or focus a point to inspect its measurement, source revision and breakdown availability. Select it to open the full run details."));
-  byId("trend-note").textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching verified image executions; carried retries count once and ${unverified} unverified records are omitted. ${select.value === "all" ? "Scatter overview: select one measurement series to show its trend." : "Lines join only one build path, architecture and exact measured step."} Dates are image step or job execution starts, and date ranges end at the published snapshot. Cache state and runner configuration are not controlled; this is not a performance comparison.`;
-  if (!points.length) { container.append(el("p", "empty", "No successful image measurements with verified execution times match these filters.\nFailed, skipped, pending, and unverified records remain visible below.")); return; }
+  byId("trend-note").textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching verified image executions. Carried retries count once. ${unverified} unverified records are omitted. ${select.value === "all" ? "Select one measurement series to see its trend." : "Each line follows one build source, path, architecture and measured step."} Date ranges use execution start times and end at the published snapshot.`;
+  if (!points.length) { container.append(el("p", "empty", "No successful image measurements with verified execution times match these filters.\nFailed, skipped, pending, and unverified records remain visible below.")); return all[0]; }
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
   const height = width < 520 ? 250 : 265;
@@ -572,23 +584,25 @@ function renderTrend() {
     svg.append(svgEl("text", {x: left + fraction * (width - left - right), y: height - 13, "text-anchor": "middle"}, dateTime(new Date(tick).toISOString(), true)));
   }
   for (const items of select.value === "all" ? [] : imageTrendGroups(points).filter(items => items.length > 1)) {
-    const color = imageSeries(items[0].job).color;
+    const color = BUILD_SOURCES[buildSource(items[0].run)].color;
     const line = svgEl("polyline", {points: items.map(item => `${x(item)},${y(item)}`).join(" "), fill: "none", stroke: color, "stroke-opacity": ".45", "stroke-width": "2", "stroke-dasharray": items[0].job.architecture === "arm64" ? "5 4" : "0"});
     svg.append(line);
   }
   for (const item of points) {
-    const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ") || item.run.branch || "Branch build";
+    const build = BUILD_SOURCES[buildSource(item.run)];
+    const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ");
+    const context = [build.label, prs || (item.run.branch === "master" ? "" : item.run.branch)].filter(Boolean).join(" · ");
     const source = String(item.run.source_sha || "unknown").slice(0, 12), breakdown = imageBreakdownLabel(item.job);
-    const label = `${prs} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · Source ${source} · ${breakdown} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
+    const label = `${context} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · Source ${source} · ${breakdown} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
-    point.append(svgEl("circle", {class: "chart-marker", cx: x(item), cy: y(item), r: 4.5, fill: imageSeries(item.job).color, stroke: "white", "stroke-width": 2, "pointer-events": "none"}));
+    point.append(svgEl("circle", {class: "chart-marker", cx: x(item), cy: y(item), r: 4.5, fill: build.color, stroke: "white", "stroke-width": 2, "pointer-events": "none"}));
     const inspect = () => {
       const heading = el("div", "chart-preview-heading");
       heading.append(el("strong", "", duration(item.job.image_build_seconds)), el("span", "", imageSeries(item.job).label));
       preview.replaceChildren(heading,
-        el("p", "", `${item.run.workflow_name || "Workflow"} · ${prs} · ${source} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`),
+        el("p", "", `${item.run.workflow_name || "Workflow"} · ${context} · ${source} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`),
         el("p", "", `${imageMeasurement(item.job).label}. ${breakdown}.`));
     };
     point.addEventListener("mouseenter", inspect);
@@ -598,16 +612,31 @@ function renderTrend() {
     svg.append(point);
   }
   container.append(svg);
+  return all[0];
 }
 
-function coverageRows(data) {
-  return prCoverage(data).sort((a, b) => Number(!!b.latestImageRun) - Number(!!a.latestImageRun)
-    || (b.latestImageRun ? runTime(b.latestImageRun) : 0) - (a.latestImageRun ? runTime(a.latestImageRun) : 0)
-    || b.pr.number - a.pr.number);
-}
 function renderCoverage() {
-  const coverage = coverageRows(state.data);
-  const counts = summarizePrCoverage(coverage);
+  const source = byId("source-filter").value;
+  const latest = byId("latest-branch-status");
+  latest.hidden = source === "pr";
+  if (!latest.hidden) {
+    const branchSource = source === "other" ? "other" : "master";
+    const run = state.data.runs.filter(item => buildSource(item) === branchSource && item.jobs.some(imageJob)).sort(latestRunFirst)[0];
+    latest.replaceChildren(el("strong", "", branchSource === "master" ? "Latest master image build" : "Latest image build on other branches"));
+    if (run) {
+      latest.append(badge(imageResult(run.jobs)), link(run.workflow_name || "Workflow run", run.url));
+      if (branchSource === "other") latest.append(el("span", "", run.branch || "Unknown branch"));
+      latest.append(el("span", "", attemptTimeLabel(run)));
+    } else {
+      latest.append(el("span", "", "No image build recorded."));
+    }
+  }
+  const summary = byId("pr-build-status");
+  summary.hidden = source === "master" || source === "other";
+  if (summary.hidden) return;
+  const prRuns = state.data.runs.filter(run => buildSource(run) === "pr");
+  const counts = summarizePrCoverage(prCoverage({pull_requests: state.data.pull_requests, runs: prRuns}));
+  byId("coverage-count").textContent = `${counts.total} PR${counts.total === 1 ? "" : "s"}`;
   byId("coverage-summary").replaceChildren(...[["success", "Success"], ["failure", "Failed"], ["cancelled", "Cancelled"], ["skipped", "Skipped"]].map(([outcome, label]) => {
     const item = el("div", `coverage-stat ${outcome}`);
     item.append(el("dt", "", label), el("dd", "", counts[outcome]));
@@ -616,51 +645,12 @@ function renderCoverage() {
   const note = byId("coverage-other");
   note.textContent = `${counts.pending} pending · ${counts.unmeasured} unmeasured (no image jobs or result unavailable).`;
   note.hidden = counts.pending + counts.unmeasured === 0;
-  const rows = [];
-  const selected = state.data.runs.find(run => runKey(run) === state.selectedRun);
-  for (const {pr, classification, latestImageRun, jobs} of coverage) {
-    if (classification !== "success" && classification !== "failure") continue;
-    const row = el("tr", selected && prNumbers(selected).includes(pr.number) ? "selected" : "");
-    const title = el("td");
-    const button = el("button", "table-button");
-    button.type = "button";
-    button.append(el("span", "pr-number", `#${pr.number}`), document.createTextNode(pr.title));
-    button.addEventListener("click", () => {
-      byId("pr-filter").value = String(pr.number);
-      state.selectedRun = runKey(latestImageRun);
-      state.selectedJob = jobs[0]?.job_id || null;
-      renderFiltered();
-    });
-    title.append(button, el("span", "subtext", prStateLabel(pr)));
-    title.append(el("span", "subtext sha", baseSummary(pr, latestImageRun).selected));
-    const status = el("td"), timings = el("td");
-    const stack = el("div", "status-stack");
-    for (const job of jobs) {
-      const execution = imageExecution(state.data, latestImageRun, job);
-      const item = el("div");
-      item.append(badge(result(job)), el("span", "subtext", `${kindLabel(job)} · ${architecture(job)}`));
-      stack.append(item);
-      const buildSeconds = completedImageSeconds(job);
-      const time = el("div", "", duration(buildSeconds));
-      time.append(el("span", "subtext", buildSeconds !== null ? "build step passed" : "no completed build timing"));
-      time.append(el("span", "subtext", executionTimeLabel(execution)));
-      const origin = el("span", "subtext");
-      origin.append(execution.originStatus === "carried" ? link(`${executionOriginLabel(execution)} ↗`, execution.originUrl) : document.createTextNode(executionOriginLabel(execution)));
-      time.append(origin);
-      timings.append(time);
-    }
-    status.append(stack);
-    const current = !!pr.head_sha && latestImageRun.source_sha === pr.head_sha;
-    title.append(el("span", "subtext sha", String(latestImageRun.source_sha || "unknown").slice(0, 10)), badge(current ? "current" : "historical", current ? "Current PR head" : "Different revision"));
-    title.append(el("span", "subtext", "Attempt base unverified"));
-    row.append(title, status, timings); rows.push(row);
-  }
-  byId("coverage-body").replaceChildren(...rows);
-  byId("coverage-count").textContent = `${rows.length} of ${counts.total} PRs`;
-  if (!rows.length) { const row = el("tr"), cell = el("td", "empty", counts.total ? "No pull requests have a successful or failed image result in the retained history." : "No pull requests have been collected yet."); cell.colSpan = 3; row.append(cell); byId("coverage-body").append(row); }
 }
-function renderRuns() {
-  const all = state.data.runs.filter(run => matchesRun(run) && (byId("path-filter").value === "all" && byId("arch-filter").value === "all" || run.jobs.some(matchesJob))).sort((a, b) => runTime(b) - runTime(a));
+function visibleRuns() {
+  const allJobs = byId("path-filter").value === "all" && byId("arch-filter").value === "all";
+  return state.data.runs.filter(run => matchesRun(run) && (allJobs || run.jobs.some(matchesJob))).sort((a, b) => runTime(b) - runTime(a));
+}
+function renderRuns(all = visibleRuns()) {
   const rows = all.slice(0, 100).map(run => {
     const row = el("tr", state.selectedRun === runKey(run) ? "selected" : "");
     const workflow = el("td");
@@ -705,9 +695,63 @@ function renderPhaseBreakdown(phases) {
   body.append(sequence);
   return body;
 }
-const VS_CLEANUP_TASKS = new Set(["build-version-collection", "builder-exit", "trixie-image-cleanup", "bookworm-cleanup"]);
+const P4RT_SUBTASKS = new Set(["p4rt-audit", "p4rt-sdk", "p4rt-owner", "p4rt-handoff"]);
 
-function renderInstallerIntervals(breakdown) {
+function intervalTaskRow({task, from, to}) {
+  const row = el("div", "interval-task");
+  const clipped = from > task.offset_seconds || to < task.offset_seconds + task.duration_seconds;
+  row.append(el("span", "", task.label), el("span", "timing-duration", duration(to - from)));
+  if (clipped || task.outcome === "cached") {
+    row.append(el("small", "timing-hint", [clipped && `Portion of a ${duration(task.duration_seconds)} task`,
+      task.outcome === "cached" && "Cached"].filter(Boolean).join(" · ")));
+  }
+  return row;
+}
+
+function intervalTaskList(spans, start, end, reportUncovered) {
+  const body = el("div", "interval-tasks");
+  const list = el("ul", "interval-measurements");
+  const parents = spans.filter(({task}) => task.kind === "p4rt-prep" || task.kind === "rootfs");
+  const children = new Map();
+  for (const span of spans) {
+    const kind = span.task.kind;
+    const parentKind = P4RT_SUBTASKS.has(kind) ? "p4rt-prep" : kind.startsWith("rootfs-") ? "rootfs" : null;
+    const parent = parents.find(p => p.task.kind === parentKind &&
+      p.task.offset_seconds <= span.task.offset_seconds &&
+      p.task.offset_seconds + p.task.duration_seconds >= span.task.offset_seconds + span.task.duration_seconds);
+    if (parent) children.set(span, parent);
+  }
+  for (const span of spans) {
+    if (children.has(span)) continue;
+    const item = el("li");
+    item.append(intervalTaskRow(span));
+    const nested = [...children].filter(([, parent]) => parent === span);
+    if (nested.length) {
+      const sublist = el("ul", "interval-measurements");
+      for (const [child] of nested) {
+        const entry = el("li");
+        entry.append(intervalTaskRow(child)); sublist.append(entry);
+      }
+      item.append(el("p", "timing-hint", "Included in the parent task duration"), sublist);
+    }
+    list.append(item);
+  }
+  if (spans.length) body.append(list);
+  else body.append(el("p", "unmeasured-note", "No task timings recorded for this interval."));
+
+  if (!reportUncovered) return body;
+  // Spans are clipped to the interval and sorted by start. Count covered wall time once.
+  let cursor = start, uncovered = 0;
+  for (const {from, to} of spans) {
+    uncovered += Math.max(0, from - cursor);
+    cursor = Math.max(cursor, to);
+  }
+  uncovered += Math.max(0, end - cursor);
+  body.append(el("p", "breakdown-note", `Unattributed wall time: ${duration(uncovered)}. Overlapping task spans count once.`));
+  return body;
+}
+
+function renderInstallerIntervals(breakdown, job, step) {
   const [section] = breakdown.sections;
   if (breakdown.sections.length !== 1 || section.kind !== "vs-image" || section.offset_seconds !== 0 ||
       section.duration_seconds !== breakdown.duration_seconds) return null;
@@ -720,82 +764,62 @@ function renderInstallerIntervals(breakdown) {
   const installerEnd = installer.offset_seconds + installer.duration_seconds;
   if (batchEnd > installer.offset_seconds || installerEnd > section.duration_seconds) return null;
 
-  const intervals = [
-    ["Preparation before the container batch", batch.offset_seconds],
-    ["Shared container batch", batch.duration_seconds],
-    ["Remaining prerequisites before installer assembly", installer.offset_seconds - batchEnd],
-    ["Final installer assembly", installer.duration_seconds, installer.phase_breakdown],
-    ["After installer assembly", section.duration_seconds - installerEnd],
-  ];
   const overview = el("section", "installer-intervals");
-  overview.append(el("h4", "", "VS installer build timeline"),
-    el("p", "breakdown-note", "These five consecutive intervals cover the build step. The container batch and installer recipe markers define their boundaries."));
-  const list = el("dl", "installer-interval-list");
-  let start = 0;
-  for (const [label, elapsed, phases] of intervals) {
-    const end = start + elapsed;
-    const row = el("div", "installer-interval");
-    row.append(el("dt", "", label), el("dd", "", duration(elapsed)));
-    const children = section.tasks.filter(task => task !== batch && task !== installer &&
-      task.offset_seconds >= start && task.offset_seconds < end && task.offset_seconds + task.duration_seconds <= end);
-    if (children.length) {
-      const detail = el("dd", "interval-detail"), disclosure = el("details");
-      disclosure.append(el("summary", "", `${children.length} measured ${children.length === 1 ? "task" : "tasks"}`));
-      const measurements = el("dl", "interval-measurements");
-      for (const child of children) {
-        const measurement = el("div");
-        measurement.append(el("dt", "", child.label), el("dd", "", duration(child.duration_seconds)));
-        measurements.append(measurement);
-      }
-      disclosure.append(measurements);
-      if (children.some(task => task.kind === "p4rt-prep")) {
-        disclosure.append(el("p", "breakdown-note", "P4RT substeps are included in the P4RT preparation total."));
-      }
-      if (children.some(task => task.kind === "rootfs") && children.some(task => task.kind.startsWith("rootfs-"))) {
-        disclosure.append(el("p", "breakdown-note", "The intermediate squashfs total includes its measured root filesystem subtasks."));
-      }
-      detail.append(disclosure);
-      row.append(detail);
+  overview.append(el("h3", "", "Image build steps"), el("p", "breakdown-note",
+    `${duration(section.duration_seconds, true)} from the start of the host Make build through its return. Select a step for its measured work.`));
+  const intervals = [
+    ["Prepare kernel, packages and P4RT", 0, batch.offset_seconds],
+    ["Build and export Bazel container images", batch.offset_seconds, batchEnd, batch],
+    ["Finish Make containers and stage the root filesystem", batchEnd, installer.offset_seconds],
+    ["Assemble the final ONIE installer", installer.offset_seconds, installerEnd, installer],
+    ["Finish the Make invocation", installerEnd, section.duration_seconds],
+  ];
+  for (const [label, start, end, marker] of intervals) {
+    const disclosure = el("details", "installer-interval"), summary = el("summary", "timing-row");
+    const name = el("span", "timing-name", label);
+    name.append(el("span", "timing-hint", `+${duration(start, true)} to +${duration(end, true)} from build start`));
+    summary.append(name, el("span", "timing-duration", duration(end - start, true))); disclosure.append(summary);
+    if (marker === installer) {
+      disclosure.append(renderPhaseBreakdown(installer.phase_breakdown));
+    } else if (marker === batch) {
+      const batch = containerBatchMeasurements(job, step);
+      if (batch) {
+        const list = el("dl", "interval-receipts");
+        const add = (target, label, elapsed) => {
+          const pair = el("div", "interval-task");
+          pair.append(el("dt", "", label), el("dd", "timing-duration", duration(elapsed, true))); target.append(pair);
+        };
+        if (batch.bazelSeconds !== null) add(list, "Shared Bazel command", batch.bazelSeconds);
+        if (batch.exports.length) {
+          add(list, "Recorded export command time", batch.exports.reduce((total, entry) => total + entry[1], 0));
+          const detail = el("details", "batch-exports"), rows = el("dl", "interval-receipts");
+          for (const [label, elapsed] of batch.exports) add(rows, label, elapsed);
+          detail.append(el("summary", "", `Exports by container (${batch.exports.length})`), rows);
+          disclosure.append(list, detail);
+        } else disclosure.append(list);
+        disclosure.append(el("p", "breakdown-note", "Export time adds the recorded archive command durations. The section heading shows elapsed time for the whole Make task."));
+      } else disclosure.append(el("p", "unmeasured-note", "Separate Bazel command and export timings were not recorded for this batch."));
     }
-    if (phases?.status === "available") {
-      const detail = el("dd", "interval-detail"), disclosure = el("details");
-      disclosure.append(el("summary", "", "ONIE assembly and compression"), renderPhaseBreakdown(phases));
-      detail.append(disclosure);
-      row.append(detail);
-    }
-    list.append(row);
-    start = end;
-  }
-  overview.append(list);
-
-  // Optional child markers refine the tail. Historical runs may have none.
-  // Only subtract distinct, ordered measurements fully inside that interval.
-  const tail = section.tasks.filter(task => VS_CLEANUP_TASKS.has(task.kind));
-  if (tail.length && new Set(tail.map(task => task.kind)).size === tail.length) {
-    let previousEnd = installerEnd, remaining = 0;
-    for (const task of tail) {
-      const end = task.offset_seconds + task.duration_seconds;
-      if (task.offset_seconds < previousEnd - 1e-9 || end > section.duration_seconds + 1e-9) return overview;
-      remaining += Math.max(0, task.offset_seconds - previousEnd);
-      previousEnd = end;
-    }
-    remaining += Math.max(0, section.duration_seconds - previousEnd);
-    overview.append(el("p", "breakdown-note", `Recorded cleanup markers leave ${duration(remaining)} of the post-assembly interval unattributed.`));
+    const spans = section.tasks.filter(task => task !== batch && task !== installer).map(task => ({
+      task, from: Math.max(start, task.offset_seconds), to: Math.min(end, task.offset_seconds + task.duration_seconds),
+    })).filter(({task, from, to}) => from < to || task.duration_seconds === 0 && from === to && (from < end || end === section.duration_seconds));
+    if (!marker || spans.length) disclosure.append(intervalTaskList(spans, start, end, !marker));
+    overview.append(disclosure);
   }
   return overview;
 }
 
-function renderBreakdown(breakdown, nativeInstaller) {
+function hostInstallerStep(step) {
+  return step.name === HOST_VS_BUILD_STEP && step.status === "completed" && step.conclusion === "success";
+}
+
+function renderBreakdown(breakdown) {
   const box = el("div", "breakdown-body");
   if (breakdown.status !== "available") {
     box.append(el("p", "breakdown-note", `Breakdown unavailable. ${breakdown.reason} The recorded step duration is shown above.`));
     return box;
   }
   box.append(el("p", "breakdown-note", `Measured from job log timestamps · ${duration(breakdown.duration_seconds)}. These sections run sequentially in top-level Make request order; each includes its prerequisites, setup and cleanup. Log timestamps may differ slightly from the rounded step duration.`));
-  if (nativeInstaller) {
-    const overview = renderInstallerIntervals(breakdown);
-    if (overview) box.append(overview);
-  }
   const list = el("ol", "breakdown-sections");
   for (const section of breakdown.sections) {
     const item = el("li", "breakdown-section");
@@ -836,16 +860,17 @@ function renderBreakdown(breakdown, nativeInstaller) {
   box.append(list);
   return box;
 }
-function renderStep(step) {
-  const item = el("li", "step-item"), breakdown = normalizeBreakdown(step.breakdown);
+function renderStep(step, timelineShown = false) {
+  const item = el("li", "step-item"), breakdown = timelineShown ? null : normalizeBreakdown(step.breakdown);
   const row = el(breakdown ? "summary" : "div", "timing-row");
   const name = el("span", "timing-name", step.name || "Unnamed step"), timing = el("span", "step-duration");
   timing.append(badge(result(step)), document.createTextNode(duration(step.duration_seconds)));
-  if (breakdown) name.append(el("span", "timing-hint", breakdown.status === "available" ? `Measured breakdown · ${breakdown.sections.length} sections` : "Breakdown unavailable"));
+  if (timelineShown) name.append(el("span", "timing-hint", "See Image build steps above."));
+  if (breakdown) name.append(el("span", "timing-hint", breakdown.status === "available" ? "Measured breakdown" : "Breakdown unavailable"));
   row.append(name, timing);
   if (breakdown) {
-    const nativeInstaller = step.name === HOST_VS_BUILD_STEP && step.status === "completed" && step.conclusion === "success";
-    const details = el("details", "step-breakdown"); details.append(row, renderBreakdown(breakdown, nativeInstaller)); item.append(details);
+    const timeline = hostInstallerStep(step) && breakdown.status === "available" && renderInstallerIntervals(breakdown);
+    const details = el("details", "step-breakdown"); details.append(row, timeline || renderBreakdown(breakdown)); item.append(details);
   } else item.append(row);
   return item;
 }
@@ -1092,6 +1117,29 @@ function containerMembers(rows, detail) {
   return {profile: detail, members};
 }
 
+function containerBatchMeasurements(job, step) {
+  if (job?.kind !== "make-vs" || step?.name !== HOST_VS_BUILD_STEP || step.conclusion !== "success" ||
+      !Array.isArray(job.steps) || !job.steps.includes(step) ||
+      job.steps.filter(item => item.name === HOST_VS_BUILD_STEP).length !== 1) return null;
+  const receipts = job.image_recipe_timings;
+  if (receipts?.version !== 2) return null;
+  const rows = recipeRows(receipts);
+  const batch = rows?.find(row => row.owner === "vs-container-images");
+  // A recipe row combines every invocation of its owner in the job.
+  if (!batch || batch.failed || batch.bazel_expected !== 1) return null;
+  const bazelSeconds = batch.bazel_phases === 1 ? batch.bazel_seconds : null;
+  const exports = [];
+  const {members} = containerMembers(rows, receipts.container_breakdown);
+  for (const {recipe} of members) {
+    // Owners that also built independently can include exports from outside the batch.
+    if (recipe.failed || recipe.bazel_expected || recipe.profiles_expected || !recipe.exports) continue;
+    const count = recipe.exports < recipe.exports_expected ? `${recipe.exports} of ${recipe.exports_expected} recorded` : recipe.exports;
+    const label = recipe.exports_expected === 1 ? "" : ` (${count} archive commands)`;
+    exports.push([`Export ${recipe.owner}${label}`, recipe.export_seconds]);
+  }
+  return bazelSeconds !== null || exports.length ? {bazelSeconds, exports} : null;
+}
+
 function renderContainerMembers({profile, members}, wallSeconds) {
   const box = el("section", "container-members");
   box.append(el("h4", "", `Containers (${members.length})`));
@@ -1217,7 +1265,7 @@ function renderDetails() {
   const analysis = byId("target-analysis");
   if (analysis) { analysis.replaceChildren(); analysis.hidden = true; }
   const run = state.data.runs.find(item => runKey(item) === state.selectedRun);
-  if (!run) { box.append(el("p", "empty", "Select a chart point, pull request, or workflow run to see its timing breakdown.")); return; }
+  if (!run) { box.append(el("p", "empty", "Select a chart point or workflow run to see its timing breakdown.")); return; }
   const heading = el("p", "detail-meta");
   heading.append(link(`${run.workflow_name || "Workflow"} ↗`, run.url), badge(result(run)), el("span", "subtext", attemptTimeLabel(run)), el("span", "subtext sha", `Source ${String(run.source_sha || "unknown").slice(0, 12)} · ${run.event || "unknown event"}`));
   box.append(heading);
@@ -1260,6 +1308,10 @@ function renderDetails() {
   }
   box.append(values);
   if (completedImageSeconds(job) !== null) box.append(el("p", "stage-note", `Measured scope: ${imageMeasurement(job).label}.`));
+  const hostStep = job.steps.find(hostInstallerStep);
+  const hostBreakdown = hostStep && normalizeBreakdown(hostStep.breakdown);
+  const timeline = hostBreakdown?.status === "available" && renderInstallerIntervals(hostBreakdown, job, hostStep);
+  if (timeline) box.append(timeline);
   const phases = job.phases || {};
   const total = PHASES.reduce((sum, phase) => sum + (seconds(phases[phase]) || 0), 0);
   const bar = el("div", "stage-bar"); bar.setAttribute("aria-label", "Recorded step time by phase");
@@ -1279,17 +1331,32 @@ function renderDetails() {
   }
   const steps = el("details", "steps"); steps.append(el("summary", "", `Step timings · ${job.steps.length} steps`));
   const list = el("ol");
-  for (const step of job.steps) list.append(renderStep(step));
+  for (const step of job.steps) list.append(renderStep(step, !!timeline && step === hostStep));
   steps.append(list); box.append(steps);
 }
-function renderFiltered() { renderTrend(); renderCoverage(); renderRuns(); renderDetails(); }
+function renderFiltered() {
+  const latest = renderTrend(), runs = visibleRuns();
+  if (!runs.some(run => runKey(run) === state.selectedRun)) {
+    const run = latest?.run || runs[0];
+    state.selectedRun = run ? runKey(run) : null;
+    state.selectedJob = latest?.job.job_id || null;
+  }
+  renderRuns(runs);
+  renderDetails();
+}
+function applyBuildSource() {
+  const pr = byId("pr-filter"), source = byId("source-filter").value;
+  pr.disabled = source === "master" || source === "other";
+  if (pr.disabled) pr.value = "all";
+  renderCoverage();
+  renderFiltered();
+}
 function render() {
   byId("dashboard").hidden = false;
   byId("snapshot-time").textContent = `Snapshot: ${dateTime(state.data.generated_at)}`;
   byId("repository-link").href = `https://github.com/${state.data.repository}`;
   renderFilters(); renderMetrics();
-  if (!state.selectedRun) { const latest = successfulImages()[0]; const run = latest?.run || [...state.data.runs].sort((a, b) => runTime(b) - runTime(a))[0]; state.selectedRun = run ? runKey(run) : null; state.selectedJob = latest?.job.job_id || null; }
-  renderFiltered();
+  applyBuildSource();
 }
 async function refresh() {
   if (state.loading) return;
@@ -1308,6 +1375,7 @@ async function refresh() {
 }
 if (typeof document !== "undefined") {
   byId("refresh").addEventListener("click", refresh);
+  byId("source-filter").addEventListener("change", () => { if (state.data) applyBuildSource(); });
   for (const id of ["path-filter", "arch-filter", "pr-filter"]) byId(id).addEventListener("change", () => { if (state.data) renderFiltered(); });
   for (const id of ["series-filter", "date-filter", "limit-filter"]) byId(id).addEventListener("change", () => { if (state.data) renderTrend(); });
   let chartWidth = 0;
@@ -1322,4 +1390,4 @@ if (typeof document !== "undefined") {
   refresh();
   setInterval(() => { if (!document.hidden) refresh(); }, 300000);
 }
-if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, completedImageSeconds, imageMeasurement, imageTrendGroups, imageSeries, selectTrendPoints, chartScale, imageBreakdownLabel, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, recipeRows, renderBuildExplanations, coverageRows, baseSummary, prStateLabel};
+if (typeof module !== "undefined") module.exports = {seconds, duration, timestamp, safeGithubUrl, validateSnapshot, measured, completedImageSeconds, imageMeasurement, imageTrendGroups, imageSeries, selectTrendPoints, chartScale, imageBreakdownLabel, attemptTimeLabel, imageExecution, executionTimeLabel, executionOriginLabel, jobExecutionLabel, imageMeasurements, imageResult, prCoverage, summarizePrCoverage, normalizeBreakdown, normalizePhaseBreakdown, renderStep, renderRecipeTimings, recipeRows, containerBatchMeasurements, renderBuildExplanations, baseSummary};

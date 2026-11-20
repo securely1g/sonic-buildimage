@@ -333,6 +333,16 @@ class ImagePhaseTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
+    def test_device_package_and_base_loads_keep_distinct_make_timings(self):
+        log = synthetic_log().replace(b"target/docker-base-trixie.gz", b"target/debs/trixie/sonic-device-data_1.0-1_all.deb")
+        log = log.replace(b"target/docker-config-engine-trixie.gz", b"target/docker-config-engine-trixie.gz-load")
+        log = log.replace(b"target/private-host-secret.gz", b"target/docker-swss-layer-trixie.gz-load")
+        result = breakdown.parse_log(log, job()["steps"][0])
+        self.assertTrue(breakdown.valid(result))
+        tasks = result["sections"][0]["tasks"]
+        self.assertEqual([(t["id"], t["duration_seconds"]) for t in tasks[:3]],
+                         [("device-data-1", 60), ("config-engine-load-1", 50), ("swss-layer-load-1", 1)])
+
     def test_shared_container_build_has_its_own_make_interval(self):
         log = synthetic_log().replace(b"target/docker-base-trixie.gz", b"target/vs-container-images")
         value = breakdown.parse_log(log, job()["steps"][0])
