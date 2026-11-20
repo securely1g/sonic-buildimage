@@ -100,8 +100,20 @@ file, without dropping records or replacing the previous output on overflow.
     `container_breakdown`. Its `rows` identify participating archive owners
     from the same recipe list. Each row contains an action count (`actions`),
     union time across the owner's observed actions (`action_seconds`), and
-    observed `fetch_seconds`, `archive_seconds` and `compress_seconds`. An
-    owner can include both runtime and debug archive targets. Shared inputs
+    observed `fetch_seconds`, `archive_seconds` and `compress_seconds`.
+    New rows also include `compile_seconds`, the wall time of compiler subprocesses
+    inside actions attributed to that image. Overlapping compiler processes count
+    once. For example, if two compiles each run for five seconds and overlap for
+    three, the image records seven seconds. This time is included in
+    `action_seconds`. A measured zero means no compiler subprocess was attributed
+    to this image in the observed profile. Older rows omit the field and display
+    an unavailable compile time.
+    When the first image-owned action and the last successful archive export can be
+    timed together, `total_seconds` gives the elapsed time between them. For
+    example, an image whose first action starts at 10:00 and whose last export
+    finishes at 10:12 takes 12 minutes, including gaps between its actions and
+    exports. A row may omit either timing independently when evidence is missing.
+    An owner can include both runtime and debug archive targets. Shared inputs
     are counted with their identifiable producer or remain unattributed.
     The `other_action_seconds` field counts intervals with only shared or
     unattributed actions active. `no_action_seconds` counts launcher time

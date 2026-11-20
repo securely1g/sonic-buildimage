@@ -935,7 +935,7 @@ test("expanded shared build lists the original per-image exports on older runs",
   assert.equal(rows.length, 1);
   assert.match(rows[0].textContent, /Containers \(1\)/);
   assert.match(rows[0].textContent, /Per-container Bazel action times are unavailable/);
-  assert.match(rows[0].textContent, /ImageExportdocker-sflow.gz4s/);
+  assert.match(rows[0].textContent, /ImageTotal elapsedCompile timeExportdocker-sflow.gz——4s/);
 }));
 
 test("batch action times are nested, ordered by activity and distinct from subsequent exports", () => withDocument(() => {
@@ -946,23 +946,53 @@ test("batch action times are nested, ordered by activity and distinct from subse
   const images = [{...base, owner: "docker-teamd.gz", exports: 2, export_seconds: 4},
     {...base, owner: "docker-syncd-vs.gz", exports: 1, export_seconds: 0}];
   const shared = {rows: images.map((row, i) => ({owner: row.owner, actions: 12, action_seconds: i ? 81 : 23,
+    total_seconds: i ? 119.5 : 85, compile_seconds: i ? 8.25 : 0,
     archive_seconds: 10, compress_seconds: 7, fetch_seconds: 1.5})),
     other_action_seconds: 25, no_action_seconds: 2, parallel_seconds: 5};
   job.image_recipe_timings = {version: 2, status: "available", recipes: [group, ...images], container_breakdown: shared};
   const view = renderRecipeTimings(job), rows = descendants(view, node => node.tagName === "tr");
   assert.equal(descendants(view, node => node.tagName === "details").length, 1);
   assert.deepEqual(rows.map(tr => tr.children.map(cell => cell.textContent)), [
-    ["Image", "Actions", "Active", "Cache fetch", "OCI archive", "Gzip", "Export"],
-    ["docker-syncd-vs.gz", "12", "81s", "1.5s", "10s", "7s", "0s (1/2)"],
-    ["docker-teamd.gz", "12", "23s", "1.5s", "10s", "7s", "4s"]]);
+    ["Image", "Actions", "Total elapsed", "Active", "Compile time", "Cache fetch", "OCI archive", "Gzip", "Export"],
+    ["docker-syncd-vs.gz", "12", "119.5s", "81s", "8.25s", "1.5s", "10s", "7s", "0s (1/2)"],
+    ["docker-teamd.gz", "12", "85s", "23s", "0s", "1.5s", "10s", "7s", "4s"]]);
   assert.match(view.textContent, /Only shared or unattributed actions active25s/);
   assert.match(view.textContent, /No action recorded2s/);
   assert.match(view.textContent, /One or more image owners active99s/);
   assert.match(view.textContent, /active together for 5s/);
+  delete shared.rows[0].total_seconds;
+  const containerRow = () => descendants(renderRecipeTimings(job), node => node.tagName === "tr")[2];
+  assert.deepEqual(containerRow().children.slice(2, 5).map(cell => cell.textContent), ["—", "23s", "0s"]);
+  delete shared.rows[0].compile_seconds;
+  const legacyRow = containerRow();
+  assert.deepEqual(legacyRow.children.map(cell => cell.textContent),
+    ["docker-teamd.gz", "12", "—", "23s", "—", "1.5s", "10s", "7s", "4s"]);
+  assert.equal(legacyRow.children[2].attributes["aria-label"], "Total elapsed unavailable");
+  assert.equal(legacyRow.children[4].attributes["aria-label"], "Compile time unavailable");
+  for (const invalid of [null, "85", 22.99, Infinity]) {
+    shared.rows[0].total_seconds = invalid;
+    assert.match(renderRecipeTimings(job).textContent, /Per-container Bazel action times are unavailable/);
+  }
+  delete shared.rows[0].total_seconds;
+  for (const invalid of [null, "2", -1, 23.01, Infinity]) {
+    shared.rows[0].compile_seconds = invalid;
+    assert.match(renderRecipeTimings(job).textContent, /Per-container Bazel action times are unavailable/);
+  }
+  delete shared.rows[0].compile_seconds;
   shared.rows[1].action_seconds = "81";
   const fallback = renderRecipeTimings(job);
   assert.match(fallback.textContent, /Per-container Bazel action times are unavailable/);
   assert.doesNotMatch(fallback.textContent, /81s/);
+}));
+
+test("a measured zero total remains visible without compiler timing", () => withDocument(() => {
+  const job = sharedContainerJob(), receipt = job.image_recipe_timings;
+  const image = receipt.recipes.at(-1);
+  image.export_seconds = 0;
+  receipt.container_breakdown = {rows: [{owner: image.owner, actions: 1, action_seconds: 0, total_seconds: 0,
+    fetch_seconds: 0, archive_seconds: 0, compress_seconds: 0}], other_action_seconds: 0, no_action_seconds: 200, parallel_seconds: 0};
+  const [, imageRow] = descendants(renderRecipeTimings(job), node => node.tagName === "tr");
+  assert.deepEqual(imageRow.children.slice(2, 5).map(cell => cell.textContent), ["0s", "0s", "—"]);
 }));
 
 test("unavailable or unverifiable profiles do not appear as measured recipes", () => withDocument(() => {

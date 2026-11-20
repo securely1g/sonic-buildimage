@@ -1112,6 +1112,10 @@ function containerMembers(rows, detail) {
     const recipe = byOwner.get(member?.owner);
     if (!recipe || seen.has(member.owner) || !Number.isSafeInteger(member.actions) || member.actions < 0 ||
         ![member.action_seconds, member.archive_seconds, member.compress_seconds, member.fetch_seconds].every(validTime)) return fallback();
+    if (Object.hasOwn(member, "compile_seconds") &&
+        (!validTime(member.compile_seconds) || member.compile_seconds > member.action_seconds + 1e-6)) return fallback();
+    if (Object.hasOwn(member, "total_seconds") &&
+        (!validTime(member.total_seconds) || member.total_seconds + 1e-6 < member.action_seconds)) return fallback();
     seen.add(member.owner);
     members.push({...member, recipe});
   }
@@ -1150,7 +1154,8 @@ function renderContainerMembers({profile, members}, wallSeconds) {
     return box;
   }
   if (profile) {
-    box.append(el("p", "stage-note", "Active time counts intervals with at least one observed action owned by the image. Images run in parallel. Cache fetch, OCI archive and gzip can overlap within active time. Make exports the archives after Bazel returns."));
+    box.append(el("p", "stage-note", "Total elapsed runs from the first observed action owned by an image through its last archive export, including time spent waiting. Images build in parallel, so their totals overlap."));
+    box.append(el("p", "stage-note", "Active time counts intervals with at least one observed action owned by the image. Compile time counts elapsed time with a C, C++, Rust or Go compiler running for that image. Simultaneous compiler processes count once per image. Compilation, cache fetch, OCI archive and gzip can overlap. Make exports the archives after Bazel returns."));
     const totals = el("dl", "recipe-metrics");
     if (wallSeconds !== null && wallSeconds >= profile.other_action_seconds + profile.no_action_seconds) {
       const imageWall = wallSeconds - profile.other_action_seconds - profile.no_action_seconds;
@@ -1168,8 +1173,10 @@ function renderContainerMembers({profile, members}, wallSeconds) {
   scroll.setAttribute("tabindex", "0");
   scroll.setAttribute("role", "region");
   scroll.setAttribute("aria-label", "Container timings");
-  const columns = profile ? ["Image", "Actions", "Active", "Cache fetch", "OCI archive", "Gzip", "Export"] : ["Image", "Export"];
-  for (const label of columns) {
+  const metrics = [["actions", "Actions"], ["total_seconds", "Total elapsed"], ["action_seconds", "Active"],
+    ["compile_seconds", "Compile time"], ["fetch_seconds", "Cache fetch"], ["archive_seconds", "OCI archive"],
+    ["compress_seconds", "Gzip"]].filter(([key]) => profile || key === "total_seconds" || key === "compile_seconds");
+  for (const label of ["Image", ...metrics.map(([, label]) => label), "Export"]) {
     const th = el("th", "", label); th.setAttribute("scope", "col"); header.append(th);
   }
   head.append(header);
@@ -1178,11 +1185,14 @@ function renderContainerMembers({profile, members}, wallSeconds) {
     name.setAttribute("scope", "row");
     if (recipe.failed) name.append(el("small", "recipe-failed", "Command failed"));
     tr.append(name);
-    if (profile) {
-      tr.append(el("td", "", recipeNumber.format(member.actions)));
-      for (const metric of ["action_seconds", "fetch_seconds", "archive_seconds", "compress_seconds"]) {
-        tr.append(el("td", "", recipeSeconds(member[metric])));
+    for (const [key, label] of metrics) {
+      const value = member[key];
+      const cell = el("td", "", key === "actions" ? recipeNumber.format(value) : recipeSeconds(value ?? null));
+      if (value === undefined) {
+        cell.title = `${label} unavailable`;
+        cell.setAttribute("aria-label", cell.title);
       }
+      tr.append(cell);
     }
     const exported = el("td", "", recipeSeconds(recipe.export_seconds));
     if (recipe.exports < recipe.exports_expected) {

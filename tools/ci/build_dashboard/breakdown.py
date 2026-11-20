@@ -283,10 +283,17 @@ def valid_container_breakdown(value, recipes):
     members = {row["owner"] for row in recipes if row["owner"].endswith(".gz") and row["exports_expected"] > 0}
     seen = set()
     for row in value["rows"]:
-        if (not isinstance(row, dict) or set(row) != {"owner", "actions"} | CONTAINER_METRICS
+        if (not isinstance(row, dict)
+                or set(row) - {"compile_seconds", "total_seconds"} != {"owner", "actions"} | CONTAINER_METRICS
                 or not isinstance(row["owner"], str) or row["owner"] not in members or row["owner"] in seen
                 or type(row["actions"]) is not int or not finite_seconds(row["actions"])
                 or not all(finite_seconds(row[key]) for key in CONTAINER_METRICS)):
+            return False
+        if "compile_seconds" in row and (not finite_seconds(row["compile_seconds"])
+                                         or row["compile_seconds"] > row["action_seconds"] + 1e-6):
+            return False
+        if "total_seconds" in row and (not finite_seconds(row["total_seconds"])
+                                       or row["total_seconds"] + 1e-6 < row["action_seconds"]):
             return False
         seen.add(row["owner"])
     return True

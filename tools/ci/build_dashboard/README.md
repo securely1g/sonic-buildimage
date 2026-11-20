@@ -110,6 +110,16 @@ actions, time with no action recorded, and time with multiple image owners
 active. The Export column measures Make's subsequent archive exports outside
 the shared Bazel command. Older runs with only recipe receipts show the
 recorded exports for each image.
+
+**Total elapsed** includes the wait from an image's first observed Bazel action
+through completion of its last runtime or debug archive export. **Compile time**
+counts the intervals when a C/C++, Go or Rust compiler ran for that image.
+Simultaneous compilers count once. For example, replaying the saved profile and
+exports from [master run 44638292829](https://github.com/securely1g/sonic-buildimage/actions/runs/44638292829/job/135965478341)
+gives Syncd VS **36m 40s total**, **23m 03s active** and **0s compiling**.
+Other images ran during that same window. An em dash means the run lacks the
+measurements needed for that value.
+
 The Linux kernel row times the entire pinned launcher and reports its build,
 output query and module-graph profiles. When Make rebuilds the P4RT package,
 its row covers the nested Bazel build, tests, server shutdown and Debian package
