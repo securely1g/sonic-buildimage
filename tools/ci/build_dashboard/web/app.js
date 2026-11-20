@@ -308,7 +308,7 @@ function imageSeries(job) {
     label: `${kindLabel(job)} · ${label} · ${architecture(job)}`,
   };
 }
-function selectTrendPoints(points, {series = "all", days = "all", limit = "60", reference = Date.now()} = {}) {
+function selectTrendPoints(points, {series = "all", days = "all", limit = "10", reference = Date.now()} = {}) {
   const cutoff = days === "all" ? null : reference - Number(days) * 86400000;
   const matching = points.filter(item => (series === "all" || imageSeries(item.job).key === series) &&
     (cutoff === null || (timestamp(item.execution?.startedAt) >= cutoff && timestamp(item.execution?.startedAt) <= reference)))

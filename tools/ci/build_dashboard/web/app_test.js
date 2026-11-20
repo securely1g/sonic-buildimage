@@ -401,8 +401,9 @@ test("chart limits expose the newest measurements and show-all preserves the ent
   const before = structuredClone(points);
   const selection = selectTrendPoints(points);
   assert.equal(selection.matching.length, 84);
-  assert.equal(selection.points.length, 60);
-  assert.deepEqual([selection.points[0].run.run_id, selection.points.at(-1).run.run_id], [60, 1]);
+  assert.equal(selection.points.length, 10);
+  assert.deepEqual([selection.points[0].run.run_id, selection.points.at(-1).run.run_id], [10, 1]);
+  assert.equal(selectTrendPoints(points, {limit: "60"}).points.length, 60);
   assert.equal(selectTrendPoints(points, {limit: "all"}).points.length, 84);
   const direct = selectTrendPoints(points, {series: imageSeries(points[1].job).key, limit: "all"});
   assert.equal(direct.points.length, 42);
@@ -656,7 +657,7 @@ function chartFixture(points, width = 1100) {
     .map(id => [id, new TestElement(id.endsWith("filter") ? "select" : "div")]));
   for (const node of Object.values(nodes)) node.value = "all";
   nodes["source-filter"].value = "combined";
-  nodes["limit-filter"].value = "60";
+  nodes["limit-filter"].value = "10";
   nodes.trend.clientWidth = width;
   const context = vm.createContext({module: {exports: {}}, URL, getComputedStyle: () => ({paddingLeft: "17px", paddingRight: "17px"})});
   vm.runInContext(readFileSync(require.resolve("./app.js"), "utf8"), context);
@@ -766,7 +767,7 @@ async function loadDashboard(points, pullRequests = []) {
   const nodes = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, new TestElement("div")]));
   for (const node of Object.values(nodes)) node.value = "all";
   nodes["source-filter"].value = "combined";
-  nodes["limit-filter"].value = "60";
+  nodes["limit-filter"].value = "10";
   nodes.trend.clientWidth = 1100;
   const snapshot = () => ({schema_version: 1, repository: "securely1g/sonic-buildimage", generated_at: "2026-11-12T00:00:00Z",
     pull_requests: pullRequests, runs: points.map(point => ({...point.run, jobs: [point.job]}))});

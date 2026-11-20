@@ -63,8 +63,8 @@ includes both runtime-only and paired installer builds. Recognized steps use
 their measurement label. Unrecognized steps appear as isolated **Boundary
 unknown** points. Date ranges end at snapshot time and
 use verified image execution starts. Carried retries count once at the original
-execution time. The chart shows the newest 60 measurements by default. Choose
-**Newest 10** for a shorter view or **Show all** for the full history. Hover or
+execution time. The chart shows the newest 10 matching measurements by default.
+Choose **Newest 60**, **Newest 120**, or **Show all** to see more. Hover or
 focus a point to see its measurement and revision. Select it to open the
 full-width **Run details**.
 
