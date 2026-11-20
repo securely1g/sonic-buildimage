@@ -48,6 +48,8 @@ class ImageWorkerTest(unittest.TestCase):
             ('push', '', True, 'none', True, True),
             ('workflow_dispatch', '', True, 'none', False, True),
             ('workflow_dispatch', '', True, 'none', True, False),
+            ('workflow_dispatch', '', True, 'vs-exit-n', True, True),
+            ('workflow_dispatch', '', True, 'vs-exit-y', True, True),
             ('workflow_dispatch', '', True, 'teamd', False, False),
             ('workflow_dispatch', '', True, 'dash-engine', False, False),
             ('workflow_dispatch', '', True, 'preflight', False, False),
@@ -605,7 +607,7 @@ class ImageWorkerTest(unittest.TestCase):
 
     def test_workflow_allowlist_matches_fixed_driver_choices(self):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
+        choices = re.search(r"options: \[none, preflight, vs-exit-n, vs-exit-y, ([^\]]+)\]", workflow).group(1).split(", ")
         self.assertEqual(set(choices), set(worker.DRIVERS))
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)

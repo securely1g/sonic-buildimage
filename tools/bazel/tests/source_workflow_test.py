@@ -107,7 +107,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                 " && github.ref == 'refs/heads/master' }}")
         self.assertIn(flag, workflow_jobs["vs"])
         self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
-        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]",
+        self.assertIn('["self-hosted","linux","bazel-x64","vs"]',
                       workflow_jobs["vs_container"])
 
     def test_host_installer_is_isolated_and_preserves_input_and_output_contracts(self):

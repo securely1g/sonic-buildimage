@@ -1033,7 +1033,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
         legacy, active = workflow.split("\n  vs_container:\n", 1)
         self.assertIn("if: ${{ false }}", legacy.split("\n  vs:\n", 1)[1])
-        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]", active)
+        self.assertIn('["self-hosted","linux","bazel-x64","vs"]', active)
         names = [line.split(": ", 1)[1] for line in active.splitlines()
                  if line.startswith("      - name: ")]
         self.assertLess(names.index("Validate the installer and retained container pairs"),

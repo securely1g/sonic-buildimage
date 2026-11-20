@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       source_image:
-        description: Dedicated source-image worker task
+        description: Dedicated source-image worker or paired VS builder-exit benchmark
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
+        options: [none, preflight, vs-exit-n, vs-exit-y, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
@@ -3418,7 +3418,7 @@ jobs:
         run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --migrated-job --mark-artifacts
 
   checks:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none' || startsWith(inputs.source_image, 'vs-exit-')
     name: OCI regression checks (AMD64)
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     outputs:
@@ -3591,7 +3591,7 @@ jobs:
           (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
           (github.event_name == 'pull_request' &&
            github.event.pull_request.head.repo.full_name == github.repository) ||
-          (github.event_name == 'workflow_dispatch' && !inputs.skip_vs)
+          (github.event_name == 'workflow_dispatch' && (!inputs.skip_vs || startsWith(inputs.source_image, 'vs-exit-')))
         run: |
           python3 -B tools/ci/p4_source_inputs.py --fetch \
             --manifest src/p4lang/source-inputs.json \
@@ -4007,12 +4007,16 @@ jobs:
     name: VS installer in SONiC slave (AMD64)
     needs: [checks]
     if: >-
-      (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
-    runs-on: [self-hosted, linux, bazel-x64, vs]
+      (github.event_name == 'workflow_dispatch' &&
+       ((inputs.source_image == 'none' && !inputs.skip_vs) ||
+        inputs.source_image == 'vs-exit-n' || inputs.source_image == 'vs-exit-y'))
+    runs-on: >-
+      ${{ fromJSON(startsWith(inputs.source_image, 'vs-exit-') &&
+          '["self-hosted","linux","bazel-x64","vs","vs-exit-bench-266-005"]' ||
+          '["self-hosted","linux","bazel-x64","vs"]') }}
     timeout-minutes: 720
     defaults:
       run:
@@ -4029,6 +4033,7 @@ jobs:
       SONIC_DPKG_CACHE_METHOD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'rwcache' || 'rcache' }}
       SONIC_DPKG_CACHE_SOURCE: /nfs/dpkg_cache/vs
       SONIC_BUILD_JOBS: "1"
+      DOCKER_LOAD_ON_BOOT: ${{ inputs.source_image == 'vs-exit-n' && 'n' || 'y' }}
       SONIC_ENABLE_DEBUG_LAYER: ${{ inputs.enable_debug_layer && 'y' || 'n' }}
       ENABLE_DOCKER_BASE_PULL: "y"
       REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
@@ -4168,7 +4173,7 @@ jobs:
       - name: Build sonic-vs.bin through the host Make wrapper
         id: native_build
         env:
-          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_BUILDER_EXIT_TRACE: ${{ startsWith(inputs.source_image, 'vs-exit-') && '1' || '0' }}
           SONIC_VS_IMAGE_TIMINGS: "1"
           SONIC_VS_RETRY_GO_FETCH: "1"
           TERM: dumb
@@ -4179,6 +4184,9 @@ jobs:
           test -s target/sonic-vs.bin
           test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+          if [[ $SONIC_VS_BUILDER_EXIT_TRACE == 1 ]]; then
+            test -s artifacts/vs/builder-exit.json
+          fi
 
       - name: Summarize VS Bazel build timings
         if: always() && steps.native_build.outcome != 'skipped'
@@ -4205,8 +4213,12 @@ jobs:
       - name: Validate the installer release and selected container archives
         run: |
           set -euo pipefail
+          installer_options=()
+          if [[ $DOCKER_LOAD_ON_BOOT == y ]]; then
+            installer_options+=(--expect-boot-bundle)
+          fi
           python3 -B scripts/validate_sonic_version.py target/sonic-vs.bin \
-            --installer --expect-boot-bundle --secure-upgrade-mode no_sign \
+            --installer "${installer_options[@]}" --secure-upgrade-mode no_sign \
             --expected-commit-id "$(git rev-parse --short HEAD)" \
             --json-output artifacts/vs/sonic-version.json
           selection=()
@@ -4365,6 +4377,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
 
   gnmi_native:
+    if: ${{ !startsWith(inputs.source_image, 'vs-exit-') }}
     name: Build gNMI OCI images and symbols (AMD64)
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 240
@@ -4542,7 +4555,7 @@ jobs:
 
   gnmi_acceptance:
     name: gNMI acceptance (AMD64)
-    if: always() && !cancelled()
+    if: always() && !cancelled() && !startsWith(inputs.source_image, 'vs-exit-')
     needs: [gnmi_native, gnmi_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 5
@@ -4556,6 +4569,7 @@ jobs:
           test "$RUNTIME_RESULT" = success
 
   mgmt_framework_native:
+    if: ${{ !startsWith(inputs.source_image, 'vs-exit-') }}
     name: Build Framework OCI images and symbols (AMD64)
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 180
@@ -4718,7 +4732,7 @@ jobs:
 
   mgmt_framework_acceptance:
     name: Framework acceptance (AMD64)
-    if: always() && !cancelled()
+    if: always() && !cancelled() && !startsWith(inputs.source_image, 'vs-exit-')
     needs: [mgmt_framework_native, mgmt_framework_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 5
