@@ -70,11 +70,12 @@ def file_identity(stat):
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def verify_execution_settings(settings, entrypoint):
+def verify_execution_settings(settings, entrypoint, *, allow_empty_cmd=False):
     """Check the startup command and noninteractive environment declared by the installer image."""
     require(settings.get("Entrypoint") == entrypoint,
             "Docker archive entrypoint differs")
-    require(settings.get("Cmd") is None, "Docker archive command differs")
+    require(settings.get("Cmd") is None or (allow_empty_cmd and settings["Cmd"] == []),
+            "Docker archive command differs")
     environment = settings.get("Env", [])
     require(isinstance(environment, list) and all(isinstance(value, str) and "=" in value for value in environment),
             "Docker archive environment is invalid")

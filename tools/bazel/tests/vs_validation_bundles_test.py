@@ -1,8 +1,12 @@
 """Exercise VS bundle selection at the producer/consumer boundary."""
 
+import gzip
+import hashlib
+import io
 import json
 import sys
 from pathlib import Path
+import tarfile
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -25,7 +29,7 @@ class BundleSelectionTest(unittest.TestCase):
                 json.dumps({"sonic_sysmgr": "sonic-sysmgr+"}), canonical + "\tmock\n",
             ]) as bazel:
                 self.assertEqual(bundles.configured_outputs("bazel", [], [label], events), {label: root / "mock"})
-                self.assertIn("set(" + label + ")", bazel.call_args.args[0])
+                self.assertIn("config(set(" + label + "), target)", bazel.call_args.args[0])
 
     def test_cross_repository_alias_binds_its_single_requested_output(self):
         """Bazel may print a rule from an entirely different repository for an owner alias."""
@@ -39,7 +43,46 @@ class BundleSelectionTest(unittest.TestCase):
                 '{"lldpd":"lldpd+"}', "@@lldpd++_repo_rules+lldpd_source//:runtime\tlldpd.tar\n" * 2, "lldpd.tar\n",
             ]) as bazel:
                 self.assertEqual(bundles.configured_outputs("bazel", [], [alias], events), {alias: root / "lldpd.tar"})
-                self.assertEqual(bazel.call_args.args[0], ["bazel", "cquery", alias, "--output=files"])
+                self.assertEqual(bazel.call_args.args[0], ["bazel", "cquery", f"config({alias}, target)", "--output=files"])
+
+    def test_inherited_file_checks_reuse_the_full_matching_parent_inventory(self):
+        """Every inherited path, including a file outside the sampled files, is available to the selected children."""
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            groups = b"root:x:0:\nusers:x:100:\n"
+            group_hash = hashlib.sha256(groups).hexdigest()
+            layer = root / "parent.tar"
+            with tarfile.open(layer, "w") as archive:
+                member = tarfile.TarInfo("etc/group")
+                member.size = len(groups)
+                archive.addfile(member, io.BytesIO(groups))
+            for name in ("docker-config-engine-trixie", "docker-swss-layer-trixie"):
+                owner = root / name
+                owner.mkdir()
+                inventory = owner / "runtime.oci.json.gz"
+                inventory.write_bytes(gzip.compress(json.dumps({
+                    "files": {"usr/share/doc/README": {"sha256": "a" * 64}, "etc/group": {"sha256": group_hash}},
+                }).encode()))
+                digest = bundles.sha(inventory)
+                (owner / "bundle.json").write_text(json.dumps({"fixtures": {inventory.name: digest}}))
+            for image in (*sorted(bundles.FULL_PARENT_INVENTORY), "docker-orchagent"):
+                child = root / image
+                child.mkdir(exist_ok=True)
+                parent = bundles.PARENT_IMAGES[image]
+                reference = {"image": parent, "files": {"etc/group": {"sha256": group_hash}}}
+                fixtures = bundles.stage_parent(child, image, {parent: reference}, {group_hash: layer})
+                if image == "docker-teamd":
+                    self.assertEqual((child / "parent.group").read_bytes(), groups)
+                    self.assertEqual(fixtures["parent.group"], group_hash)
+                else:
+                    self.assertNotIn("parent.group", fixtures)
+                self.assertEqual(json.loads((child / "parent.json").read_text())["image"], parent)
+                if image == "docker-orchagent":
+                    self.assertNotIn("parent.oci.json.gz", fixtures)
+                else:
+                    inherited = child / "parent.oci.json.gz"
+                    self.assertTrue(inherited.samefile(root / parent / "runtime.oci.json.gz"))
+                    self.assertEqual(fixtures[inherited.name], bundles.sha(inherited))
 
     def test_registered_companion_only_requested_when_debug_is_enabled(self):
         runtime = {"docker-unit.gz": "//unit:docker-unit.gz"}

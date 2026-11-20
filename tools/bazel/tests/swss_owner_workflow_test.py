@@ -24,6 +24,25 @@ def calls(path, function):
 
 
 class SwssOwnerWorkflowTest(unittest.TestCase):
+    def test_native_closure_selects_one_configured_output(self):
+        """A warm server can expose a second policy built in a Python test transition."""
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        step = next(s for s in jobs["archive"]["steps"] if "native link closure" in s["name"])["run"]
+        function = step[step.index("output() {"):step.index('runtime="$(output')]
+        self.assertIn("bgp_eoiu_marker.py null)", step)
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary) / "bazel"
+            fake.write_text("#!/bin/sh\n" +
+                            'case "$2" in "config(//:policy, target)") echo top-level ;; '
+                            '"config(//:source.py, null)") echo source.py ;; '
+                            '*) echo transitioned; echo ambiguous ;; esac\n')
+            fake.chmod(0o755)
+            shell = function + "output //:policy && output //:source.py null && ! output //:ambiguous"
+            result = subprocess.run(["bash", "-ec", shell], env=dict(os.environ, BAZEL=str(fake)),
+                                    check=True, capture_output=True, text=True)
+            self.assertEqual(result.stdout.splitlines(), ["top-level", "source.py"])
+            self.assertIn("Expected exactly one configured output", result.stderr)
+
     def test_filtered_workflows_include_local_downloader_input(self):
         filenames = {filename for filename, _job in JOBS} | {"bazel-libteam.yml"}
         for filename in filenames:

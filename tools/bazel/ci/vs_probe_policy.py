@@ -40,6 +40,8 @@ def preparation_targets(image, debug_selected):
     if image not in FAMILIES:
         return result
     module = import_module("tools.bazel.ci." + FAMILIES[image] + "_image")
+    if image == "docker-teamd":
+        result["runtime-apt.json"] = module.TARGETS["runtime-apt.json"]
     if image == "docker-gbsyncd-vs":
         result.update({"base.source.tar": "//dockers/docker-base-trixie:source_runtime",
                        **{n: module.TARGETS[n] for n in ("source-contract.json", "source-receipt.json")}})
@@ -53,6 +55,9 @@ def preparation_targets(image, debug_selected):
             continue
         target_name = target.rsplit(":", 1)[-1]
         if debug_selected and target_name in {"all_debug_symbols", "source_debug_payloads", "docker-config-engine-trixie.debug_symbols"}:
+            result[name] = target
+        if image in ("docker-fpm-frr", "docker-teamd") and (
+                name == "frr.python.tar" or debug_selected and name.endswith(".debug-tools.tar")):
             result[name] = target
         if target_name in {"files", "ci_config"} and name.endswith(".tar"):
             result[name] = target
@@ -107,7 +112,7 @@ def prepare(image, version, variant, layout_dir, source_paths, bundle_dir, *, ma
         if owner_archive(name):
             owned[name] = source_members(path)
             native.update(owned[name])
-        elif name.endswith(("files.tar", "config.tar")) or ("debug" in name and name.endswith(".tar")):
+        elif name == "frr.python.tar" or name.endswith(("files.tar", "config.tar")) or ("debug" in name and name.endswith(".tar")):
             if "debug" not in name or variant == "debug":
                 owned[name] = {k: v for k, v in check.payload(path, require_root=False).items()
                                if v["kind"] != "directory"}

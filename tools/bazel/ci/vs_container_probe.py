@@ -100,6 +100,9 @@ def p4rt_expectations(owner, revision, files, symbols, native):
 
 def runtime_report(directory, bundle):
     image = bundle["image"]
+    if image == "docker-teamd":
+        from tools.bazel.ci.teamd_image import verify_parent_runtime_packages
+        verify_parent_runtime_packages(directory)
     owner = ROOT / "src/sonic-p4rt/sonic-pins"
     headers = subprocess.check_output(["git", "cat-file", "-p", bundle["revision"]], cwd=ROOT, text=True).split("\n\n", 1)[0]
     report = {"architecture": bundle["architecture"], "revision": bundle["revision"],

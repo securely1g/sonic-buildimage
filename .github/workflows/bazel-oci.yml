@@ -266,11 +266,19 @@ jobs:
           set -euo pipefail
           "$BAZEL" build //dockers/docker-orchagent:package_policy \
             @sonic_swss//dist:swss_pkg @sonic_swss//dist:swss_pkg.debug_symbols
-          output() { "$BAZEL" cquery "$1" --output=files; }
+          output() {
+            local files
+            files=$("$BAZEL" cquery "config($1, ${2:-target})" --output=files) || return
+            if [[ -z "$files" || "$files" == *$'\n'* ]]; then
+              printf 'Expected exactly one configured output for %s\n' "$1" >&2
+              return 1
+            fi
+            printf '%s\n' "$files"
+          }
           runtime="$(output @sonic_swss//dist:swss_pkg)"
           symbols="$(output @sonic_swss//dist:swss_pkg.debug_symbols)"
           policy="$(output //dockers/docker-orchagent:package_policy)"
-          anchor="$(output @sonic_swss//fpmsyncd:bgp_eoiu_marker.py)"
+          anchor="$(output @sonic_swss//fpmsyncd:bgp_eoiu_marker.py null)"
           execution_root="$(dirname "$(realpath bazel-out)")"
           source="$(dirname "$(dirname "$(realpath "$execution_root/$anchor")")")"
           graph="$(mktemp)"
@@ -1376,7 +1384,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: validated-${{ matrix.image }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/vs-container/vs-validation.json
+          path: |
+            ${{ runner.temp }}/vs-container/vs-validation.json
+            ${{ runner.temp }}/vs-container/*.runtime.json
           if-no-files-found: error
           retention-days: 7
 

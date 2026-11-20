@@ -10,7 +10,48 @@ import uuid
 
 from tools.bazel.ci import validate_runtime
 from tools.bazel.ci.artifact_validation import require, sha
+from tools.bazel.ci.vs_archive_reuse import verify_execution_settings
 from tools.bazel.oci.image_validation import docker_archive
+
+
+# These are the installed service entrypoints from the final Make Dockerfile stages.
+# Probes override --entrypoint to inspect the image and cannot check its normal startup this way.
+SUPERVISORD = "/usr/local/bin/supervisord"
+ENTRYPOINTS = {
+    "docker-base-trixie": None, "docker-config-engine-trixie": None,
+    "docker-dash-engine": "/usr/bin/start.sh", "docker-dash-ha": SUPERVISORD,
+    "docker-database": "/usr/local/bin/docker-database-init.sh", "docker-eventd": SUPERVISORD,
+    "docker-fpm-frr": "/usr/bin/docker_init.sh", "docker-gbsyncd-vs": SUPERVISORD,
+    "docker-lldp": "/usr/bin/docker-lldp-init.sh", "docker-macsec": SUPERVISORD,
+    "docker-mux": "/usr/bin/docker-init.sh", "docker-nat": SUPERVISORD,
+    "docker-orchagent": "/usr/bin/docker-init.sh", "docker-router-advertiser": "/usr/bin/docker-init.sh",
+    "docker-sflow": SUPERVISORD, "docker-snmp": "/usr/bin/docker-snmp-init.sh",
+    "docker-sonic-bmp": SUPERVISORD, "docker-sonic-gnmi": SUPERVISORD,
+    "docker-sonic-mgmt-framework": SUPERVISORD, "docker-sonic-otel": SUPERVISORD,
+    "docker-sonic-p4rt": SUPERVISORD, "docker-swss-layer-trixie": SUPERVISORD,
+    "docker-syncd-vs": SUPERVISORD, "docker-sysmgr": SUPERVISORD,
+    "docker-teamd": "/usr/bin/docker-teamd-init.sh",
+}
+
+# These services check their inherited empty ExposedPorts on master. SNMP's
+# EXPOSE is in the build stage, and its final stage inherits from Config Engine.
+INHERITED_PORTS = {
+    "docker-dash-ha", "docker-fpm-frr", "docker-macsec", "docker-sflow", "docker-snmp",
+    "docker-sonic-otel", "docker-sysmgr", "docker-teamd",
+}
+
+
+def verify_startup(image, settings):
+    """Check the configured default independently of the commands used by smoke tests."""
+    if image not in ENTRYPOINTS:
+        return  # New families still receive platform, release, layer, tag and checksum checks.
+    entrypoint = ENTRYPOINTS[image]
+    if entrypoint is None:
+        require(not settings.get("Entrypoint") and not settings.get("Cmd"), "Unexpected base image startup command")
+    else:
+        verify_execution_settings(settings, [entrypoint], allow_empty_cmd=True)
+    if image in INHERITED_PORTS:
+        require(not settings.get("ExposedPorts"), "Unexpected exposed ports in " + image)
 
 
 def read_oci(directory, variant):
@@ -55,6 +96,7 @@ def validate_artifacts(directory, image, revision, debug_enabled, build_version)
         require(variant + ".oci.json.gz" in fixtures, "Missing producer OCI metadata for " + name)
         oci = read_oci(directory, variant)
         config = oci["config"]
+        verify_startup(image, config["config"])
         require((config["os"], config["architecture"]) == ("linux", bundle["architecture"]),
                 "OCI metadata has the wrong platform for " + name)
         require(config["config"].get("Labels", {}).get("Tag") == bundle["build_version"],

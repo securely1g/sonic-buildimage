@@ -74,6 +74,24 @@ def file_metadata(stream, name):
     return {"sha256": hasher.hexdigest(), "size": size, **elf_header(prefix, name)}
 
 
+def verify_swss_component_labels(labels, packages):
+    """FRR and Teamd inherit both version labels from their SONiC base packages."""
+    for name in ("libswsscommon", "sonic-supervisord-utilities-rs"):
+        require(labels.get("com.azure.sonic.versions." + name) == packages[name]["Version"],
+                "Inherited component label differs: " + name)
+
+
+def verify_inherited_files(parent, installed, replacements, mutable, image):
+    """Verify all parent files, matching permitted replacements to independent owner TAR metadata."""
+    for path, original in parent.items():
+        if original["kind"] == "directory" or path in mutable:
+            continue
+        expected = replacements.get(path, original)
+        actual = installed.get(path, {})
+        require(all(actual.get(key) == value for key, value in expected.items()),
+                image + " changed inherited payload: " + path)
+
+
 def payload(path, require_root=True):
     return cached_inventory(path, ("package_payload", require_root),
                             lambda: _payload(path, require_root))

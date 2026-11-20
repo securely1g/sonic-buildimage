@@ -24,7 +24,7 @@ def digest(content):
 
 
 class VSContainerValidationTest(unittest.TestCase):
-    image = "docker-example"
+    image = "docker-teamd"
     revision = "1" * 40
     version = "HEAD.0-1111111"
 
@@ -43,7 +43,9 @@ class VSContainerValidationTest(unittest.TestCase):
         name = self.image + ("-dbg" if variant == "debug" else "")
         config = {
             "rootfs": {"type": "layers", "diff_ids": ["sha256:" + digest(blob) for blob in layers]},
-            "config": {"Labels": {"Tag": self.version}}, "os": "linux", "architecture": "amd64",
+            "config": {"Labels": {"Tag": self.version}, "Entrypoint": ["/usr/bin/docker-teamd-init.sh"],
+                       "Env": ["DEBIAN_FRONTEND=noninteractive"]},
+            "os": "linux", "architecture": "amd64",
         }
         if settings is not None:
             config["config"] = settings
@@ -78,6 +80,82 @@ class VSContainerValidationTest(unittest.TestCase):
 
     def test_runtime_only_needs_no_debug_inputs(self):
         self.assertEqual(set(self.validate()["archives"]), {"runtime"})
+
+    def test_startup_contract_covers_each_final_dockerfile_stage(self):
+        """The runner overrides the entrypoint, so validate every service's normal command separately."""
+        families = set(vs_probe_policy.FAMILIES) | vs_standalone_probes.STANDALONE_IMAGES
+        self.assertLessEqual(set(validate.ENTRYPOINTS), families)
+        for image, executable in validate.ENTRYPOINTS.items():
+            with self.subTest(image=image):
+                dockerfile, = [file for base in (ROOT / "dockers", ROOT / "platform/vs")
+                               if (file := base / image / "Dockerfile.j2").is_file()]
+                final_stage = dockerfile.read_text().split("\nFROM ")[-1].splitlines()
+                declared = [json.loads(line.split(" ", 1)[1]) for line in final_stage if line.startswith("ENTRYPOINT ")]
+                self.assertEqual(declared, [[executable]] if executable else [])
+                self.assertFalse(any(line.startswith(("CMD ", "EXPOSE ")) for line in final_stage))
+
+    def test_runtime_only_rejects_broken_default_startup_even_when_shell_probes_would_run(self):
+        settings = {"Labels": {"Tag": self.version}, "Entrypoint": ["/usr/bin/docker-teamd-init.sh"],
+                    "Env": ["DEBIAN_FRONTEND=noninteractive"]}
+        for changes, error in (({"Entrypoint": ["/bin/false"]}, "entrypoint"), ({"Cmd": ["--broken"]}, "command"),
+                               ({"Env": []}, "environment"), ({"ExposedPorts": {"123/tcp": {}}}, "exposed ports")):
+            with self.subTest(changes=changes):
+                self.add_image("runtime", [b"runtime"], settings | changes)
+                with self.assertRaisesRegex(ValueError, error):
+                    self.validate()
+        self.add_image("runtime", [b"runtime"], settings | {"Cmd": []})
+        self.validate()  # An empty OCI command supplies no arguments to Teamd.
+
+    def test_unknown_family_keeps_the_common_archive_checks(self):
+        self.image = self.bundle["image"] = "docker-future-service"
+        self.add_image("runtime", [b"runtime"], {"Labels": {"Tag": self.version}, "Entrypoint": ["/future"]})
+        self.validate()
+        self.bundle["archives"]["runtime"]["sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            self.validate()
+
+    def test_service_inheritance_compares_all_parent_files_and_declared_replacements(self):
+        """TAR ownership permits specific overrides, while changing an unrelated parent executable always fails."""
+        base_file = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0, "sha256": digest(b"original")}
+        changed = dict(base_file, sha256=digest(b"overwritten"))
+        inherited = {name: {"kind": "symlink", "linkname": target} for name, target in
+                     {"bin": "usr/bin", "sbin": "usr/sbin", "lib": "usr/lib", "var/run": "/run"}.items()}
+        inherited.update(dict.fromkeys(("usr/bin/cat", "etc/group", "etc/passwd", "etc/gshadow",
+                                        "etc/service.conf", "var/lib/dpkg/status"), base_file))
+        (self.directory / "parent.group").write_text("root:x:0:\n")
+        packages = {"libswsscommon": {"Version": "1.0"}, "sonic-supervisord-utilities-rs": {"Version": "2.0"}}
+        labels = {"com.azure.sonic.versions." + name: item["Version"] for name, item in packages.items()}
+        (self.directory / "config-engine.packages.json").write_text(json.dumps({"dependency_check": {"packages": packages}}))
+
+        def write_inventory(variant, files, layers):
+            data = {"files": files, "config": {"rootfs": {"diff_ids": layers}, "config": {"Labels": labels}}}
+            (self.directory / (variant + ".oci.json.gz")).write_bytes(gzip.compress(json.dumps(data).encode()))
+
+        write_inventory("parent", inherited, ["parent"])
+        for image, parent, family in (("docker-swss-layer-trixie", "docker-config-engine-trixie", None),
+                                      ("docker-teamd", "docker-swss-layer-trixie", "teamd"),
+                                      ("docker-fpm-frr", "docker-swss-layer-trixie", "frr")):
+            (self.directory / "parent.json").write_text(json.dumps({"image": parent}))
+            for variant in ("runtime", "debug"):
+                with self.subTest(image=image, variant=variant):
+                    files = dict(inherited, **{"var/lib/dpkg/status": changed})
+                    owners = {}
+                    if family:
+                        files["etc/service.conf"] = changed
+                        owners[family + ".files.tar"] = {"etc/service.conf": changed}
+                        owners[family + ".debug-tools.tar"] = {}
+                    if family == "frr":
+                        owners["frr.python.tar"] = {}
+                    if family == "teamd" and variant == "debug":
+                        files["etc/group"] = changed
+                    (self.directory / (variant + ".owners.json")).write_text(json.dumps({"owners": owners}))
+                    write_inventory(variant, files, ["parent", "service"])
+                    groups = "root:x:0:\n" + ("_ssh:x:104:\n" if variant == "debug" else "")
+                    with patch.object(vs_standalone_probes, "run", return_value=groups):
+                        vs_standalone_probes.verify_full_parent(self.directory, {"image": image}, variant, "probe")
+                    write_inventory(variant, files | {"usr/bin/cat": changed}, ["parent", "service"])
+                    with self.assertRaisesRegex(ValueError, "changed inherited payload: usr/bin/cat"):
+                        vs_standalone_probes.verify_full_parent(self.directory, {"image": image}, variant, "probe")
 
     def test_enabled_debug_extends_the_published_runtime(self):
         self.bundle["debug_enabled"] = True

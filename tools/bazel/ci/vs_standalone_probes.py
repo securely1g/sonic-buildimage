@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import uuid
 
-from tools.bazel.ci import base_images, bmp_loaded, swss_layer, vs_container_validation
+from tools.bazel.ci import artifact_validation, base_images, bmp_loaded, frr_image, swss_layer, teamd_image, vs_container_validation
 from tools.bazel.ci.artifact_validation import require, sha
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -127,6 +127,38 @@ def verify_parent(directory, bundle, variant, inventory, inherited):
         require(inventory["files"][path] == expected_files[path], "Child changed a parent file: " + path)
 
 
+def verify_full_parent(directory, bundle, variant, tag):
+    """Compare the assembled service with its published parent and declared owner replacements."""
+    image = bundle["image"]
+    parent_image = CONFIG if image == SWSS else SWSS
+    parent_record = json.loads((directory / "parent.json").read_bytes())
+    require(parent_record["image"] == parent_image, "Wrong VS parent for " + image)
+    parent = vs_container_validation.read_oci(directory, "parent")
+    current = vs_container_validation.read_oci(directory, variant)
+    layers = parent["config"]["rootfs"]["diff_ids"]
+    require(layers and current["config"]["rootfs"]["diff_ids"][:len(layers)] == layers,
+            image + " did not inherit the selected parent's layers")
+    files, inherited = current["files"], parent["files"]
+    base_images.verify_directory_aliases(files)
+    debug = variant == "debug"
+    owners = json.loads((directory / (variant + ".owners.json")).read_bytes())["owners"]
+    if image in (TEAM, FRR):
+        packages = json.loads((directory / "config-engine.packages.json").read_bytes())
+        artifact_validation.verify_swss_component_labels(current["config"]["config"]["Labels"],
+                                                         packages["dependency_check"]["packages"])
+    if image == SWSS:
+        artifact_validation.verify_inherited_files(inherited, files, {}, {"var/lib/dpkg/status"}, "SWSS layer")
+    elif image == TEAM:
+        teamd_image.verify_parent_files(inherited, files, owners["teamd.files.tar"],
+                                        owners["teamd.debug-tools.tar"] if debug else {}, debug=debug)
+        groups = run(tag, "/bin/cat", ["/etc/group"]).splitlines()
+        teamd_image.verify_inherited_accounts(inherited, files, (directory / "parent.group").read_text().splitlines(),
+                                              groups, add_ssh=debug)
+    else:
+        frr_image.verify_parent_files(inherited, files, owners["frr.files.tar"], owners["frr.python.tar"],
+                                      owners["frr.debug-tools.tar"] if debug else {})
+
+
 def validate_base(directory, variant, name, summary):
     inventory = vs_container_validation.read_oci(directory, variant)["files"]
     base_images.verify_directory_aliases(inventory)
@@ -158,6 +190,8 @@ def standalone(image, directory, bundle, report):
             summary = {**report["images"][name], "architecture": bundle["architecture"],
                        "runtime_native": report["runtime_native"]}
             with vs_container_validation.loaded_image(directory, spec, bundle) as tag:
+                if image in (SWSS, FRR, TEAM):
+                    verify_full_parent(directory, bundle, variant, tag)
                 if image in (BASE, CONFIG, SYNCD):
                     verify_installed_declaration(directory, bundle, variant, tag)
                 if image == SYNCD:

@@ -20,6 +20,23 @@ class VSProbePolicyTest(unittest.TestCase):
                                       make_manifests=root / "manifests")
             self.assertEqual(products["debug.make.manifest.json"], runtime_manifest)
 
+    def test_teamd_rejects_apt_packages_already_supplied_by_the_swss_parent(self):
+        from tools.bazel.ci.teamd_image import verify_parent_runtime_packages
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            selection = directory / "runtime-apt.json"
+            owner = "//dockers/docker-teamd:runtime_apt_selection"
+            for debug in (False, True):
+                self.assertEqual(policy.preparation_targets("docker-teamd", debug)[selection.name], owner)
+            selection.write_text(json.dumps({"selected": []}))
+            exported = policy.prepare("docker-teamd", "test", "runtime", None,
+                                      {selection.name: selection}, directory)
+            self.assertEqual(exported[selection.name], selection)
+            verify_parent_runtime_packages(directory)
+            selection.write_text(json.dumps({"selected": [{"package": "libnl-3-200"}]}))
+            with self.assertRaisesRegex(ValueError, "already owned by its parent"):
+                probe.runtime_report(directory, {"image": "docker-teamd"})
+
     def test_disabled_debug_does_not_request_owner_symbols(self):
         for image in policy.FAMILIES:
             with self.subTest(image=image):

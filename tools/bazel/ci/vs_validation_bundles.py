@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.build import execution_root_from_bep
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.oci import oci_inventory
+from tools.bazel.oci.package_state import file_bytes
 
 # Standalone parent probes also run on the original parents used by this build.
 PARENTS = ("docker-base-trixie", "docker-swss-layer-trixie")
@@ -31,10 +32,16 @@ PARENT_IMAGES = {
     "docker-swss-layer-trixie": "docker-config-engine-trixie",
     "docker-orchagent": "docker-config-engine-trixie",
     "docker-syncd-vs": "docker-config-engine-trixie",
+    "docker-fpm-frr": "docker-swss-layer-trixie",
+    "docker-teamd": "docker-swss-layer-trixie",
 }
+# These owners check every inherited file, including preserved file metadata.
+FULL_PARENT_INVENTORY = {"docker-swss-layer-trixie", "docker-fpm-frr", "docker-teamd"}
+
 COMMON_FILES = (
     "run/redis/sonic-db/database_config.json",
     "usr/lib/x86_64-linux-gnu/libswsscommon.so.0.0.0",
+    "etc/group",
 )
 
 
@@ -93,7 +100,7 @@ def configured_outputs(bazel, options, labels, events):
         for label in external:
             repository, target = label[1:].split("//", 1)
             canonical[label] = "@@" + repositories[repository] + "//" + target
-    query = "set(" + " ".join(sorted(set(labels))) + ")"
+    query = "config(set(" + " ".join(sorted(set(labels))) + "), target)"
     expression = 'str(target.label) + "\\t" + "\\t".join([f.path for f in target.files.to_list()])'
     result = subprocess.check_output(
         [bazel, "cquery", *options, query, "--output=starlark", "--starlark:expr=" + expression],
@@ -122,7 +129,7 @@ def configured_outputs(bazel, options, labels, events):
         # its unique output without guessing its target name or configuration.
         if label not in outputs:
             paths = subprocess.check_output(
-                [bazel, "cquery", *options, requested, "--output=files"], text=True,
+                [bazel, "cquery", *options, f"config({requested}, target)", "--output=files"], text=True,
             ).splitlines()
             require(len(paths) == 1, requested + ": expected one configured alias output")
             outputs[label] = local_path(paths[0])
@@ -158,7 +165,7 @@ def layout_metadata(directory):
     return manifest, metadata(manifest["config"]), [blob(item) for item in manifest["layers"]]
 
 
-def write_inventory(directory, variant, bundle, prefixes, retain=False):
+def write_inventory(directory, variant, bundle, prefixes, *, group_layers, retain=False):
     manifest, config, layers = layout_metadata(directory)
     digests = tuple(layer["digest"] for layer in manifest["layers"])
     # The installer emits many siblings with identical immutable parent layers.
@@ -166,7 +173,10 @@ def write_inventory(directory, variant, bundle, prefixes, retain=False):
     prefix = max((key for key in prefixes if digests[:len(key)] == key), key=len, default=())
     files = prefixes.get(prefix, {}).copy()
     for layer in layers[len(prefix):]:
-        oci_inventory.apply_layer(layer, files)
+        entries = oci_inventory.apply_layer(layer, files)
+        group = entries.get("etc/group", {})
+        if retain and group.get("kind") == "file":
+            group_layers[group["sha256"]] = layer
     if retain:
         prefixes[digests] = files
     report = {"config": config, "config_digest": manifest["config"]["digest"],
@@ -212,6 +222,32 @@ def stage_probe_fixtures(image, artifacts, bundle):
     return artifacts
 
 
+def stage_parent(bundle, image, references, group_layers):
+    parent = PARENT_IMAGES.get(image)
+    if parent is None:
+        return {}
+    require(parent in references, f"{image}: missing configured VS parent {parent}")
+    summary = bundle / "parent.json"
+    summary.write_text(json.dumps(references[parent], sort_keys=True) + "\n")
+    fixtures = {summary.name: sha(summary)}
+    if image in FULL_PARENT_INVENTORY:
+        # The parent bundle has already indexed the exact configured OCI
+        # layers. Reuse its compact inventory for the child's overlay checks.
+        source = bundle.parent / parent
+        parent_manifest = json.loads((source / "bundle.json").read_bytes())
+        filename = "runtime.oci.json.gz"
+        copy_output(source / filename, bundle / "parent.oci.json.gz")
+        fixtures["parent.oci.json.gz"] = parent_manifest["fixtures"][filename]
+    if image == "docker-teamd":
+        # Its debug image may append _ssh. Give the validator the actual
+        # inherited rows to compare with the loaded container's /etc/group.
+        digest = references[parent]["files"]["etc/group"]["sha256"]
+        original = bundle / "parent.group"
+        original.write_bytes(file_bytes(group_layers[digest], {"etc/group"})["etc/group"])
+        fixtures[original.name] = digest
+    return fixtures
+
+
 def write_bundles(args, families, paths, version):
     from tools.bazel.ci import vs_probe_policy
 
@@ -221,7 +257,7 @@ def write_bundles(args, families, paths, version):
     with TemporaryDirectory(prefix=".vs-bundles-", dir=destination.parent) as work:
         staged = Path(work) / "containers"
         staged.mkdir()
-        prefixes, references = {}, {}
+        prefixes, references, group_layers = {}, {}, {}
         parents = ["docker-base-trixie", "docker-config-engine-trixie", "docker-swss-layer-trixie"]
         for image in [name for name in parents if name in families] + sorted(families.keys() - set(parents)):
             entry = families[image]
@@ -229,18 +265,13 @@ def write_bundles(args, families, paths, version):
             bundle.mkdir()
             source_paths = {name: paths[label] for name, label in entry["sources"].items()}
             archive_specs = {}
-            fixtures = {}
-            if image in PARENT_IMAGES:
-                require(PARENT_IMAGES[image] in references, f"{image}: missing configured VS parent {PARENT_IMAGES[image]}")
-                fixture = bundle / "parent.json"
-                fixture.write_text(json.dumps(references[PARENT_IMAGES[image]], sort_keys=True) + "\n")
-                fixtures[fixture.name] = sha(fixture)
+            fixtures = stage_parent(bundle, image, references, group_layers)
             for variant in sorted(entry["members"], key=lambda name: name == "debug"):
                 archive, label, layout_label = entry["members"][variant]
                 layout_path = paths[layout_label]
                 parent = image in parents and variant == "runtime"
                 inventory, manifest, config, common_files = write_inventory(
-                    layout_path, variant, bundle, prefixes, retain=parent)
+                    layout_path, variant, bundle, prefixes, group_layers=group_layers, retain=parent)
                 if parent:
                     references[image] = {"image": image, "diff_ids": config["rootfs"]["diff_ids"],
                                          "files": common_files}
