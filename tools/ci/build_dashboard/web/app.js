@@ -43,6 +43,9 @@ const TASK_LABELS = {
   "p4rt-sdk": "P4RT SDK inputs",
   "p4rt-owner": "P4RT source build",
   "p4rt-handoff": "P4RT artifact handoff",
+  "rootfs-prepare": "Prepare the stage-one root filesystem",
+  "rootfs-compress": "Compress the intermediate squashfs",
+  "rootfs-cache-save": "Save the intermediate squashfs to cache",
   "build-version-collection": "Collect build-version metadata",
   "builder-exit": "Exit the builder and return to the host",
   "trixie-image-cleanup": "Trixie image cleanup",
@@ -747,6 +750,9 @@ function renderInstallerIntervals(breakdown) {
       disclosure.append(measurements);
       if (children.some(task => task.kind === "p4rt-prep")) {
         disclosure.append(el("p", "breakdown-note", "P4RT substeps are included in the P4RT preparation total."));
+      }
+      if (children.some(task => task.kind === "rootfs") && children.some(task => task.kind.startsWith("rootfs-"))) {
+        disclosure.append(el("p", "breakdown-note", "The intermediate squashfs total includes its measured root filesystem subtasks."));
       }
       detail.append(disclosure);
       row.append(detail);

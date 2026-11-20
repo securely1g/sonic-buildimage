@@ -1605,6 +1605,9 @@ ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(addprefix $(TARGET_PATH)/,$(SONIC_RFS_TARGETS) $(SONIC_INSTALLERS)): | bazel-kernel-ensure
 endif
 
+vs_rfs_timing = $(filter 1:sonic-vs.bin__vs__rfs.squashfs,$(SONIC_VS_IMAGE_TIMINGS):$*)
+vs_rfs_cache_marker = $(if $(and $(vs_rfs_timing),$(call CHECK_WCACHE_ENABLED,$*)),echo '[ vs timing ] [ rootfs-cache-save ] [ $(1) ]' || :)
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
@@ -1622,6 +1625,13 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
 
+		# Keep the public timing markers on the original recipe stdout while
+		# build_debian.sh sends its normal output through the target log.
+		unset SONIC_VS_RFS_TIMING_FD
+		if [[ -n "$(vs_rfs_timing)" ]] && exec {SONIC_VS_RFS_TIMING_FD}>&1; then
+			export SONIC_VS_RFS_TIMING_FD
+			echo '[ vs timing ] [ rootfs-prepare ] [ start ]' || :
+		fi
 		$(eval installer=$($*_INSTALLER))
 		$(eval machine=$($*_MACHINE))
 
@@ -1658,7 +1668,9 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		ENABLE_SBOM="$(ENABLE_SBOM)" \
 			./build_debian.sh $(LOG)
 
+		$(call vs_rfs_cache_marker,start)
 		$(call SAVE_CACHE,$*,$@)
+		$(call vs_rfs_cache_marker,end)
 
 	fi
 

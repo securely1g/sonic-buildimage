@@ -190,7 +190,9 @@ log contains the shared container batch and final installer boundaries. With
 P4RT preparation (including graph audit, SDK, source build and handoff), and
 the time spent collecting version metadata, returning from the disposable
 builder, and cleaning up in the Trixie and Bookworm Make invocations.
-P4RT child times are included in the parent. Expand **Final VS image recipe**
+Within the intermediate root filesystem target, the build times preparation,
+the first-stage `mksquashfs` command, and the cache save when writes are enabled.
+These measurements and the P4RT substeps are included in their parent totals. Expand **Final VS image recipe**
 for the installer phase timeline, including Docker load/tag/inspect,
 filesystem compression, Docker store compression, payload ZIP packaging
 and ONIE wrapping. Older builds retain their observed outer durations.

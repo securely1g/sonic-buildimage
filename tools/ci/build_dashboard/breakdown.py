@@ -88,10 +88,11 @@ TASK_LABELS = {
     "teamd": "Team daemon container",
     "macsec": "MACsec container",
 }
+VS_ROOTFS_TARGET = "target/sonic-vs.bin__vs__rfs.squashfs"
 EXACT_TARGETS = {
     "target/vs-container-images": "vs-container-images",
     "target/sonic-vs.bin": "final-image",
-    "target/sonic-vs.bin__vs__rfs.squashfs": "rootfs",
+    VS_ROOTFS_TARGET: "rootfs",
     "target/sonic-vs.img.gz": "final-image",
     "target/sonic-vs.img.gz__vs__rfs.squashfs": "rootfs",
     "target/docker-orchagent.gz": "orchagent-release",
@@ -109,6 +110,11 @@ for _kind in TASK_LABELS.keys() - {
 # Explicit pipeline spans emitted by the VS Make build. Only the stable IDs and
 # their measured boundaries are retained, never arbitrary command output.
 VS_TIMING = re.compile(r"\[ vs timing \] \[ ([a-z0-9-]+) \] \[ (start|end) \]\Z")
+VS_ROOTFS_TIMING_LABELS = {
+    "rootfs-prepare": "Prepare the stage-one root filesystem",
+    "rootfs-compress": "Compress the intermediate squashfs",
+    "rootfs-cache-save": "Save the intermediate squashfs to cache",
+}
 VS_TIMING_LABELS = {
     "kernel-prep": "Kernel package preparation",
     "p4rt-prep": "P4RT source and SDK preparation",
@@ -116,6 +122,7 @@ VS_TIMING_LABELS = {
     "p4rt-sdk": "P4RT SDK inputs",
     "p4rt-owner": "P4RT source build",
     "p4rt-handoff": "P4RT artifact handoff",
+    **VS_ROOTFS_TIMING_LABELS,
     "build-version-collection": "Collect build-version metadata",
     "builder-exit": "Exit the builder and return to the host",
     "trixie-image-cleanup": "Trixie image cleanup",
@@ -675,6 +682,8 @@ are observed recipe/cache intervals and are deliberately not summed.
             kind, boundary = timing.groups()
             if not current or current["label"] != SECTION_LABELS["vs-image"] or kind not in VS_TIMING_LABELS:
                 continue
+            if kind in VS_ROOTFS_TIMING_LABELS and VS_ROOTFS_TARGET not in active:
+                continue
             if boundary == "start":
                 timed_starts[kind] = when if kind not in timed_starts else None
                 continue
@@ -699,6 +708,9 @@ are observed recipe/cache intervals and are deliberately not summed.
                 if identity in FINAL_IMAGE_TARGETS:
                     active_phases[identity] = {"seen": 0, "error": None, "value": None, "when": None}
                 continue
+            if identity == VS_ROOTFS_TARGET:
+                for name in VS_ROOTFS_TIMING_LABELS:
+                    timed_starts.pop(name, None)
             began = active.pop(identity, None)
             if began is None:
                 return unavailable("incomplete-log")

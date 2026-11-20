@@ -1017,7 +1017,7 @@ test("historical native installer boundaries account for all five intervals with
     ["Remaining prerequisites before installer assembly", "14m 32s"], ["Final installer assembly", "15m 20s"],
     ["After installer assembly", "4m 57s"],
   ]);
-  assert.doesNotMatch(view.textContent, /Collect build-version metadata|unattributed|P4RT source build/);
+  assert.doesNotMatch(view.textContent, /Collect build-version metadata|unattributed|P4RT source build|Compress the intermediate squashfs/);
   assert.match(view.textContent, /Root filesystem squashfs/);
 }));
 
@@ -1045,6 +1045,7 @@ test("native preparation substeps, ONIE Docker phases and unmarked cleanup time 
   const tailStart = installer.offset_seconds + installer.duration_seconds;
   const task = (kind, offset_seconds, duration_seconds) => ({id: kind + "-1", offset_seconds, duration_seconds, outcome: "finished"});
   tasks.push(task("kernel-prep", 60, 155), task("p4rt-prep", 440, 1300), task("p4rt-owner", 480, 1000),
+    task("rootfs-prepare", 5442, 180), task("rootfs-compress", 5622, 25), task("rootfs-cache-save", 5649, 30),
     task("build-version-collection", tailStart + 3, 2), task("builder-exit", tailStart + 5, 280),
     task("trixie-image-cleanup", tailStart + 285, 1), task("bookworm-cleanup", tailStart + 286, 3));
   installer.phase_breakdown = {version: 1, source: "build-phase-markers", status: "available", reason: null,
@@ -1062,6 +1063,10 @@ test("native preparation substeps, ONIE Docker phases and unmarked cleanup time 
   }
   const intervals = descendants(view, node => node.className === "installer-interval");
   assert.match(intervals[0].textContent, /P4RT substeps are included/);
+  for (const label of ["Prepare the stage-one root filesystem", "Compress the intermediate squashfs",
+    "Save the intermediate squashfs to cache", "total includes its measured root filesystem subtasks"]) {
+    assert.ok(intervals[2].textContent.includes(label), label);
+  }
   assert.match(intervals[3].textContent, /ONIE assembly and compression.*Load and tag Docker images/);
   assert.match(intervals[4].textContent, /Trixie image cleanup/);
   assert.equal(descendants(intervals[4], node => node.tagName === "details")[0].children[0].tagName, "summary");

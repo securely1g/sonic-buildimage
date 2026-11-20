@@ -179,8 +179,10 @@ file, without dropping records or replacing the previous output on overflow.
     its containing section, `duration_seconds`, and `outcome` (`finished` or
     `cached`). Tasks can overlap and are not an additive partition of the
     section. The native installer also emits paired `[ vs timing ]` start/end
-    markers for kernel/P4RT preparation, P4RT substeps, version collection,
-    builder exit and host cleanup. A completed pair produces a task from the
+    markers for kernel/P4RT preparation, P4RT substeps, intermediate root
+    filesystem preparation, compression and cache save (when writes are enabled),
+    version collection, builder exit and host cleanup. Intermediate root filesystem
+    timings must occur within the corresponding ONIE squashfs target's markers. A completed pair produces a task from the
     same fixed vocabulary. An unmatched optional marker contributes no duration.
   - A final-image task may additionally contain `phase_breakdown`:
     - `version`: `1`; `source`: `build-phase-markers`.
