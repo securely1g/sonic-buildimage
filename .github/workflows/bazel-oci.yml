@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
+        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd, dhcp-relay]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
@@ -24,6 +24,10 @@ on:
         description: Optional successful source-download run in this repository
         type: string
         default: ''
+      enable_debug_layer:
+        description: Build companion debug archives for the VS installer
+        type: boolean
+        default: true
       skip_vs:
         description: Skip the full VS image build
         type: boolean
@@ -242,6 +246,142 @@ jobs:
           python3 -B control/tools/bazel/ci/source_image_worker.py stop \
             --image "$SELECTED_IMAGE" --revision "$SOURCE_REVISION" \
             --workspace "$GITHUB_WORKSPACE/source" --artifacts "$RUNNER_TEMP/source-image-artifacts"
+
+  dhcp_relay_source_image:
+    name: DHCP relay source image (AMD64, K3s)
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'dhcp-relay'
+    runs-on: [self-hosted, Linux, X64, sonic-slave-container-k3s]
+    timeout-minutes: 360
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      # Pin the reviewed registry; update alongside the DHCP source registration.
+      SONIC_BASE_REVIEW_REGISTRY: bb1fec1be28d52588c20121eb73ac92923412d6b
+      SOURCE_REVISION: ${{ inputs.source_revision }}
+      BAZELISK_GITHUB_TOKEN: ""
+      SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Validate the requested source revision
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          assert re.fullmatch(r'[0-9a-f]{40}', os.environ['SOURCE_REVISION']), 'Use a full reviewed source SHA'
+          assert not os.environ['SOURCE_INPUTS_RUN'], 'K3s uses the remote cache, not source-input artifacts'
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_revision }}
+          persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        run: |
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$SOURCE_REVISION" --event-name workflow_dispatch \
+            --github-output "$GITHUB_OUTPUT"
+      # The ephemeral K3s worker lifecycle owns job-local state cleanup.
+      # The shared remote cache is managed by the worker, not this workflow.
+      - name: Prepare existing image inspection and template tools
+        id: dhcp_tools
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from tools.bazel.ci.source_image_worker import prepare_validation_tools
+          artifacts = Path('artifacts/dhcp-relay')
+          artifacts.mkdir(parents=True, exist_ok=True)
+          prepare_validation_tools(artifacts)
+          PY
+      - name: Verify native AMD64 Trixie tools and remote-only cache
+        run: |
+          test "$(uname -m)" = x86_64
+          test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
+          for tool in bazel git make python3 readelf objcopy bsdtar j2 file; do
+            command -v "$tool"
+          done
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+          python3 -B tools/bazel/ci/resources.py --configure
+          python3 -B tools/bazel/ci/configure_runner_cache.py --remote-only \
+            --output artifacts/dhcp-relay/cache-configuration.json
+          # The shared wrapper disables the home RC. Import only the verified
+          # worker-managed cache settings into its ignored job-local RC.
+          python3 - <<'PY'
+          import os
+          import hashlib
+          import json
+          from pathlib import Path
+          import shlex
+          managed = os.environ['SONIC_BAZEL_REMOTE_ONLY_RC']
+          assert '\n' not in managed and '\r' not in managed
+          trust = Path(os.environ['SONIC_BAZEL_JAVA_TRUST_STORE'])
+          assert trust.is_absolute() and trust.is_file() and os.access(trust, os.R_OK)
+          assert '\n' not in str(trust) and '\r' not in str(trust)
+          with Path('.bazelrc.user').open('a') as output:
+              output.write('import ' + shlex.quote(managed) + '\n')
+              output.write('startup ' + shlex.quote('--host_jvm_args=-Djavax.net.ssl.trustStore=' + str(trust)) + '\n')
+          Path('artifacts/dhcp-relay/worker-java-trust.validation.json').write_text(json.dumps({
+              'status': 'passed', 'java_trust_store_sha256': hashlib.sha256(trust.read_bytes()).hexdigest(),
+              'certificate_verification': True,
+          }, indent=2) + '\n')
+          PY
+      - name: Configure verified source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py --prefer-debian-snapshot --output "$RUNNER_TEMP/dhcp-source-mirrors.cfg"
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/dhcp-source-mirrors.cfg" >> .bazelrc.user
+      - name: Prepare pinned submodules for image builds
+        run: bash tools/bazel/ci/prepare_image_submodules.sh
+      - name: Check DHCP utilities and CLI tests without DEB generation
+        id: dhcp_utility_tests
+        run: &dhcp_utility_tests |
+          python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
+            --output artifacts/dhcp-relay/utility-action.validation.json \
+            //src/sonic-dhcp-utilities:upstream_tests //src/sonic-dhcp-utilities:installed_wheel_test \
+            //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests
+          "$BAZEL" test //src/sonic-dhcp-utilities:upstream_tests \
+            //src/sonic-dhcp-utilities:installed_wheel_test \
+            //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests --nocache_test_results \
+            --build_event_json_file="$PWD/artifacts/dhcp-relay/utility-test-events.json"
+      - name: Build DHCP relay runtime and debug images from source owners
+        id: dhcp_relay_build
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: GITHUB_SHA="$SOURCE_REVISION" python3 -B tools/bazel/ci/dhcp_relay_image.py build --bazel "$BAZEL" --artifacts artifacts/dhcp-relay
+      - name: Validate DHCP relay image contents and source symbols
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: GITHUB_SHA="$SOURCE_REVISION" python3 -B tools/bazel/ci/dhcp_relay_image.py validate --artifacts artifacts/dhcp-relay
+      - name: Check DHCP relay incremental rebuild and restored image digests
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          GITHUB_SHA="$SOURCE_REVISION" python3 -B tools/bazel/ci/dhcp_relay_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dhcp-relay
+          git diff --exit-code
+      - name: Prepare reviewed DHCP relay evidence
+        id: dhcp_relay_public
+        if: always() && (steps.dhcp_tools.outcome == 'failure' || steps.dhcp_utility_tests.outcome == 'failure' || steps.dhcp_relay_build.outcome == 'success' || steps.dhcp_relay_build.outcome == 'failure')
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from types import SimpleNamespace
+          from tools.bazel.ci.source_image_worker import publish
+          publish(SimpleNamespace(artifacts=Path('artifacts/dhcp-relay'), image='dhcp-relay'))
+          PY
+      - name: Retain DHCP relay images and reviewed build evidence
+        id: bazel_upload_dhcp_relay_public
+        if: always() && steps.dhcp_relay_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dhcp-relay-image-amd64
+          path: artifacts/dhcp-relay/public/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
 
   source_worker_preflight:
     name: Source worker preflight (${{ matrix.worker }})
@@ -1511,6 +1651,101 @@ jobs:
         if: steps.bazel_upload_lldp_public.outcome == 'success' && steps.bazel_upload_lldp_public.outputs.artifact-id != ''
         run: python3 -B tools/bazel/ci/release_image_payloads.py lldp
 
+      - name: Preserve completed archive evidence before DHCP relay acceptance
+        if: matrix.architecture == 'amd64'
+        run: |
+          if [[ -d artifacts ]]; then
+            preserved="$(mktemp -d "$SONIC_BAZEL_JOB_TEMP/pre-dhcp-relay-artifacts.XXXXXXXX")"
+            mv artifacts "$preserved/artifacts"
+          fi
+
+      - name: Check DHCP utilities and CLI tests without DEB generation
+        if: matrix.architecture == 'amd64'
+        run: *dhcp_utility_tests
+      - name: Build DHCP relay runtime and debug images from source owners
+        id: dhcp_relay_build
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(uname -m)" = x86_64
+          test "$(. /etc/os-release; echo "$VERSION_CODENAME")" = trixie
+          python3 -B tools/bazel/ci/dhcp_relay_image.py build --bazel "$BAZEL" --artifacts artifacts/dhcp-relay
+      - name: Validate DHCP relay image contents and source symbols
+        if: matrix.architecture == 'amd64'
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: python3 -B tools/bazel/ci/dhcp_relay_image.py validate --artifacts artifacts/dhcp-relay
+      - name: Check DHCP relay incremental rebuild and restored image digests
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: |
+          python3 -B tools/bazel/ci/dhcp_relay_image.py incremental --bazel "$BAZEL" --artifacts artifacts/dhcp-relay
+          git diff --exit-code
+      - name: Prepare reviewed DHCP relay evidence
+        id: dhcp_relay_public
+        if: always() && matrix.architecture == 'amd64' && (steps.dhcp_relay_build.outcome == 'success' || steps.dhcp_relay_build.outcome == 'failure')
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          from tools.bazel.ci.public_artifacts import safe_json, dependency_json, bep_summary
+          root = Path('artifacts/dhcp-relay')
+          if (root / 'build-receipt.json').exists():
+              receipt = json.loads((root / 'build-receipt.json').read_text())
+              public = {key: receipt[key] for key in ('status', 'architecture', 'revision', 'tested_revision_parents', 'artifacts') if key in receipt}
+              safe_json(public)
+              (root / 'public-receipt.json').write_text(json.dumps(public, indent=2) + '\n')
+          names = ['validation.json', 'action-audit.json', 'incremental.json']
+          names += [path.name for path in root.glob('*.validation.json')]
+          names += [path.name for path in root.glob('*packages.json')]
+          for name in names:
+              path = root / name
+              if path.exists():
+                  safe_json(json.loads(path.read_text()))
+          for name, kind in (('MODULE.bazel.lock', 'lock'), ('module-graph.json', 'graph')):
+              path = root / name
+              if path.exists():
+                  dependency_json(json.loads(path.read_text()), kind)
+          summary = {str(path.relative_to(root)): bep_summary(path.read_text().splitlines(), partial=True)
+                     for path in root.rglob('*events.json*')}
+          safe_json(summary)
+          (root / 'build-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
+          PYCODE
+      - name: Retain images and reviewed build evidence
+        id: bazel_upload_dhcp_relay_public
+        if: always() && steps.dhcp_relay_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dhcp-relay-image-amd64
+          path: |
+            artifacts/dhcp-relay/*.gz
+            artifacts/dhcp-relay/*.tar
+            artifacts/dhcp-relay/*.status
+            artifacts/dhcp-relay/*packages.json
+            artifacts/dhcp-relay/*.validation.json
+            artifacts/dhcp-relay/validation.json
+            artifacts/dhcp-relay/public-receipt.json
+            artifacts/dhcp-relay/action-audit.json
+            artifacts/dhcp-relay/incremental.json
+            artifacts/dhcp-relay/build-summary.json
+            artifacts/dhcp-relay/MODULE.bazel.lock
+            artifacts/dhcp-relay/module-graph.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+      - name: Release published DHCP relay payload copies
+        if: steps.bazel_upload_dhcp_relay_public.outcome == 'success' && steps.bazel_upload_dhcp_relay_public.outputs.artifact-id != ''
+        run: python3 -B tools/bazel/ci/release_image_payloads.py dhcp-relay
+
       - name: Preserve completed archive evidence before MUX acceptance
         if: matrix.architecture == 'amd64'
         run: |
@@ -2019,6 +2254,67 @@ jobs:
           BAZEL_CLEANUP_UPLOAD_STEPS: '["runner_cleanup_upload_0"]'
         run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --migrated-job --mark-artifacts
 
+  dhcp_relay_runtime:
+    name: Run installed DHCP relay images (AMD64)
+    needs: [archive, dhcp_relay_source_image]
+    if: >-
+      always() && !cancelled() &&
+      ((needs.archive.result == 'success' && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')) ||
+       (needs.dhcp_relay_source_image.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.source_image == 'dhcp-relay'))
+    env:
+      TESTED_REVISION: ${{ github.event_name == 'workflow_dispatch' && inputs.source_image == 'dhcp-relay' && inputs.source_revision || github.sha }}
+    runs-on: [self-hosted, Linux, X64, ubuntu-x64]
+    timeout-minutes: 25
+    steps:
+      - *restore_workspace_access
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.TESTED_REVISION }}
+      - name: Register post-job cleanup
+        id: runner_cleanup
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/bazel-post-job-cleanup
+        with:
+          migrated-job: 'true'
+      - *align_retained_kernel
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$TESTED_REVISION" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dhcp-relay-image-amd64
+          path: artifacts/dhcp-relay
+      - name: Exercise installed DHCPv4, DHCPv6 and monitor services
+        env:
+          CI_HEAD_SHA: ${{ steps.checkout_identity.outputs.head_sha }}
+          CI_BASE_SHA: ${{ steps.checkout_identity.outputs.base_sha }}
+        run: GITHUB_SHA="$TESTED_REVISION" python3 -B tools/bazel/ci/dhcp_relay_loaded.py --artifacts artifacts/dhcp-relay
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: runner_cleanup_upload_0
+        if: always()
+        with:
+          name: dhcp-relay-runtime-amd64
+          path: |
+            artifacts/dhcp-relay/*.runtime.json
+            artifacts/dhcp-relay/loaded-validation.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Record post-job cleanup eligibility
+        if: always() && steps.runner_cleanup.outcome == 'success'
+        env:
+          BAZEL_CLEANUP_STEPS: ${{ toJSON(steps) }}
+          BAZEL_CLEANUP_JOB_STATUS: ${{ job.status }}
+          BAZEL_CLEANUP_UPLOAD_STEPS: '["runner_cleanup_upload_0"]'
+        run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --migrated-job --mark-artifacts
+
   mux_runtime:
     name: Run installed MUX images (AMD64)
     needs: archive
@@ -2073,6 +2369,239 @@ jobs:
           BAZEL_CLEANUP_JOB_STATUS: ${{ job.status }}
           BAZEL_CLEANUP_UPLOAD_STEPS: '["runner_cleanup_upload_0"]'
         run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --migrated-job --mark-artifacts
+
+  p4rt_native:
+    name: Build and inspect P4RT images (AMD64)
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    # P4RT keeps two Bazel output bases and the finished OCI archives on the VS build pool.
+    runs-on: [self-hosted, linux, bazel-x64, vs]
+    timeout-minutes: 360
+    container:
+      image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+      options: --init
+    env:
+      BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      P4RT_TRUSTED_CACHE: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install execution tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            autoconf automake binutils binutils-gold build-essential busybox ca-certificates gdb git j2cli jq libtool libxml2 pkg-config python3 python3-jinja2 python3-yaml tar unzip zstd
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Configure remote cache uploads
+        env:
+          UPLOAD_CACHE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: |
+          printf '\nbuild --remote_upload_local_results=%s\n' \
+            "$UPLOAD_CACHE" >> .bazelrc.user
+
+      - name: Check native architecture and generated dependency state
+        run: |
+          test "$(uname -m)" = "x86_64"
+          test ! -e MODULE.bazel.lock
+          test -z "$(git ls-files -- MODULE.bazel.lock)"
+          git check-ignore MODULE.bazel.lock
+
+      - name: Register post-job Bazel cleanup
+        id: bazel_cleanup_register
+        uses: ./.github/actions/bazel-post-job-cleanup
+      - name: Initialize P4RT's pinned source owner
+        run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+      - name: Install P4RT source execution dependencies
+        run: |
+          apt-get install -y --no-install-recommends bison flex libfl-dev libgmp-dev patch zip \
+            libarchive-tools libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-nf-3-dev \
+            libnl-route-3-dev libzmq3-dev libboost-serialization-dev nlohmann-json3-dev uuid-dev
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/src/sonic-p4rt/sonic-pins"
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.29.0
+          bazelisk-cache: true
+          repository-cache: true
+          disk-cache: p4rt-native-amd64
+          cache-version: "8.5.1"
+      - name: Configure Bazel action memory budget
+        run: python3 -B tools/bazel/ci/resources.py --configure
+      - name: Preserve setup-bazel caches and enable the pool service for trusted sources
+        if: env.P4RT_TRUSTED_CACHE == 'true'
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py --private-remote-cache
+      - name: Preserve local setup-bazel caches for fork builds
+        if: env.P4RT_TRUSTED_CACHE != 'true'
+        run: python3 tools/bazel/ci/preserve_setup_bazel_cache.py
+      - name: Restore default Bazel startup ownership
+        run: python3 tools/bazel/ci/repair_bazel_startup.py
+
+      - name: Configure shared source download mirrors
+        run: |
+          python3 -B tools/bazel/ci/source_mirrors.py \
+            --output "$RUNNER_TEMP/sonic-source-mirrors.cfg"
+          # common.bazelrc imports this ignored file, including through Draft wrappers.
+          printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
+
+      - name: Allocate fresh P4RT build and owner output paths
+        id: p4rt_storage
+        run: |
+          scratch=$(mktemp -d "$SONIC_BAZEL_JOB_TEMP/p4rt.XXXXXXXX")
+          printf 'scratch=%s\n' "$scratch" >> "$GITHUB_OUTPUT"
+          python3 - "$scratch" <<'PYSPACE'
+          from pathlib import Path
+          import shutil, sys
+          path = Path(sys.argv[1])
+          free = shutil.disk_usage(path).free
+          print(f"P4RT scratch has {free / 1024**3:.1f} GiB available for both Bazel output bases and archives")
+          if free < 90 * 1024**3:
+              raise SystemExit("P4RT requires 90 GiB of free build space")
+          PYSPACE
+          printf 'P4RT_SCRATCH=%s\nP4RT_ARTIFACTS=%s/artifacts\n' "$scratch" "$scratch" >> "$GITHUB_ENV"
+          df -h "$scratch" "$GITHUB_WORKSPACE"
+      - name: Bound P4RT build phases and verify execution tools
+        run: |
+          for tool in bsdtar gdb readelf objcopy make git python3 zip bison flex g++ pkg-config; do
+            command -v "$tool" >/dev/null
+          done
+          PYTHONPATH="$PWD" python3 -B - <<'PYLAUNCH'
+          import os, shlex, shutil
+          from pathlib import Path
+          from tools.bazel.ci.preserve_setup_bazel_cache import write_bazel6_owner_rc
+          real = shutil.which("bazel")
+          if not real:
+              raise SystemExit("Bazelisk is unavailable")
+          directory = Path(os.environ["P4RT_SCRATCH"]) / "bazel-bin"
+          directory.mkdir()
+          owner_rc = directory.parent / "p4rt-owner.bazelrc"
+          write_bazel6_owner_rc(owner_rc, Path.home(), Path(os.environ["RUNNER_TEMP"]) / "sonic-source-mirrors.cfg",
+                                private_remote_cache=os.environ["P4RT_TRUSTED_CACHE"] == "true")
+          for name, heap in (("bazel", "3g"), ("owner", "2g")):
+              path = directory / name
+              if name == "owner":
+                  # Retain the PINS workspace rc and its split-DWARF configuration.
+                  startup = " --nosystem_rc --nohome_rc --bazelrc=" + shlex.quote(str(owner_rc))
+              else:
+                  startup = " --output_base=" + shlex.quote(str(directory.parent / "root-output-base"))
+              path.write_text("#!/bin/sh\nset -eu\n"
+                  'if [ "$#" -eq 1 ] && [ "$1" = --version ]; then\n'
+                  "  exec " + shlex.quote(real) + ' "$@"\nfi\n'
+                  "exec " + shlex.quote(real) + startup + " --host_jvm_args=-Xmx" + heap + ' "$@"\n')
+              path.chmod(0o755)
+          with Path(os.environ["GITHUB_ENV"]).open("a") as output:
+              output.write("P4RT_OWNER_BAZEL=" + str(directory / "owner") + "\n")
+          with Path(os.environ["GITHUB_PATH"]).open("a") as output:
+              output.write(str(directory) + "\n")
+          PYLAUNCH
+      - name: Check P4RT storage before SDK preparation
+        run: df -h / "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+      - name: Prepare matching Common SDK and source-owned P4RT TARs
+        run: |
+          python3 -B tools/bazel/ci/p4rt_image.py prepare-owner --bazel "$BAZEL" \
+            --directory "$P4RT_ARTIFACTS" --owner-source src/sonic-p4rt/sonic-pins \
+            --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
+            --owner-output-base "$P4RT_SCRATCH/owner-output-base" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
+      - name: Check P4RT storage before image build
+        run: df -h / "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+      - name: Build P4RT runtime and debug images
+        run: |
+          python3 -B tools/bazel/ci/p4rt_image.py build --bazel "$BAZEL" \
+            --directory "$P4RT_ARTIFACTS" --owner-source src/sonic-p4rt/sonic-pins \
+            --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
+            --owner-output-base "$P4RT_SCRATCH/owner-output-base"
+      - name: Check P4RT storage before image validation
+        run: df -h / "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
+      - name: Validate P4RT image contents and cache reuse
+        run: |
+          python3 -B tools/bazel/ci/p4rt_validate.py validate --directory "$P4RT_ARTIFACTS" \
+            --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
+          python3 -B tools/bazel/ci/p4rt_validate.py incremental --directory "$P4RT_ARTIFACTS" \
+            --owner-source src/sonic-p4rt/sonic-pins --bazel "$BAZEL"
+      - name: Run all original P4RT tests against the selected image SDK
+        run: |
+          for phase in prepare-owner-runtime owner-tests; do
+            python3 -B tools/bazel/ci/p4rt_image.py "$phase" --bazel "$BAZEL" \
+              --directory "$P4RT_ARTIFACTS" --owner-source src/sonic-p4rt/sonic-pins \
+              --owner-revision "$(git rev-parse HEAD:src/sonic-p4rt/sonic-pins)" \
+              --owner-output-base "$P4RT_SCRATCH/owner-output-base" --owner-bazel "$P4RT_OWNER_BAZEL" --jobs 2
+          done
+      - name: Prepare reviewed P4RT public evidence
+        id: p4rt_public
+        if: always() && steps.p4rt_storage.outcome == 'success'
+        run: python3 -B tools/bazel/ci/p4rt_public.py --directory "$P4RT_ARTIFACTS"
+      - name: Retain P4RT images and acceptance evidence
+        id: bazel_upload_p4rt_public
+        if: always() && steps.p4rt_public.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p4rt-images-amd64-${{ github.sha }}
+          path: ${{ env.P4RT_ARTIFACTS }}/public
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Authorize published artifacts for post-job cleanup
+        if: always() && steps.bazel_cleanup_register.outcome == 'success'
+        env:
+          BAZEL_CLEANUP_STEPS: ${{ toJSON(steps) }}
+        run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --mark-artifacts
+
+  p4rt_runtime:
+    name: Load and run P4RT images (AMD64)
+    needs: p4rt_native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Bind the tested checkout identity
+        id: checkout_identity
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python3 -B tools/bazel/ci/checkout_identity.py \
+            --expected-revision "$GITHUB_SHA" --event-name "$GITHUB_EVENT_NAME" \
+            --head-sha "$EVENT_HEAD_SHA" --event-base-sha "$EVENT_BASE_SHA" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Initialize P4RT's pinned probe owner
+        run: git submodule update --init -- src/sonic-p4rt/sonic-pins
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: p4rt-images-amd64-${{ github.sha }}
+          path: artifacts/p4rt
+      - name: Check installed P4RT startup, ConfigDB and software RPCs
+        run: |
+          python3 -B tools/bazel/ci/p4rt_loaded.py --release-downloaded-inputs --directory artifacts/p4rt \
+            --owner-source src/sonic-p4rt/sonic-pins
+      - name: Verify source, SDK, owner tests and both image receipts
+        run: python3 -B tools/bazel/ci/p4rt_acceptance.py --directory artifacts/p4rt
+      - name: Retain installed P4RT evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: p4rt-installed-amd64-${{ github.sha }}
+          path: artifacts/p4rt/*.runtime.json
+          if-no-files-found: error
+          retention-days: 14
 
   gearbox_archive:
     name: Gearbox archive (AMD64)
@@ -2721,7 +3250,7 @@ jobs:
     # Keep the required status on the job that actually loads and tests both archives.
     name: Container archive (AMD64)
     if: always() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
-    needs: [archive, database_acceptance, frr_runtime, teamd_runtime, radv_acceptance, lldp_runtime, mux_runtime, gearbox_runtime, macsec_runtime, otel_runtime, dash_engine_runtime]
+    needs: [archive, database_acceptance, frr_runtime, teamd_runtime, radv_acceptance, lldp_runtime, dhcp_relay_runtime, mux_runtime, gearbox_runtime, macsec_runtime, otel_runtime, dash_engine_runtime, p4rt_native, p4rt_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 20
     steps:
@@ -3249,6 +3778,7 @@ jobs:
 
       - name: Check Make handoff and archive validation
         run: |
+          PYTHONPATH="$PWD" python3 -B -m unittest discover -s tools/bazel/ci -p 'p4rt_*_test.py'
           python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/tests -p '*_test.py'
           python3 -B -m unittest discover -s tools/ci/runner -p '*_test.py'
@@ -3779,6 +4309,7 @@ jobs:
       SONIC_DPKG_CACHE_METHOD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'rwcache' || 'rcache' }}
       SONIC_DPKG_CACHE_SOURCE: /nfs/dpkg_cache/vs
       SONIC_BUILD_JOBS: "1"
+      SONIC_ENABLE_DEBUG_LAYER: ${{ (github.event_name != 'workflow_dispatch' || inputs.enable_debug_layer) && 'y' || 'n' }}
       ENABLE_DOCKER_BASE_PULL: "y"
       REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
       ACR_REGISTRY_NAME: sonicdev
@@ -3950,18 +4481,36 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Validate the installer and retained container pairs
+      - name: Validate the installer release and selected container archives
         run: |
           set -euo pipefail
           python3 -B scripts/validate_sonic_version.py target/sonic-vs.bin \
             --installer --secure-upgrade-mode no_sign \
             --expected-commit-id "$(git rev-parse --short HEAD)" \
             --json-output artifacts/vs/sonic-version.json
+          selection=()
+          archives=(target/docker-orchagent.gz target/docker-syncd-vs.gz)
+          if [[ $SONIC_ENABLE_DEBUG_LAYER == n ]]; then
+            selection+=(--runtime-only)
+          else
+            archives+=(target/docker-orchagent-dbg.gz target/docker-syncd-vs-dbg.gz)
+          fi
           python3 -B tools/bazel/ci/verify_vs_image_tags.py \
-            --target target --version artifacts/vs/sonic-version.json --timings artifacts/vs/image-timings
+            --target target --version artifacts/vs/sonic-version.json --timings artifacts/vs/image-timings \
+            --receipt artifacts/vs/container-build.json "${selection[@]}"
+          sha256sum target/sonic-vs.bin "${archives[@]}" > artifacts/vs/outputs.sha256
+
+      - name: Validate the installer and retained container pairs
+        if: env.SONIC_ENABLE_DEBUG_LAYER == 'y'
+        run: |
+          set -euo pipefail
           bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
-          sha256sum target/sonic-vs.bin target/docker-orchagent{,-dbg}.gz \
-            target/docker-syncd-vs{,-dbg}.gz > artifacts/vs/outputs.sha256
+
+      - name: Prepare runtime-only installed image checks
+        if: env.SONIC_ENABLE_DEBUG_LAYER == 'n'
+        run: |
+          set -euo pipefail
+          bash tools/bazel/ci/validate_vs.sh --runtime-only 2>&1 | tee artifacts/vs/validation.log
 
       - name: Verify installed base, SWSS and Syncd images
         timeout-minutes: 20
@@ -4096,6 +4645,7 @@ jobs:
 
   gnmi_native:
     name: Build gNMI OCI images and symbols (AMD64)
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 240
     container:
@@ -4272,7 +4822,7 @@ jobs:
 
   gnmi_acceptance:
     name: gNMI acceptance (AMD64)
-    if: always() && !cancelled()
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
     needs: [gnmi_native, gnmi_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 5
@@ -4287,6 +4837,7 @@ jobs:
 
   mgmt_framework_native:
     name: Build Framework OCI images and symbols (AMD64)
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 180
     container:
@@ -4448,7 +4999,7 @@ jobs:
 
   mgmt_framework_acceptance:
     name: Framework acceptance (AMD64)
-    if: always() && !cancelled()
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none')
     needs: [mgmt_framework_native, mgmt_framework_runtime]
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     timeout-minutes: 5

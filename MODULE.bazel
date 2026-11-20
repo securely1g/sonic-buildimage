@@ -54,8 +54,14 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.38-0baa4acc9eac9ccc793b81104b1580d530271cbe",
+    version = "0.0.39-6f32af5649f08819bf97499e8a0c5435a161f0ef",
     repo_name = "sonic_build_infra",
+)
+# Select the wheel metadata adapter while its source/registry change is reviewed.
+# Transitive consumers select the previous .39 snapshot, which sorts above this one.
+single_version_override(
+    module_name = "sonic-build-infra",
+    version = "0.0.39-6f32af5649f08819bf97499e8a0c5435a161f0ef",
 )
 bazel_dep(name = "grub", version = "2.12.sonic.1")
 bazel_dep(
@@ -141,6 +147,15 @@ pip.parse(
     python_version = "3.13",
     requirements_lock = "//src/sonic-config-engine:requirements_lock.txt",
 )
+# Build/test imports for the DHCP utilities producer. Image runtime resolution
+# is owned separately by the consuming Docker target.
+pip.parse(
+    hub_name = "dhcp_utilities_test_pip",
+    python_version = "3.13",
+    requirements_lock = "//src/sonic-dhcp-utilities:requirements_lock.txt",
+)
+use_repo(pip, "dhcp_utilities_test_pip")
+
 pip.parse(
     hub_name = "swss_config_pip",
     python_version = "3.13",
@@ -356,10 +371,10 @@ source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "so
 source_modules(
     name = "image_source_modules",
     modules = {
+        "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@isc_dhcp//:MODULE.bazel": "isc-dhcp",
         "@sonic_dhcpmon//:MODULE.bazel": "sonic-dhcpmon",
         "@sonic_dhcp_relay//:MODULE.bazel": "sonic-dhcp-relay",
-        "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
         "@libteam//:MODULE.bazel": "libteam",
@@ -689,25 +704,57 @@ source_modules(
     },
 )
 
-
-# Daemons and installed package metadata for the DHCP relay local package.
+# DHCP relay consumes native owner TARs and the shared locked runtime inputs.
 bazel_dep(name = "isc-dhcp", version = "4.4.3.sonic.1", repo_name = "isc_dhcp")
 bazel_dep(name = "sonic-dhcpmon", version = "0.1.0-b824589b2ba49a8ba59142289bfb04bb3ca68875", repo_name = "sonic_dhcpmon")
-bazel_dep(name = "sonic-dhcp-relay", version = "0.1.0-89b18b54b2552dea86e2292bd1a9d848733551c3", repo_name = "sonic_dhcp_relay")
+bazel_dep(name = "sonic-dhcp-relay", version = "0.1.0-1bbc612265bfc8e7582cb699dc44326f62595739", repo_name = "sonic_dhcp_relay")
+use_repo(apt, "dhcp_relay_runtime_debian", "dhcp_relay_test_debian")
 
-# Draft source for registry #235. Remove this override and select its published
-# module version once the native PcapPlusPlus owner revision is registered.
-archive_override(
-    module_name = "sonic-dhcp-relay",
-    urls = ["https://github.com/securely1g/sonic-dhcp-relay/archive/89b18b54b2552dea86e2292bd1a9d848733551c3.tar.gz"],
-    integrity = "sha256-1b9FL1LBgtS8fhT7/c0PsXrd8uf/wUbRJ7n1igDaew4=",
-    strip_prefix = "sonic-dhcp-relay-89b18b54b2552dea86e2292bd1a9d848733551c3",
+apt_inputs(
+    name = "dhcp_relay_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
 )
 
-use_repo(apt, "dhcp_relay_runtime_debian")
 pip.parse(
     hub_name = "dhcp_relay_pip",
     python_version = "3.13",
-    requirements_lock = "//dockers/docker-dhcp-relay:requirements_lock.txt",
+    requirements_lock = "//dockers/docker-dhcp-relay/python:requirements_lock.txt",
 )
 use_repo(pip, "dhcp_relay_pip")
+
+# Existing DHCP CLI tests use the published utilities wheel and Make-pinned
+# SDK from config_engine_pip; this hub supplies only additional test imports.
+bazel_dep(name = "sonic-utilities", version = "1.2.0-331e19551e1d345e86b59f73be573487893d5af1", repo_name = "sonic_utilities")
+pip.parse(
+    hub_name = "dhcp_relay_cli_test_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-dhcp-relay/cli-plugin-tests:requirements_lock.txt",
+    environment = {"CC": "gcc", "CXX": "g++"},
+)
+use_repo(pip, "dhcp_relay_cli_test_pip")
+
+# Reuse the original cross-repository CLI test fixture at Make's gitlink.
+# This is test data only, not a host-services build or image dependency.
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(
+    name = "dhcp_relay_host_services_test_fixture",
+    urls = ["https://raw.githubusercontent.com/securely1g/sonic-host-services/b9cbca03cd08313438b742f3eff87a9416e70d14/tests/common/mock_configdb.py"],
+    sha256 = "08b4b525ead991783fd49c270c10a94aa7e07cfab0c3effb93940767aad38cd8",
+    downloaded_file_path = "mock_configdb.py",
+)
+
+# P4RT retains its source-owned Bazel 6 build. The explicit preparation step
+# verifies and stages its runtime/debug TARs and source contracts here.
+local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+
+local_repository(
+    name = "p4rt_owner_payload",
+    path = ".bazel-inputs/p4rt-owner",
+)
+
+use_repo(apt, "p4rt_debian", "p4rt_debug_debian", "p4rt_test_debian")
+
+apt_inputs(
+    name = "p4rt_apt_inputs",
+    lock = "@sonic_build_infra//apt:apt.lock.json",
+)

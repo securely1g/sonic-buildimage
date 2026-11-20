@@ -17,6 +17,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
+import yaml
 from contextlib import ExitStack
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -26,6 +27,39 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_dhcp_dispatch_selects_only_its_image_and_runtime_jobs(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/bazel-oci.yml').read_text())
+        jobs = workflow['jobs']
+        selected = {}
+        github = SimpleNamespace(event_name='workflow_dispatch')
+        inputs = SimpleNamespace(source_image='dhcp-relay', source_inputs_run='', skip_vs=True)
+        pending = dict(jobs)
+        while pending:
+            before = len(pending)
+            for name, job in list(pending.items()):
+                dependencies = job.get('needs', [])
+                dependencies = [dependencies] if isinstance(dependencies, str) else dependencies
+                if any(key not in selected for key in dependencies):
+                    continue
+                needs = SimpleNamespace(**{key: SimpleNamespace(result='success' if selected[key] else 'skipped')
+                                           for key in dependencies})
+                del pending[name]
+                expression = job.get('if', '')
+                if not expression:
+                    selected[name] = all(selected[key] for key in dependencies)
+                    continue
+                expression = expression.replace('${{', '').replace('}}', '').strip()
+                expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
+                expression = re.sub(r'!(?!=)', 'not ', expression)
+                selected[name] = bool(eval(expression, {'__builtins__': {}}, {
+                    'github': github, 'inputs': inputs, 'needs': needs, 'false': False,
+                    'always': lambda: True, 'cancelled': lambda: False,
+                    'contains': lambda values, value: value in values, 'fromJSON': json.loads,
+                }))
+            self.assertLess(len(pending), before, "workflow dependency cycle")
+        self.assertEqual({name for name, runs in selected.items() if runs},
+                         {'dhcp_relay_source_image', 'dhcp_relay_runtime'})
+
     def test_normal_ci_has_no_branch_specific_exceptions(self):
         workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
         self.assertNotIn('SOURCE_ONLY_NO_DEBS', workflow)
@@ -49,6 +83,7 @@ class ImageWorkerTest(unittest.TestCase):
             ('workflow_dispatch', '', True, 'none', False, True),
             ('workflow_dispatch', '', True, 'none', True, False),
             ('workflow_dispatch', '', True, 'teamd', False, False),
+            ('workflow_dispatch', '', True, 'dhcp-relay', False, False),
             ('workflow_dispatch', '', True, 'dash-engine', False, False),
             ('workflow_dispatch', '', True, 'preflight', False, False),
         ):
@@ -609,8 +644,9 @@ class ImageWorkerTest(unittest.TestCase):
         self.assertEqual(set(choices), set(worker.DRIVERS))
         gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
         self.assertEqual(len(gates), 2)
+        # DHCP relay uses its own remote-only K3s route, not the legacy dpool setup.
         for gate in gates:
-            self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
+            self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS) - {"dhcp-relay"})
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
