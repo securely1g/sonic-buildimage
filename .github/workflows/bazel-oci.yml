@@ -707,6 +707,7 @@ jobs:
     outputs:
       containers: ${{ steps.bundles.outputs.matrix }}
       artifact_prefix: ${{ steps.bundles.outputs.prefix }}
+      installer_artifact_id: ${{ steps.vs_installer_upload.outputs.artifact-id }}
       debug_layer: ${{ steps.bundles.outputs.debug_layer }}
     if: >-
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
@@ -1270,12 +1271,46 @@ jobs:
     outputs:
       build_version: ${{ steps.installer.outputs.build_version }}
     steps:
+      - &restore_workspace_access
+        name: Restore workspace access before checkout
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${GITHUB_REPOSITORY##*/}"
+          pipeline_workspace="${RUNNER_WORKSPACE%/}"
+          expected="$pipeline_workspace/$repository"
+          if [[ "$GITHUB_WORKSPACE" != "$expected" ]]; then
+            printf 'Refusing permission repair: expected workspace %s, got %s.\n' \
+              "$expected" "$GITHUB_WORKSPACE" >&2
+            exit 1
+          fi
+          if [[ ! -e "$expected" && ! -L "$expected" ]]; then
+            echo 'No existing workspace to repair.'
+            exit 0
+          fi
+          work_root="$(realpath -e -- "$pipeline_workspace/..")"
+          physical_workspace="$work_root/$repository/$repository"
+          if [[ ! -d "$expected" || "$(realpath -e -- "$expected")" != "$physical_workspace" ]]; then
+            echo 'Refusing permission repair on a redirected workspace.' >&2
+            exit 1
+          fi
+          expected="$physical_workspace"
+          owner="$(id -u):$(id -g)"
+          sudo -n find -P "$expected" -xdev -type d \
+            -exec chown --no-dereference -- "$owner" {} +
+          sudo -n find -P "$expected" -xdev -type d \
+            -exec chmod u+rwx -- {} +
+          sudo -n find -P "$expected" -xdev -type f -links 1 \
+            -exec chown --no-dereference -- "$owner" {} +
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: sonic-vs-slave-amd64
+          artifact-ids: ${{ needs.vs_container.outputs.installer_artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/vs-installer
       - name: Prepare installer inspection tools
         run: |
@@ -1309,6 +1344,7 @@ jobs:
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 60
     steps:
+      - *restore_workspace_access
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

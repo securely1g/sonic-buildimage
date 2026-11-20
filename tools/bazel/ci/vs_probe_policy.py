@@ -43,6 +43,8 @@ def preparation_targets(image, debug_selected):
     if image == "docker-gbsyncd-vs":
         result.update({"base.source.tar": "//dockers/docker-base-trixie:source_runtime",
                        **{n: module.TARGETS[n] for n in ("source-contract.json", "source-receipt.json")}})
+        if debug_selected:
+            result["policy.json"] = module.TARGETS["policy.json"]
     for name, target in module.TARGETS.items():
         if not debug_selected and ("debug" in name or "symbols" in name or name.startswith("openssh")):
             continue
@@ -89,7 +91,8 @@ def prepare(image, version, variant, layout_dir, source_paths, bundle_dir, *, ma
     native, owned, artifacts = {}, {}, {}
     standalone = extra_standalone_targets(image, variant == "debug")
     if make_manifests is not None:
-        name = image + ("-dbg" if variant == "debug" else "")
+        # Both DASH engine targets explicitly use the runtime :labels target.
+        name = image + ("-dbg" if variant == "debug" and image != "docker-dash-engine" else "")
         for file in ("manifest.json", "image.env", "components.labels"):
             source = make_manifests / name / file
             if source.is_file():

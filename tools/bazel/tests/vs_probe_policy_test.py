@@ -10,6 +10,16 @@ from tools.bazel.ci import vs_probe_policy as policy
 
 
 class VSProbePolicyTest(unittest.TestCase):
+    def test_debug_dash_engine_validates_the_runtime_manifest_used_by_its_labels_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime_manifest = root / "manifests/docker-dash-engine/manifest.json"
+            runtime_manifest.parent.mkdir(parents=True)
+            runtime_manifest.write_text("{}")
+            products = policy.prepare("docker-dash-engine", "test", "debug", None, {}, root,
+                                      make_manifests=root / "manifests")
+            self.assertEqual(products["debug.make.manifest.json"], runtime_manifest)
+
     def test_disabled_debug_does_not_request_owner_symbols(self):
         for image in policy.FAMILIES:
             with self.subTest(image=image):
@@ -29,6 +39,23 @@ class VSProbePolicyTest(unittest.TestCase):
             (directory / "bundle.json").write_text(json.dumps(bundle))
             with self.assertRaisesRegex(ValueError, "selected service variants"):
                 policy.selected_images(directory, variants)
+
+    def test_gearbox_debug_launcher_follows_its_declared_implementation_provider(self):
+        launcher, library, real = "usr/bin/pi_CLI_dummy", "usr/lib/libpicli.so.0", "usr/lib/libpicli.so.0.1"
+        symbol_dir = "usr/lib/debug/.build-id/"
+        base = {"mode": 0o755, "uid": 0, "gid": 0, "has_debuglink": True, "needed": [], "sha256": "123"}
+        native = {launcher: {**base, "build_id": "0011"}, real: {**base, "build_id": "0022"}}
+        files = {path: {**item, "elf_machine": 62} for path, item in native.items()}
+        files.update({library: {"kind": "symlink", "linkname": "libpicli.so.0.1"},
+                      symbol_dir + "00/11.debug": {}, symbol_dir + "00/22.debug": {}})
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            spec = {"provider": library, "symbol": "main", "source": "main.c"}
+            (directory / "policy.json").write_text(json.dumps({"native": {"debug_forwarding": {launcher: spec}}}))
+            _, pairs = probe.native_expectations(directory, {"fixtures": {}, "image": "docker-gbsyncd-vs"},
+                                                 "debug", files, {"native": native, "owners": {}})
+            record = next(row for row in pairs if row["path"] == launcher)
+            self.assertEqual(record["debug_forwarding"], {**spec, "debug_path": symbol_dir + "00/22.debug"})
 
     def test_missing_native_source_or_requested_symbols_fails_before_docker(self):
         path = "usr/bin/service"

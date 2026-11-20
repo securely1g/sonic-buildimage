@@ -42,10 +42,15 @@ def family(archive):
     return archive.removesuffix(".gz").removesuffix("-dbg")
 
 
-def validation_targets(archives, registered_debug, debug_enabled):
+def validation_targets(archives, registered_debug, debug_enabled, validation_only_debug=()):
     from tools.bazel.ci import vs_probe_policy
 
     members = dict(archives)
+    for name in validation_only_debug:
+        runtime = family(name) + ".gz"
+        if debug_enabled and runtime in archives:
+            require(name.endswith("-dbg.gz"), "Expected a validation-only debug companion: " + name)
+            members[name] = archives[runtime].removesuffix(".gz") + "-dbg.gz"
     for parent in PARENTS:
         name = parent + ".gz"
         members.setdefault(name, f"//dockers/{parent}:{name}")
@@ -58,7 +63,7 @@ def validation_targets(archives, registered_debug, debug_enabled):
         entry["members"][variant] = (name, archive_label, archive_label.removesuffix(".gz"))
 
     for image, entry in families.items():
-        entry["supports_debug"] = image + "-dbg.gz" in registered_debug
+        entry["supports_debug"] = image + "-dbg.gz" in registered_debug or image + "-dbg.gz" in validation_only_debug
         with_debug = debug_enabled and entry["supports_debug"]
         require(set(entry["members"]) == ({"runtime", "debug"} if with_debug else {"runtime"}),
                 f"{image}: VS batch differs from debug selection")
@@ -78,10 +83,17 @@ def extra_targets(families):
 
 
 def configured_outputs(bazel, options, labels, events):
-    # Use cquery for the OCI TreeArtifacts as the build event stream may expand
-    # a directory to individual files. Each stable main-repo label names one
-    # file or one directory, including filegroup wrappers for external repos.
-    query = "set(" + " ".join(sorted(set(labels.values()))) + ")"
+    # Build private owner fixtures as top-level targets. A filegroup wrapper
+    # in this repository would create a cross-package visibility violation.
+    # cquery reports canonical repository names and preserves TreeArtifact roots.
+    external = {label for label in labels if label.startswith("@") and not label.startswith("@@")}
+    canonical = {label: label for label in labels}
+    if external:
+        repositories = json.loads(subprocess.check_output([bazel, "mod", "dump_repo_mapping", ""], text=True))
+        for label in external:
+            repository, target = label[1:].split("//", 1)
+            canonical[label] = "@@" + repositories[repository] + "//" + target
+    query = "set(" + " ".join(sorted(set(labels))) + ")"
     expression = 'str(target.label) + "\\t" + "\\t".join([f.path for f in target.files.to_list()])'
     result = subprocess.check_output(
         [bazel, "cquery", *options, query, "--output=starlark", "--starlark:expr=" + expression],
@@ -101,7 +113,7 @@ def configured_outputs(bazel, options, labels, events):
                 "unexpected Bazel output path: " + output)
         path = (execution_root / output).resolve(strict=True)
         outputs[label] = path
-    return {key: outputs[label] for key, label in labels.items()}
+    return {key: outputs[label] for key, label in canonical.items()}
 
 
 def copy_output(source, output):
@@ -166,9 +178,12 @@ def redis_config(source_tar):
 def stage_probe_fixtures(image, artifacts, bundle):
     from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES
 
-    # P4RT consumes the original source TAR to bind its SDK to the VS parent.
-    # Other loaded probes mount a private copy of database_config.json.
-    if image not in STANDALONE_IMAGES and image != "docker-sonic-p4rt":
+    # Standalone checks use the owner records projected in *.owners.json.
+    # P4RT also needs the original parent TAR for its separate SDK test.
+    if image in STANDALONE_IMAGES:
+        for name in ("base.source.tar", "config-engine.source.tar", "syncd.source.tar", "source-runtime.tar"):
+            artifacts.pop(name, None)
+    elif image != "docker-sonic-p4rt":
         for name in ("config-engine-source.tar", "config-engine.source.tar"):
             source = artifacts.pop(name, None)
             if source is None:
@@ -248,6 +263,7 @@ def write_bundles(args, families, paths, version):
             "installer_archives": sorted(args.archive),
             "auxiliary_parents": list(PARENTS),
             "registered_debug": sorted(set(args.registered_debug)),
+            "validation_only_debug": sorted(set(args.validation_only_debug)),
         }, sort_keys=True) + "\n")
         # A Make retry gets a complete replacement, including removal of any
         # debug bundles from an earlier attempt in this checkout.
@@ -268,7 +284,7 @@ def matrix(directory, debug_layer):
     for image in sorted(expected):
         bundle = json.loads((directory / image / "bundle.json").read_bytes())
         variants = {"runtime"}
-        if debug_layer == "y" and image + "-dbg.gz" in selection["registered_debug"]:
+        if debug_layer == "y" and image + "-dbg.gz" in selection["registered_debug"] + selection["validation_only_debug"]:
             variants.add("debug")
         require(set(bundle["archives"]) == variants, f"{image}: missing selected archive during publication")
         output.append({"image": image})

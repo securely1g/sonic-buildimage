@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import vs_container_validation as common
 from tools.bazel.ci import vs_probe_policy as policy
+from tools.bazel.ci.vs_archive_reuse import verify_execution_settings
 from tools.bazel.oci.oci_inventory import resolve_path
 
 
@@ -42,10 +43,14 @@ def native_expectations(directory, bundle, variant, files, evidence):
                 check.require(symbols in files, "installed native ELF has no matching detached symbols: " + name)
             if symbols in files:
                 pairs.append({"path": name, "debug_path": symbols, "needed": item["needed"]})
-    if bundle["image"] == "docker-dash-engine" and variant == "debug":
-        from tools.bazel.ci.dash_engine_validate import DEBUG_FORWARDING
+    if variant == "debug" and bundle["image"] in ("docker-dash-engine", "docker-gbsyncd-vs"):
+        if bundle["image"] == "docker-gbsyncd-vs":
+            forwarding = json.loads((directory / "policy.json").read_bytes())["native"]["debug_forwarding"]
+        else:
+            from tools.bazel.ci.dash_engine_validate import DEBUG_FORWARDING
+            forwarding = DEBUG_FORWARDING
         indexed = {p["path"]: p for p in pairs}
-        for launcher, spec in DEBUG_FORWARDING.items():
+        for launcher, spec in forwarding.items():
             provider = resolve_path(spec["provider"], files)
             indexed[launcher]["debug_forwarding"] = {**spec, "debug_path": indexed[provider]["debug_path"]}
     for product, members in evidence["owners"].items():
@@ -88,6 +93,7 @@ def p4rt_expectations(owner, revision, files, symbols, native):
         definitions = [i for i, line in enumerate(lines, 1) if re.match(r"\s*int\s+main\s*\(", line)]
         check.require(len(definitions) == 1, "ambiguous P4RT source main: " + name)
         result[name] = {"source": source, "first_line": definitions[0], "last_line": len(lines),
+                        "parameters": ["int", "char **"],
                         "runtime_sha256": native[binary]["sha256"], "dwp_sha256": symbols[dwp]["sha256"]}
     return result
 
@@ -122,6 +128,9 @@ def runtime_report(directory, bundle):
             report["source_debug_pairs"] = pairs
         env = dict(row.split("=", 1) for row in inventory["config"]["config"].get("Env", []))
         manifest = variant + ".make.manifest.json"
+        if image == "docker-nat":
+            check.require(manifest in bundle["fixtures"], "NAT archive is missing its Make manifest: " + name)
+            verify_execution_settings(inventory["config"]["config"], ["/usr/local/bin/supervisord"])
         if manifest in bundle["fixtures"]:
             declared = json.loads((directory / manifest).read_bytes())
             actual = inventory["config"]["config"]["Labels"]["com.azure.sonic.manifest"]

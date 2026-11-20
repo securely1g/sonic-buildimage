@@ -98,7 +98,7 @@ def settings_from(arguments, rc):
     return values
 
 
-def build_labels(workspace, archives, *, testonly=False):
+def build_labels(workspace, archives):
     """Main-repository producer labels already match Bazel's canonical event IDs."""
     labels = archives.copy()
     aliases = {name: label for name, label in archives.items()
@@ -107,9 +107,8 @@ def build_labels(workspace, archives, *, testonly=False):
         return labels
     # BEP rewrites apparent external repo names to canonical Bzlmod names and
     # expands label shorthand. Identity filegroups give these exports stable IDs.
-    testing = "testonly=True, " if testonly else ""
     contents = "".join(
-        f'filegroup(name={json.dumps(name)}, srcs=[{json.dumps(label)}], {testing}tags=["manual"])\n'
+        f'filegroup(name={json.dumps(name)}, srcs=[{json.dumps(label)}], tags=["manual"])\n'
         for name, label in sorted(aliases.items())
     )
     package = Path("target/bazel-container-batch") / hashlib.sha256(contents.encode()).hexdigest()
@@ -181,16 +180,13 @@ def build(args):
         owner = name.removesuffix(debug_suffix) + ".gz" if name.endswith(debug_suffix) else name
         owners[owner].append(name)
     labels = build_labels(workspace, archives)
-    validation_labels = {}
+    validation_labels = []
     if args.validation_directory:
         from tools.bazel.ci import vs_validation_bundles as validation
-        families = validation.validation_targets(archives, set(args.registered_debug), args.validation_debug == "y")
-        sources = validation.extra_targets(families)
-        # External canonical names change with module selection. Reuse the
-        # existing filegroup mechanism to give every requested input a stable ID.
-        keys = {f"input-{index}": label for index, label in enumerate(sources)}
-        stable = build_labels(workspace, keys, testonly=True)
-        validation_labels = {label: stable[key] for key, label in keys.items()}
+        families = validation.validation_targets(archives, set(args.registered_debug), args.validation_debug == "y",
+                                                 args.validation_only_debug)
+        # Top-level requests can select each owner's private test fixtures.
+        validation_labels = validation.extra_targets(families)
     settings = os.environ
     layout_labels = {}
     if args.boot_layouts:
@@ -224,7 +220,7 @@ def build(args):
             "--build_event_json_file=" + str(events),
             "--nobuild_event_json_file_path_conversion",
             "--experimental_build_event_output_group_mode=default=inline_only",
-            *dict.fromkeys([*labels.values(), *layout_labels.values(), *validation_labels.values()]),
+            *dict.fromkeys([*labels.values(), *layout_labels.values(), *validation_labels]),
         ]
         try:
             time_vs_image.run_phase(build_timing, "build", command)
@@ -262,6 +258,7 @@ def main():
     parser.add_argument("--validation-directory", type=Path, help="Publish per-image runtime-test artifacts")
     parser.add_argument("--validation-debug", choices=("y", "n"), default="n")
     parser.add_argument("--registered-debug", action="append", default=[])
+    parser.add_argument("--validation-only-debug", action="append", default=[])
     parser.add_argument("--shared-args", action="append", default=[],
                         help="Owner-declared Starlark build settings safe for the entire batch")
     for option in ("--archive", "--label", "--owner-args"):

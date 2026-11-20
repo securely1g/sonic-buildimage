@@ -1,10 +1,12 @@
 """Exercise VS consumer integrity using in-memory reference OCI descriptors and real archive bytes."""
 
+from contextlib import nullcontext
 import gzip
 import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -13,6 +15,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.bazel.ci import vs_container_probe, vs_probe_policy, vs_standalone_probes
 from tools.bazel.ci import vs_container_validation as validate
 
 
@@ -36,12 +39,14 @@ class VSContainerValidationTest(unittest.TestCase):
         }
         self.add_image("runtime", [b"base", b"runtime"])
 
-    def add_image(self, variant, layers):
+    def add_image(self, variant, layers, settings=None):
         name = self.image + ("-dbg" if variant == "debug" else "")
         config = {
             "rootfs": {"type": "layers", "diff_ids": ["sha256:" + digest(blob) for blob in layers]},
             "config": {"Labels": {"Tag": self.version}}, "os": "linux", "architecture": "amd64",
         }
+        if settings is not None:
+            config["config"] = settings
         raw = json.dumps(config).encode()
         blobs = {f"blobs/sha256/{digest(blob)}": blob for blob in layers}
         manifest = {"Layers": list(blobs), "RepoTags": [name + ":latest"], "Config": digest(raw) + ".json"}
@@ -95,6 +100,46 @@ class VSContainerValidationTest(unittest.TestCase):
         self.add_image("debug", [b"base", b"runtime", b"debug tools"])
         with self.assertRaisesRegex(ValueError, "selected variants"):
             self.validate()
+
+    def test_nat_installer_profile_reuses_its_make_manifest_and_existing_probe(self):
+        """Only selected NAT archives use the original Make settings and installed iptables/service probe."""
+        self.image = self.bundle["image"] = "docker-nat"
+        self.revision = self.bundle["revision"] = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        manifests = self.directory / "make"
+        expected = []
+        for variant, name in (("runtime", self.image), ("debug", self.image + "-dbg")):
+            self.bundle["debug_enabled"] = variant == "debug"
+            manifest = {"service": {"name": name}}
+            source = manifests / name / "manifest.json"
+            source.parent.mkdir(parents=True)
+            source.write_text(json.dumps(manifest))
+            fixtures = vs_probe_policy.prepare(self.image, self.version, variant, None, {}, self.directory,
+                                               make_manifests=manifests)
+            for filename, path in fixtures.items():
+                (self.directory / filename).write_bytes(path.read_bytes())
+                self.bundle["fixtures"][filename] = digest(path.read_bytes())
+            settings = {"Entrypoint": ["/usr/local/bin/supervisord"], "Env": ["DEBIAN_FRONTEND=noninteractive"],
+                        "Labels": {"Tag": self.version, "com.azure.sonic.manifest": json.dumps(manifest)}}
+            layers = [b"runtime"] if variant == "runtime" else [b"runtime", b"debug"]
+            self.add_image(variant, layers, settings)
+            bundle = self.validate(self.bundle["debug_enabled"])
+            report = vs_container_probe.runtime_report(self.directory, bundle)
+            expected.append(name)
+            with patch.object(validate, "loaded_image", side_effect=lambda *args: nullcontext("fixture-tag")), \
+                    patch.object(vs_standalone_probes, "run") as run:
+                vs_standalone_probes.standalone(self.image, self.directory, bundle, report)
+            self.assertEqual([call.args[2] for call in run.call_args_list], [["-s", "--", tag] for tag in expected])
+            script = (ROOT / "dockers/docker-nat/verify-installed.sh").read_text()
+            self.assertTrue(all(call.kwargs["stdin"] == script for call in run.call_args_list))
+
+        for changed, message in ((dict(settings, Entrypoint=["/bin/false"]), "entrypoint"),
+                                 (dict(settings, Cmd=["false"]), "command"),
+                                 (dict(settings, Env=["DEBIAN_FRONTEND=readline"]), "environment")):
+            with self.subTest(message=message):
+                self.add_image("debug", layers, changed)
+                with self.assertRaisesRegex(ValueError, message):
+                    vs_container_probe.runtime_report(self.directory, self.validate(True))
 
     def test_wrong_revision_or_release_fails_before_probing(self):
         with self.assertRaisesRegex(ValueError, "checkout"):

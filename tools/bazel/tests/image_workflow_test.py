@@ -62,7 +62,10 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(inspection["needs"], "vs_container")
         upload, = [step for step in producer["steps"] if step.get("id") == "vs_installer_upload"]
         fetch, = [step for step in inspection["steps"] if "download-artifact@" in step.get("uses", "")]
-        self.assertEqual(fetch["with"]["name"], upload["with"]["name"])
+        self.assertEqual(upload["with"]["name"], "sonic-vs-slave-amd64")
+        self.assertEqual(producer["outputs"]["installer_artifact_id"], "${{ steps.vs_installer_upload.outputs.artifact-id }}")
+        self.assertEqual(fetch["with"]["artifact-ids"], "${{ needs.vs_container.outputs.installer_artifact_id }}")
+        self.assertTrue(fetch["with"]["merge-multiple"])
         self.assertIn("/target/sonic-vs.bin", upload["with"]["path"].splitlines()[0])
         validate, = [step for step in inspection["steps"] if step.get("id") == "installer"]
         self.assertLess(inspection["steps"].index(fetch), inspection["steps"].index(validate))

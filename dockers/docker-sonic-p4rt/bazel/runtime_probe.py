@@ -101,7 +101,7 @@ def main():
             if "source" in expected:
                 owner_match = (found.get("file", "").replace("\\", "/").endswith(expected["source"])
                                and expected["first_line"] <= found.get("line", 0) <= expected["last_line"]
-                               and found.get("parameters"))
+                               and found.get("parameters") == expected["parameters"])
             else:
                 owner_match = all(found.get(key) == expected[key] for key in ("file", "line", "parameters"))
             require(found.get("found") and owner_match,
