@@ -1679,6 +1679,12 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 # An existing installer must be rebuilt when switching its image-store format.
 ifeq ($(CONFIGURED_PLATFORM),vs)
 vs_boot_mode_stamp := $(TARGET_PATH)/.installer-docker-load-on-boot
+ifeq ($(DOCKER_LOAD_ON_BOOT),y)
+vs_boot_bundle_inputs := files/docker/docker files/docker/load-images.conf files/docker/sonic-load-images \
+                        installer/install.sh onie-mk-demo.sh scripts/build_boot_packages.py \
+                        tools/bazel/image/boot_image_bundle.py tools/bazel/image/image_config.py \
+                        tools/bazel/oci/boot_layout.py tools/bazel/oci/oci_layout.py
+endif
 .PHONY: check-vs-boot-mode
 $(vs_boot_mode_stamp): check-vs-boot-mode
 	@mkdir -p "$(@D)"
@@ -1694,7 +1700,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         build_debian.sh \
         scripts/validate_sonic_version.py \
         $(vs_boot_mode_stamp) \
-        $(if $(filter y,$(DOCKER_LOAD_ON_BOOT)),tools/bazel/image/boot_image_bundle.py scripts/build_boot_packages.py files/docker/sonic-load-images files/docker/load-images.conf) \
+        $(vs_boot_bundle_inputs) \
         files/build_templates/sonic_version.yml.j2 \
         files/build_templates/sonic_debian_extension.j2 \
         files/build_templates/docker_image_ctl.j2 \
