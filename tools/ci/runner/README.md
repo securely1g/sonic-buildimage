@@ -10,12 +10,12 @@ use this pool. The job explicitly selects `grpc://172.16.0.4:9092` for Bazel's
 remote cache and downloader, with persistent Bazel and Make package caches under
 the runner workspace. Remote uploads are enabled only for master pushes.
 It does not require the K3s worker's managed cache configuration or `/actions`
-layout. The job validates the installer and the SWSS and Syncd runtime/debug
-image pairs before publishing them. Building this ONIE installer does not require
+layout. The job publishes the installer and per-container archives. Separate
+`bazel-x64` jobs verify the installer and run each selected container. Building this ONIE installer does not require
 KVM.
 
 The self-hosted `ubuntu-x64` pool runs the OCI regression checks and supplies verified
-source inputs to the installer job. The separate AMD64 and ARM64 archive jobs
+source inputs to the installer job. The native AMD64 and ARM64 package jobs
 run on the self-hosted `bazel-x64` and `bazel-arm64` pools. Fork PRs and manual
 runs with `skip_vs=true` skip the native installer.
 
