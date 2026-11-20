@@ -320,6 +320,16 @@ else:
         self.assertIn("controlled capture-pairs", validation_log)
         self.assertIn("controlled verify-pairs", validation_log)
 
+    def test_intermediate_squashfs_cache_is_opt_in_for_the_actual_vs_build(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        option = workflow[True]["workflow_dispatch"]["inputs"]["cache_vs_squashfs"]
+        self.assertEqual(option["type"], "boolean")
+        self.assertIs(option["default"], False)
+        build = next(step for step in workflow["jobs"]["vs_container"]["steps"]
+                     if step.get("id") == "native_build")
+        self.assertEqual(build["env"]["SONIC_VS_SQUASHFS_CACHE_SOURCE"],
+                         "${{ inputs.cache_vs_squashfs && format('{0}/vs-squashfs-private', runner.workspace) || '' }}")
+
     def test_vs_installer_retains_all_bazel_recipe_diagnostics_before_validation(self):
         job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
         build = next(step for step in job["steps"] if step.get("id") == "native_build")

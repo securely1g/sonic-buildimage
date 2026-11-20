@@ -654,6 +654,26 @@ sudo cp ./asic_config_checksum $FILESYSTEM_ROOT/etc/sonic/asic_config_checksum
 ## Check if not a last stage of RFS build
 fi
 
+compress_intermediate_rootfs() (
+    output="$TARGET_PATH/$RFS_SQUASHFS_NAME"
+    if [[ -z ${VS_SQUASHFS_CACHE:-} ]]; then
+        sudo rm -f -- "$output"
+        sudo mksquashfs "$FILESYSTEM_ROOT" "$output" -Xcompression-level 1
+        return
+    fi
+    if [[ $VS_SQUASHFS_CACHE == /* && -d $VS_SQUASHFS_CACHE ]] && bazel_bin=$(command -v "${BAZEL:-bazel}") &&
+        python3 tools/bazel/image/intermediate_squashfs.py --root "$FILESYSTEM_ROOT" \
+            --output "$output" --cache-dir "$VS_SQUASHFS_CACHE" --bazel "$bazel_bin"; then
+        return
+    fi
+
+    echo '[INFO] Using native compression for the VS intermediate root filesystem' >&2
+    temporary=$(mktemp -d -- "$TARGET_PATH/.vs-squashfs.XXXXXXXX")
+    trap 'rm -rf -- "$temporary"' EXIT
+    sudo mksquashfs "$FILESYSTEM_ROOT" "$temporary/image" -Xcompression-level 1 || return
+    mv -fT -- "$temporary/image" "$output"
+)
+
 if [[ $RFS_SPLIT_FIRST_STAGE == y ]]; then
     echo '[INFO] Finished with RFS first stage'
     echo '[INFO] Umount all'
@@ -665,8 +685,7 @@ if [[ $RFS_SPLIT_FIRST_STAGE == y ]]; then
     ## Wait fuser fully kill the processes
     sudo timeout 15s bash -c 'until LANG=C chroot $0 umount /proc; do sleep 1; done' $FILESYSTEM_ROOT || true
 
-    sudo rm -f $TARGET_PATH/$RFS_SQUASHFS_NAME
-    sudo mksquashfs $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME -Xcompression-level 1
+    compress_intermediate_rootfs
 
     exit 0
 fi

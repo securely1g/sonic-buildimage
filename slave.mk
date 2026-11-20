@@ -1607,6 +1607,16 @@ endif
 
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE)/$(BLDENV)/$(CONFIGURED_PLATFORM)/$(CONFIGURED_ARCH),y/trixie/vs/amd64)
+ifeq ($(filter y,$(CROSS_BUILD_ENVIRON) $(MULTIARCH_QEMU_ENVIRON)),)
+ifneq ($(SONIC_VS_SQUASHFS_CACHE_DIR),)
+$(TARGET_PATH)/sonic-vs.bin__vs__rfs.squashfs: private export VS_SQUASHFS_CACHE := $(SONIC_VS_SQUASHFS_CACHE_DIR)
+$(TARGET_PATH)/sonic-vs.bin__vs__rfs.squashfs: tools/bazel/image/intermediate_squashfs.py tools/bazel/image/private_squashfs.bzl
+# Keep this personalized intermediate off the shared Make package cache.
+override sonic-vs.bin__vs__rfs.squashfs_CACHE_OVERRIDE := none
+endif
+endif
+endif
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
         .platform \
         build_debian.sh \

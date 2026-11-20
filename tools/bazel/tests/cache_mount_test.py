@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check host cache configuration without starting Docker or a builder."""
 
+import csv
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,56 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class CacheMountTest(unittest.TestCase):
+    def test_vs_intermediate_uses_a_private_mount_and_skips_the_shared_package_cache(self):
+        work = (ROOT / "Makefile.work").read_text()
+        host = work[work.index("# The intermediate contains"):work.index("# User name and tag")]
+        slave = (ROOT / "slave.mk").read_text()
+        start = slave.index("ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE)/$(BLDENV)/$(CONFIGURED_PLATFORM)/$(CONFIGURED_ARCH)")
+        selection = slave[start:slave.index("\n$(addprefix ", start)]
+        cache = (ROOT / "Makefile.cache").read_text()
+        cache_gate = cache[cache.index("WCACHE_OPTIONS :="):cache.index("# It logs the reason")]
+        target = "target/sonic-vs.bin__vs__rfs.squashfs"
+        other = "target/sonic-vs.img.gz__vs__rfs.squashfs"
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / 'owner\'s "private", cache'
+            python = directory / "python3"
+            python.write_text('#!/bin/sh\nexit "$PREFLIGHT"\n')
+            python.chmod(0o755)
+            builder_env = "SONIC_VS_SQUASHFS_CACHE_DIR := $(patsubst SONIC_VS_SQUASHFS_CACHE_DIR=%,%,$(filter SONIC_VS_SQUASHFS_CACHE_DIR=%,$(DOCKER_RUN)))"
+            makefile = host + "\n" + builder_env + "\n" + selection + "\n" + cache_gate + f"""
+SONIC_DPKG_CACHE_METHOD := rwcache
+{Path(target).name}_CACHE_MODE := GIT_CONTENT_SHA
+{Path(other).name}_CACHE_MODE := GIT_CONTENT_SHA
+.PHONY: {target} {other}
+{target} {other}:
+	@printf '%s\\n' $(DOCKER_RUN)
+	@$(if $(call CHECK_WCACHE_ENABLED,$(notdir $@)),echo package-cache-save,:)
+"""
+            flags = dict(BUILD_WITH_BAZEL_WHEN_AVAILABLE="y", BLDENV="trixie", CONFIGURED_PLATFORM="vs",
+                         CONFIGURED_ARCH="amd64", COMPILE_HOST_ARCH="amd64", TARGET_PATH="target",
+                         SONIC_VS_SQUASHFS_CACHE_SOURCE=str(source))
+            for goal, changed, preflight, mount, save_package in (
+                    (target, {}, 0, True, False), (target, {}, 1, False, False),
+                    (target, {Path(target).name + "_CACHE_OVERRIDE": "rwcache"}, 0, True, False),
+                    (target, {"BUILD_WITH_BAZEL_WHEN_AVAILABLE": "n"}, 0, False, True),
+                    (target, {"CONFIGURED_ARCH": "arm64"}, 0, False, True),
+                    (target, {"SONIC_VS_SQUASHFS_CACHE_SOURCE": ""}, 0, False, True),
+                    (other, {}, 0, False, True)):
+                with self.subTest(goal=goal, changed=changed, preflight=preflight):
+                    args = ["make", "--no-print-directory", "-f", "-", goal]
+                    args.extend(f"{key}={value}" for key, value in (flags | changed).items())
+                    result = subprocess.run(args, cwd=ROOT, input=makefile, text=True, capture_output=True,
+                                            env=dict(os.environ, PREFLIGHT=str(preflight),
+                                                     PATH=str(directory) + os.pathsep + os.environ["PATH"]))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    lines = result.stdout.splitlines()
+                    self.assertEqual("--mount" in lines, mount)
+                    self.assertEqual("package-cache-save" in lines, save_package)
+                    if mount:
+                        self.assertEqual(next(csv.reader([lines[lines.index("--mount") + 1]])),
+                                         ["type=bind", f"source={source}", "target=/vs-squashfs-cache"])
+
     def workflow_step(self, name):
         """Run the workflow's actual shell, without a second implementation of its policy."""
         workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
@@ -23,6 +74,28 @@ class CacheMountTest(unittest.TestCase):
         self.assertEqual(workflow.count(marker), 1)
         step = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0]
         return textwrap.dedent(step.split("        run: |\n", 1)[1])
+
+    def test_failed_native_fallback_preserves_existing_squashfs(self):
+        script = (ROOT / "build_debian.sh").read_text()
+        start = script.index("compress_intermediate_rootfs()")
+        function = script[start:script.index("\n)\n", start) + 3]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dest = root / "original.squashfs"
+            dest.write_bytes(b"original")
+            program = function + r"""
+sudo() { "$@"; }
+mksquashfs() { printf candidate > "$2"; return "$NATIVE_STATUS"; }
+compress_intermediate_rootfs
+"""
+            env = dict(os.environ, VS_SQUASHFS_CACHE=str(root / "unmounted"), TARGET_PATH=str(root),
+                       RFS_SQUASHFS_NAME=dest.name, FILESYSTEM_ROOT="fsroot-vs")
+            for status, content in ((1, b"original"), (0, b"candidate")):
+                result = subprocess.run(["bash", "-ec", program], env=dict(env, NATIVE_STATUS=str(status)),
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertEqual(dest.read_bytes(), content)
+                self.assertEqual(list(root.iterdir()), [dest])
 
     @unittest.skipUnless(os.geteuid() == 0, "requires root to exercise actual root/non-root cache ownership")
     def test_ci_cache_namespace_preserves_legacy_entries_and_reuses_writer_cache(self):

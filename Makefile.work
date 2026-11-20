@@ -87,6 +87,8 @@
 #  *                 action and Bazelisk caches for all Bazel builds.
 #  *                 Default: $(SONIC_DPKG_CACHE_SOURCE)/bazel, independent of
 #  *                 BUILD_WITH_BAZEL_WHEN_AVAILABLE. Empty disables the mount.
+#  * SONIC_VS_SQUASHFS_CACHE_SOURCE: Private local directory for compressing the
+#  *                 AMD64 VS intermediate rootfs. Empty uses native mksquashfs.
 ###############################################################################
 
 SHELL = /bin/bash
@@ -530,6 +532,23 @@ DOCKER_RUN := mkdir -p -- $(SONIC_BAZEL_CACHE_QUOTED) && test -w $(SONIC_BAZEL_C
 	-v $(SONIC_BAZEL_CACHE_QUOTED):/bazel_cache:rw \
 	-e BAZELISK_HOME=/bazel_cache/bazelisk \
 	-v '$(subst ','"'"',$(PWD)/tools/bazel/slave.bazelrc)':/etc/bazel.bazelrc:ro
+endif
+
+# The intermediate contains local account data. Only this builder gets a
+# separate local cache. An unusable source selects fresh native compression.
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE)/$(BLDENV)/$(CONFIGURED_PLATFORM)/$(CONFIGURED_ARCH)/$(COMPILE_HOST_ARCH),y/trixie/vs/amd64/amd64)
+VS_SQUASHFS_GOALS := target/sonic-vs.bin target/sonic-vs.bin__vs__rfs.squashfs
+ifneq ($(and $(strip $(SONIC_VS_SQUASHFS_CACHE_SOURCE)),$(filter $(VS_SQUASHFS_GOALS),$(MAKECMDGOALS))),)
+VS_SQUASHFS_CACHE_SOURCE_QUOTED := '$(subst ','"'"',$(SONIC_VS_SQUASHFS_CACHE_SOURCE))'
+ifeq ($(shell python3 tools/bazel/image/intermediate_squashfs.py --prepare-cache-dir $(VS_SQUASHFS_CACHE_SOURCE_QUOTED) >/dev/null && echo ready),ready)
+# Docker parses --mount as CSV. Quote the whole source field separately from the shell argument.
+VS_SQUASHFS_MOUNT := type=bind,"source=$(subst ","",$(SONIC_VS_SQUASHFS_CACHE_SOURCE))",target=/vs-squashfs-cache
+DOCKER_RUN += --mount '$(subst ','"'"',$(VS_SQUASHFS_MOUNT))' -e SONIC_VS_SQUASHFS_CACHE_DIR=/vs-squashfs-cache
+else
+# Preserve private mode on fallback, even though there is no cache mount.
+DOCKER_RUN += -e SONIC_VS_SQUASHFS_CACHE_DIR=unavailable
+endif
+endif
 endif
 
 # User name and tag for "docker-*" images created by native dockerd mode.

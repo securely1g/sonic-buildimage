@@ -289,6 +289,33 @@ records that invocation and its profile. The container rows record their
 archive exports. The normal installer selects runtime containers, and
 a debug installer requires `INSTALL_DEBUG_TOOLS=y` and `SONIC_ENABLE_DEBUG_LAYER=y`.
 
+The manual **Bazel OCI** workflow can cache the gzip compression of the
+intermediate AMD64 VS root filesystem. Select `source_image=none`, clear
+`skip_vs`, and enable `cache_vs_squashfs`. A direct native Make build can
+select the same path:
+
+```sh
+make BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+    SONIC_VS_SQUASHFS_CACHE_SOURCE="$HOME/.cache/sonic-vs-squashfs" \
+    target/sonic-vs.bin
+```
+
+Make prepares the Debian tree on every build. Bazel snapshots its contents
+and filesystem metadata, then looks up the compressed image on the same
+worker. The target log for `sonic-vs.bin__vs__rfs.squashfs` reports
+`SonicSquashfs: disk cache hit` or `SonicSquashfs: executed locally`.
+File contents, ownership, permissions, hardlinks, extended attributes and
+modification times affect reuse. The filesystem creation timestamp uses
+the source root directory's modification time.
+
+The selected cache path must be a worker-local directory owned by the build
+user with mode 0700. Account data can be present in the image, so this mode
+disables remote Bazel transfers and the shared Make cache write for that
+target. Other recipes retain their configured caches. If private compression
+is unavailable Make uses the native compressor. The option defaults off:
+reading the tree and restoring the compressed file can take longer than
+native gzip even on a cache hit.
+
 The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
 the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
 registry login, Make reuses a local computed-tag slave image, pulls the matching
