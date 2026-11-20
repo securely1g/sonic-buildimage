@@ -4,7 +4,7 @@ import runpy
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -37,7 +37,7 @@ class LoadOnBootTest(unittest.TestCase):
         self.assertFalse(self.bundle.exists())
         self.assertEqual(self.inspect.call_args.args[0][-3:], list(self.expected))
         self.run_loader()
-        self.load.assert_called_once()
+        self.assertEqual(self.load.call_count, 2)  # docker load, followed by sync -f
         self.inspect.assert_called_once()
 
     def test_interrupted_load_retries_the_same_archive(self):
@@ -45,6 +45,7 @@ class LoadOnBootTest(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_loader()
         self.assertTrue(self.bundle.is_file())
+        self.assertFalse((self.store / ".sonic-images-loaded").exists())
         self.load.side_effect = None
         self.run_loader()
         self.assertFalse(self.bundle.exists())
@@ -55,6 +56,23 @@ class LoadOnBootTest(unittest.TestCase):
             self.run_loader()
         self.assertTrue(self.bundle.is_file())
         self.assertFalse((self.store / ".sonic-images-loaded").exists())
+
+    def test_store_sync_failure_retains_source_for_retry(self):
+        self.load.side_effect = [None, subprocess.CalledProcessError(1, "sync")]
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_loader()
+        self.assertTrue(self.bundle.is_file())
+        self.assertFalse((self.store / ".sonic-images-loaded").exists())
+        self.load.side_effect = None
+        self.run_loader()
+        self.assertFalse(self.bundle.exists())
+
+    def test_upgrade_waits_even_with_valid_receipt(self):
+        self.run_loader()
+        ready = Mock()
+        with patch.dict(load_images.__globals__, wait_for_daemon=ready):
+            load_images(self.store, self.inventory, wait=True)
+        ready.assert_called_once_with()
 
     def test_missing_source_or_stale_receipt_fails(self):
         self.bundle.unlink()
