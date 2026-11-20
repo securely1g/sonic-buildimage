@@ -233,7 +233,16 @@ else
         TAR_EXTRA_OPTION="--numeric-owner --warning=no-timestamp"
     fi
     mkdir -p $demo_mnt/$image_dir/$DOCKERFS_DIR
-    if [ -f $FILESYSTEM_DOCKERFS ]; then
+    if [ "$FILESYSTEM_DOCKERFS" = sonic-images.tar.gz ]; then
+        # Keep the compressed OCI bundle in the version-specific Docker mount.
+        # The new image imports it at boot or before upgrade package migration.
+        bundle_dir="$demo_mnt/$image_dir/$DOCKERFS_DIR"
+        if [ -f "$FILESYSTEM_DOCKERFS" ]; then
+            cp "$FILESYSTEM_DOCKERFS" "$bundle_dir/"
+        else
+            unzip -op "$INSTALLER_PAYLOAD" "$FILESYSTEM_DOCKERFS" > "$bundle_dir/$FILESYSTEM_DOCKERFS"
+        fi
+    elif [ -f $FILESYSTEM_DOCKERFS ]; then
         tar xz $TAR_EXTRA_OPTION -f $FILESYSTEM_DOCKERFS -C $demo_mnt/$image_dir/$DOCKERFS_DIR
     else
         unzip -op $INSTALLER_PAYLOAD "$FILESYSTEM_DOCKERFS" | tar xz $TAR_EXTRA_OPTION -f - -C $demo_mnt/$image_dir/$DOCKERFS_DIR
