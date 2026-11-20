@@ -1,5 +1,6 @@
 """Run the real image-verification workflow shell against recording commands."""
 
+import itertools
 import json
 import os
 from pathlib import Path
@@ -342,7 +343,8 @@ class VerificationWorkflowTest(unittest.TestCase):
     def test_p4rt_build_and_installed_jobs_use_same_run_archives(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
         archive, installed = jobs["p4rt_native"], jobs["p4rt_runtime"]
-        self.assertEqual(archive["runs-on"], jobs["gearbox_archive"]["runs-on"])
+        self.assertEqual(archive["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(jobs["gearbox_archive"]["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(archive["container"], jobs["gearbox_archive"]["container"])
         self.assertEqual(archive["if"], jobs["archive"]["if"])
         self.assertEqual(installed["runs-on"], "ubuntu-24.04")
@@ -368,8 +370,11 @@ class VerificationWorkflowTest(unittest.TestCase):
         launcher = step["run"].split("<<'PYLAUNCH'\n", 1)[1].split("\nPYLAUNCH", 1)[0]
         trust = jobs["p4rt_native"]["env"]["P4RT_TRUSTED_CACHE"]
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", trust)
-        for trusted in ("true", "false"):
-            with self.subTest(trusted=trusted), tempfile.TemporaryDirectory(prefix="P4RT launch ") as name:
+        self.assertEqual(jobs["p4rt_native"]["env"]["P4RT_UPLOAD_CACHE"],
+                         "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
+        for trusted, upload in itertools.product(("true", "false"), repeat=2):
+            with self.subTest(trusted=trusted, upload=upload), \
+                    tempfile.TemporaryDirectory(prefix="P4RT launch ") as name:
                 directory = Path(name)
                 (directory / "bazel").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
                 (directory / "bazel").chmod(0o755)
@@ -380,7 +385,8 @@ class VerificationWorkflowTest(unittest.TestCase):
                 mirror.touch()
                 environment = dict(os.environ, PATH=name + os.pathsep + os.environ["PATH"],
                                    HOME=name, PYTHONPATH=str(ROOT), RUNNER_TEMP=name, P4RT_SCRATCH=name,
-                                   P4RT_TRUSTED_CACHE=trusted, GITHUB_ENV=str(directory / "env"),
+                                   P4RT_TRUSTED_CACHE=trusted, P4RT_UPLOAD_CACHE=upload,
+                                   GITHUB_ENV=str(directory / "env"),
                                    GITHUB_PATH=str(directory / "path"))
                 subprocess.run([sys.executable, "-c", launcher], env=environment, check=True)
                 wrappers = Path((directory / "path").read_text().strip())
@@ -396,7 +402,9 @@ class VerificationWorkflowTest(unittest.TestCase):
                 settings = [shlex.split(line) for line in rc.read_text().splitlines()]
                 expected = [["common", "--repository_cache=/repo"], ["build", "--disk_cache=/disk"],
                             ["common", "--experimental_downloader_config=" + str(mirror)],
-                            ["build", "--remote_upload_local_results=false"]]
+                            # Only trusted master pushes write owner results to the pool cache.
+                            ["build", "--remote_upload_local_results=" +
+                             ("true" if trusted == upload == "true" else "false")]]
                 if trusted == "true":
                     expected.extend([["common", "--remote_cache=grpc://172.16.0.4:9092"],
                                      ["common", "--experimental_remote_downloader=grpc://172.16.0.4:9092"],
@@ -417,7 +425,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         ])
         self.assertEqual(jobs["otel_runtime"]["needs"], "otel_archive")
         dash = jobs["dash_engine_archive"]
-        self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(dash["timeout-minutes"], 360)
         self.assertEqual(shlex.split(dash["env"]["SONIC_CONTAINER_BAZEL_OPTIONS"]), [
             "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
@@ -1003,7 +1011,8 @@ class VerificationWorkflowTest(unittest.TestCase):
                       "name = Path(sys.argv[0]).name\n"
                       "stage = 'daemon' if name == 'make' else ('prepare' if any("
                       "arg.endswith('/prepare_nested_docker.py') for arg in sys.argv) else ('relay' if any("
-                      "arg.endswith('/verify_dhcp_relay.py') for arg in sys.argv) else 'probe'))\n"
+                      "arg.endswith('/verify_dhcp_relay.py') for arg in sys.argv) else ('bmp' if any("
+                      "arg.endswith('/bmp_loaded.py') for arg in sys.argv) else 'probe')))\n"
                       "with Path(os.environ['CALLS']).open('a') as output: output.write(stage + '\\n')\n"
                       "sys.exit(int(os.environ['PREPARE_EXIT']) if stage == 'prepare' else 0)\n")
             make.write_text(record)
@@ -1013,7 +1022,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             sudo = commands / "sudo"
             sudo.write_text('#!/bin/sh\nexec "$@"\n')
             sudo.chmod(0o755)
-            for failure, expected in (("0", ["prepare", "daemon", "probe", "relay"]), ("23", ["prepare"])):
+            for failure, expected in (("0", ["prepare", "daemon", "probe", "relay", "bmp"]), ("23", ["prepare"])):
                 calls.unlink(missing_ok=True)
                 result = subprocess.run(["bash", "-c", common["SONIC_RUN_CMDS"]], cwd=directory,
                                         env=dict(environment, CALLS=str(calls), PREPARE_EXIT=failure),
@@ -1098,8 +1107,14 @@ class VerificationWorkflowTest(unittest.TestCase):
             linkage_report = directory / "artifacts/vs/tlm-teamd-linkage.txt"
             for name, probe_exit, docker_exit, output, expected_status in cases:
                 with self.subTest(name=name):
-                    for path in (directory / "validate_runtime.json", directory / "verify_nat_archives.json",
-                                 directory / "verify_dhcp_relay.json", linkage_call, linkage_report):
+                    for path in (
+                        directory / "validate_runtime.json",
+                        directory / "verify_nat_archives.json",
+                        directory / "verify_dhcp_relay.json",
+                        directory / "bmp_loaded.json",
+                        linkage_call,
+                        linkage_report,
+                    ):
                         path.unlink(missing_ok=True)
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
                         env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
@@ -1133,6 +1148,9 @@ class VerificationWorkflowTest(unittest.TestCase):
                         self.assertFalse(linkage_call.exists())
                         self.assertFalse(linkage_report.exists())
                     else:
+                        bmp = json.loads((directory / "bmp_loaded.json").read_text())
+                        self.assertEqual(bmp["docker_host"], "unix:///worker-private.sock")
+                        self.assertEqual(bmp["args"], ["-B", "tools/bazel/ci/bmp_loaded.py"])
                         linkage = json.loads(linkage_call.read_text())
                         self.assertEqual(linkage["args"], docker_arguments)
                         self.assertEqual(linkage["docker_host"], "unix:///worker-private.sock")
@@ -1143,6 +1161,62 @@ class VerificationWorkflowTest(unittest.TestCase):
         for path in ("artifacts/vs/swss-images/", "artifacts/vs/syncd-p4-images/",
                      "artifacts/vs/*-installed-images-policy.json", "artifacts/vs/installed-images.json"):
             self.assertIn(path, retained)
+
+
+class MergedImageVerificationContractTest(unittest.TestCase):
+    """Inert merge controls: parse shell text without executing image probes."""
+
+    @staticmethod
+    def verify_scripts(workflow):
+        jobs = yaml.safe_load(workflow)["jobs"]
+        return {
+            name: next(step["run"] for step in jobs[name]["steps"]
+                       if step.get("name") == "Verify installed base, SWSS and Syncd images")
+            for name in ("vs", "vs_container")
+        }
+
+    def assert_verifiers(self, scripts):
+        relay = "python3 -B tools/bazel/ci/verify_dhcp_relay.py"
+        bmp = "python3 -B tools/bazel/ci/bmp_loaded.py"
+        nat = "python3 -B tools/bazel/ci/verify_nat_archives.py"
+        for name, script in scripts.items():
+            self.assertEqual(script.count(relay), 1, name)
+            self.assertEqual(script.count(bmp), 1, name)
+            self.assertLess(script.index(relay), script.index(bmp), name)
+        # The dormant legacy route uses an explicit fail-closed AND chain.
+        self.assertIn(relay + " && \\\n    " + bmp, scripts["vs"])
+        # The active route's heredoc enables errexit/pipefail before every probe.
+        active = scripts["vs_container"]
+        self.assertIn("<<'SH'\nset -euo pipefail\n", active)
+        self.assertIn(relay + "\n" + bmp + "\n", active)
+        self.assertEqual(active.count(nat), 1)
+        self.assertLess(active.index(bmp), active.index(nat))
+        self.assertNotIn("|| true", active)
+
+    def test_both_parents_verifiers_retained_in_each_route(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        self.assert_verifiers(self.verify_scripts(workflow))
+
+    def test_missing_parent_verifier_and_weakened_order_are_rejected(self):
+        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
+        scripts = self.verify_scripts(workflow)
+        relay = "python3 -B tools/bazel/ci/verify_dhcp_relay.py"
+        bmp = "python3 -B tools/bazel/ci/bmp_loaded.py"
+        mutations = []
+        for name in scripts:
+            for verifier in (relay, bmp):
+                changed = dict(scripts)
+                changed[name] = changed[name].replace(verifier, "true")
+                mutations.append(changed)
+        changed = dict(scripts)
+        changed["vs"] = changed["vs"].replace(relay + " &&", relay + " ;")
+        mutations.append(changed)
+        changed = dict(scripts)
+        changed["vs_container"] = changed["vs_container"].replace("set -euo pipefail", "set -u")
+        mutations.append(changed)
+        for changed in mutations:
+            with self.subTest(scripts=changed), self.assertRaises(AssertionError):
+                self.assert_verifiers(changed)
 
 
 if __name__ == "__main__":
