@@ -27,6 +27,20 @@ class BundleSelectionTest(unittest.TestCase):
                 self.assertEqual(bundles.configured_outputs("bazel", [], [label], events), {label: root / "mock"})
                 self.assertIn("set(" + label + ")", bazel.call_args.args[0])
 
+    def test_cross_repository_alias_binds_its_single_requested_output(self):
+        """Bazel may print a rule from an entirely different repository for an owner alias."""
+        alias = "@lldpd//:runtime"
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "lldpd.tar").touch()
+            events = root / "events"
+            events.write_text(json.dumps({"workspaceInfo": {"localExecRoot": str(root)}}))
+            with patch.object(bundles.subprocess, "check_output", side_effect=[
+                '{"lldpd":"lldpd+"}', "@@lldpd++_repo_rules+lldpd_source//:runtime\tlldpd.tar\n" * 2, "lldpd.tar\n",
+            ]) as bazel:
+                self.assertEqual(bundles.configured_outputs("bazel", [], [alias], events), {alias: root / "lldpd.tar"})
+                self.assertEqual(bazel.call_args.args[0], ["bazel", "cquery", alias, "--output=files"])
+
     def test_registered_companion_only_requested_when_debug_is_enabled(self):
         runtime = {"docker-unit.gz": "//unit:docker-unit.gz"}
         debug = {"docker-unit-dbg.gz": "//unit:docker-unit-dbg.gz"}

@@ -100,6 +100,11 @@ def configured_outputs(bazel, options, labels, events):
         text=True,
     )
     execution_root = execution_root_from_bep(events)
+    def local_path(output):
+        require(output and not Path(output).is_absolute() and ".." not in Path(output).parts,
+                "unexpected Bazel output path: " + output)
+        return (execution_root / output).resolve(strict=True)
+
     outputs = {}
     for line in result.splitlines():
         fields = line.split("\t")
@@ -108,11 +113,19 @@ def configured_outputs(bazel, options, labels, events):
         output = fields[1]
         if label.lstrip("@").startswith("//"):
             label = label.lstrip("@")
-        require(label not in outputs, "duplicate configured output: " + label)
-        require(output and not Path(output).is_absolute() and ".." not in Path(output).parts,
-                "unexpected Bazel output path: " + output)
-        path = (execution_root / output).resolve(strict=True)
+        path = local_path(output)
+        require(label not in outputs or outputs[label] == path, "conflicting configured outputs: " + label)
         outputs[label] = path
+    for requested, label in canonical.items():
+        # cquery exposes the actual rule for an alias, which can even live in
+        # a different external repository. Ask for that alias alone to bind
+        # its unique output without guessing its target name or configuration.
+        if label not in outputs:
+            paths = subprocess.check_output(
+                [bazel, "cquery", *options, requested, "--output=files"], text=True,
+            ).splitlines()
+            require(len(paths) == 1, requested + ": expected one configured alias output")
+            outputs[label] = local_path(paths[0])
     return {key: outputs[label] for key, label in canonical.items()}
 
 
