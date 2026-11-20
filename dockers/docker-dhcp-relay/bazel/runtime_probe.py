@@ -10,11 +10,14 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import time
+import xmlrpc.client
 
 import redis
+from supervisor.xmlrpc import SupervisorTransport
 
 sys.path.insert(0, str(Path(__file__).parent))
 import runtime_smoke
@@ -47,15 +50,17 @@ def fixture(native, vlans=True, dualtor=False):
     if dualtor:
         metadata["subtype"] = "DualToR"
     # Empty tables vanish in Redis; startup needs a real port for its alias map.
-    data = {"DEVICE_METADATA": {"localhost": metadata}, "PORT": {"Ethernet0": {"alias": "etp1"}}, "INTERFACE": {},
+    data = {"DEVICE_METADATA": {"localhost": metadata}, "PORT": {"Ethernet0": {"alias": "etp1"}},
+            "INTERFACE": {"Ethernet0": {}, "Ethernet0|198.51.100.1/24": {},
+                          "Ethernet0|2001:db8:1::1/64": {}},
             "PORTCHANNEL_INTERFACE": {}, "MGMT_INTERFACE": {}, "VLAN": {}, "VLAN_INTERFACE": {},
             "DHCP_RELAY": {}, "FEATURE": {"dhcp_relay": {"state": "enabled", "set_owner": "local"},
                                            "dhcp_server": {"state": "disabled"}}}
     if vlans:
-        data.update({"VLAN": {"Vlan1000": {"vlanid": "1000", "dhcp_servers": ["192.0.2.2"]}},
+        data.update({"VLAN": {"Vlan1000": {"vlanid": "1000", "dhcp_servers": ["198.51.100.2"]}},
                      "VLAN_INTERFACE": {"Vlan1000": {}, "Vlan1000|192.0.2.1/24": {},
                                         "Vlan1000|2001:db8::1/64": {}},
-                     "DHCP_RELAY": {"Vlan1000": {"dhcpv6_servers": ["2001:db8::2"]}}})
+                     "DHCP_RELAY": {"Vlan1000": {"dhcpv6_servers": ["2001:db8:1::2"]}}})
     return data
 
 
@@ -107,6 +112,14 @@ def installed_startup(name, data, programs, config_db, counter_db, state_db):
     log_path = Path("/tmp") / (name + "-startup.log")
     for directory in ("/var/log/supervisor", "/var/spool/rsyslog"):
         Path(directory).mkdir(parents=True, exist_ok=True)
+    # Each profile starts fresh instead of caching the prior supervisor groups.
+    Path("/etc/supervisor/conf.d/docker-dhcp-relay.supervisord.conf").unlink(missing_ok=True)
+    endpoint = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=(";", "#"))
+    endpoint.read("/etc/supervisor/supervisord.conf")
+    server_url = endpoint.get("supervisorctl", "serverurl")
+    require(server_url.startswith("unix://"), "Supervisor endpoint must be a private Unix socket")
+    transport = SupervisorTransport(serverurl=server_url)
+    supervisor = xmlrpc.client.ServerProxy("http://localhost", transport=transport).supervisor
     with log_path.open("w") as log:
         process = subprocess.Popen(["/usr/bin/docker_init.sh"], stdout=log, stderr=subprocess.STDOUT,
                                    start_new_session=True)
@@ -116,21 +129,33 @@ def installed_startup(name, data, programs, config_db, counter_db, state_db):
 
             def pids():
                 require(process.poll() is None, "entrypoint exited:\n" + log_path.read_text())
+                # Bound the actual Unix socket, including connect/read, rather than
+                # spawning one Python supervisorctl process for each daemon.
+                previous_timeout = socket.getdefaulttimeout()
+                socket.setdefaulttimeout(5)
+                try:
+                    processes = supervisor.getAllProcessInfo()
+                except (OSError, xmlrpc.client.Error):
+                    return None
+                finally:
+                    transport.close()
+                    socket.setdefaulttimeout(previous_timeout)
                 if not groups:
                     config.read("/etc/supervisor/conf.d/docker-dhcp-relay.supervisord.conf")
                     for section in config.sections():
                         if section.startswith("group:"):
                             for member in config.get(section, "programs").split(","):
-                                groups[member.strip()] = section.removeprefix("group:") + ":" + member.strip()
+                                groups[member.strip()] = section.removeprefix("group:")
+                statuses = {(item["group"], item["name"]): item for item in processes}
+                require(len(statuses) == len(processes), "Supervisor returned duplicate program identities")
                 observed = {}
                 for daemon in programs:
                     if daemon == "start":
                         continue
-                    result = subprocess.run(["supervisorctl", "pid", groups.get(daemon, daemon)], text=True,
-                                            capture_output=True, timeout=5)
-                    if result.returncode or not result.stdout.strip().isdigit() or int(result.stdout.strip()) <= 0:
+                    status = statuses.get((groups.get(daemon, daemon), daemon))
+                    if not status or status["statename"] != "RUNNING" or status["pid"] <= 0:
                         return None
-                    observed[daemon] = int(result.stdout.strip())
+                    observed[daemon] = status["pid"]
                 return observed
 
             observed = wait_until(pids, "supervisor did not start declared daemons: " + name)
@@ -150,6 +175,7 @@ def installed_startup(name, data, programs, config_db, counter_db, state_db):
                 require(pids() == observed, "daemon restarted during acceptance: " + name)
             return {"daemons": sorted(observed), "startup_cleared_counters": True, "stable_seconds": 10}
         finally:
+            transport.close()
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGTERM)
                 try:
@@ -201,9 +227,11 @@ def main():
     require(config["INSTANCES"]["redis"]["hostname"] == "127.0.0.1", "Redis hostname is not loopback")
     binary = Path("/probe/redis/usr/bin/redis-server")
     redis_fixture = {"executable": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-                     "database_config": str(database)}
+                     "database_config": str(database), "loopback_tcp": True}
     for args in (["link", "add", "Vlan1000", "type", "veth", "peer", "name", "Ethernet0"],
                  ["link", "set", "Vlan1000", "up"], ["link", "set", "Ethernet0", "up"],
+                 ["addr", "add", "198.51.100.1/24", "dev", "Ethernet0"],
+                 ["-6", "addr", "add", "2001:db8:1::1/64", "dev", "Ethernet0", "nodad"],
                  ["addr", "add", "192.0.2.1/24", "dev", "Vlan1000"],
                  ["-6", "addr", "add", "2001:db8::1/64", "dev", "Vlan1000", "nodad"]):
         command(["ip", *args])
