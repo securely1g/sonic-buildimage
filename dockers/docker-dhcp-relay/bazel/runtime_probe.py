@@ -46,7 +46,8 @@ def fixture(native, vlans=True, dualtor=False):
                 "mac": "02:00:00:00:00:01", "has_sonic_dhcpv4_relay": str(native)}
     if dualtor:
         metadata["subtype"] = "DualToR"
-    data = {"DEVICE_METADATA": {"localhost": metadata}, "PORT": {}, "INTERFACE": {},
+    # Empty tables vanish in Redis; startup needs a real port for its alias map.
+    data = {"DEVICE_METADATA": {"localhost": metadata}, "PORT": {"Ethernet0": {"alias": "etp1"}}, "INTERFACE": {},
             "PORTCHANNEL_INTERFACE": {}, "MGMT_INTERFACE": {}, "VLAN": {}, "VLAN_INTERFACE": {},
             "DHCP_RELAY": {}, "FEATURE": {"dhcp_relay": {"state": "enabled", "set_owner": "local"},
                                            "dhcp_server": {"state": "disabled"}}}
@@ -133,6 +134,8 @@ def installed_startup(name, data, programs, config_db, counter_db, state_db):
                 return observed
 
             observed = wait_until(pids, "supervisor did not start declared daemons: " + name)
+            require(Path("/tmp/port-name-alias-map.txt").read_text().split() == ["Ethernet0", "etp1"],
+                    "entrypoint did not render the private port alias")
             for daemon, pid in observed.items():
                 binary = shlex.split(programs[daemon])[0]
                 if daemon != "dhcprelayd":
@@ -199,8 +202,8 @@ def main():
     binary = Path("/probe/redis/usr/bin/redis-server")
     redis_fixture = {"executable": str(binary), "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                      "database_config": str(database)}
-    for args in (["link", "add", "Vlan1000", "type", "veth", "peer", "name", "RelayPeer"],
-                 ["link", "set", "Vlan1000", "up"], ["link", "set", "RelayPeer", "up"],
+    for args in (["link", "add", "Vlan1000", "type", "veth", "peer", "name", "Ethernet0"],
+                 ["link", "set", "Vlan1000", "up"], ["link", "set", "Ethernet0", "up"],
                  ["addr", "add", "192.0.2.1/24", "dev", "Vlan1000"],
                  ["-6", "addr", "add", "2001:db8::1/64", "dev", "Vlan1000", "nodad"]):
         command(["ip", *args])
