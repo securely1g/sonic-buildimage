@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+import zlib
 
 import pexpect
 
@@ -27,7 +28,7 @@ from validate_sonic_version import read_installer_version
 # Recovery media used by platform/vs/onie.mk (EFI-capable ISO also boots with BIOS).
 ONIE_PATH = "onie/efi/onie-recovery-x86_64-kvm_x86_64-r0.iso"
 ONIE_SHA256 = "23d2d1240ac0c3b82eabcb73032201d93b34c85a196b819ee02d2e1853974b9c"
-MODULES = ("virtio_blk", "virtio_net", "squashfs", "overlay")
+ACTIVE_MODULES = ("virtio_blk", "virtio_net", "squashfs", "overlay")
 GRUB = "The highlighted entry will be executed"
 VERSION_KEYS = ("build_version", "commit_id", "asic_type", "kernel_version")
 
@@ -44,31 +45,54 @@ def file_digest(path):
         return digest(stream)
 
 
-def package_modules(package):
-    """Get the ABI and the four required module hashes from the actual selected .deb."""
-    stems = set()
+def configured_modules():
+    names = []
+    for line in Path("files/initramfs-tools/modules").read_text().splitlines():
+        fields = line.partition("#")[0].split()
+        if fields:
+            names.append(fields[0].replace("-", "_"))
+    return names
+
+
+def package_modules(package, required):
+    """Collect requested modules from the kernel image package, including built-ins."""
+    releases = set()
     records = {}
     with subprocess.Popen(["dpkg-deb", "--fsys-tarfile", package], stdout=subprocess.PIPE) as proc:
         with proc.stdout, tarfile.open(fileobj=proc.stdout, mode="r|") as archive:
             for entry in archive:
+                if not entry.isfile():
+                    continue
                 path = entry.name.removeprefix("./")
-                if path.startswith("boot/vmlinuz-") and entry.isfile():
-                    stems.add(path.removeprefix("boot/vmlinuz-"))
-                match = re.fullmatch(r"(?:usr/)?lib/modules/([^/]+)/(kernel/.*/([^/]+)\.ko(?:\.(?:xz|gz|zst))?)", path)
-                if match and entry.isfile() and match[3] in MODULES:
-                    name = match[3]
+                if path.startswith("boot/vmlinuz-"):
+                    releases.add(path.removeprefix("boot/vmlinuz-"))
+                location = re.fullmatch(r"(?:usr/)?lib/modules/([^/]+)/(.*)", path)
+                if not location:
+                    continue
+                release, relative = location.groups()
+                if relative == "modules.builtin":
+                    with archive.extractfile(entry) as manifest:
+                        for builtin in manifest.read().decode().splitlines():
+                            name = Path(builtin).stem.replace("-", "_")
+                            if name in required:
+                                if name in records:
+                                    raise ValueError(f"duplicate {name} in {package}")
+                                records[name] = {"kind": "builtin", "release": release, "path": builtin}
+                match = re.fullmatch(r"kernel/.*/([^/]+)\.ko(?:\.(?:xz|gz|zst))?", relative)
+                if match and (name := match[1].replace("-", "_")) in required:
                     if name in records:
                         raise ValueError(f"duplicate {name} in {package}")
                     with archive.extractfile(entry) as module:
-                        records[name] = {"release": match[1], "path": match[2], "sha256": digest(module)}
+                        records[name] = {"kind": "module", "release": release,
+                                         "path": relative, "sha256": digest(module)}
             # Drain tar's zero padding so dpkg-deb can exit normally.
             while proc.stdout.read(1024 * 1024):
                 pass
         if proc.wait():
             raise ValueError(f"could not read the kernel package {package}")
-    if len(stems) != 1 or set(records) != set(MODULES):
-        raise ValueError(f"{package} has kernel(s) {sorted(stems)} and module(s) {sorted(records)}")
-    (release,) = stems
+    if len(releases) != 1 or set(records) != set(required):
+        raise ValueError(f"{package} has kernel(s) {sorted(releases)}; missing modules: {sorted(set(required) - records.keys())}")
+    (release,) = releases
     if any(item["release"] != release for item in records.values()):
         raise ValueError("module ABI differs from the selected kernel image")
     return release, records
@@ -88,7 +112,15 @@ def vm(args, log):
         child.logfile_read = None
         if child.isalive():
             child.kill(signal.SIGTERM)
-        child.close(force=True)
+            # QEMU flushes qcow2 writes and tears down guest RAM before exiting.
+            # pexpect.close() normally allows just a fraction of a second.
+            try:
+                child.expect(pexpect.EOF, timeout=90)
+            except pexpect.TIMEOUT:
+                child.kill(signal.SIGKILL)
+                child.expect(pexpect.EOF, timeout=30)
+                raise RuntimeError("QEMU did not stop cleanly after SIGTERM") from None
+        child.close()
 
 
 # Run inside the newly installed guest as an ordinary user. Check all four
@@ -102,11 +134,18 @@ version = yaml.safe_load(pathlib.Path("/etc/sonic/sonic_version.yml").read_text(
 result = {"release": release, "version": {k: version[k] for k in VERSION_KEYS}, "modules": {}}
 for name in MODULES:
     filename = subprocess.check_output(["/sbin/modinfo", "-F", "filename", name], text=True).strip()
-    path = pathlib.Path(filename).resolve()
-    vermagic = subprocess.check_output(["/sbin/modinfo", "-F", "vermagic", name], text=True).split()[0]
-    result["modules"][name] = {"path": str(path.relative_to(directory)), "release": vermagic,
-                               "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                               "loaded": name in loaded and pathlib.Path("/sys/module", name).is_dir()}
+    if filename == "(builtin)":
+        builtins = {pathlib.Path(line).stem.replace("-", "_"): line
+                    for line in (directory / "modules.builtin").read_text().splitlines()}
+        module = {"kind": "builtin", "release": release, "path": builtins[name]}
+        active = pathlib.Path("/sys/module", name).is_dir()
+    else:
+        path = pathlib.Path(filename).resolve()
+        vermagic = subprocess.check_output(["/sbin/modinfo", "-F", "vermagic", name], text=True).split()[0]
+        module = {"kind": "module", "release": vermagic, "path": str(path.relative_to(directory)),
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        active = name in loaded and pathlib.Path("/sys/module", name).is_dir()
+    result["modules"][name] = dict(module, loaded=active)
 print("HOST_BASE_GUEST " + json.dumps(result, separators=(",", ":")))
 """
 
@@ -114,17 +153,47 @@ print("HOST_BASE_GUEST " + json.dumps(result, separators=(",", ":")))
 def check_guest(observed, release, modules, version):
     if observed["release"] != release or observed["version"] != version:
         raise ValueError(f"unexpected booted kernel or SONiC version: {observed}")
-    for name in MODULES:
-        actual = observed["modules"][name]
-        if actual != dict(modules[name], loaded=True):
-            raise ValueError(f"{name}: guest {actual}, expected {modules[name]} and loaded")
+    if set(observed["modules"]) != set(modules):
+        raise ValueError("module inventory differs from the selected kernel package")
+    for name, expected in modules.items():
+        actual = dict(observed["modules"][name])
+        active = actual.pop("loaded")
+        if actual != expected or (name in ACTIVE_MODULES and not active):
+            raise ValueError(f"{name}: guest {observed['modules'][name]}, expected {expected}, "
+                             f"required active: {name in ACTIVE_MODULES}")
+
+
+def probe_guest(common, log, username, timeout, modules):
+    with vm(common + ["-snapshot"], log) as child:
+        child.expect_exact(GRUB, timeout=180)
+        child.send("\r")
+        child.expect(r"sonic login:", timeout=timeout)
+        child.sendline(username)
+        # Keep authentication and shell echo out of the serial logs.
+        child.logfile_read = None
+        child.expect_exact("Password:")
+        child.sendline(os.environ.get("SONIC_PASSWORD", "YourPaSsWoRd"))
+        prompt = re.escape(username) + r"@sonic:[^\r\n]*[#$] "
+        child.expect(prompt, timeout=120)
+        child.sendline("stty -echo")
+        child.expect(prompt, timeout=120)
+        child.logfile_read = log
+        probe = f"MODULES={tuple(sorted(modules))!r}\nVERSION_KEYS={VERSION_KEYS!r}\n" + GUEST_PROBE
+        # Keep the serial input comfortably below the TTY's single-line limit.
+        encoded = base64.b64encode(zlib.compress(probe.encode())).decode()
+        child.sendline(f"""python3 -c 'import base64,zlib; exec(zlib.decompress(base64.b64decode("{encoded}")))'""")
+        child.expect(r"(?m)^HOST_BASE_GUEST (\{[^\r\n]*\})\r*$", timeout=120)
+        return json.loads(child.match[1])
 
 
 def boot(args, work, result):
     installer = args.installer.resolve(strict=True)
     result["installer_sha256"] = file_digest(installer)
     result["kernel_deb_sha256"] = file_digest(args.kernel_deb)
-    release, modules = package_modules(args.kernel_deb)
+    initramfs = configured_modules()
+    result["initramfs_configured_modules"] = initramfs
+    result["required_active_modules"] = list(ACTIVE_MODULES)
+    release, modules = package_modules(args.kernel_deb, set(ACTIVE_MODULES).union(initramfs))
     metadata = read_installer_version(installer)
     version = {key: metadata[key] for key in VERSION_KEYS}
     if any(not isinstance(value, str) or not value.strip() for value in version.values()):
@@ -168,29 +237,14 @@ def boot(args, work, result):
             child.expect_exact("ONIE: Install OS", timeout=args.timeout)
             child.expect_exact(GRUB, timeout=120)
             child.send("\r")
-            child.expect_exact(GRUB, timeout=args.timeout)
+            rejected = child.expect_exact([GRUB, "Failure: Unable to install image", "Kernel panic"],
+                                          timeout=args.timeout)
+            if rejected:
+                raise RuntimeError("ONIE failed to install sonic-vs.bin; see serial log")
         result["install_seconds"] = round(time.monotonic() - start, 3)
         print("Booting the disk with both recovery media removed", flush=True)
         start = time.monotonic()
-        with vm(common, log) as child:
-            child.expect_exact(GRUB, timeout=180)
-            child.send("\r")
-            child.expect(r"sonic login:", timeout=args.timeout)
-            child.sendline(args.username)
-            # Keep authentication and shell echo out of the serial logs.
-            child.logfile_read = None
-            child.expect_exact("Password:")
-            child.sendline(os.environ.get("SONIC_PASSWORD", "YourPaSsWoRd"))
-            prompt = re.escape(args.username) + r"@sonic:[^\r\n]*[#$] "
-            child.expect(prompt, timeout=120)
-            child.sendline("stty -echo")
-            child.expect(prompt, timeout=120)
-            child.logfile_read = log
-            probe = f"MODULES={MODULES!r}\nVERSION_KEYS={VERSION_KEYS!r}\n" + GUEST_PROBE
-            encoded = base64.b64encode(probe.encode()).decode()
-            child.sendline(f"printf %s '{encoded}' | base64 -d | python3")
-            child.expect(r"(?m)^HOST_BASE_GUEST (\{[^\r\n]*\})\r*$", timeout=120)
-            observed = json.loads(child.match[1])
+        observed = probe_guest(common, log, args.username, args.timeout, modules)
         result["boot_probe_seconds"] = round(time.monotonic() - start, 3)
         result["guest"] = observed
         check_guest(observed, release, modules, version)
@@ -198,6 +252,8 @@ def boot(args, work, result):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-revision", help="full git SHA used to build the installer")
+    parser.add_argument("--verifier-revision", help="full git SHA of the boot verifier")
     parser.add_argument("--installer", type=Path, required=True)
     parser.add_argument("--kernel-deb", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -206,9 +262,13 @@ def main():
     parser.add_argument("--timeout", type=int, default=3600, help="seconds per install/boot phase")
     parser.add_argument("--username", default=os.environ.get("SONIC_USERNAME", "admin"))
     args = parser.parse_args()
+    for revision in (args.build_revision, args.verifier_revision):
+        if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+            parser.error("expected a 40-character git SHA")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     result = {"verified": False, "worker": os.environ.get("RUNNER_NAME") or socket.gethostname(),
-              "installer": args.installer.name, "kernel_deb": args.kernel_deb.name}
+              "installer": args.installer.name, "kernel_deb": args.kernel_deb.name,
+              "build_revision": args.build_revision, "verifier_revision": args.verifier_revision}
     try:
         with tempfile.TemporaryDirectory(prefix="vs-host-boot-", dir=args.work_dir) as temporary:
             boot(args, Path(temporary), result)

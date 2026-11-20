@@ -110,6 +110,50 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]",
                       workflow_jobs["vs_container"])
 
+    def test_warm_builder_accepts_only_the_independent_source_run_and_attempt(self):
+        steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]["steps"]
+        guard = next(step for step in steps if step.get("id") == "cold_source")
+        checkout = next(step for step in steps if step.get("name") == "Checkout repository and pinned submodules")
+        verifier = next(step for step in steps if step.get("name") == "Check out the boot verifier at this workflow revision")
+        self.assertLess(steps.index(guard), steps.index(checkout))
+        self.assertEqual(checkout["with"]["ref"], "${{ steps.cold_source.outputs.revision || '' }}")
+        self.assertEqual(verifier["with"]["ref"], "${{ github.sha }}")
+        self.assertIn("/scripts/validate_sonic_version.py", verifier["with"]["sparse-checkout"])
+        sha = "4ee673441d21e690bacd31dd66b31d0201c5f31e"
+        branch = "prototype/vs-hostbase-two-workers"
+        run = dict(id=44701956443, run_attempt=1, event="workflow_dispatch", head_branch=branch,
+                   path=".github/workflows/bazel-oci.yml", head_sha=sha)
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            stage = workspace / "vs-cold-123-2"
+            stage.mkdir()
+            output = workspace / "result"
+            (stage / "cold-receipt.json").write_text(json.dumps(
+                dict(mode="cold", cache_hit=False, trial_id="44701956443-1", revision=sha)))
+            curl = workspace / "curl"
+            curl.write_text("#!/bin/bash\n"
+                            '[[ "${!#}" == https://api.github.test/repos/owner/repo/actions/runs/44701956443/attempts/1 ]] || exit 22\n'
+                            "cat api.json\n")
+            curl.chmod(0o755)
+            env = dict(os.environ, PATH=str(workspace) + ":" + os.defpath, SEED_RUN="44701956443",
+                       GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2", GITHUB_REF_NAME=branch,
+                       GITHUB_REPOSITORY="owner/repo", GITHUB_API_URL="https://api.github.test",
+                       GITHUB_OUTPUT=str(output), GH_TOKEN="fixture")
+            for changes, accepted in [({}, True), ({"path": "bazel-oci.yml"}, True),
+                                      ({"id": 1}, False), ({"run_attempt": 2}, False),
+                                      ({"event": "push"}, False), ({"path": "other.yml"}, False),
+                                      ({"head_branch": "master"}, False), ({"head_sha": "b" * 40}, False)]:
+                with self.subTest(changes=changes):
+                    output.unlink(missing_ok=True)
+                    (workspace / "api.json").write_text(json.dumps(run | changes))
+                    got = subprocess.run(["bash", "-c", guard["run"]], cwd=workspace, env=env,
+                                         capture_output=True, text=True)
+                    self.assertEqual(got.returncode == 0, accepted, got.stderr)
+                    if accepted:
+                        self.assertEqual(output.read_text(), f"revision={sha}\n")
+                    else:
+                        self.assertFalse(output.exists())
+
     def test_host_installer_is_isolated_and_preserves_input_and_output_contracts(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
         self.assertNotIn("concurrency", job)
@@ -127,7 +171,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
             "--experimental_remote_downloader_local_fallback",
         ):
             self.assertIn(flag, job["env"]["BAZEL_CONTAINER_ARGS"])
-        checkout = job["steps"][0]["with"]
+        checkout = next(step["with"] for step in job["steps"] if step.get("name") == "Checkout repository and pinned submodules")
         directory = "vs-${{ github.run_id }}-${{ github.run_attempt }}"
         self.assertEqual(checkout["path"], directory)
         self.assertTrue(checkout["submodules"])
@@ -156,7 +200,10 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                       selected["Verify P4 source bytes before native Make"]["run"])
         for step in job["steps"]:
             if "download-artifact@" in step.get("uses", ""):
-                self.assertTrue(step["with"]["path"].startswith(directory + "/"))
+                if step["with"].get("name") == "vs-hostbase-cold-receipt":
+                    self.assertEqual(step["with"]["path"], "vs-cold-${{ github.run_id }}-${{ github.run_attempt }}")
+                else:
+                    self.assertTrue(step["with"]["path"].startswith(directory + "/"))
             if "upload-artifact@" in step.get("uses", ""):
                 for path in step["with"]["path"].splitlines():
                     self.assertTrue(path.startswith(directory + "/"), path)

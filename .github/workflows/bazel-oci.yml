@@ -4060,12 +4060,61 @@ jobs:
         --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
         --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
     steps:
+      - name: Download the independent cold-worker receipt
+        if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' && inputs.vs_hostbase_phase == 'warm'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.vs_hostbase_seed_run }}
+          name: vs-hostbase-cold-receipt
+          path: vs-cold-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Verify the cold source revision against its originating workflow attempt
+        id: cold_source
+        if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' && inputs.vs_hostbase_phase == 'warm'
+        working-directory: ${{ github.workspace }}
+        env:
+          SEED_RUN: ${{ inputs.vs_hostbase_seed_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SEED_RUN" =~ ^[1-9][0-9]{0,19}$ ]]
+          receipt="vs-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/cold-receipt.json"
+          test -f "$receipt" && test ! -L "$receipt"
+          trial=$(jq -er 'select(.mode == "cold" and .cache_hit == false) | .trial_id' "$receipt")
+          [[ "$trial" =~ ^([1-9][0-9]{0,19})-([1-9][0-9]{0,5})$ ]]
+          seed_id=${BASH_REMATCH[1]}
+          attempt=${BASH_REMATCH[2]}
+          test "$seed_id" = "$SEED_RUN"
+          source_sha=$(jq -er .revision "$receipt")
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          curl --fail --silent --show-error --retry 3 -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$seed_id/attempts/$attempt" |
+            jq -e --arg id "$seed_id" --arg attempt "$attempt" --arg branch "$GITHUB_REF_NAME" --arg sha "$source_sha" '
+              (.id | tostring) == $id and (.run_attempt | tostring) == $attempt and
+              .event == "workflow_dispatch" and (.path == ".github/workflows/bazel-oci.yml" or .path == "bazel-oci.yml") and
+              .head_branch == $branch and .head_sha == $sha' > /dev/null
+          printf 'revision=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository and pinned submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ steps.cold_source.outputs.revision || '' }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
           submodules: recursive
+
+      - name: Stage the verified cold receipt in the native checkout
+        if: steps.cold_source.outcome == 'success'
+        env:
+          BUILD_REVISION: ${{ steps.cold_source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BUILD_REVISION"
+          seed="$GITHUB_WORKSPACE/vs-cold-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          install -d -m 0700 artifacts/vs/hostbase-experiment
+          mv -- "$seed/cold-receipt.json" artifacts/vs/hostbase-experiment/
+          rmdir -- "$seed"
 
       - name: Download verified source archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -4170,36 +4219,30 @@ jobs:
           memory_option=$(python3 -B tools/bazel/ci/resources.py) || exit
           printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "${BAZEL_CONTAINER_ARGS:-}" "$memory_option" >> "$GITHUB_ENV"
 
-      - name: Download the independent cold-worker receipt
-        if: github.event_name == 'workflow_dispatch' && inputs.vs_hostbase_phase == 'warm'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.vs_hostbase_seed_run }}
-          name: vs-hostbase-cold-receipt
-          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment
-
       - name: Identify the VS host-base trial, builder and worker
-        if: github.event_name == 'workflow_dispatch' && (inputs.vs_hostbase_phase == 'warm' || inputs.vs_hostbase_phase == 'cold')
+        if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' && (inputs.vs_hostbase_phase == 'warm' || inputs.vs_hostbase_phase == 'cold')
         env:
           TRIAL_PHASE: ${{ inputs.vs_hostbase_phase }}
           SEED_RUN: ${{ inputs.vs_hostbase_seed_run }}
+          COLD_REVISION: ${{ steps.cold_source.outputs.revision }}
         run: |
           set -euo pipefail
           # This pool registers one VS runner per Azure VM, with an ephemeral suffix.
           [[ "$RUNNER_NAME" =~ ^(sonic-baz[[:alnum:]]+)-vs-[[:alnum:]]+$ ]]
           machine=${BASH_REMATCH[1],,}
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           if [[ "$TRIAL_PHASE" == cold ]]; then
+            test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
             test -z "$SEED_RUN"
             trial="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           else
+            test "$(git rev-parse HEAD)" = "$COLD_REVISION"
             [[ "$SEED_RUN" =~ ^[1-9][0-9]*$ ]]
             receipt=artifacts/vs/hostbase-experiment/cold-receipt.json
             trial=$(jq -er .trial_id "$receipt")
             [[ "$trial" =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]
             test "${BASH_REMATCH[1]}" = "$SEED_RUN"
-            test "$(jq -er .worker_id "$receipt")" != "$machine"
+            seed_worker=$(jq -er '.worker_id | select(test("^sonic-baz[a-z0-9]+$"))' "$receipt")
+            test "$seed_worker" != "$machine"
           fi
           image=$(make -s -f Makefile.work BLDENV=trixie showtag | tail -n 1)
           digest=$(docker image inspect --format '{{.Id}}' "$image")
@@ -4253,13 +4296,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Check out the boot verifier at this workflow revision
+        if: env.SONIC_HOSTBASE_MODE == 'warm'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-verifier
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /tools/bazel/ci/vs_host_base_boot.py
+            /scripts/validate_sonic_version.py
+
       - name: Install the restored VS installer on a blank disk and verify guest modules
         if: env.SONIC_HOSTBASE_MODE == 'warm'
+        env:
+          BUILD_REVISION: ${{ steps.cold_source.outputs.revision }}
         run: |
           set -euo pipefail
+          verifier=artifacts/vs/hostbase-verifier
+          test "$(git rev-parse HEAD)" = "$BUILD_REVISION"
+          test "$(git -C "$verifier" rev-parse HEAD)" = "$GITHUB_SHA"
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-            SONIC_RUN_CMDS='/usr/bin/python3 -B tools/bazel/ci/vs_host_base_boot.py --installer target/sonic-vs.bin --kernel-deb target/debs/trixie/linux-image-*-unsigned_*_amd64.deb --output artifacts/vs/host-base-boot.json'
+            SONIC_RUN_CMDS="/usr/bin/python3 -B $verifier/tools/bazel/ci/vs_host_base_boot.py --build-revision $BUILD_REVISION --verifier-revision $GITHUB_SHA --installer target/sonic-vs.bin --kernel-deb target/debs/trixie/linux-image-*-unsigned_*_amd64.deb --output artifacts/vs/host-base-boot.json"
           make -f Makefile.work BLDENV=trixie sonic-slave-run \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
             SONIC_RUN_CMDS="python3 -B tools/bazel/ci/vs_host_base.py --cleanup-trial $SONIC_HOSTBASE_TRIAL_ID"
