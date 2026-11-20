@@ -342,7 +342,7 @@ class VerificationWorkflowTest(unittest.TestCase):
     def test_p4rt_build_and_installed_jobs_use_same_run_archives(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
         archive, installed = jobs["p4rt_native"], jobs["p4rt_runtime"]
-        self.assertEqual(archive["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(archive["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(jobs["gearbox_archive"]["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(archive["container"], jobs["gearbox_archive"]["container"])
         self.assertEqual(archive["if"], jobs["archive"]["if"])
