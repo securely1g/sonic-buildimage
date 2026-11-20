@@ -997,6 +997,80 @@ test("profile cards show named spans and receipts without accepting raw private 
   assert.equal(recipeRows(value), null);
 }));
 
+// Measured boundaries of the master VS installer build in run 44638292829.
+function nativeInstallerStep() {
+  const tasks = [
+    {id: "vs-container-images-1", offset_seconds: 2023.544782, duration_seconds: 2817.313521},
+    {id: "rootfs-1", offset_seconds: 5441.178008, duration_seconds: 243.355476},
+    {id: "final-image-1", offset_seconds: 5712.876499, duration_seconds: 920.387027},
+  ].map(task => ({...task, outcome: "finished"}));
+  const section = {id: "vs-image-1", duration_seconds: 6929.801178, offset_seconds: 0, tasks};
+  return {...stepWith({version: 1, status: "available", source: "github-job-log", duration_seconds: section.duration_seconds, sections: [section]}),
+    name: "Build sonic-vs.bin through the host Make wrapper", duration_seconds: 6930};
+}
+
+test("historical native installer boundaries account for all five intervals without inventing child timings", () => withDocument(() => {
+  const view = renderStep(nativeInstallerStep());
+  const rows = descendants(view, node => node.className === "installer-interval");
+  assert.deepEqual(rows.map(row => row.children.slice(0, 2).map(cell => cell.textContent)), [
+    ["Preparation before the container batch", "33m 44s"], ["Shared container batch", "46m 57s"],
+    ["Remaining prerequisites before installer assembly", "14m 32s"], ["Final installer assembly", "15m 20s"],
+    ["After installer assembly", "4m 57s"],
+  ]);
+  assert.doesNotMatch(view.textContent, /Collect build-version metadata|unattributed|P4RT source build/);
+  assert.match(view.textContent, /Root filesystem squashfs/);
+}));
+
+test("incomplete, repeated or overlapping native boundary pairs preserve the underlying spans", () => withDocument(() => {
+  const cases = [
+    step => { step.name = "Build the VS image"; }, step => { step.conclusion = "failure"; },
+    (_, tasks) => { tasks.shift(); }, (_, tasks) => { tasks.pop(); },
+    (_, tasks) => { tasks.push({...tasks[0], id: "vs-container-images-2"}); },
+    (_, tasks) => { tasks.push({...tasks[2], id: "final-image-2"}); },
+    (_, tasks) => { tasks[0].offset_seconds = tasks[2].offset_seconds - tasks[0].duration_seconds + 1; },
+    (_, tasks) => { tasks[2].outcome = "cached"; },
+  ];
+  for (const change of cases) {
+    const step = nativeInstallerStep();
+    change(step, step.breakdown.sections[0].tasks);
+    const view = renderStep(step);
+    assert.doesNotMatch(view.textContent, /VS installer build timeline/);
+    assert.match(view.textContent, /Root filesystem squashfs/);
+  }
+}));
+
+test("native preparation substeps, ONIE Docker phases and unmarked cleanup time retain their scope", () => withDocument(() => {
+  const step = nativeInstallerStep(), tasks = step.breakdown.sections[0].tasks;
+  const installer = tasks.find(task => task.id === "final-image-1");
+  const tailStart = installer.offset_seconds + installer.duration_seconds;
+  const task = (kind, offset_seconds, duration_seconds) => ({id: kind + "-1", offset_seconds, duration_seconds, outcome: "finished"});
+  tasks.push(task("kernel-prep", 60, 155), task("p4rt-prep", 440, 1300), task("p4rt-owner", 480, 1000),
+    task("build-version-collection", tailStart + 3, 2), task("builder-exit", tailStart + 5, 280),
+    task("trixie-image-cleanup", tailStart + 285, 1), task("bookworm-cleanup", tailStart + 286, 3));
+  installer.phase_breakdown = {version: 1, source: "build-phase-markers", status: "available", reason: null,
+    duration_seconds: installer.duration_seconds, segments: [
+      {phase: "assembly", context: "docker-load", offset_seconds: 0, duration_seconds: 200},
+      {phase: "compression", context: "docker-store", offset_seconds: 200, duration_seconds: 110},
+      {phase: "compression", context: "payload", offset_seconds: 310, duration_seconds: installer.duration_seconds - 310},
+    ]};
+  const view = renderStep(step);
+  for (const label of ["Kernel package preparation", "P4RT source and SDK preparation", "P4RT source build",
+    "P4RT preparation total includes", "Collect build-version metadata", "Exit the builder and return to the host",
+    "Trixie image cleanup", "Bookworm cleanup invocation", "11s of the post-assembly interval unattributed",
+    "Assembly · Load and tag Docker images", "Compression · Compress the Docker store", "Compression · Build the payload ZIP"]) {
+    assert.ok(view.textContent.includes(label), label);
+  }
+  const intervals = descendants(view, node => node.className === "installer-interval");
+  assert.match(intervals[0].textContent, /P4RT substeps are included/);
+  assert.match(intervals[3].textContent, /ONIE assembly and compression.*Load and tag Docker images/);
+  assert.match(intervals[4].textContent, /Trixie image cleanup/);
+  assert.equal(descendants(intervals[4], node => node.tagName === "details")[0].children[0].tagName, "summary");
+  tasks.find(task => task.id === "builder-exit-1").offset_seconds -= 1;
+  const overlapping = renderStep(step);
+  assert.match(overlapping.textContent, /VS installer build timeline/);
+  assert.doesNotMatch(overlapping.textContent, /interval unattributed/);
+}));
+
 test("legacy snapshots keep their step duration without requiring a breakdown", () => withDocument(() => {
   const step = stepWith(undefined);
   const snapshot = {schema_version: 1, repository: "securely1g/sonic-buildimage", pull_requests: [], runs: [{run_id: 1, attempt: 1, pr_numbers: [], jobs: [{steps: [step]}]}]};

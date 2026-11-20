@@ -184,16 +184,22 @@ The historical example above has only the boundaries of its 18m 00s final
 recipe. Its internal phase times were not recorded, so the dashboard shows that
 limitation instead of estimating a split. Adding the instrumentation cannot
 recover those missing measurements; a subsequent image build supplies them.
-Current `.bin` builds expose the measured final recipe and root-filesystem
-tasks, but do not emit inner-phase receipts. Their inner phases remain
-**not recorded**. An old `.img.gz` receipt cannot populate `.bin` timings.
-The host Make step uses `TERM=dumb` to emit the existing build/finish markers
-instead of terminal redraws. The Make wrapper already marks its single outer
-installer request. Historical direct-slave terminal redraws do not provide task
-end times and cannot be reconstructed into a complete breakdown.
-Likewise, a Make `cached` marker does not establish a Bazel cache-hit rate.
-Repeated target invocations remain separate observations. Log timestamps have
-finer precision than Actions step timestamps, so their totals can differ slightly.
+The native `sonic-vs.bin` build step shows five wall-clock intervals when its
+log contains the shared container batch and final installer boundaries. With
+`SONIC_VS_IMAGE_TIMINGS=1` the same step also records kernel preparation,
+P4RT preparation (including graph audit, SDK, source build and handoff), and
+the time spent collecting version metadata, returning from the disposable
+builder, and cleaning up in the Trixie and Bookworm Make invocations.
+P4RT child times are included in the parent. Expand **Final VS image recipe**
+for the installer phase timeline, including Docker load/tag/inspect,
+filesystem compression, Docker store compression, payload ZIP packaging
+and ONIE wrapping. Older builds retain their observed outer durations.
+
+The host Make step uses `TERM=dumb` to emit build and finish markers. Historical
+direct-slave terminal redraws lack task end times. A Make `cached` marker alone
+cannot establish the Bazel cache-hit rate. Repeated target invocations remain
+separate observations. Log timestamps have finer precision than Actions step
+timestamps, so their totals can differ slightly.
 
 The collector reads at most 20 eligible missing job logs per refresh, newest
 first. Each download has a 32 MiB size limit and a 45-second deadline. It retains

@@ -1687,7 +1687,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         scripts/sbom_parse_lockfiles.py \
         scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
-        $$(if $$(filter sonic-vs.img.gz,$$*),scripts/image_timing.py scripts/build_kvm_image.sh) \
+        $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),scripts/image_timing.py) \
+        $$(if $$(filter sonic-vs.img.gz,$$*),scripts/build_kvm_image.sh) \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_INSTALLS)) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_INSTALLS)) \
@@ -1750,7 +1751,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	$(HEADER)
 	# The receipt is private; only the completed summary bypasses the target log.
 	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
-	if [ "$@" = "target/sonic-vs.img.gz" ]; then
+	if [[ "$@" = "target/sonic-vs.img.gz" || ( "$@" = "target/sonic-vs.bin" && "$${SONIC_VS_IMAGE_TIMINGS:-}" = 1 ) ]]; then
 		SONIC_IMAGE_TIMING_FILE=$$(python3 ./scripts/image_timing.py begin 2>/dev/null) || SONIC_IMAGE_TIMING_FILE=
 		export SONIC_IMAGE_TIMING_FILE
 		trap 'python3 ./scripts/image_timing.py discard 2>/dev/null || true' EXIT
@@ -2046,7 +2047,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	chmod a+x $@
 	# Reached only on success, after cleanup; relay outside the target log.
 	if [ -n "$${SONIC_IMAGE_TIMING_FILE:-}" ]; then
-		python3 ./scripts/image_timing.py end 2>/dev/null || true
+		python3 ./scripts/image_timing.py end "$@" 2>/dev/null || true
 	fi
 	$(FOOTER)
 

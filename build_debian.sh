@@ -25,7 +25,8 @@
 set -x -e
 
 # Only the final VS recipe owns a receipt; the first rootfs stage is separate.
-if [[ "${RFS_SPLIT_LAST_STAGE:-}" != y || "${RFS_SPLIT_FIRST_STAGE:-}" == y || "${TARGET_MACHINE:-}" != vs || "${IMAGE_TYPE:-}" != kvm ]]; then
+if [[ "${RFS_SPLIT_LAST_STAGE:-}" != y || "${RFS_SPLIT_FIRST_STAGE:-}" == y ||
+      "${TARGET_MACHINE:-}" != vs || ( "${IMAGE_TYPE:-}" != kvm && "${IMAGE_TYPE:-}" != onie ) ]]; then
     unset SONIC_IMAGE_TIMING_FILE
 elif [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
     python3 ./scripts/image_timing.py switch assembly filesystem 2>/dev/null || true
@@ -997,7 +998,11 @@ fi
 
 ## Compress docker files
 if [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
-    python3 ./scripts/image_timing.py switch compression filesystem 2>/dev/null || true
+    if [[ ${IMAGE_TYPE:-} == onie ]]; then
+        python3 ./scripts/image_timing.py switch compression docker-store 2>/dev/null || true
+    else
+        python3 ./scripts/image_timing.py switch compression filesystem 2>/dev/null || true
+    fi
 fi
 if [ "$BUILD_REDUCE_IMAGE_SIZE" = "y" ]; then
     pushd $FILESYSTEM_ROOT && sudo tar -I pzstd -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
@@ -1005,6 +1010,9 @@ else
     pushd $FILESYSTEM_ROOT && sudo tar -I pigz -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
 fi
 
+if [[ -n ${SONIC_IMAGE_TIMING_FILE:-} && ${IMAGE_TYPE:-} == onie ]]; then
+    python3 ./scripts/image_timing.py switch assembly payload 2>/dev/null || true
+fi
 ## Compress together with /boot, /var/lib/docker and $PLATFORM_DIR as an installer payload zip file
 pushd $FILESYSTEM_ROOT && sudo tar -I pigz -cf platform.tar.gz -C $PLATFORM_DIR . && sudo zip -n .gz $OLDPWD/$INSTALLER_PAYLOAD -r boot/ platform.tar.gz; popd
 sudo zip -g -n .squashfs:.gz $INSTALLER_PAYLOAD $FILESYSTEM_SQUASHFS

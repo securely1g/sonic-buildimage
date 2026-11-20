@@ -178,7 +178,10 @@ file, without dropping records or replacing the previous output on overflow.
   - Each task contains a known `id`, fixed `label`, `offset_seconds` relative to
     its containing section, `duration_seconds`, and `outcome` (`finished` or
     `cached`). Tasks can overlap and are not an additive partition of the
-    section. Unobserved work inside a recipe is not synthesized.
+    section. The native installer also emits paired `[ vs timing ]` start/end
+    markers for kernel/P4RT preparation, P4RT substeps, version collection,
+    builder exit and host cleanup. A completed pair produces a task from the
+    same fixed vocabulary. An unmatched optional marker contributes no duration.
   - A final-image task may additionally contain `phase_breakdown`:
     - `version`: `1`; `source`: `build-phase-markers`.
     - `status`: `available` or `unavailable`; `reason`: `null`, `not-recorded`,
@@ -187,7 +190,7 @@ file, without dropping records or replacing the previous output on overflow.
       unavailable.
     - `segments`: at most 64 sequential, contiguous intervals, each with
       `phase` (`assembly`, `boot-checks`, or `compression`), `context` (`recipe`,
-      `filesystem`, `installer`, `bios`, `uefi`, `4-asic`, or `6-asic`),
+      `filesystem`, `installer`, `docker-load`, `docker-store`, `payload`, `bios`, `uefi`, `4-asic`, or `6-asic`),
       `offset_seconds` relative to the producer interval, and `duration_seconds`.
       Labels are derived from these fixed identifiers. Segments partition the
       producer interval; category totals aggregate repeated segments without
@@ -204,7 +207,7 @@ file, without dropping records or replacing the previous output on overflow.
     make that inner detail unavailable while preserving valid outer timings.
     The `.bin` installer and `.img.gz` VM target identities are distinct when
     associating receipts. Both support outer recipe and root-filesystem task
-    timing; current `.bin` builds do not emit inner-phase receipts.
+    timing. Instrumented `.bin` builds emit their own ONIE phase receipt.
     Previously retained tasks without this optional field remain supported.
   Timing values must be finite and nonnegative; child intervals must fit their
   parent. Identifiers and labels come from the parser's allowlist, never

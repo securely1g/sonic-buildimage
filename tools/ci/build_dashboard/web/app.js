@@ -37,6 +37,16 @@ const SECTION_LABELS = {
   "p4rt-runtime": "P4RT runtime package", "p4rt-debug": "P4RT debug package",
 };
 const TASK_LABELS = {
+  "kernel-prep": "Kernel package preparation",
+  "p4rt-prep": "P4RT source and SDK preparation",
+  "p4rt-audit": "P4RT dependency graph audit",
+  "p4rt-sdk": "P4RT SDK inputs",
+  "p4rt-owner": "P4RT source build",
+  "p4rt-handoff": "P4RT artifact handoff",
+  "build-version-collection": "Collect build-version metadata",
+  "builder-exit": "Exit the builder and return to the host",
+  "trixie-image-cleanup": "Trixie image cleanup",
+  "bookworm-cleanup": "Bookworm cleanup invocation",
   "vs-container-images": "Bazel container images",
   "final-image": "Final VS image recipe", rootfs: "Root filesystem squashfs", base: "Base container",
   "config-engine": "Config-engine container", "orchagent-release": "Orchagent release container",
@@ -65,7 +75,7 @@ const BREAKDOWN_REASONS = {
   "invalid-timing": "The log timing boundaries could not be verified.",
 };
 const IMAGE_PHASE_LABELS = {assembly: "Assembly", "boot-checks": "Boot checks", compression: "Compression"};
-const IMAGE_CONTEXT_LABELS = {recipe: "Recipe", filesystem: "Filesystem and payload", installer: "ONIE installer", bios: "BIOS", uefi: "UEFI", "4-asic": "4 ASIC", "6-asic": "6 ASIC"};
+const IMAGE_CONTEXT_LABELS = {"docker-load": "Load and tag Docker images", "docker-store": "Compress the Docker store", payload: "Build the payload ZIP", recipe: "Recipe", filesystem: "Filesystem and payload", installer: "ONIE installer", bios: "BIOS", uefi: "UEFI", "4-asic": "4 ASIC", "6-asic": "6 ASIC"};
 const IMAGE_PHASE_REASONS = {
   "not-recorded": "Inner phases were not measured in this run. The recipe duration above does not provide separate assembly, boot checks or compression timings.",
   "invalid-timing": "The inner phase measurements could not be verified. The outer recipe timing is still available above.",
@@ -692,13 +702,94 @@ function renderPhaseBreakdown(phases) {
   body.append(sequence);
   return body;
 }
-function renderBreakdown(breakdown) {
+const VS_CLEANUP_TASKS = new Set(["build-version-collection", "builder-exit", "trixie-image-cleanup", "bookworm-cleanup"]);
+
+function renderInstallerIntervals(breakdown) {
+  const [section] = breakdown.sections;
+  if (breakdown.sections.length !== 1 || section.kind !== "vs-image" || section.offset_seconds !== 0 ||
+      section.duration_seconds !== breakdown.duration_seconds) return null;
+  const batches = section.tasks.filter(task => task.kind === "vs-container-images");
+  const installers = section.tasks.filter(task => task.kind === "final-image");
+  if (batches.length !== 1 || installers.length !== 1) return null;
+  const [batch] = batches, [installer] = installers;
+  if (batch.outcome !== "finished" || installer.outcome !== "finished") return null;
+  const batchEnd = batch.offset_seconds + batch.duration_seconds;
+  const installerEnd = installer.offset_seconds + installer.duration_seconds;
+  if (batchEnd > installer.offset_seconds || installerEnd > section.duration_seconds) return null;
+
+  const intervals = [
+    ["Preparation before the container batch", batch.offset_seconds],
+    ["Shared container batch", batch.duration_seconds],
+    ["Remaining prerequisites before installer assembly", installer.offset_seconds - batchEnd],
+    ["Final installer assembly", installer.duration_seconds, installer.phase_breakdown],
+    ["After installer assembly", section.duration_seconds - installerEnd],
+  ];
+  const overview = el("section", "installer-intervals");
+  overview.append(el("h4", "", "VS installer build timeline"),
+    el("p", "breakdown-note", "These five consecutive intervals cover the build step. The container batch and installer recipe markers define their boundaries."));
+  const list = el("dl", "installer-interval-list");
+  let start = 0;
+  for (const [label, elapsed, phases] of intervals) {
+    const end = start + elapsed;
+    const row = el("div", "installer-interval");
+    row.append(el("dt", "", label), el("dd", "", duration(elapsed)));
+    const children = section.tasks.filter(task => task !== batch && task !== installer &&
+      task.offset_seconds >= start && task.offset_seconds < end && task.offset_seconds + task.duration_seconds <= end);
+    if (children.length) {
+      const detail = el("dd", "interval-detail"), disclosure = el("details");
+      disclosure.append(el("summary", "", `${children.length} measured ${children.length === 1 ? "task" : "tasks"}`));
+      const measurements = el("dl", "interval-measurements");
+      for (const child of children) {
+        const measurement = el("div");
+        measurement.append(el("dt", "", child.label), el("dd", "", duration(child.duration_seconds)));
+        measurements.append(measurement);
+      }
+      disclosure.append(measurements);
+      if (children.some(task => task.kind === "p4rt-prep")) {
+        disclosure.append(el("p", "breakdown-note", "P4RT substeps are included in the P4RT preparation total."));
+      }
+      detail.append(disclosure);
+      row.append(detail);
+    }
+    if (phases?.status === "available") {
+      const detail = el("dd", "interval-detail"), disclosure = el("details");
+      disclosure.append(el("summary", "", "ONIE assembly and compression"), renderPhaseBreakdown(phases));
+      detail.append(disclosure);
+      row.append(detail);
+    }
+    list.append(row);
+    start = end;
+  }
+  overview.append(list);
+
+  // Optional child markers refine the tail. Historical runs may have none.
+  // Only subtract distinct, ordered measurements fully inside that interval.
+  const tail = section.tasks.filter(task => VS_CLEANUP_TASKS.has(task.kind));
+  if (tail.length && new Set(tail.map(task => task.kind)).size === tail.length) {
+    let previousEnd = installerEnd, remaining = 0;
+    for (const task of tail) {
+      const end = task.offset_seconds + task.duration_seconds;
+      if (task.offset_seconds < previousEnd - 1e-9 || end > section.duration_seconds + 1e-9) return overview;
+      remaining += Math.max(0, task.offset_seconds - previousEnd);
+      previousEnd = end;
+    }
+    remaining += Math.max(0, section.duration_seconds - previousEnd);
+    overview.append(el("p", "breakdown-note", `Recorded cleanup markers leave ${duration(remaining)} of the post-assembly interval unattributed.`));
+  }
+  return overview;
+}
+
+function renderBreakdown(breakdown, nativeInstaller) {
   const box = el("div", "breakdown-body");
   if (breakdown.status !== "available") {
     box.append(el("p", "breakdown-note", `Breakdown unavailable. ${breakdown.reason} The recorded step duration is shown above.`));
     return box;
   }
   box.append(el("p", "breakdown-note", `Measured from job log timestamps · ${duration(breakdown.duration_seconds)}. These sections run sequentially in top-level Make request order; each includes its prerequisites, setup and cleanup. Log timestamps may differ slightly from the rounded step duration.`));
+  if (nativeInstaller) {
+    const overview = renderInstallerIntervals(breakdown);
+    if (overview) box.append(overview);
+  }
   const list = el("ol", "breakdown-sections");
   for (const section of breakdown.sections) {
     const item = el("li", "breakdown-section");
@@ -716,7 +807,10 @@ function renderBreakdown(breakdown) {
         const taskItem = el("li", "breakdown-task"), taskRow = el(hasPhases ? "summary" : "div", "timing-row");
         const taskName = el("span", "timing-name", task.label);
         taskName.append(el("span", "timing-hint", `Starts at +${duration(task.offset_seconds)} in section · log: ${task.outcome}`));
-        if (hasPhases) taskName.append(el("span", "timing-hint", task.phase_breakdown.status === "available" ? "Assembly, boot checks and compression" : task.phase_breakdown.reason === "not-recorded" ? "Inner phases not measured in this run" : "Inner phase breakdown unavailable"));
+        if (task.kind === "p4rt-prep") {
+          taskName.append(el("span", "timing-hint", "The P4RT preparation total includes the measured P4RT substeps."));
+        }
+        if (hasPhases) taskName.append(el("span", "timing-hint", task.phase_breakdown.status === "available" ? "Measured installer phases" : task.phase_breakdown.reason === "not-recorded" ? "Inner phases not measured in this run" : "Inner phase breakdown unavailable"));
         taskRow.append(taskName, el("span", "timing-duration", duration(task.duration_seconds)));
         const track = el("div", "task-track"), span = el("span", "task-span");
         track.setAttribute("aria-hidden", "true");
@@ -744,7 +838,8 @@ function renderStep(step) {
   if (breakdown) name.append(el("span", "timing-hint", breakdown.status === "available" ? `Measured breakdown · ${breakdown.sections.length} sections` : "Breakdown unavailable"));
   row.append(name, timing);
   if (breakdown) {
-    const details = el("details", "step-breakdown"); details.append(row, renderBreakdown(breakdown)); item.append(details);
+    const nativeInstaller = step.name === HOST_VS_BUILD_STEP && step.status === "completed" && step.conclusion === "success";
+    const details = el("details", "step-breakdown"); details.append(row, renderBreakdown(breakdown, nativeInstaller)); item.append(details);
   } else item.append(row);
   return item;
 }

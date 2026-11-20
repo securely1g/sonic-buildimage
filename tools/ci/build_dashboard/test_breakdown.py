@@ -69,6 +69,36 @@ def final_tasks(value):
     return [task for section in value["sections"] for task in section["tasks"] if task["id"].startswith("final-image-")]
 
 
+class VSPipelineTimingTests(unittest.TestCase):
+    def test_measured_preparation_and_host_cleanup_survive_collection(self):
+        def marker(second, kind, event):
+            return f"2026-10-10T00:00:{second:02d}Z [ vs timing ] [ {kind} ] [ {event} ]\n".encode()
+
+        early = (marker(2, "kernel-prep", "start") + marker(4, "kernel-prep", "end") +
+                 marker(4, "p4rt-prep", "start") + marker(5, "p4rt-audit", "start") +
+                 b"\xef\xbb\xbf" + marker(8, "p4rt-audit", "end") + marker(9, "p4rt-prep", "end"))
+        late = (b"2026-10-10T00:08:01Z [ vs timing ] [ build-version-collection ] [ start ]\n"
+                b"2026-10-10T00:08:04Z [ vs timing ] [ build-version-collection ] [ end ]\n"
+                b"2026-10-10T00:08:04Z [ vs timing ] [ builder-exit ] [ start ]\n"
+                b"2026-10-10T00:08:06Z [ vs timing ] [ builder-exit ] [ end ]\n")
+        log = synthetic_log().replace(b"2026-10-10T00:00:10Z", early + b"2026-10-10T00:00:10Z")
+        log = log.replace(FINAL_FINISH, FINAL_FINISH + late).replace(b"sonic-vs.img.gz", b"sonic-vs.bin")
+        value = breakdown.parse_log(log, job()["steps"][0])
+        self.assertTrue(breakdown.valid(value))
+        tasks = {t["id"]: t for t in value["sections"][0]["tasks"]}
+        for kind, seconds in [("kernel-prep", 2), ("p4rt-prep", 5), ("p4rt-audit", 3),
+                              ("build-version-collection", 3), ("builder-exit", 2)]:
+            self.assertEqual(tasks[kind + "-1"]["duration_seconds"], seconds)
+
+    def test_partial_unpaired_and_unrecognized_markers_cannot_fabricate_timings(self):
+        extra = (b"2026-10-10T00:00:02Z [ vs timing ] [ p4rt-prep ] [ start ]\n"
+                 b"2026-10-10T00:00:03Z [ vs timing ] [ private-host ] [ start ]\n"
+                 b"2026-10-10T00:00:04Z [ vs timing ] [ private-host ] [ end ]\n"
+                 b"2026-10-10T00:00:05Z [ vs timing ] [ builder-exit ] [ end ]\n")
+        log = synthetic_log().replace(b"2026-10-10T00:00:10Z", extra + b"2026-10-10T00:00:10Z")
+        self.assertEqual(breakdown.parse_log(log, job()["steps"][0]), parsed())
+
+
 class ImagePhaseTests(unittest.TestCase):
     def parse(self, log):
         value = breakdown.parse_log(log, job()["steps"][0])
