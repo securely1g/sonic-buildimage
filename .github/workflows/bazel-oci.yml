@@ -2082,8 +2082,7 @@ jobs:
   p4rt_native:
     name: Build and inspect P4RT images (AMD64)
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
-    # P4RT keeps two Bazel output bases and the finished OCI archives on the VS build pool.
-    runs-on: [self-hosted, linux, bazel-x64, vs]
+    runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 360
     container:
       image: debian:trixie-20260918@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
