@@ -356,6 +356,7 @@ source_modules = use_repo_rule("@sonic_build_infra//oci:source_modules.bzl", "so
 source_modules(
     name = "image_source_modules",
     modules = {
+        "@lm_sensors//:MODULE.bazel": "lm-sensors",
         "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
@@ -701,3 +702,30 @@ apt_inputs(
     name = "p4rt_apt_inputs",
     lock = "@sonic_build_infra//apt:apt.lock.json",
 )
+
+# The PMON image consumes the existing source installation interfaces.
+bazel_dep(name = "lm-sensors", version = "3.6.0.sonic.1", repo_name = "lm_sensors")
+single_version_override(
+    module_name = "lm-sensors",
+    version = "3.6.0.sonic.1",
+    patches = ["//dockers/docker-platform-monitor/bazel:lm-sensors-config-metadata.patch"],
+    patch_strip = 1,
+)
+bazel_dep(name = "blkinfo", version = "0.2.0.sonic.1", repo_name = "blkinfo")
+bazel_dep(name = "bitarray", version = "2.8.1.sonic.2", repo_name = "bitarray")
+bazel_dep(name = "redis-dump-load", version = "1.1.sonic.1", repo_name = "redis_dump_load")
+bazel_dep(
+    name = "sonic-platform-daemons",
+    version = "1.0.0-9af1479fdae05cdea57219a686f9a61e883663e5",
+    repo_name = "sonic_platform_daemons",
+)
+# Match the compiler embedded in the daemons' grpcio-tools 1.71.0.
+single_version_override(module_name = "protobuf", version = "29.0")
+use_repo(apt, "pmon_runtime_debian", "lm_sensors_debian")
+pip.parse(
+    hub_name = "pmon_runtime_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-platform-monitor/bazel/python:requirements_lock.txt",
+    download_only = True,
+)
+use_repo(pip, "pmon_runtime_pip")

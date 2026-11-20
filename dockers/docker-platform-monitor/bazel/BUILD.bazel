@@ -1,0 +1,38 @@
+"""Container-owned Python closure from actual source Requires-Dist."""
+load("@sonic_build_infra//python:runtime_lock.bzl", "python_runtime_plan")
+load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("//tools/bazel/image/vs/python:apt_metadata.bzl", "apt_python_metadata")
+package(default_visibility = ["//visibility:public"])
+_INHERITED_SOURCES = ['//src/sonic-py-common:sonic-py-common.runtime', '//src/sonic-config-engine:sonic-config-engine.runtime', '//src/sonic-yang-mgmt:sonic-yang-mgmt.runtime', '//src/sonic-yang-models:sonic-yang-models.runtime']
+_SOURCES = ['//tools/bazel/image/vs/python:platform_common_runtime', '@sonic_platform_daemons//:daemons.runtime']
+_PROVIDED_SOURCES = ['@bitarray//:bitarray.runtime', '@redis_dump_load//:install', '@blkinfo//:blkinfo.runtime']
+_SOURCE_NAMES = ['bitarray', 'redis-dump-load', 'blkinfo', 'sonic-py-common', 'sonic-config-engine', 'sonic-yang-mgmt', 'sonic-yang-models', 'sonic-platform-common', 'sonic-ledd', 'sonic-pcied', 'sonic-psud', 'sonic-syseepromd', 'sonic-thermalctld', 'sonic-sensormond', 'sonic-xcvrd', 'sonic-ycabled', 'sonic-chassisd', 'sonic-stormond', 'sonic-bmcctld']
+apt_python_metadata(name = 'apt_cffi', archive = '@config_engine_debian//python3-cffi:data', distribution = 'cffi')
+apt_python_metadata(name = 'apt_pycparser', archive = '@config_engine_debian//python3-pycparser:data', distribution = 'pycparser')
+apt_python_metadata(name = 'apt_redis', archive = '@config_engine_debian//python3-redis:data', distribution = 'redis')
+apt_python_metadata(name = "apt_setuptools", archive = "@base_debian//python3-setuptools:data", distribution = "setuptools")
+_APT_SOURCES = [':apt_setuptools', ':apt_cffi', ':apt_pycparser', ':apt_redis']
+_APT_NAMES = ['setuptools', 'cffi', 'pycparser', 'redis']
+py_binary(name = "constraints_tool", srcs = ["prepare_constraints.py"], main = "prepare_constraints.py", deps = ["@sonic_build_infra//python:runtime_lock_lib"], python_version = "3.11")
+genrule(name = "parent_constraints", srcs = ["//src/sonic-config-engine:requirements_lock.txt"], outs = ["parent_compatible_constraints.txt"], tools = [":constraints_tool"], cmd = "$(location :constraints_tool) $< $@")
+python_runtime_plan(
+    name = "python_plan",
+    packages = _INHERITED_SOURCES + _SOURCES + _APT_SOURCES + _PROVIDED_SOURCES,
+    roots = _SOURCE_NAMES + _APT_NAMES + ['grpcio==1.71.0', 'grpcio-tools==1.71.0', 'thrift', 'requests', 'python-dateutil==2.9.0.post0', 'libpci', 'psutil', 'blkinfo', 'smbus2'],
+    source_distributions = _SOURCE_NAMES + _APT_NAMES,
+    site_packages = ["/usr/local/lib/python3.13/dist-packages", "/usr/lib/python3/dist-packages"],
+    python_version = "3.13",
+    python_platform = "x86_64-unknown-linux-gnu",
+    uv_version = "0.11.0",
+    constraints = [":parent_constraints"],
+)
+
+exports_files(["source_paths.json", "debug_source_paths.json"])
+
+py_test(
+    name = "smartcmd_compatibility_test",
+    srcs = ["smartcmd_compatibility_test.py"],
+    args = ["--smartcmd=$(rootpath //dockers/docker-platform-monitor:ssd_tools/SmartCmd)", "--policy=$(rootpath //dockers/docker-platform-monitor:debian_debug_policy)"],
+    data = ["//dockers/docker-platform-monitor:ssd_tools/SmartCmd", "//dockers/docker-platform-monitor:debian_debug_policy"],
+    deps = ["//tools/bazel/ci:artifact_validation", "//tools/bazel/oci:apt_selection"],
+)

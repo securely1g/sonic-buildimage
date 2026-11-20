@@ -141,6 +141,20 @@ jobs:
             --bazel "$bazel" \
             --output artifacts/base-images/config-engine-rebuild.json
           git diff --exit-code
+      - name: Build PMON runtime and debug archives
+        if: matrix.architecture == 'amd64'
+        env:
+          BAZELISK_GITHUB_TOKEN: ""
+        run: |
+          set -euo pipefail
+          bazel="${BASE_REVIEW_BAZEL:-$GITHUB_WORKSPACE/tools/bazel/ci/libteam_draft_bazel.sh}"
+          "$bazel" build //dockers/docker-platform-monitor:docker-platform-monitor.gz \
+            //dockers/docker-platform-monitor:docker-platform-monitor-dbg.gz \
+            2>&1 | tee artifacts/base-images/pmon-build.log
+          "$bazel" test //dockers/docker-platform-monitor/bazel:smartcmd_compatibility_test \
+            //tools/bazel/tests:apt_selection_test //tools/bazel/tests:oci_inventory_test \
+            2>&1 | tee artifacts/base-images/pmon-test.log
+          git diff --exit-code
       - name: Retain images, symbols and build evidence
         id: bazel_upload_base_images_build
         if: always()

@@ -1,0 +1,23 @@
+"""Existing platform-common wheel metadata for the PMON Python closure."""
+load("@rules_python//python:defs.bzl", "py_binary")
+load("@sonic_build_infra//python:wheel_layer.bzl", "wheel_layer")
+load(":apt_metadata.bzl", "apt_python_metadata")
+package(default_visibility = ["//visibility:public"])
+py_binary(
+    name = "apt_metadata_tool",
+    srcs = ["apt_metadata.py"],
+    main = "apt_metadata.py",
+    deps = ["@config_engine_pip//packaging"],
+    python_version = "3.13",
+)
+wheel_layer(
+    name = "platform_common_files",
+    wheels = ["@sonic_platform_common//:sonic_platform_common_wheel"],
+    site_packages = "/usr/local/lib/python3.13/dist-packages",
+    headers = "/usr/local/include/python3.13",
+)
+apt_python_metadata(
+    name = "platform_common_runtime",
+    archive = ":platform_common_files",
+    distribution = "sonic-platform-common",
+)
