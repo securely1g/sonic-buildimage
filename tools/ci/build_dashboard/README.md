@@ -42,7 +42,7 @@ boundary. Unknown boundaries remain
 isolated points, and historical durations are preserved.
 
 The chart starts with one point per measured image execution. Master builds
-are green and PR builds are blue. Point labels and the legend name the source.
+are green and PR builds are yellow. Point labels and the legend name the source.
 For example, a push to `master` after merging PR #253 is a master build. A
 `pull_request` workflow remains a PR build even if GitHub omits its PR number.
 A workflow dispatched on a feature branch with a recorded PR association also

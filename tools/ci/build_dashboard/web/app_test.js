@@ -787,11 +787,15 @@ test("build source filters the chart and run history, including PR events withou
   const select = (id, value) => { nodes[id].value = value; nodes[id].listeners.change(); };
   const markers = () => descendants(nodes.trend, node => node.attributes?.class === "chart-marker");
   const runs = () => nodes["runs-body"].children.map(row => descendants(row, node => node.tagName === "button")[0]?.textContent);
-  const green = "#187247", blue = "#175caa";
+  const green = "#187247", yellow = "#facc15", ochre = "#805f00";
   assert.deepEqual(runs(), ["Workflow 6", "Workflow 4", "Workflow 3", "Workflow 2", "Workflow 1"]);
-  assert.deepEqual(markers().map(marker => marker.attributes.fill), [green, blue, green, blue]);
+  assert.deepEqual(markers().map(marker => marker.attributes.fill), [green, yellow, green, yellow]);
   assert.match(nodes["history-legend"].textContent, /Master/i);
   assert.match(nodes["history-legend"].textContent, /Pull request/i);
+  assert.ok(markers().filter(marker => marker.attributes.fill === yellow).every(marker => marker.attributes.stroke === ochre));
+  const prDot = nodes["history-legend"].children.find(item => item.textContent.startsWith("Pull request")).children[0];
+  assert.equal(prDot.style.backgroundColor, yellow);
+  assert.equal(prDot.style.border, `1px solid ${ochre}`);
   assert.match(nodes["coverage-summary"].textContent, /Failed1/);
   assert.equal(nodes["coverage-body"], undefined);
   assert.match(nodes["latest-branch-status"].textContent, /master/i);
@@ -802,7 +806,7 @@ test("build source filters the chart and run history, including PR events withou
   const lines = descendants(nodes.trend, node => node.tagName === "polyline");
   assert.equal(lines.length, 2);
   for (const line of lines) {
-    const sameSource = markers().filter(marker => marker.attributes.fill === line.attributes.stroke);
+    const sameSource = markers().filter(marker => (marker.attributes.fill === yellow ? ochre : green) === line.attributes.stroke);
     assert.equal(sameSource.length, 2);
     assert.equal(line.attributes.points, sameSource.map(({attributes}) => `${attributes.cx},${attributes.cy}`).join(" "));
   }
@@ -811,7 +815,7 @@ test("build source filters the chart and run history, including PR events withou
   assert.equal(nodes["latest-branch-status"].hidden, true);
   assert.equal(nodes["pr-build-status"].hidden, false);
   assert.deepEqual(runs(), ["Workflow 6", "Workflow 4", "Workflow 2"]);
-  assert.deepEqual(markers().map(marker => marker.attributes.fill), [blue, blue]);
+  assert.deepEqual(markers().map(marker => marker.attributes.fill), [yellow, yellow]);
   select("pr-filter", "20");
   assert.deepEqual(runs(), ["Workflow 6", "Workflow 4"]);
   select("source-filter", "master");

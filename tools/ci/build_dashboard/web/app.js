@@ -30,7 +30,7 @@ const IMAGE_SERIES_LABELS = {
 };
 const BUILD_SOURCES = {
   master: {label: "Master", color: "#187247"},
-  pr: {label: "Pull request", color: "#175caa"},
+  pr: {label: "Pull request", color: "#facc15", outline: "#805f00"},
   other: {label: "Other branch", color: "#536775"},
 };
 // Keep this vocabulary in sync with breakdown.py. Never display labels or log text from a snapshot.
@@ -551,10 +551,12 @@ function renderTrend() {
   const visible = new Map();
   for (const {run, job} of points) {
     const source = BUILD_SOURCES[buildSource(run)], scope = imageSeries(job);
-    visible.set(`${source.label} · ${scope.label}`, source.color);
+    visible.set(`${source.label} · ${scope.label}`, source);
   }
-  for (const [label, color] of [...visible].sort(([a], [b]) => a.localeCompare(b))) {
-    const item = el("span"), dot = el("i"); dot.style.backgroundColor = color; dot.setAttribute("aria-hidden", "true");
+  for (const [label, source] of [...visible].sort(([a], [b]) => a.localeCompare(b))) {
+    const item = el("span"), dot = el("i"); dot.style.backgroundColor = source.color;
+    if (source.outline) dot.style.border = `1px solid ${source.outline}`;
+    dot.setAttribute("aria-hidden", "true");
     item.append(dot, document.createTextNode(label)); legend.append(item);
   }
   legend.hidden = !points.length;
@@ -584,8 +586,8 @@ function renderTrend() {
     svg.append(svgEl("text", {x: left + fraction * (width - left - right), y: height - 13, "text-anchor": "middle"}, dateTime(new Date(tick).toISOString(), true)));
   }
   for (const items of select.value === "all" ? [] : imageTrendGroups(points).filter(items => items.length > 1)) {
-    const color = BUILD_SOURCES[buildSource(items[0].run)].color;
-    const line = svgEl("polyline", {points: items.map(item => `${x(item)},${y(item)}`).join(" "), fill: "none", stroke: color, "stroke-opacity": ".45", "stroke-width": "2", "stroke-dasharray": items[0].job.architecture === "arm64" ? "5 4" : "0"});
+    const source = BUILD_SOURCES[buildSource(items[0].run)];
+    const line = svgEl("polyline", {points: items.map(item => `${x(item)},${y(item)}`).join(" "), fill: "none", stroke: source.outline || source.color, "stroke-opacity": source.outline ? ".8" : ".45", "stroke-width": "2", "stroke-dasharray": items[0].job.architecture === "arm64" ? "5 4" : "0"});
     svg.append(line);
   }
   for (const item of points) {
@@ -597,7 +599,7 @@ function renderTrend() {
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
-    point.append(svgEl("circle", {class: "chart-marker", cx: x(item), cy: y(item), r: 4.5, fill: build.color, stroke: "white", "stroke-width": 2, "pointer-events": "none"}));
+    point.append(svgEl("circle", {class: "chart-marker", cx: x(item), cy: y(item), r: 4.5, fill: build.color, stroke: build.outline || "white", "stroke-width": build.outline ? 1 : 2, "pointer-events": "none"}));
     const inspect = () => {
       const heading = el("div", "chart-preview-heading");
       heading.append(el("strong", "", duration(item.job.image_build_seconds)), el("span", "", imageSeries(item.job).label));
