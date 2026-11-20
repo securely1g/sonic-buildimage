@@ -9,7 +9,7 @@ on:
       source_image:
         description: Dedicated source-image worker task
         type: choice
-        options: [none, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
+        options: [none, vs-hostbase, preflight, sysmgr, dash-ha, orchagent, sflow, otel, syncd, gearbox, dash-engine, gnmi, gnmi-no-dialout, teamd]
         default: none
       source_revision:
         description: Reviewed 40-character source commit for an image task
@@ -32,6 +32,15 @@ on:
         description: Skip the full VS image build
         type: boolean
         default: true
+      vs_hostbase_phase:
+        description: Measure the complete VS host-base target using an isolated trial cache
+        type: choice
+        options: [disabled, cold, warm]
+        default: disabled
+      vs_hostbase_seed_run:
+        description: Cold workflow run ID for the two-worker restore
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -3418,7 +3427,7 @@ jobs:
         run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --migrated-job --mark-artifacts
 
   checks:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none' || inputs.source_image == 'vs-hostbase'
     name: OCI regression checks (AMD64)
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     outputs:
@@ -3997,9 +4006,13 @@ jobs:
 
   vs_container:
     name: VS installer in SONiC slave (AMD64)
+    permissions:
+      contents: read
+      actions: read
     needs: [checks]
     if: >-
-      (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none') &&
+      (github.event_name != 'workflow_dispatch' || inputs.source_image == 'none' ||
+       (inputs.source_image == 'vs-hostbase' && (inputs.vs_hostbase_phase == 'cold' || inputs.vs_hostbase_phase == 'warm'))) &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
@@ -4157,6 +4170,46 @@ jobs:
           memory_option=$(python3 -B tools/bazel/ci/resources.py) || exit
           printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "${BAZEL_CONTAINER_ARGS:-}" "$memory_option" >> "$GITHUB_ENV"
 
+      - name: Download the independent cold-worker receipt
+        if: github.event_name == 'workflow_dispatch' && inputs.vs_hostbase_phase == 'warm'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.vs_hostbase_seed_run }}
+          name: vs-hostbase-cold-receipt
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment
+
+      - name: Identify the VS host-base trial, builder and worker
+        if: github.event_name == 'workflow_dispatch' && (inputs.vs_hostbase_phase == 'warm' || inputs.vs_hostbase_phase == 'cold')
+        env:
+          TRIAL_PHASE: ${{ inputs.vs_hostbase_phase }}
+          SEED_RUN: ${{ inputs.vs_hostbase_seed_run }}
+        run: |
+          set -euo pipefail
+          # This pool registers one VS runner per Azure VM, with an ephemeral suffix.
+          [[ "$RUNNER_NAME" =~ ^(sonic-baz[[:alnum:]]+)-vs-[[:alnum:]]+$ ]]
+          machine=${BASH_REMATCH[1],,}
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          if [[ "$TRIAL_PHASE" == cold ]]; then
+            test -z "$SEED_RUN"
+            trial="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          else
+            [[ "$SEED_RUN" =~ ^[1-9][0-9]*$ ]]
+            receipt=artifacts/vs/hostbase-experiment/cold-receipt.json
+            trial=$(jq -er .trial_id "$receipt")
+            [[ "$trial" =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]
+            test "${BASH_REMATCH[1]}" = "$SEED_RUN"
+            test "$(jq -er .worker_id "$receipt")" != "$machine"
+            rm -f artifacts/vs/hostbase-experiment/personalization.json
+          fi
+          image=$(make -s -f Makefile.work BLDENV=trixie showtag | tail -n 1)
+          digest=$(docker image inspect --format '{{.Id}}' "$image")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'SONIC_HOSTBASE_MODE=%s\nSONIC_HOSTBASE_TRIAL_ID=%s\nSONIC_HOSTBASE_WORKER_ID=%s\nSONIC_HOSTBASE_BUILDER_ID=%s\n' \
+            "$TRIAL_PHASE" "$trial" "$machine" "$digest" >> "$GITHUB_ENV"
+          printf 'Host-base %s on %s (registered runner %s), builder %s, trial %s\n' \
+            "$TRIAL_PHASE" "$machine" "$RUNNER_NAME" "$digest" "$trial"
+
       - name: Build sonic-vs.bin through the host Make wrapper
         id: native_build
         env:
@@ -4170,6 +4223,37 @@ jobs:
           test -s target/sonic-vs.bin
           test -s target/sonic-vs.bin.dockers
           test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+
+      - name: Preserve the whole-target cache receipt
+        if: ${{ !cancelled() && (env.SONIC_HOSTBASE_MODE == 'cold' || env.SONIC_HOSTBASE_MODE == 'warm') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-hostbase-${{ env.SONIC_HOSTBASE_MODE }}-receipt
+          path: |
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment/${{ env.SONIC_HOSTBASE_MODE }}-receipt.json
+            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/hostbase-experiment/personalization.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Install the restored VS installer on a blank disk and verify guest modules
+        if: env.SONIC_HOSTBASE_MODE == 'warm'
+        run: |
+          set -euo pipefail
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            SONIC_RUN_CMDS='/usr/bin/python3 -B tools/bazel/ci/vs_host_base_boot.py --installer target/sonic-vs.bin --kernel-deb target/debs/trixie/linux-image-*-unsigned_*_amd64.deb --output artifacts/vs/host-base-boot.json'
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            SONIC_RUN_CMDS="python3 -B tools/bazel/ci/vs_host_base.py --cleanup-trial $SONIC_HOSTBASE_TRIAL_ID"
+
+      - name: Preserve guest boot and module verification
+        if: ${{ !cancelled() && env.SONIC_HOSTBASE_MODE == 'warm' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-hostbase-guest
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/host-base-boot.json
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Summarize VS Bazel build timings
         if: always() && steps.native_build.outcome != 'skipped'
@@ -4356,6 +4440,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
 
   gnmi_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image != 'vs-hostbase'
     name: Build gNMI OCI images and symbols (AMD64)
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 240
@@ -4547,6 +4632,7 @@ jobs:
           test "$RUNTIME_RESULT" = success
 
   mgmt_framework_native:
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image != 'vs-hostbase'
     name: Build Framework OCI images and symbols (AMD64)
     runs-on: [self-hosted, linux, bazel-x64]
     timeout-minutes: 180

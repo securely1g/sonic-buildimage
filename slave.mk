@@ -1605,6 +1605,15 @@ ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(addprefix $(TARGET_PATH)/,$(SONIC_RFS_TARGETS) $(SONIC_INSTALLERS)): | bazel-kernel-ensure
 endif
 
+# Always enter the experiment on its one supported intermediate target, even
+# when a previous ordinary Make invocation left a personalized squashfs behind.
+ifneq ($(strip $(SONIC_HOSTBASE_MODE)),)
+vs_host_base_target := $(TARGET_PATH)/sonic-vs.bin__vs__rfs.squashfs
+.PHONY: check-vs-host-base
+$(vs_host_base_target): check-vs-host-base
+$(vs_host_base_target): private vs_host_base_trial := y
+endif
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
@@ -1638,12 +1647,13 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		j2 -f env files/initramfs-tools/union-mount.j2 onie-image.conf > files/initramfs-tools/union-mount
 		j2 -f env files/initramfs-tools/arista-convertfs.j2 onie-image.conf > files/initramfs-tools/arista-convertfs
 
+		$(if $(vs_host_base_trial),env -u PASSWORD -u DEFAULT_PASSWORD -u CHANGE_DEFAULT_PASSWORD -u BMC_NOS_ACCOUNT_USERNAME -u BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD -u MAKEFLAGS -u MFLAGS -u MAKEOVERRIDES SONIC_VS_UNPERSONALIZED_BASE=y) \
 		RFS_SQUASHFS_NAME=$* \
 		USERNAME="$(USERNAME)" \
-		PASSWORD="$${PASSWORD}" \
+		$(if $(vs_host_base_trial),,PASSWORD="$${PASSWORD}" \
 		CHANGE_DEFAULT_PASSWORD="$(CHANGE_DEFAULT_PASSWORD)" \
 		BMC_NOS_ACCOUNT_USERNAME="$(BMC_NOS_ACCOUNT_USERNAME)" \
-		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$${BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD}" \
+		BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD="$${BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD}") \
 		TARGET_MACHINE=$(machine) \
 		IMAGE_TYPE=$($(installer)_IMAGE_TYPE) \
 		TARGET_PATH=$(TARGET_PATH) \
@@ -1656,9 +1666,9 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		MASTER_KUBERNETES_VERSION=$(MASTER_KUBERNETES_VERSION) \
 		MASTER_CRI_DOCKERD=$(MASTER_CRI_DOCKERD) \
 		ENABLE_SBOM="$(ENABLE_SBOM)" \
-			./build_debian.sh $(LOG)
+			$(if $(vs_host_base_trial),python3 -B tools/bazel/ci/vs_host_base.py -- )./build_debian.sh $(LOG)
 
-		$(call SAVE_CACHE,$*,$@)
+		$(if $(vs_host_base_trial),,$(call SAVE_CACHE,$*,$@))
 
 	fi
 

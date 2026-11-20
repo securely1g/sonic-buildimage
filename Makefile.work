@@ -520,6 +520,16 @@ DOCKER_RUN += -e 'SONIC_BAZEL_REMOTE_CACHE=$(subst ','"'"',$(SONIC_BAZEL_REMOTE_
 DOCKER_RUN += -e 'SONIC_BAZEL_KERNEL_REMOTE_CACHE=$(subst ','"'"',$(SONIC_BAZEL_KERNEL_REMOTE_CACHE))' \
 	-e 'SONIC_BAZEL_KERNEL_REMOTE_UPLOAD=$(subst ','"'"',$(SONIC_BAZEL_KERNEL_REMOTE_UPLOAD))'
 
+# A host-base cache trial spans two separate VS workers. Pass its identifiers
+# by name so both the host Make and the slave use the same experiment.
+ifneq ($(strip $(SONIC_HOSTBASE_MODE)),)
+export SONIC_HOSTBASE_TRIAL_ID SONIC_HOSTBASE_MODE SONIC_HOSTBASE_BUILDER_ID SONIC_HOSTBASE_WORKER_ID
+# Each worker builds the build-hooks DEB locally. Clamp the timestamps in
+# that input to the same source revision, including in a reused checkout.
+HOSTBASE_HOOKS_EPOCH := SOURCE_DATE_EPOCH=$(shell git log -1 --format=%ct HEAD)
+DOCKER_RUN += -e SONIC_HOSTBASE_TRIAL_ID -e SONIC_HOSTBASE_MODE -e SONIC_HOSTBASE_BUILDER_ID -e SONIC_HOSTBASE_WORKER_ID
+endif
+
 # Reuse downloads and action outputs across disposable builder containers.
 # Create the bind source as the host build user, before Docker can create a
 # root-owned directory. Keep the output base private to each builder/check-out.
@@ -851,7 +861,7 @@ docker-cleanup:
 
 .PHONY: sonic-build-hooks
 sonic-build-hooks:
-	$(Q)pushd src/sonic-build-hooks; TRUSTED_GPG_URLS=$(TRUSTED_GPG_URLS) $(MAKE) all; popd
+	$(Q)pushd src/sonic-build-hooks; $(HOSTBASE_HOOKS_EPOCH) TRUSTED_GPG_URLS=$(TRUSTED_GPG_URLS) $(MAKE) $(if $(SONIC_HOSTBASE_MODE),-B) all; popd
 	$(Q)mkdir -p $(SLAVE_DIR)/buildinfo
 	$(Q)cp src/sonic-build-hooks/buildinfo/sonic-build-hooks* $(SLAVE_DIR)/buildinfo
 
