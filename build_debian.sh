@@ -671,12 +671,12 @@ if [[ $RFS_SPLIT_FIRST_STAGE == y ]]; then
     sudo LANG=C chroot $FILESYSTEM_ROOT fuser -km /proc || true
     ## Wait fuser fully kill the processes
     sudo timeout 15s bash -c 'until LANG=C chroot $0 umount /proc; do sleep 1; done' $FILESYSTEM_ROOT || true
+    rfs_timing rootfs-prepare end rootfs-compress start
 
     sudo rm -f $TARGET_PATH/$RFS_SQUASHFS_NAME
-    rfs_timing rootfs-prepare end rootfs-compress start
     sudo mksquashfs $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME -Xcompression-level 1
-    rfs_timing rootfs-compress end
 
+    rfs_timing rootfs-compress end
     exit 0
 fi
 
