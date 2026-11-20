@@ -41,6 +41,10 @@ on:
         description: Cold workflow run ID for the two-worker restore
         type: string
         default: ''
+      vs_hostbase_acr_verified:
+        description: Route a warm VS host-base restore to a worker with verified registry access
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -4017,7 +4021,11 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
-    runs-on: [self-hosted, linux, bazel-x64, vs]
+    runs-on: >-
+      ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' &&
+          inputs.vs_hostbase_phase == 'warm' && inputs.vs_hostbase_acr_verified &&
+          '["self-hosted","linux","bazel-x64","vs","vs-hostbase-acr-verified"]' ||
+          '["self-hosted","linux","bazel-x64","vs"]') }}
     timeout-minutes: 720
     defaults:
       run:
@@ -4270,6 +4278,13 @@ jobs:
           image=$(make -s -f Makefile.work BLDENV=trixie showtag | tail -n 1)
           digest=$(docker image inspect --format '{{.Id}}' "$image")
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          if [[ "$TRIAL_PHASE" == warm ]]; then
+            cold_digest=$(jq -er '.builder | select(test("^sha256:[0-9a-f]{64}$"))' "$receipt")
+            if [[ "$digest" != "$cold_digest" ]]; then
+              printf 'Warm worker selected slave %s. The cold worker used %s.\n' "$digest" "$cold_digest" >&2
+              exit 1
+            fi
+          fi
           printf 'SONIC_HOSTBASE_MODE=%s\nSONIC_HOSTBASE_TRIAL_ID=%s\nSONIC_HOSTBASE_WORKER_ID=%s\nSONIC_HOSTBASE_BUILDER_ID=%s\n' \
             "$TRIAL_PHASE" "$trial" "$machine" "$digest" >> "$GITHUB_ENV"
           printf 'Host-base %s on %s (registered runner %s), builder %s, trial %s\n' \

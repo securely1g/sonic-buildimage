@@ -107,8 +107,62 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                 " && github.ref == 'refs/heads/master' }}")
         self.assertIn(flag, workflow_jobs["vs"])
         self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
-        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]",
+        self.assertIn('["self-hosted","linux","bazel-x64","vs"]',
                       workflow_jobs["vs_container"])
+
+    def test_only_opted_in_warm_dispatch_adds_an_acr_verified_runner_label(self):
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        triggers = workflow.get("on", workflow.get(True))
+        flag = triggers["workflow_dispatch"]["inputs"]["vs_hostbase_acr_verified"]
+        self.assertEqual(flag["type"], "boolean")
+        self.assertIs(flag["default"], False)
+        routing = " ".join(workflow["jobs"]["vs_container"]["runs-on"].split())
+        condition = ("github.event_name == 'workflow_dispatch' && inputs.source_image == 'vs-hostbase' && "
+                     "inputs.vs_hostbase_phase == 'warm' && inputs.vs_hostbase_acr_verified")
+        match = re.fullmatch(r"\$\{\{ fromJSON\(" + re.escape(condition) + r" && '([^']+)' \|\| '([^']+)'\) \}\}", routing)
+        self.assertIsNotNone(match, routing)
+        default = ["self-hosted", "linux", "bazel-x64", "vs"]
+        self.assertEqual(json.loads(match[1]), [*default, "vs-hostbase-acr-verified"])
+        self.assertEqual(json.loads(match[2]), default)
+        for name, job in workflow["jobs"].items():
+            if name != "vs_container":
+                self.assertNotIn("vs_hostbase_acr_verified", str(job.get("runs-on")))
+
+    def test_warm_worker_rejects_a_different_slave_before_publishing_trial_environment(self):
+        steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]["steps"]
+        identify = next(step for step in steps if step.get("name") == "Identify the VS host-base trial, builder and worker")
+        native = next(step for step in steps if step.get("id") == "native_build")
+        self.assertLess(steps.index(identify), steps.index(native))
+        sha = "4ee673441d21e690bacd31dd66b31d0201c5f31e"
+        cold_digest = "sha256:" + "a" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            receipt = ws / "artifacts/vs/hostbase-experiment/cold-receipt.json"
+            receipt.parent.mkdir(parents=True)
+            receipt.write_text(json.dumps(dict(trial_id="44701956443-1", worker_id="sonic-baz00000p",
+                                               builder=cold_digest)))
+            for name, result in [("git", sha), ("make", "test-slave")]:
+                tool = ws / name
+                tool.write_text("#!/bin/sh\necho " + result + "\n")
+                tool.chmod(0o755)
+            docker = ws / "docker"
+            docker.write_text('#!/bin/sh\ntest "$1 $2" = "image inspect" && echo "$ACTUAL_DIGEST"\n')
+            docker.chmod(0o755)
+            output = ws / "env"
+            env = dict(os.environ, TRIAL_PHASE="warm", RUNNER_NAME="sonic-baz000003-vs-xyz",
+                       SEED_RUN="44701956443", COLD_REVISION=sha, GITHUB_ENV=str(output),
+                       PATH=str(ws) + ":" + os.defpath)
+            for digest, accepted in [(cold_digest, True), ("sha256:" + "b" * 64, False)]:
+                with self.subTest(digest=digest):
+                    output.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", "-c", identify["run"]], cwd=ws,
+                                            env=env | {"ACTUAL_DIGEST": digest}, capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    if accepted:
+                        self.assertIn("SONIC_HOSTBASE_BUILDER_ID=" + digest, output.read_text())
+                    else:
+                        self.assertIn("cold worker used", result.stderr)
+                        self.assertFalse(output.exists())
 
     def test_warm_builder_accepts_only_the_independent_source_run_and_attempt(self):
         steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]["steps"]
