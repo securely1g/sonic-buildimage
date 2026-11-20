@@ -60,12 +60,12 @@ does not select the full VS installer or other container builds.
 ## Review prerequisites and limits
 
 The review branch consumes the merged [relay source PR #5](https://github.com/securely1g/sonic-dhcp-relay/pull/5)
-through the pending [registry PR #235](https://github.com/securely1g/sonic-bazel-registry/pull/235).
-It also selects the shared wheel metadata adapter on
-[`codex/wheel-runtime-metadata-dhcp`](https://github.com/securely1g/sonic-build-infra/tree/codex/wheel-runtime-metadata-dhcp).
-The dedicated workflow pins the corresponding temporary registry commit. These
-unmerged prerequisites must be replaced with their published registrations before
-the integration is ready to merge.
+through the merged [registry PR #235](https://github.com/securely1g/sonic-bazel-registry/pull/235).
+The shared wheel metadata adapter is under review in
+[Infra PR #127](https://github.com/securely1g/sonic-build-infra/pull/127).
+The dedicated workflow pins its temporary registry entry. After that adapter
+and its registry registration merge, select the actual merged source version
+and remove the temporary registry endpoint before merging this integration.
 
 The existing Make build remains the fallback for unsupported profiles. A fresh
 Make reference build can generate DEBs and is outside this task's validation
