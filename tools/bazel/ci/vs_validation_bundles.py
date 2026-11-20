@@ -100,7 +100,10 @@ def configured_outputs(bazel, options, labels, events):
         for label in external:
             repository, target = label[1:].split("//", 1)
             canonical[label] = "@@" + repositories[repository] + "//" + target
-    query = "config(set(" + " ".join(sorted(set(labels))) + "), target)"
+    # Source files use Bazel's null configuration. Keep them alongside the
+    # selected top-level rule configuration, excluding test/exec transitions.
+    query = ('let roots = set(' + ' '.join(sorted(set(labels))) +
+             ') in config($roots, target) + kind("source file", $roots)')
     expression = 'str(target.label) + "\\t" + "\\t".join([f.path for f in target.files.to_list()])'
     result = subprocess.check_output(
         [bazel, "cquery", *options, query, "--output=starlark", "--starlark:expr=" + expression],

@@ -29,7 +29,8 @@ class BundleSelectionTest(unittest.TestCase):
                 json.dumps({"sonic_sysmgr": "sonic-sysmgr+"}), canonical + "\tmock\n",
             ]) as bazel:
                 self.assertEqual(bundles.configured_outputs("bazel", [], [label], events), {label: root / "mock"})
-                self.assertIn("config(set(" + label + "), target)", bazel.call_args.args[0])
+                self.assertIn('let roots = set(' + label + ') in config($roots, target) + kind("source file", $roots)',
+                              bazel.call_args.args[0])
 
     def test_cross_repository_alias_binds_its_single_requested_output(self):
         """Bazel may print a rule from an entirely different repository for an owner alias."""
