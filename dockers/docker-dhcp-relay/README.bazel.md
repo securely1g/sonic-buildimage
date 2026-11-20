@@ -59,8 +59,8 @@ does not select the full VS installer or other container builds.
 
 ## Review prerequisites and limits
 
-The review branch selects [relay source PR #5](https://github.com/securely1g/sonic-dhcp-relay/pull/5)
-through [registry PR #235](https://github.com/securely1g/sonic-bazel-registry/pull/235).
+The review branch consumes the merged [relay source PR #5](https://github.com/securely1g/sonic-dhcp-relay/pull/5)
+through the pending [registry PR #235](https://github.com/securely1g/sonic-bazel-registry/pull/235).
 It also selects the shared wheel metadata adapter on
 [`codex/wheel-runtime-metadata-dhcp`](https://github.com/securely1g/sonic-build-infra/tree/codex/wheel-runtime-metadata-dhcp).
 The dedicated workflow pins the corresponding temporary registry commit. These
