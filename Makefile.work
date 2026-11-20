@@ -451,7 +451,13 @@ else
 DOCKER_PRIVMODE := --privileged
 endif
 
-DOCKER_RUN := docker run --rm=true $(DOCKER_PRIVMODE) --init \
+# Instrument only the foreground Docker invocation for the selected native VS
+# installer. Keep the original --rm lifecycle and inherited standard streams.
+vs_docker_run := docker run
+ifeq ($(SONIC_VS_BUILDER_EXIT_TRACE):$(SONIC_VS_IMAGE_TIMINGS):$(BLDENV):$(MAKECMDGOALS),1:1:trixie:target/sonic-vs.bin)
+vs_docker_run := python3 -B tools/bazel/ci/trace_builder_exit.py
+endif
+DOCKER_RUN := $(vs_docker_run) --rm=true $(DOCKER_PRIVMODE) --init \
     -v $(DOCKER_BUILDER_MOUNT) \
     $(GIT_WORKTREE_MOUNTS) \
     -v "$(DOCKER_LOCKDIR):$(DOCKER_LOCKDIR)" \

@@ -107,7 +107,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                 " && github.ref == 'refs/heads/master' }}")
         self.assertIn(flag, workflow_jobs["vs"])
         self.assertIn("if: ${{ false }}", workflow_jobs["vs"])
-        self.assertIn("runs-on: [self-hosted, linux, bazel-x64, vs]",
+        self.assertIn('["self-hosted","linux","bazel-x64","vs"]',
                       workflow_jobs["vs_container"])
 
     def test_gearbox_master_uploads_allow_multi_gb_remote_writes(self):

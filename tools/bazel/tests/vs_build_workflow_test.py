@@ -136,14 +136,28 @@ else:
 
     def test_ci_builds_and_verifies_the_boot_bundle(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        profiles = [job["steps"] for job in workflow["jobs"].values()
-                    if any("bash tools/bazel/ci/build_vs.sh" in step.get("run", "") for step in job["steps"])]
-        self.assertEqual(len(profiles), 2)
-        for profile in profiles:
-            build = next(step for step in profile if "bash tools/bazel/ci/build_vs.sh" in step.get("run", ""))
-            verify = next(step for step in profile if "--expect-boot-bundle" in step.get("run", ""))
-            self.assertEqual(build["env"]["DOCKER_LOAD_ON_BOOT"], "y")
-            self.assertLess(profile.index(build), profile.index(verify))
+        native = workflow["jobs"]["vs_container"]
+        legacy = workflow["jobs"]["vs"]
+        for job in (native, legacy):
+            steps = job["steps"]
+            build = next(step for step in steps if "bash tools/bazel/ci/build_vs.sh" in step.get("run", ""))
+            verify = next(step for step in steps if "--expect-boot-bundle" in step.get("run", ""))
+            self.assertLess(steps.index(build), steps.index(verify))
+            if job is legacy:
+                self.assertEqual(build["env"]["DOCKER_LOAD_ON_BOOT"], "y")
+                continue
+            self.assertEqual(job["env"]["DOCKER_LOAD_ON_BOOT"],
+                             "${{ inputs.source_image == 'vs-exit-n' && 'n' || 'y' }}")
+            self.assertIn('if [[ $DOCKER_LOAD_ON_BOOT == y ]]', verify["run"])
+            self.assertIn('"${installer_options[@]}"', verify["run"])
+            self.assertEqual(build["env"]["SONIC_VS_BUILDER_EXIT_TRACE"],
+                             "${{ startsWith(inputs.source_image, 'vs-exit-') && '1' || '0' }}")
+            self.assertIn("test -s artifacts/vs/builder-exit.json", build["run"])
+            self.assertIn('["self-hosted","linux","bazel-x64","vs","vs-exit-bench-266-005"]',
+                          job["runs-on"])
+            fetch = next(step for step in workflow["jobs"]["checks"]["steps"]
+                         if step.get("id") == "p4_sources_fetch")
+            self.assertIn("startsWith(inputs.source_image, 'vs-exit-')", fetch["if"])
         result = self.run_script("build_vs.sh", DOCKER_LOAD_ON_BOOT="y")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_profile(self.calls()[0], "target/sonic-vs.bin", "n", load_on_boot="y")

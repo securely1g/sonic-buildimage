@@ -8,7 +8,13 @@ if [[ ${1:-} == --vs-timings ]]; then
     # so retries can produce one complete set of markers for the final build.
     if [[ $1 == 0 ]]; then
         echo '[ vs timing ] [ build-version-collection ] [ start ]'
-        trap 'printf "%s\n" "[ vs timing ] [ build-version-collection ] [ end ]" "[ vs timing ] [ builder-exit ] [ start ]"' EXIT
+        mark_builder_exit() {
+            if [[ -n ${SONIC_VS_BUILDER_EXIT_MARKER:-} ]]; then
+                date +%s%N > "$SONIC_VS_BUILDER_EXIT_MARKER"
+            fi
+            printf '%s\n' '[ vs timing ] [ build-version-collection ] [ end ]' '[ vs timing ] [ builder-exit ] [ start ]'
+        }
+        trap mark_builder_exit EXIT
     fi
 fi
 
