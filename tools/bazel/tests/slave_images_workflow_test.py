@@ -104,7 +104,11 @@ elif name == "stat":
             "github.ref == 'refs/heads/master' || "
             "(github.event_name == 'push' && github.ref == 'refs/heads/vs-runner')")
         self.assertEqual(workflow["permissions"], {"contents": "read"})
-        self.assertEqual(self.publisher["runs-on"], self.consumer["runs-on"])
+        # Ordinary builds must run on the same profile as the slave publisher.
+        # The explicit warm trial can select an additional registry-access label.
+        routing = " ".join(self.consumer["runs-on"].split())
+        default_profile = routing.rsplit("|| '", 1)[1].split("'", 1)[0]
+        self.assertEqual(self.publisher["runs-on"], json.loads(default_profile))
         self.assertNotIn("concurrency", self.publisher)
         self.assertNotIn("concurrency", self.consumer)
         for name, value in self.publisher["env"].items():
