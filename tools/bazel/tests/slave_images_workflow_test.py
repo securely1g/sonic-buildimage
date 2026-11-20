@@ -104,7 +104,11 @@ elif name == "stat":
             "github.ref == 'refs/heads/master' || "
             "(github.event_name == 'push' && github.ref == 'refs/heads/vs-runner')")
         self.assertEqual(workflow["permissions"], {"contents": "read"})
-        self.assertEqual(self.publisher["runs-on"], self.consumer["runs-on"])
+        regular = json.dumps(self.publisher["runs-on"], separators=(",", ":"))
+        pinned = json.dumps([*self.publisher["runs-on"], "vs-exit-bench-266-005"], separators=(",", ":"))
+        self.assertEqual(" ".join(self.consumer["runs-on"].split()),
+                         "${{ fromJSON(startsWith(inputs.source_image, 'vs-exit-') && "
+                         f"'{pinned}' || '{regular}') " + "}}")
         self.assertNotIn("concurrency", self.publisher)
         self.assertNotIn("concurrency", self.consumer)
         for name, value in self.publisher["env"].items():
