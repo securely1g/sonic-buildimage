@@ -62,6 +62,7 @@ retain it for later builds; no clean is needed between image changes.
 In dedicated CI the helper stops its idle image Bazel server before the owner
 build and test phases. Make can run other producers concurrently, so it keeps
 the shared root server alive. The Make SDK build uses the image cache policy.
+It skips the no-DEB action audit that dedicated CI runs on the same targets.
 The Bazel 6 owner reads the slave's repository/disk caches, the PINS source
 mirror rules and any selected remote cache. The VS pool's configured remote
 downloader is also available. Like the image producers, the owner uploads its

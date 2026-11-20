@@ -392,7 +392,7 @@ class RuntimeTest(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 image.source_identity(evidence)
 
-    def test_make_uses_existing_manifests_and_cannot_supply_a_ci_receipt(self):
+    def test_make_uses_existing_manifests_skips_the_audit_and_cannot_supply_a_ci_receipt(self):
         args = SimpleNamespace(directory=self.root / 'artifacts', owner_source=self.root / 'owner',
                                owner_revision='a' * 40, bazel='root-bazel')
         revision = 'b' * 40
@@ -402,7 +402,7 @@ class RuntimeTest(unittest.TestCase):
                 patch.object(image, 'checkout_revision', return_value=revision) as identity, \
                 patch.object(image.command_log, 'execute', return_value='bazel 8.5.1\n'), \
                 patch.object(image, 'prepare_manifests') as render, \
-                patch.object(image.bazel_commands, 'audit_targets'), \
+                patch.object(image.bazel_commands, 'audit_targets') as audit, \
                 patch.object(image.build, 'collect_archives', side_effect=collect), \
                 patch.object(image, 'prepare_repository'), patch.object(image.p4rt_handoff, 'same_common_library'), \
                 patch.object(image, 'run_owner'), patch.object(image.p4rt_handoff, 'stage'), patch.object(image, 'write') as write:
@@ -412,16 +412,18 @@ class RuntimeTest(unittest.TestCase):
             with patch.object(sys, 'argv', command), patch.dict(os.environ, {'SONIC_VS_IMAGE_TIMINGS': '1'}), \
                     redirect_stderr(io.StringIO()) as log:
                 image.main()
-        phases = ('p4rt-audit', 'p4rt-sdk', 'p4rt-owner', 'p4rt-handoff')
+        phases = ('p4rt-sdk', 'p4rt-owner', 'p4rt-handoff')
         children = [f'[ vs timing ] [ {phase} ] [ {event} ]' for phase in phases for event in ('start', 'end')]
         self.assertEqual(log.getvalue().splitlines(),
                          ['[ vs timing ] [ p4rt-prep ] [ start ]', *children, '[ vs timing ] [ p4rt-prep ] [ end ]'])
         owner_identity.assert_called_once_with(args.owner_source, args.owner_revision)
         self.assertEqual(identity.call_count, 2)
         render.assert_not_called()
+        audit.assert_not_called()
         path, receipt = write.call_args.args
         self.assertEqual(receipt['status'], 'prepared-for-make')
         self.assertEqual(receipt['revision'], revision)
+        self.assertNotIn('action_audit', receipt)
         path.write_text(json.dumps({'status': receipt['status'], 'revision': revision}))
         with patch.object(image, 'source_identity', return_value=revision), \
                 self.assertRaisesRegex(ValueError, 'different inputs'):

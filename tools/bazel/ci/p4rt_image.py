@@ -229,10 +229,11 @@ def prepare_owner(args, *, make_build=False):
         revision = receipt['revision'] = identity()
         if not make_build:
             prepare_manifests(execute, preparation, receipt)
-        phase = partial(time_vs_image.log_make_phase, vs_make=make_build)
-        with phase('p4rt-audit'):
+            # Make receipts are never accepted as evidence, and Make adds only
+            # cache options, so dedicated CI's audit already covers this graph.
             receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, list(PREPARATION_TARGETS.values()),
                 workspace=ROOT, output=preparation / 'action-audit.json')
+        phase = partial(time_vs_image.log_make_phase, vs_make=make_build)
         with phase('p4rt-sdk'):
             build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options, use_execution_root=True)
             module = (preparation / 'common.MODULE.bazel').read_text()
