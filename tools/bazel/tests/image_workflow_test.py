@@ -1,5 +1,6 @@
 """Run the real image-verification workflow shell against recording commands."""
 
+import itertools
 import json
 import os
 from pathlib import Path
@@ -342,7 +343,8 @@ class VerificationWorkflowTest(unittest.TestCase):
     def test_p4rt_build_and_installed_jobs_use_same_run_archives(self):
         jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
         archive, installed = jobs["p4rt_native"], jobs["p4rt_runtime"]
-        self.assertEqual(archive["runs-on"], jobs["gearbox_archive"]["runs-on"])
+        self.assertEqual(archive["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(jobs["gearbox_archive"]["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(archive["container"], jobs["gearbox_archive"]["container"])
         self.assertEqual(archive["if"], jobs["archive"]["if"])
         self.assertEqual(installed["runs-on"], "ubuntu-24.04")
@@ -368,8 +370,11 @@ class VerificationWorkflowTest(unittest.TestCase):
         launcher = step["run"].split("<<'PYLAUNCH'\n", 1)[1].split("\nPYLAUNCH", 1)[0]
         trust = jobs["p4rt_native"]["env"]["P4RT_TRUSTED_CACHE"]
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", trust)
-        for trusted in ("true", "false"):
-            with self.subTest(trusted=trusted), tempfile.TemporaryDirectory(prefix="P4RT launch ") as name:
+        self.assertEqual(jobs["p4rt_native"]["env"]["P4RT_UPLOAD_CACHE"],
+                         "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}")
+        for trusted, upload in itertools.product(("true", "false"), repeat=2):
+            with self.subTest(trusted=trusted, upload=upload), \
+                    tempfile.TemporaryDirectory(prefix="P4RT launch ") as name:
                 directory = Path(name)
                 (directory / "bazel").write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
                 (directory / "bazel").chmod(0o755)
@@ -380,7 +385,8 @@ class VerificationWorkflowTest(unittest.TestCase):
                 mirror.touch()
                 environment = dict(os.environ, PATH=name + os.pathsep + os.environ["PATH"],
                                    HOME=name, PYTHONPATH=str(ROOT), RUNNER_TEMP=name, P4RT_SCRATCH=name,
-                                   P4RT_TRUSTED_CACHE=trusted, GITHUB_ENV=str(directory / "env"),
+                                   P4RT_TRUSTED_CACHE=trusted, P4RT_UPLOAD_CACHE=upload,
+                                   GITHUB_ENV=str(directory / "env"),
                                    GITHUB_PATH=str(directory / "path"))
                 subprocess.run([sys.executable, "-c", launcher], env=environment, check=True)
                 wrappers = Path((directory / "path").read_text().strip())
@@ -396,7 +402,9 @@ class VerificationWorkflowTest(unittest.TestCase):
                 settings = [shlex.split(line) for line in rc.read_text().splitlines()]
                 expected = [["common", "--repository_cache=/repo"], ["build", "--disk_cache=/disk"],
                             ["common", "--experimental_downloader_config=" + str(mirror)],
-                            ["build", "--remote_upload_local_results=false"]]
+                            # Only trusted master pushes write owner results to the pool cache.
+                            ["build", "--remote_upload_local_results=" +
+                             ("true" if trusted == upload == "true" else "false")]]
                 if trusted == "true":
                     expected.extend([["common", "--remote_cache=grpc://172.16.0.4:9092"],
                                      ["common", "--experimental_remote_downloader=grpc://172.16.0.4:9092"],
@@ -417,7 +425,7 @@ class VerificationWorkflowTest(unittest.TestCase):
         ])
         self.assertEqual(jobs["otel_runtime"]["needs"], "otel_archive")
         dash = jobs["dash_engine_archive"]
-        self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
+        self.assertEqual(dash["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(dash["timeout-minutes"], 360)
         self.assertEqual(shlex.split(dash["env"]["SONIC_CONTAINER_BAZEL_OPTIONS"]), [
             "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
