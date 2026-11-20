@@ -1060,8 +1060,7 @@ class VerificationWorkflowTest(unittest.TestCase):
             sudo.chmod(0o755)
             python = directory / "python3"
             python.write_text(f"#!{sys.executable}\nimport json, os, sys\nfrom pathlib import Path\n"
-                              "relay = any(arg.endswith('/verify_dhcp_relay.py') for arg in sys.argv)\n"
-                              "Path('relay-call.json' if relay else 'docker-call.json').write_text(json.dumps({'args': sys.argv[1:], "
+                              "Path(Path(sys.argv[2]).stem + '.json').write_text(json.dumps({'args': sys.argv[1:], "
                               "'docker_host': os.environ.get('DOCKER_HOST')}))\n"
                               "sys.exit(int(os.environ['PROBE_EXIT']))\n")
             python.chmod(0o755)
@@ -1099,7 +1098,8 @@ class VerificationWorkflowTest(unittest.TestCase):
             linkage_report = directory / "artifacts/vs/tlm-teamd-linkage.txt"
             for name, probe_exit, docker_exit, output, expected_status in cases:
                 with self.subTest(name=name):
-                    for path in (directory / "docker-call.json", directory / "relay-call.json", linkage_call, linkage_report):
+                    for path in (directory / "validate_runtime.json", directory / "verify_nat_archives.json",
+                                 directory / "verify_dhcp_relay.json", linkage_call, linkage_report):
                         path.unlink(missing_ok=True)
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", shell], cwd=directory,
                         env=dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
@@ -1109,17 +1109,24 @@ class VerificationWorkflowTest(unittest.TestCase):
                                  EXPECTED_DOCKER_ARGUMENTS=json.dumps(docker_arguments), LINKAGE_OUTPUT=output),
                         capture_output=True, text=True)
                     self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
-                    called = json.loads((directory / "docker-call.json").read_text())
+                    called = json.loads((directory / "validate_runtime.json").read_text())
                     self.assertEqual(called["docker_host"], "unix:///worker-private.sock")
                     self.assertEqual(called["args"], ["-B", "tools/bazel/ci/validate_runtime.py",
                         "--images-policy", "artifacts/vs/swss-installed-images-policy.json",
                         "--images-policy", "artifacts/vs/syncd-installed-images-policy.json", "--target", "target",
                         "--output", "artifacts/vs/installed-images.json"])
-                    relay_call = directory / "relay-call.json"
+                    relay_call = directory / "verify_dhcp_relay.json"
                     self.assertEqual(relay_call.exists(), not probe_exit)
                     if not probe_exit:
                         self.assertEqual(json.loads(relay_call.read_text()), {
                             "args": ["-B", "tools/bazel/ci/verify_dhcp_relay.py"],
+                            "docker_host": "unix:///worker-private.sock",
+                        })
+                    nat_call = directory / "verify_nat_archives.json"
+                    self.assertEqual(nat_call.exists(), expected_status == 0)
+                    if nat_call.exists():
+                        self.assertEqual(json.loads(nat_call.read_text()), {
+                            "args": ["-B", "tools/bazel/ci/verify_nat_archives.py"],
                             "docker_host": "unix:///worker-private.sock",
                         })
                     if probe_exit:
