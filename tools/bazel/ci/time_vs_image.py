@@ -60,12 +60,15 @@ def time_phase(directory, phase):
 
 
 def run_phase(directory, phase, command, *, cwd=None, env=None):
-    if directory is not None and (phase in ("build", "test") or phase.startswith("cquery-")):
+    if directory is not None and (
+        phase in ("build", "test")
+        or phase.startswith(("build-", "test-", "cquery-", "aquery-"))
+    ):
         # Nested workspaces may pass startup flags before the Bazel command.
         index = command.index(phase.split("-", 1)[0], 1) + 1
         profile = directory.resolve() / f"{phase}.profile.json.gz"
         flags = [f"--profile={profile}", "--noslim_profile"]
-        if directory.parent.name == "vs-container-images":
+        if directory.parent.name in ("vs-container-images", "vs-validation"):
             flags.append("--experimental_profile_include_target_label")
         command = [*command[:index], *flags, *command[index:]]
     with time_phase(directory, phase):

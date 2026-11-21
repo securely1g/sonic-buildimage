@@ -413,10 +413,10 @@ class RuntimeTest(unittest.TestCase):
                 patch.object(image, 'checkout_revision', return_value=revision) as identity, \
                 patch.object(image.command_log, 'execute', return_value='bazel 8.5.1\n'), \
                 patch.object(image, 'prepare_manifests') as render, \
-                patch.object(image.bazel_commands, 'audit_targets'), \
-                patch.object(image.build, 'collect_archives', side_effect=collect), \
+                patch.object(image.bazel_commands, 'audit_targets') as audit, \
+                patch.object(image.build, 'collect_archives', side_effect=collect) as collect_call, \
                 patch.object(image, 'prepare_repository'), patch.object(image.p4rt_handoff, 'same_common_library'), \
-                patch.object(image, 'run_owner'), patch.object(image.p4rt_handoff, 'stage'), patch.object(image, 'write') as write:
+                patch.object(image, 'run_owner') as owner, patch.object(image.p4rt_handoff, 'stage'), patch.object(image, 'write') as write:
             command = ['p4rt_image.py', 'prepare-make-owner', '--directory', str(args.directory),
                        '--owner-source', str(args.owner_source), '--owner-revision', args.owner_revision,
                        '--owner-output-base', str(self.root / 'owner-output'), '--bazel', args.bazel]
@@ -427,6 +427,19 @@ class RuntimeTest(unittest.TestCase):
         children = [f'[ vs timing ] [ {phase} ] [ {event} ]' for phase in phases for event in ('start', 'end')]
         self.assertEqual(log.getvalue().splitlines(),
                          ['[ vs timing ] [ p4rt-prep ] [ start ]', *children, '[ vs timing ] [ p4rt-prep ] [ end ]'])
+        recipes = list((self.root / 'artifacts/vs/image-timings/bazel-p4rt-owner').glob('recipe-*'))
+        self.assertEqual(len(recipes), 1)
+        recipe = recipes[0]
+        self.assertEqual(json.loads((recipe / 'recipe.json').read_text()), {
+            'bazel': ['audit', 'sdk', 'owner'],
+            'profiles': ['audit', 'sdk-build', 'owner-aquery', 'owner-build'],
+            'exports': ['handoff'],
+        })
+        for timed in ('audit', 'sdk', 'owner', 'handoff'):
+            self.assertEqual(json.loads((recipe / f'{timed}.timing.json').read_text())['exit_code'], 0)
+        self.assertEqual(audit.call_args.kwargs['profile'], recipe / 'audit.profile.json.gz')
+        self.assertEqual(collect_call.call_args.kwargs['profile'], recipe / 'sdk-build.profile.json.gz')
+        self.assertEqual(owner.call_args.kwargs['timings'], recipe)
         owner_identity.assert_called_once_with(args.owner_source, args.owner_revision)
         self.assertEqual(identity.call_count, 2)
         render.assert_not_called()

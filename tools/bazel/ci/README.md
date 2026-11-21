@@ -334,7 +334,8 @@ and installed images. To run the debug archive and symbol checks, dispatch
 To compare the two modes, dispatch both from the
 same revision and compare the **Build sonic-vs.bin through the host Make wrapper**
 step. The `sonic-vs-bazel-timings-amd64` artifact includes the selected archive
-names, Bazel profile and export times for that step.
+names, Bazel profiles (kernel, P4RT owner preparation, container batch and
+validation) and export times.
 
 On a paired run, [`validate_vs.sh`](validate_vs.sh) runs in the separate
 **Validate the installer and retained container pairs** step, using the same

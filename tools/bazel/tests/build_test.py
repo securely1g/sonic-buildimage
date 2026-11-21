@@ -67,12 +67,18 @@ else:
 
     def test_layout_and_lock_can_be_built_with_the_archives(self):
         extra = ["//image:layout", "@infra//apt:lock"]
+        profile = self.directory / "sdk-build.profile.json.gz"
         with contextlib.redirect_stdout(io.StringIO()):
             paths = build.collect_archives(self.workspace, self.directory, self.receipt,
                                           self.targets, bazel=str(self.bazel),
-                                          additional_targets=extra)
+                                          additional_targets=extra, profile=profile)
         self.assertEqual(set(paths), set(self.targets))
         commands = [command["argv"] for command in self.receipt["commands"]]
+        self.assertIn(f"--profile={profile.resolve()}", commands[0])
+        self.assertIn("--noslim_profile", commands[0])
+        self.assertIn("--experimental_profile_include_target_label", commands[0])
+        for query in commands[1:]:
+            self.assertFalse(any(arg.startswith("--profile=") for arg in query))
         self.assertEqual(commands[0][-4:], [*self.targets.values(), *extra])
         self.assertEqual([query[-1] for query in commands[1:]], list(self.targets.values()))
 

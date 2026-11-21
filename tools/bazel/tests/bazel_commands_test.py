@@ -67,5 +67,22 @@ class ActionAuditTest(unittest.TestCase):
                     self.audit("output", command)
 
 
+    def test_profile_option_is_forwarded_to_aquery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recorded = []
+            def query(command, *, cwd, stdout, check):
+                recorded.extend(command)
+                stdout.write(json.dumps({"actions": [], "artifacts": [], "pathFragments": []}))
+                stdout.flush()
+            with mock.patch("subprocess.run", side_effect=query):
+                bazel_commands.audit_targets(
+                    "bazel", ["--platforms=native"], ["//:checked"],
+                    workspace=root, output=root / "audit.json",
+                    profile=root / "audit.profile.json.gz")
+        self.assertIn(f"--profile={(root / 'audit.profile.json.gz').resolve()}", recorded)
+        self.assertIn("--noslim_profile", recorded)
+
+
 if __name__ == "__main__":
     unittest.main()

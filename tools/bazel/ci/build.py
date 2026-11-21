@@ -46,7 +46,7 @@ def resolve_output(execution_root, output):
 
 
 def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", options=(),
-                     use_execution_root=False, additional_targets=()):
+                     use_execution_root=False, additional_targets=(), profile=None):
     """Build filename-to-label declarations, exporting one nonempty file each.
 
     The caller owns target selection and payload validation. These are archive
@@ -60,7 +60,10 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
         raise ValueError("archive declarations need nonempty, plain output filenames")
     execute = partial(command_log.execute, cwd=workspace)
     receipt.setdefault("artifacts", {})
-    execute([bazel, "build", *options,
+    profile_options = ([f"--profile={Path(profile).resolve()}", "--noslim_profile",
+                        "--experimental_profile_include_target_label"]
+                       if profile is not None else [])
+    execute([bazel, "build", *options, *profile_options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
              *targets.values(), *additional_targets], directory, receipt, "build")
     execution_root = None
