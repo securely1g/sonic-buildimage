@@ -31,7 +31,10 @@ P4RT = "docker-sonic-p4rt"
 P4RT_SYMBOLS = "//dockers/docker-sonic-p4rt:p4rt_with_symbols"
 # Standalone parent probes also run on the original parents used by this build.
 PARENTS = (BASE, SWSS)
-GNMI_DIALOUT = "@sonic_gnmi//tools/bazel:enable_dialout"
+MAKE_FEATURES = {
+    "docker-sonic-gnmi": ("dialout_enabled", "@sonic_gnmi//tools/bazel:enable_dialout"),
+    PMON: ("pddf_enabled", "//dockers/docker-platform-monitor:pddf"),
+}
 DASH_LOCK = "@sonic_build_infra//apt:apt.lock.json"
 APT_REPORT_FAMILIES = {"docker-orchagent", "docker-sonic-gnmi", "docker-sonic-otel", "docker-dash-engine", P4RT}
 
@@ -303,9 +306,20 @@ def stage_parent(bundle, image, references, account_layers):
     return fixtures
 
 
-def write_bundles(args, families, paths, version, *, dialout=None):
+def make_features(image, build_settings):
+    """Record what Make requested so probes can compare it with the installed image."""
+    if image not in MAKE_FEATURES:
+        return {}
+    name, flag = MAKE_FEATURES[image]
+    value = build_settings.get(flag)
+    require(value in ("true", "false"), f"missing Make-selected {flag} setting for {image}")
+    return {name: value == "true"}
+
+
+def write_bundles(args, families, paths, build_settings):
     from tools.bazel.ci import vs_probe_policy
 
+    version = build_settings["//tools/bazel/oci:image_version"]
     destination = args.validation_directory
     destination.parent.mkdir(parents=True, exist_ok=True)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -320,10 +334,7 @@ def write_bundles(args, families, paths, version, *, dialout=None):
             bundle.mkdir()
             source_paths = {name: paths[label] for name, label in entry["sources"].items()}
             archive_specs = {}
-            settings = {}
-            if image == "docker-sonic-gnmi":
-                require(dialout in ("true", "false"), "missing Make-selected gNMI dialout setting")
-                settings["dialout_enabled"] = dialout == "true"
+            settings = make_features(image, build_settings)
             if "apt_lock" in entry:
                 settings["apt_lock_sha256"] = sha(paths[entry["apt_lock"]])
                 settings["apt_layers"] = {}

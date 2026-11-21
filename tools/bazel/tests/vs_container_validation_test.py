@@ -233,12 +233,13 @@ class VSContainerValidationTest(unittest.TestCase):
             images[name] = {"native": {"usr/bin/sensors": {}}}
             inventory = {"config": {"rootfs": {"diff_ids": layers}}, "files": {}}
             (self.directory / (variant + ".oci.json.gz")).write_bytes(gzip.compress(json.dumps(inventory).encode()))
-            bundle = {"image": image, "architecture": "amd64", "archives": archives}
-            with patch.object(validate, "loaded_image", side_effect=lambda *args: nullcontext("fixture-tag")), \
-                    patch.object(vs_standalone_probes, "run") as run:
-                vs_standalone_probes.standalone(image, self.directory, bundle, {"images": images, "runtime_native": {}})
-                self.assertEqual([call.args[2][-1] for call in run.call_args_list], list(archives))
-                self.assertIn("sonic-cfggen", run.call_args.kwargs["stdin"])
+            for enabled, arg in ((True, "y"), (False, "n")):
+                bundle = {"image": image, "architecture": "amd64", "archives": archives, "pddf_enabled": enabled}
+                with patch.object(validate, "loaded_image", side_effect=lambda *args: nullcontext("fixture-tag")), \
+                        patch.object(vs_standalone_probes, "run") as run:
+                    vs_standalone_probes.standalone(image, self.directory, bundle, {"images": images, "runtime_native": {}})
+                    self.assertEqual([call.args[2][-2:] for call in run.call_args_list], [[v, arg] for v in archives])
+                    self.assertIn("sonic-cfggen", run.call_args.kwargs["stdin"])
         (self.directory / "parent.json").write_text(json.dumps({
             "image": "docker-config-engine-trixie", "diff_ids": ["wrong-parent"], "files": {},
         }))

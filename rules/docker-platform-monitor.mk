@@ -89,17 +89,20 @@ SONIC_BAZEL_DBG_DOCKER_IMAGES += $(DOCKER_PLATFORM_MONITOR_DBG)
 $(DOCKER_PLATFORM_MONITOR_DBG)_PATH = $($(DOCKER_PLATFORM_MONITOR)_PATH)
 $(DOCKER_PLATFORM_MONITOR)_BAZEL_TARGET = //dockers/docker-platform-monitor:$(DOCKER_PLATFORM_MONITOR)
 $(DOCKER_PLATFORM_MONITOR_DBG)_BAZEL_TARGET = //dockers/docker-platform-monitor:$(DOCKER_PLATFORM_MONITOR_DBG)
-ifneq ($(PDDF_SUPPORT),y)
-$(DOCKER_PLATFORM_MONITOR)_BAZEL_ARGS += --//dockers/docker-platform-monitor:pddf=false
-$(DOCKER_PLATFORM_MONITOR_DBG)_BAZEL_ARGS += --//dockers/docker-platform-monitor:pddf=false
-endif
+# This flag affects only PMON; both archives can stay in the shared VS build.
+$(DOCKER_PLATFORM_MONITOR)_BAZEL_SHARED_ARGS = --//dockers/docker-platform-monitor:pddf=$(if $(filter y,$(PDDF_SUPPORT)),true,false)
+$(DOCKER_PLATFORM_MONITOR)_BAZEL_ARGS = $($(DOCKER_PLATFORM_MONITOR)_BAZEL_SHARED_ARGS)
+$(DOCKER_PLATFORM_MONITOR_DBG)_BAZEL_SHARED_ARGS = $($(DOCKER_PLATFORM_MONITOR)_BAZEL_SHARED_ARGS)
+$(DOCKER_PLATFORM_MONITOR_DBG)_BAZEL_ARGS = $($(DOCKER_PLATFORM_MONITOR_DBG)_BAZEL_SHARED_ARGS)
 SONIC_BAZEL_MANIFESTS += docker-platform-monitor docker-platform-monitor-$(DBG_IMAGE_MARK)
+SONIC_BAZEL_IMAGE_ENVIRONMENTS += docker-platform-monitor
 docker-platform-monitor_MANIFEST_IMAGE = $(DOCKER_PLATFORM_MONITOR)
 docker-platform-monitor-$(DBG_IMAGE_MARK)_MANIFEST_IMAGE = $(DOCKER_PLATFORM_MONITOR)
 docker-platform-monitor-$(DBG_IMAGE_MARK)_MANIFEST_SUFFIX = $(DBG_IMAGE_MARK)
 $(DOCKER_PLATFORM_MONITOR)_BAZEL_DEPENDS = $(TARGET_PATH)/bazel-manifests/docker-base-trixie/manifest.json \
     $(TARGET_PATH)/bazel-manifests/docker-config-engine-trixie/manifest.json \
-    $(TARGET_PATH)/bazel-manifests/docker-platform-monitor/manifest.json
+    $(TARGET_PATH)/bazel-manifests/docker-platform-monitor/manifest.json \
+    $(TARGET_PATH)/bazel-manifests/docker-platform-monitor/image.env
 $(DOCKER_PLATFORM_MONITOR_DBG)_BAZEL_DEPENDS = $($(DOCKER_PLATFORM_MONITOR)_BAZEL_DEPENDS) $(TARGET_PATH)/bazel-manifests/docker-platform-monitor-$(DBG_IMAGE_MARK)/manifest.json
 endif
 endif

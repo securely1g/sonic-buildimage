@@ -17,6 +17,17 @@ from tools.bazel.ci.vs_container_validation import PMON, static_i386_files, veri
 
 
 class BundleSelectionTest(unittest.TestCase):
+    def test_feature_evidence_uses_the_selected_bazel_flags(self):
+        for image, flag, field in (
+            (PMON, "//dockers/docker-platform-monitor:pddf", "pddf_enabled"),
+            ("docker-sonic-gnmi", "@sonic_gnmi//tools/bazel:enable_dialout", "dialout_enabled"),
+        ):
+            for value, expected in (("true", True), ("false", False)):
+                self.assertEqual(bundles.make_features(image, {flag: value}), {field: expected})
+            for invalid in ({}, {flag: "unknown"}):
+                with self.assertRaisesRegex(ValueError, "missing Make-selected"):
+                    bundles.make_features(image, invalid)
+
     def test_only_pmon_can_ship_the_original_static_smartcmd(self):
         path = "usr/bin/SmartCmd"
         source = Path(__file__).resolve().parents[3] / "dockers" / PMON / "ssd_tools/SmartCmd"

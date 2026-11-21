@@ -4,14 +4,18 @@ The native AMD64 Trixie VS/FIPS profile builds PMON from the existing
 config-engine base, source-built lm-sensors and Platform Daemons, the
 platform-common wheel, and the locked PMON Python and Debian runtime sets.
 
-Prepare the parent image manifests using the existing Make metadata entry
-point (this command builds no containers):
+Inside a configured AMD64 Trixie VS/FIPS slave, build the installer inputs
+with the same image version and manifests that Make uses for the installer.
 
 ```sh
-make -f tools/bazel/prepare_manifests.mk \
-  'MANIFEST_METADATA=rules/docker-base-trixie.mk rules/docker-config-engine-trixie.mk rules/docker-platform-monitor.mk' \
-  BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs \
-  CONFIGURED_ARCH=amd64 INCLUDE_FIPS=y DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers
+make -f slave.mk BUILD_WITH_BAZEL_WHEN_AVAILABLE=y \
+  target/docker-platform-monitor.gz target/docker-platform-monitor-dbg.gz
+```
+
+For local development, Bazel can also build the archives with its default
+image metadata and run the source checks.
+
+```sh
 bazel build //dockers/docker-platform-monitor:docker-platform-monitor.gz \
   //dockers/docker-platform-monitor:docker-platform-monitor-dbg.gz
 bazel test //dockers/docker-platform-monitor/bazel:smartcmd_compatibility_test \

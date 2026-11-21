@@ -226,7 +226,9 @@ def standalone(image, directory, bundle, report):
                     inventory = vs_container_validation.read_oci(directory, variant)
                     verify_parent(directory, bundle, variant, inventory, [])
                     require("usr/bin/sensors" in summary["native"], "Missing lm-sensors owner executable")
-                    run(tag, "/bin/sh", ["-s", "--", variant], stdin=Path(__file__).with_name("pmon_installed.sh").read_text(),
+                    require(type(bundle.get("pddf_enabled")) is bool, "Missing Make-selected PMON PDDF mode")
+                    pddf = "y" if bundle["pddf_enabled"] else "n"
+                    run(tag, "/bin/sh", ["-s", "--", variant, pddf], stdin=Path(__file__).with_name("pmon_installed.sh").read_text(),
                         options=["--env", "PYTHONDONTWRITEBYTECODE=1"])
                 elif image in (BASE, CONFIG):
                     validate_base(directory, variant, image, summary)
