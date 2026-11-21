@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 class FinalImageTemplateTest(unittest.TestCase):
-    def render(self, settings="", arguments=()):
+    def render(self, settings="", arguments=(), expected_cache=("", "")):
         source = (ROOT / "slave.mk").read_text()
         end = source.index('\n\tj2 -f env files/initramfs-tools/union-mount.j2')
         start = source.rindex('\n\texport debs_path="$(IMAGE_DISTRO_DEBS_PATH)"', 0, end) + 1
@@ -45,7 +45,9 @@ environment = Environment(loader=FileSystemLoader(root), undefined=StrictUndefin
 rendered = environment.get_template("files/build_templates/sonic_debian_extension.j2").render(os.environ)
 pathlib.Path("rendered.sh").write_text(rendered)
 pathlib.Path("flags.json").write_text(json.dumps({
-    name: os.environ[name] for name in ("ENABLE_MULTIDB", "ENABLE_VRF_STRICT", "enable_multidb")
+    name: os.environ[name] for name in ("ENABLE_MULTIDB", "ENABLE_VRF_STRICT", "enable_multidb",
+                                      "SONIC_INSTALLER_DOCKER_STORE_CACHE",
+                                      "SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE")
 }))
 ''')
             (directory / "Makefile").write_text('''SHELL := /bin/bash
@@ -90,7 +92,10 @@ SERVICES := swss.service swss@.service
             syntax = subprocess.run(["bash", "-n", "rendered.sh"], cwd=directory,
                                     text=True, capture_output=True, timeout=10)
             self.assertEqual(syntax.returncode, 0, syntax.stderr)
-            return rendered, json.loads((directory / "flags.json").read_text())
+            flags = json.loads((directory / "flags.json").read_text())
+            self.assertEqual((flags.pop("SONIC_INSTALLER_DOCKER_STORE_CACHE"),
+                              flags.pop("SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE")), expected_cache)
+            return rendered, flags
 
     def test_default_empty_flags_render_complete_template(self):
         rendered, flags = self.render()
@@ -128,6 +133,132 @@ ENABLE_VRF_STRICT := y
 ''')
         self.assertIn('systemctl enable kubelet.service', rendered)
         self.assertIn('systemctl enable set-vrf-strict-mode', rendered)
+
+    def test_cache_hit_skips_only_loading_tags_and_shutdown_generation(self):
+        rendered, _ = self.render('''SONIC_INSTALLER_DOCKER_STORE_CACHE := fixture-cache
+SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE := read
+sonic-vs.bin_DOCKERS += docker-other.gz
+docker-other.gz_MACHINE := other
+''', expected_cache=("fixture-cache", "read"))
+        loading = "installer_store_loading_skipped=n" + rendered.split(
+            "installer_store_loading_skipped=n", 1)[1].split(
+                '\nif [[ -n ${SONIC_IMAGE_TIMING_FILE:-}', 1)[0]
+        shutdown = rendered.split("# Generate shutdown order\n", 1)[1].split("\n\n", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="installer-cache-template-") as directory:
+            directory = Path(directory)
+            env = dict(os.environ, TARGET_MACHINE="vs", FILESYSTEM_ROOT="fixture-root",
+                       DOCKER_HOST="fixture-socket", SONIC_IMAGE_VERSION="fixture-version",
+                       SONIC_INSTALLER_DOCKER_STORE_OUTPUT="dockerfs.tar.gz")
+            stub = '''
+set -euo pipefail
+sudo() {
+    printf '%s\\n' "$*" >> events
+    if [[ $* == *" inspect "* ]]; then echo '{}'; fi
+}
+jq() { if [[ $1 != -e ]]; then cat >/dev/null; echo '{}'; fi; }
+python3() { echo prepare >> events; return "$PREPARE_STATUS"; }
+'''
+            script = stub + loading.replace("/tmp/manifest.json", str(directory / "manifest.json")) + "\n" + shutdown
+            for enabled, status in ((False, "1"), (True, "1"), (True, "2"), (True, "0")):
+                with self.subTest(enabled=enabled, status=status):
+                    (directory / "events").write_text("")
+                    current = dict(env, PREPARE_STATUS=status)
+                    current.pop("SONIC_INSTALLER_DOCKER_STORE_STATE", None)
+                    if enabled:
+                        current["SONIC_INSTALLER_DOCKER_STORE_STATE"] = "fixture-state"
+                    result = subprocess.run(["bash", "-c", script], cwd=directory, env=current,
+                                            text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    events = (directory / "events").read_text().splitlines()
+                    if enabled and status == "0":
+                        self.assertEqual(events, ["prepare"])
+                    else:
+                        self.assertEqual(sum("docker load " in event for event in events), 2)
+                        self.assertEqual(sum("docker tag " in event for event in events), 4)
+                        self.assertEqual(sum("generate_shutdown_order.py" in event for event in events), 1)
+                        self.assertFalse(any("docker-other" in event for event in events))
+
+    def test_local_package_cache_hit_preserves_loading_installation_and_shutdown_generation(self):
+        rendered, _ = self.render('''SONIC_PACKAGES_LOCAL := docker-macsec.gz docker-dhcp-relay.gz
+docker-macsec.gz_DEFAULT_FEATURE_STATE_ENABLED := y
+docker-dhcp-relay.gz_DEFAULT_FEATURE_STATE_ENABLED := y
+''')
+        loading = "installer_store_loading_skipped=n" + rendered.split(
+            "installer_store_loading_skipped=n", 1)[1].split(
+                '\nif [[ -n ${SONIC_IMAGE_TIMING_FILE:-}', 1)[0]
+        shutdown = rendered.split("# Generate shutdown order\n", 1)[1].split("\n\n", 1)[0]
+        start = rendered.index('sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT '
+                               '"${package_install[@]}" --from-tarball')
+        packages = rendered[start:rendered.index('sudo umount $FILESYSTEM_ROOT/target', start)]
+        with tempfile.TemporaryDirectory(prefix="installer-cache-local-packages-") as directory:
+            directory = Path(directory)
+            stub = '''
+set -euo pipefail
+sudo() {
+    printf '%s\\n' "$*" >> events
+    if [[ $* == *" inspect "* ]]; then echo '{}'; fi
+    if [[ $* == *" images "* ]]; then echo latest; fi
+}
+jq() { if [[ $1 != -e ]]; then cat >/dev/null; echo '{}'; fi; }
+python3() { echo prepare >> events; return "$PREPARE_STATUS"; }
+'''
+            script = stub + loading.replace("/tmp/manifest.json", str(directory / "manifest.json"))
+            script += "\n" + shutdown + "\n" + packages
+            for status in ("0", "1"):
+                with self.subTest(status=status):
+                    (directory / "events").write_text("")
+                    result = subprocess.run(
+                        ["bash", "-c", script], cwd=directory,
+                        env=dict(os.environ, TARGET_MACHINE="vs", FILESYSTEM_ROOT="fixture-root",
+                                 DOCKER_HOST="fixture-socket", SONIC_IMAGE_VERSION="fixture-version",
+                                 SONIC_INSTALLER_DOCKER_STORE_STATE="fixture-state",
+                                 SONIC_INSTALLER_DOCKER_STORE_OUTPUT="dockerfs.tar.gz",
+                                 PREPARE_STATUS=status),
+                        text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    events = (directory / "events").read_text().splitlines()
+                    self.assertEqual(sum("docker load " in event for event in events), 2)
+                    self.assertEqual(sum("generate_shutdown_order.py" in event for event in events), 1)
+                    self.assertEqual(sum("install -y -v DEBUG --from-tarball target/docker-" in event
+                                         for event in events), 2)
+                    self.assertEqual(sum("docker tag docker-macsec:latest" in event for event in events), 1)
+                    self.assertEqual(sum("docker tag docker-dhcp-relay:latest" in event
+                                         for event in events), 1)
+
+    def test_verified_hit_skips_packing_but_damaged_restored_output_cannot_fall_back_to_empty_store(self):
+        source = (ROOT / "build_debian.sh").read_text()
+        block = "installer_store_cache_status=1" + source.split(
+            "installer_store_cache_status=1", 1)[1].split(
+                '\nif [[ -n ${SONIC_IMAGE_TIMING_FILE:-}', 1)[0]
+        with tempfile.TemporaryDirectory(prefix="installer-cache-packing-") as directory:
+            directory = Path(directory)
+            (directory / "root").mkdir()
+            stub = '''
+set -e
+sudo() { echo "$*" >> "$EVENTS"; }
+python3() {
+    case "$2" in
+        hit) return "$HIT_STATUS" ;;
+        publish) echo published >> "$EVENTS" ;;
+    esac
+}
+die() { echo "$*" >&2; exit 1; }
+FILESYSTEM_ROOT=root
+FILESYSTEM_DOCKERFS=dockerfs.tar.gz
+BUILD_REDUCE_IMAGE_SIZE=n
+'''
+            for status, expected in (("0", 0), ("1", 0), ("2", 1)):
+                with self.subTest(status=status):
+                    (directory / "events").write_text("")
+                    result = subprocess.run(["bash", "-c", stub + block], cwd=directory,
+                                            env=dict(os.environ, HIT_STATUS=status,
+                                                     EVENTS=str(directory / "events"),
+                                                     SONIC_INSTALLER_DOCKER_STORE_STATE="fixture-state"),
+                                            text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    events = (directory / "events").read_text()
+                    self.assertEqual("tar -I pigz" in events, status == "1")
+                    self.assertEqual("published" in events, status == "1")
 
 
 if __name__ == "__main__":

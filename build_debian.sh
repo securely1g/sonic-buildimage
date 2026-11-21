@@ -726,6 +726,21 @@ sudo install -o root -g root -m 0644 "$sonic_version_tmp" \
     "$FILESYSTEM_ROOT/etc/sonic/sonic_version.yml"
 rm -f "$sonic_version_tmp"
 
+unset SONIC_INSTALLER_DOCKER_STORE_STATE SONIC_INSTALLER_DOCKER_STORE_OUTPUT SONIC_INSTALLER_DOCKER_STORE_RECEIPT
+if [[ ${RFS_SPLIT_LAST_STAGE:-n} == y && ${RFS_SPLIT_FIRST_STAGE:-n} != y &&
+      ${IMAGE_TYPE:-} == onie && ${TARGET_MACHINE:-} == vs && $CONFIGURED_ARCH == amd64 &&
+      -n ${SONIC_INSTALLER_DOCKER_STORE_CACHE:-} &&
+      ( ${SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE:-off} == read ||
+        ${SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE:-off} == readwrite ) ]]; then
+    SONIC_INSTALLER_DOCKER_STORE_STATE=$(mktemp "$TARGET_PATH/.installer-docker-store.XXXXXX")
+    printf '{"version":1,"status":"disabled"}\n' > "$SONIC_INSTALLER_DOCKER_STORE_STATE"
+    SONIC_INSTALLER_DOCKER_STORE_OUTPUT=$(readlink -m "$FILESYSTEM_DOCKERFS")
+    SONIC_INSTALLER_DOCKER_STORE_RECEIPT="$TARGET_PATH/sonic-vs.bin.docker-store-cache.json"
+    rm -f -- "$SONIC_INSTALLER_DOCKER_STORE_RECEIPT"
+    export SONIC_INSTALLER_DOCKER_STORE_STATE SONIC_INSTALLER_DOCKER_STORE_OUTPUT SONIC_INSTALLER_DOCKER_STORE_RECEIPT
+    trap_push 'rm -f -- "$SONIC_INSTALLER_DOCKER_STORE_STATE"'
+fi
+
 if [ -f sonic_debian_extension.sh ]; then
     ./sonic_debian_extension.sh $FILESYSTEM_ROOT $PLATFORM_DIR $IMAGE_DISTRO
 fi
@@ -1015,13 +1030,30 @@ if [ -n "${SONIC_IMAGE_TIMING_FILE:-}" ]; then
         python3 ./scripts/image_timing.py switch compression filesystem 2>/dev/null || true
     fi
 fi
+installer_store_cache_status=1
+if [[ -n ${SONIC_INSTALLER_DOCKER_STORE_STATE:-} ]]; then
+    if python3 scripts/installer_docker_store_cache.py hit --state "$SONIC_INSTALLER_DOCKER_STORE_STATE"; then
+        installer_store_cache_status=0
+    else
+        installer_store_cache_status=$?
+    fi
+    if [[ $installer_store_cache_status != 0 && $installer_store_cache_status != 1 ]]; then
+        die "Restored Docker-store state changed; refusing to package an empty live daemon"
+    fi
+fi
 if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y ]]; then
     # The extension already assembled the tagged image bundle before packing the rootfs.
     test -s "$FILESYSTEM_DOCKERFS"
+elif [[ $installer_store_cache_status == 0 ]]; then
+    echo '[ installer Docker-store cache ] packing skipped: verified archive restored'
 elif [ "$BUILD_REDUCE_IMAGE_SIZE" = "y" ]; then
     pushd $FILESYSTEM_ROOT && sudo tar -I pzstd -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
 else
     pushd $FILESYSTEM_ROOT && sudo tar -I pigz -cf $OLDPWD/$FILESYSTEM_DOCKERFS -C ${DOCKERFS_PATH}var/lib/docker .; popd
+fi
+if [[ -n ${SONIC_INSTALLER_DOCKER_STORE_STATE:-} && $installer_store_cache_status == 1 ]]; then
+    python3 scripts/installer_docker_store_cache.py publish --state "$SONIC_INSTALLER_DOCKER_STORE_STATE" \
+        --root "$FILESYSTEM_ROOT" --output "$FILESYSTEM_DOCKERFS" || true
 fi
 
 if [[ -n ${SONIC_IMAGE_TIMING_FILE:-} && ${IMAGE_TYPE:-} == onie ]]; then

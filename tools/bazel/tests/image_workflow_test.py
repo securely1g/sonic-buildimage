@@ -1,5 +1,6 @@
 """Run the real image-verification workflow shell against recording commands."""
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -124,6 +125,48 @@ class VerificationWorkflowTest(unittest.TestCase):
                 with self.subTest(dependency=dependency, outcome=outcome):
                     env = dict(success, **{dependency: outcome})
                     self.assertNotEqual(subprocess.run(["bash", "-eu", "-c", gate["run"]], env=env).returncode, 0)
+
+    def test_installer_store_cache_writes_are_limited_to_master_and_same_repo_pr276(self):
+        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
+        expression = re.search(
+            r"SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=\$\{\{ (.*?) \}\}",
+            job["env"]["SONIC_BUILD_VARS"], re.DOTALL).group(1)
+
+        def result(node):
+            if isinstance(node, ast.Constant):
+                return node.value
+            if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+                return result(node.left) == result(node.comparators[0])
+            if isinstance(node, ast.BoolOp):
+                value = result(node.values[0])
+                for child in node.values[1:]:
+                    if (isinstance(node.op, ast.And) and not value
+                            or isinstance(node.op, ast.Or) and value):
+                        break
+                    value = result(child)
+                return value
+            self.fail("Unexpected cache-mode expression syntax")
+
+        cases = (
+            ("push", "refs/heads/master", 0, "securely1g/sonic-buildimage", "readwrite"),
+            ("push", "refs/heads/other", 0, "securely1g/sonic-buildimage", "read"),
+            ("pull_request", "refs/pull/276/merge", 276, "securely1g/sonic-buildimage", "readwrite"),
+            ("pull_request", "refs/pull/277/merge", 277, "securely1g/sonic-buildimage", "read"),
+            ("pull_request", "refs/pull/276/merge", 276, "fork/sonic-buildimage", "read"),
+            ("workflow_dispatch", "refs/heads/master", 276, "securely1g/sonic-buildimage", "read"),
+        )
+        for event, ref, number, repository, expected in cases:
+            with self.subTest(event=event, ref=ref, number=number, repository=repository):
+                context = {
+                    "github.event_name": event, "github.ref": ref, "github.event.pull_request.number": number,
+                    "github.event.pull_request.head.repo.full_name": repository,
+                    "github.repository": "securely1g/sonic-buildimage",
+                }
+                source = expression
+                for name, value in context.items():
+                    source = source.replace(name, repr(value))
+                tree = ast.parse(source.replace("&&", "and").replace("||", "or"), mode="eval")
+                self.assertEqual(result(tree.body), expected)
 
     def test_runtime_pruning_commands_stop_on_errors_without_using_a_real_daemon(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())

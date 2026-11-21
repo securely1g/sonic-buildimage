@@ -281,6 +281,79 @@ It does not update image pins or create commits. See the
 [host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
 The downstream installer verification job extracts the release and commit from the packaged filesystem.
 
+The native AMD64 VS ONIE job also trials a prepared Docker-store cache,
+independently of container-build caching. It sets
+`SONIC_INSTALLER_DOCKER_STORE_CACHE=/dpkg_cache/installer-docker-store-v1`
+inside the slave, using the existing shared package-cache mount. Master pushes
+and same-repository runs of trial PR #276 set
+`SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=readwrite`; other PR and manual
+runs use `read`. Fork PRs do not run this job. Other builds default to `off`.
+These settings are passed in `SONIC_BUILD_VARS`; set the mode to `off` to
+restore the original assembly path.
+
+On the host/NFS mount, entries live under
+`/nfs/dpkg_cache/vs/installer-docker-store-v1/<input-key>/`, each containing
+`dockerfs.tar.gz` and `manifest.json`. This shared cache persists independently
+of the run's checkout and GitHub workflow artifacts.
+
+On a hit, the build copies and SHA256-verifies the compressed Docker-store
+archive, restores the two generated shutdown-order files, and skips image
+load/tag/manifest generation and Docker-store compression. The rootfs, version
+file, services, SquashFS, ZIP and ONIE wrapper are still generated normally.
+All existing installer and installed-image validators still run.
+
+The key includes ordered selected archive contents, exact version tags,
+the fully rendered extension, utilities wheel and shutdown generator,
+installed Debian package versions, Docker binaries/configuration and storage
+profile, and relevant packaging scripts/tools/options. It intentionally does
+not reuse the complete installer or its build-date/commit metadata.
+Changed tags or any keyed input cause a miss; this is not a cache based only
+on the Git SHA or filenames. Input archive hashing and cache transfer are real
+overheads and must be included when measuring the benefit.
+The default image version incorporates the source revision (and a timestamp for
+dirty builds), so a new revision normally misses even if its container archives
+are unchanged. This first trial targets identical-input rebuilds; it does not
+retag a cached store for a different version or change version-generation rules.
+
+The initial supported profile excludes cross/VM builds, Kubernetes pulls,
+additional package-manager installs, image-size optimization, custom tar options
+and custom organization hooks. The shipped no-op `organization_extensions.sh`
+is accepted only at its reviewed SHA256, which is also included in the key.
+A modified or symlinked extension, or any `build_debian.organization.sh`, still
+disables caching. Unsupported profiles, missing/corrupt entries,
+inaccessible caches and failed publication fall back to normal assembly.
+If an already-restored output changes after image loading was skipped, the
+build fails rather than accidentally packaging an empty live daemon.
+
+Entries are immutable and published by atomic directory rename after the normal
+load/tag/manifest checks, shutdown generation and tar command succeed. A
+nonblocking publisher lock avoids waiting behind other uploads. The trial
+refuses new publication beyond 16 GiB of cached archive data; it does not evict
+or overwrite entries. Administrators must provision trusted writer permissions
+and manage retention on this dedicated subdirectory. Helper read mode is not a
+filesystem ACL or a defense against arbitrary code on a privileged runner.
+Checksum validation detects corruption; it does not authenticate an untrusted
+cache writer. Do not share this cache across untrusted build tenants.
+
+The timing artifact contains `installer-docker-store-cache.json`, including
+hit/miss/disabled state, a fixed reason code for disabled/unavailable inputs or
+entries, opaque key, preparation time (fingerprinting plus
+lookup/restore), skip flags and publication time/bytes when applicable.
+The existing `docker-load` phase includes cache probing/restoration on hits;
+the Docker-store compression phase then contains only the skip check.
+No cached data is extracted into the rootfs: only two fixed metadata files are
+installed, while the verified compressed store goes directly into the payload.
+
+For an actual cold/warm trial, run two fresh builds with identical selected
+archives, version tags and keyed tools/configuration. Use a private writable
+cache for local experiments, or let a master push or same-repository PR #276
+run seed the shared cache before a matching run. Rerun the same unchanged
+commit and inputs for this trial; a new revision normally has a different key.
+Other unseeded PR runs are expected to miss and cannot publish to the shared
+cache. Require the second receipt to say `hit`, both skip
+flags to be true and the existing validators to pass, then compare the entire
+final recipe rather than adding together old phase estimates.
+
 The host wrapper [`build_vs.sh`](build_vs.sh) runs one
 `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
