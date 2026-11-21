@@ -67,6 +67,7 @@ class KernelArtifactsTest(unittest.TestCase):
         output = self.fixture.root / "public-from-vs"
         summary = kernel_artifacts.collect(self.fixture.root, None, output, debs_directory=handoff, from_vs_handoff=True)
         self.assertEqual(summary, baseline)
+        self.assertEqual(summary["architecture"], self.fixture.architecture)
         self.assertEqual({p.name: p.read_bytes() for p in output.iterdir()},
                          {p.name: p.read_bytes() for p in self.output.iterdir()})
 
@@ -77,9 +78,11 @@ class KernelArtifactsTest(unittest.TestCase):
                 record = self.fixture.bundle / kernel.RESOLUTION_DIRECTORY / self.fixture.provenance["resolution"]["lock_sha256"]
                 if reason == "missing":
                     record.unlink()
+                    error = "expected nonempty regular kernel output"
                 else:
                     record.write_bytes(b"wrong evidence")
-                with self.assertRaises(ValueError):
+                    error = "kernel dependency record differs"
+                with self.assertRaisesRegex(ValueError, error):
                     kernel_artifacts.collect(self.fixture.root, None, self.output, vs_handoff=True)
                 self.assertFalse(self.output.exists())
 
@@ -107,7 +110,8 @@ class KernelArtifactsTest(unittest.TestCase):
                 else:
                     (handoff / next(iter(self.fixture.packages))).write_bytes(b"invalid DEB")
                 path.write_text(json.dumps(receipt))
-                with self.assertRaises(ValueError):
+                error = "kernel artifact failed" if change == "package" else "kernel handoff differs"
+                with self.assertRaisesRegex(ValueError, error):
                     kernel_artifacts.collect(self.fixture.root, None, self.output, debs_directory=handoff, from_vs_handoff=True)
                 self.assertFalse(self.output.exists())
 

@@ -24,13 +24,14 @@ def checked_metadata(packages, output, name, digest, fields):
     public_artifacts.safe_json(metadata)
 
 
-def collect(workspace, state, output, architecture="amd64", debs_directory=None,
+def collect(workspace, state, output, architecture=None, debs_directory=None,
             *, vs_handoff=False, from_vs_handoff=False):
     kernel.require(not output.exists(), "kernel artifact destination already exists")
     packages = Path(debs_directory or kernel.DEBS_DIRECTORY)
     if not packages.is_absolute():
         packages = workspace / packages
     verified = kernel.verify(packages, workspace, architecture=architecture)
+    architecture = verified["manifest"]["architecture"]
     selected = verified["provenance"]["resolution"]
     records = {}
     for relative, field in kernel.RESOLUTION_RECORDS.items():
