@@ -215,8 +215,8 @@ def runtime_report(directory, bundle):
                     key, value = line.split("=", 1)
                     check.require(settings.get(key) == value, "OCI setting differs from Make for " + key)
         if image == "docker-gbsyncd-vs":
-            from tools.bazel.tests.integration.syncd_p4_images_test import check_p4_inputs
-            check_p4_inputs(directory / "source-contract.json", directory / "source-receipt.json")
+            from tools.bazel.ci.gbsyncd_image import verify_installer_source_payload
+            verify_installer_source_payload(directory, variant, files, owners["source_sha256"]["source-runtime.tar"])
         if image == "docker-database":
             report["include_system_eventd"] = env["INCLUDE_SYSTEM_EVENTD"]
             report["own_debug_pairs"] = [p for p in pairs if p["path"] in owners["owners"]["source-runtime.tar"]]

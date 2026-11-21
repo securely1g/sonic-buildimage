@@ -139,6 +139,38 @@ class GearboxVimReceipt(unittest.TestCase):
 
 
 class GearboxBuildEvidenceTest(unittest.TestCase):
+    def test_installer_compares_dash_data_against_the_selected_source_receipt(self):
+        """A second DASH generation can change pipeline JSON even if the same libraries are installed."""
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            pipeline = "etc/dash/dash_pipeline_p4rt.json"
+            license_file = "usr/share/doc/dash-sai/LICENSE"
+            changelog = "usr/share/doc/p4lang-bmv2/changelog.Debian.gz"
+            library = "usr/lib/x86_64-linux-gnu/libsai.so"
+            soname = "usr/lib/x86_64-linux-gnu/libsai.so.0"
+            regular = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0, "sha256": "1" * 64, "size": 173}
+            source = {pipeline: regular, license_file: regular, changelog: regular,
+                      library: dict(regular, elf_machine=62), soname: {"kind": "symlink", "mode": 0, "linkname": library}}
+            installed = dict(source)
+            del installed[changelog]
+            installed[soname] = dict(source[soname], mode=0o777)
+            contract = directory / "source-contract.json"
+            contract.write_text(json.dumps({"packages": [{"required_paths": {pipeline: "file"}}]}))
+            receipt = {"contract_sha256": gbsyncd_image.check.sha(contract), "payload": {"sha256": "2" * 64},
+                       "packages": [{"files": source}]}
+            (directory / "source-receipt.json").write_text(json.dumps(receipt))
+            (directory / "source-excludes.txt").write_text("usr/share/doc/*\n")
+            (directory / "source-includes.txt").write_text("usr/share/doc/*/LICENSE\n")
+            with patch.object(gbsyncd_image, "check_p4_inputs"):
+                for variant in ("runtime", "debug"):
+                    with self.subTest(variant=variant):
+                        gbsyncd_image.verify_installer_source_payload(directory, variant, installed, "2" * 64)
+                        changed = installed | {pipeline: dict(regular, sha256="3" * 64)}
+                        with self.assertRaisesRegex(ValueError, pipeline):
+                            gbsyncd_image.verify_installer_source_payload(directory, variant, changed, "2" * 64)
+                with self.assertRaisesRegex(ValueError, "built runtime TAR"):
+                    gbsyncd_image.verify_installer_source_payload(directory, "runtime", installed, "4" * 64)
+
     def test_exported_packages_and_archives_match_the_validated_layouts(self):
         """Validation must inspect the same build's payload as the published archives."""
         with tempfile.TemporaryDirectory() as temporary:

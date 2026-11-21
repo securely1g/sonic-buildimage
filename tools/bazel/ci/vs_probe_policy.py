@@ -62,7 +62,8 @@ def preparation_targets(image, debug_selected):
         result["p4rt.owner-debug.tar"] = "@p4rt_owner_payload//:p4rt_runtime_debug.tar"
     if image == "docker-gbsyncd-vs":
         result.update({"base.source.tar": "//dockers/docker-base-trixie:source_runtime",
-                       **{n: module.TARGETS[n] for n in ("source-contract.json", "source-receipt.json")}})
+                       **{n: module.TARGETS[n] for n in ("source-contract.json", "source-receipt.json",
+                                                          "source-excludes.txt", "source-includes.txt")}})
         if debug_selected:
             result["policy.json"] = module.TARGETS["policy.json"]
     for name, target in module.TARGETS.items():
@@ -151,6 +152,8 @@ def prepare(image, version, variant, layout_dir, source_paths, bundle_dir, *, ma
             owned[name] = {key: item for key, item in payload.items()
                            if item["kind"] != "directory" or image == "docker-snmp"}
         elif owner_archive(name):
+            if image == "docker-gbsyncd-vs" and name == "source-runtime.tar":
+                source_sha256[name] = check.sha(path)
             owned[name] = source_members(path)
             native.update(owned[name])
         elif name == "frr.python.tar" or name.endswith(("files.tar", "config.tar")) or ("debug" in name and name.endswith(".tar")):
