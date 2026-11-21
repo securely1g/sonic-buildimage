@@ -83,7 +83,7 @@ class KernelBundleTest(unittest.TestCase):
             'bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-' + self.gitlink + '", repo_name = "sonic_linux_kernel")'))
         ci = self.root / "tools/bazel/ci"
         ci.mkdir(parents=True)
-        for name in ("resolution.py", "time_vs_image.py", "resources.py"):
+        for name in ("command_log.py", "resolution.py", "time_vs_image.py", "resources.py"):
             shutil.copyfile(ROOT / "tools/bazel/ci" / name, ci / name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", ".gitmodules", "Makefile.work", "rules", "tools"], check=True)
@@ -537,6 +537,89 @@ class KernelBundleTest(unittest.TestCase):
         self.assertEqual(json.loads((directory / "launcher.timing.json").read_text())["exit_code"], 37)
         self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"partial profile")
         self.assertFalse((directory / "stage-debs.timing.json").exists())
+
+    def test_cache_retries_reuse_launcher_state_and_publish_only_after_verified_success(self):
+        remote = "grpc://cache.example:9092"
+        outage = ("ERROR: Executing genrule failed: Failed to query remote execution capabilities: "
+                  "Connection refused: /172.16.0.4:9092\n"
+                  "ERROR: Build did NOT complete successfully\n")
+        for failures in (1, 3):
+            calls = []
+            metadata = {}
+            state = self.root / f"retry-state-{failures}"
+            before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+                      for path in self.bundle.iterdir()}
+
+            def execute(command, workspace):
+                calls.append(command)
+                self.assertEqual(workspace, self.root)
+                self.assertEqual(command[command.index("--remote-cache") + 1], remote)
+                self.assertNotIn("--remote-cache-read-only", command)
+                for name, identity in before.items():
+                    path = self.bundle / name
+                    self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), identity)
+                workdir = Path(command[command.index("--work-dir") + 1])
+                workdir.mkdir(parents=True, exist_ok=True)
+                if len(calls) <= failures:
+                    (workdir / "build.log").write_text(outage)
+                    (workdir / "profile.json.gz").write_bytes(b"failed profile")
+                    raise subprocess.CalledProcessError(34, command)
+                self.declared_outputs(workdir)
+                consumer = Path(command[command.index("--workspace") + 1])
+                metadata.update(self.resolution_files(workdir, consumer))
+                (workdir / "build.log").write_text("verified kernel build\n")
+                (workdir / "invocation.json").write_text(json.dumps({
+                    "schema": 3, "target": kernel.TARGET, "uid": 1000,
+                    "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
+                    "host_architecture": self.architecture,
+                    "kernel_config": self.state["kernel_config"], **self.state["launcher"],
+                    "remote_cache": remote, "remote_cache_read_only": False, "disk_cache": None}))
+
+            with self.subTest(failures=failures), \
+                    patch.object(kernel.command_log.time, "sleep") as sleep, redirect_stderr(io.StringIO()):
+                if failures == 3:
+                    with self.assertRaises(subprocess.CalledProcessError) as failure:
+                        kernel.build(self.root, state, remote, True, execute=execute)
+                    self.assertEqual(failure.exception.returncode, 34)
+                    self.assertFalse((state / "kernel-receipt.json").exists())
+                else:
+                    receipt = kernel.build(self.root, state, remote, True,
+                                           execute=execute, fetch=lambda url: metadata[url])
+                    self.assertEqual(receipt["result"]["manifest"], self.manifest)
+                    self.assertEqual(receipt["plan"]["remote_cache"], remote)
+                    self.assertEqual(kernel.verify(self.bundle, self.root)["manifest"], self.manifest)
+            self.assertEqual(len(calls), min(failures + 1, 3))
+            self.assertTrue(all(command == calls[0] for command in calls))
+            self.assertEqual(sleep.call_args_list,
+                             [unittest.mock.call(10)] + ([unittest.mock.call(30)] if failures == 3 else []))
+            for attempt in range(1, min(failures, 2) + 1):
+                retained = state / f"cache-attempt-{attempt}"
+                self.assertEqual(retained.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((retained / "build.log").read_text(), outage)
+                self.assertEqual((retained / "profile.json.gz").read_bytes(), b"failed profile")
+
+    def test_kernel_retry_does_not_reclassify_stale_log_after_bootstrap_failure(self):
+        calls = []
+        state = self.root / "stale-retry-state"
+
+        def execute(command, workspace):
+            calls.append(command)
+            workdir = Path(command[command.index("--work-dir") + 1])
+            workdir.mkdir(parents=True, exist_ok=True)
+            if len(calls) == 1:
+                (workdir / "build.log").write_text(
+                    "ERROR: Failed to query remote execution capabilities: Connection refused\n")
+                raise subprocess.CalledProcessError(34, command)
+            raise subprocess.CalledProcessError(1, command)
+
+        with patch.object(kernel.command_log.time, "sleep") as sleep, \
+                redirect_stderr(io.StringIO()), self.assertRaises(subprocess.CalledProcessError) as failure:
+            kernel.build(self.root, state, "grpc://cache:9092", False, execute=execute)
+        self.assertEqual(failure.exception.returncode, 1)
+        self.assertEqual(len(calls), 2)
+        sleep.assert_called_once_with(10)
+        self.assertFalse((state / "kernel-receipt.json").exists())
+        self.assertEqual(kernel.verify(self.bundle, self.root)["manifest"], self.manifest)
 
     def test_managed_kernel_cache_reaches_only_the_isolated_consumer(self):
         cache_rc = self.root / "worker-cache.bazelrc"

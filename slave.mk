@@ -1687,7 +1687,8 @@ vs_boot_bundle_inputs := files/docker/docker files/docker/load-images.conf files
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 vs_boot_bundle_inputs += tools/bazel/image/build_boot_bundle.py tools/bazel/image/boot_bundle.bzl \
                          tools/bazel/image/boot_bundle_action.py tools/bazel/image/BUILD.bazel \
-                         tools/bazel/build_helpers.py tools/bazel/ci/build.py tools/bazel/ci/cache_reuse.py
+                         tools/bazel/build_helpers.py tools/bazel/ci/build.py tools/bazel/ci/cache_reuse.py \
+                         tools/bazel/ci/command_log.py
 endif
 endif
 .PHONY: check-vs-boot-mode
