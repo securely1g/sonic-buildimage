@@ -20,6 +20,7 @@ from tools.bazel.image.build_boot_bundle import BundlePackage, Image, write_arch
 from tools.bazel.oci.boot_layout import publish_layout
 from tools.bazel.oci.oci_layout import validate_layout
 from tools.bazel.tests.oci_base_fixture import digest, docker_save, image_fixture, oci_files, write_layout
+from tools.bazel.tests.integration.boot_bundle_cache import action_counts
 
 PLATFORM = "linux/amd64"
 
@@ -32,6 +33,29 @@ class BootBundleBridgeTest(unittest.TestCase):
         self.config, self.layers = image_fixture()
         self.layout = self.work / "native"
         write_layout(self.layout, oci_files(self.config, self.layers))
+
+    def test_cache_counts_ignore_receipt_metadata_and_accept_native_only_bundles(self):
+        evidence = self.work / "evidence.json"
+        receipt = {
+            "archives": {"actions": {"SonicBootArchive": {"executed": 1}}},
+            "bundle": {"actions": {"SonicBootLayer": {"executed": 1, "hits": 2},
+                                   "SonicBootBundle": {"executed": 1}}},
+            "inputs": {"native_images": 1, "gzip_level": 1, "graph_seconds": 0.01},
+            "total_seconds": 2.0,
+        }
+        evidence.write_text(json.dumps(receipt))
+        self.assertEqual(action_counts(evidence), {
+            "SonicBootArchive": {"executed": 1},
+            "SonicBootLayer": {"executed": 1, "hits": 2},
+            "SonicBootBundle": {"executed": 1},
+        })
+        del receipt["archives"]
+        evidence.write_text(json.dumps(receipt))
+        self.assertEqual(action_counts(evidence), receipt["bundle"]["actions"])
+        receipt["bundle"] = {"seconds": 1.0}
+        evidence.write_text(json.dumps(receipt))
+        with self.assertRaises(KeyError):
+            action_counts(evidence)
 
     def test_make_symlink_receipt_and_pruned_sidecar_fallback(self):
         archive = self.work / "cached-export.gz"
