@@ -1721,6 +1721,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         scripts/sbom_parse_lockfiles.py \
         scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
+        $$(if $$(filter sonic-vs.bin,$$*),scripts/installer_docker_store_cache.py) \
         $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),scripts/image_timing.py) \
         $$(if $$(filter sonic-vs.img.gz,$$*),scripts/build_kvm_image.sh) \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
@@ -1808,6 +1809,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	export onie_recovery_kvm_6asic_image="$(FILES_PATH)/$(ONIE_RECOVERY_KVM_6ASIC_IMAGE)"
 	export kversion="$(KVERSION)"
 	export image_type="$($*_IMAGE_TYPE)"
+	export SONIC_INSTALLER_DOCKER_STORE_CACHE="$(SONIC_INSTALLER_DOCKER_STORE_CACHE)"
+	export SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE="$(SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE)"
 	export sonicadmin_user="$(USERNAME)"
 	export sonic_asic_platform="$(patsubst %-$(CONFIGURED_ARCH),%,$(CONFIGURED_PLATFORM))"
 	export enable_organization_extensions="$(ENABLE_ORGANIZATION_EXTENSIONS)"

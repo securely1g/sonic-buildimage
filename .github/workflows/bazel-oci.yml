@@ -752,7 +752,10 @@ jobs:
       SONIC_VERSION_CONTROL_COMPONENTS: py2,py3,web,git,docker
       MIRROR_SNAPSHOT: "y"
       SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
-      SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
+      SONIC_BUILD_VARS: >-
+        P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
+        SONIC_INSTALLER_DOCKER_STORE_CACHE=/dpkg_cache/installer-docker-store-v1
+        SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'readwrite' || 'read' }}
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
       SONIC_VS_VALIDATION_BUNDLES: "1"
@@ -900,6 +903,11 @@ jobs:
         run: |
           set -euo pipefail
           timings=artifacts/vs/image-timings
+          if [[ -f target/sonic-vs.bin.docker-store-cache.json ]]; then
+            mkdir -p "$timings"
+            cp target/sonic-vs.bin.docker-store-cache.json "$timings/installer-docker-store-cache.json"
+            cat "$timings/installer-docker-store-cache.json"
+          fi
           if [[ -d "$timings" ]]; then
             python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" --github-actions
             cat "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
