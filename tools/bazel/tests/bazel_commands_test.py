@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import sys
 import unittest
@@ -21,11 +22,12 @@ class ActionAuditTest(unittest.TestCase):
                 "artifacts": [{"id": 1, "pathFragmentId": 1}],
                 "pathFragments": [{"id": 1, "label": output_name}],
             }
-            def query(command, *, cwd, stdout, check):
+            def query(command, *, cwd, stdout, stderr, text):
                 self.assertEqual(command[1], "aquery")
                 self.assertIn("--platforms=native", command)
                 stdout.write(json.dumps(graph))
                 stdout.flush()
+                return subprocess.CompletedProcess(command, 0, stderr="")
             with mock.patch("subprocess.run", side_effect=query):
                 try:
                     return bazel_commands.audit_targets(
@@ -65,6 +67,37 @@ class ActionAuditTest(unittest.TestCase):
             with self.subTest(command=command):
                 with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                     self.audit("output", command)
+
+    def test_recovered_cache_query_still_rejects_forbidden_actions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            calls = []
+
+            def query(command, **kwargs):
+                calls.append(command)
+                if len(calls) == 1:
+                    kwargs["stdout"].write("private partial graph")
+                    return subprocess.CompletedProcess(
+                        command, 34, stderr="ERROR: Failed to query remote execution capabilities: "
+                        "Connection refused: /172.16.0.4:9092\n")
+                kwargs["stdout"].write(json.dumps({
+                    "actions": [{"arguments": ["make", "package"], "outputIds": []}]}))
+                return subprocess.CompletedProcess(command, 0, stderr="")
+
+            with mock.patch("subprocess.run", side_effect=query), \
+                    mock.patch("tools.bazel.ci.command_log.sleep"), \
+                    self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                bazel_commands.audit_targets(
+                    "bazel", ["--platforms=native", "--remote_header=authorization=private-cache-value"],
+                    ["//:checked"],
+                    workspace=directory, output=directory / "audit.json")
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0], calls[1])
+            receipt = json.loads((directory / "audit.query.json").read_text())
+            self.assertEqual(receipt["commands"][0]["returncode"], 0)
+            self.assertNotIn("private-cache-value", (directory / "audit.query.json").read_text())
+            for log in directory.glob("*.log"):
+                self.assertNotIn("private partial graph", log.read_text())
 
 
 if __name__ == "__main__":

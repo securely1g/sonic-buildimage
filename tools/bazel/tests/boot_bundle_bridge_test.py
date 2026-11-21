@@ -1,6 +1,8 @@
 """Test the installer-selected input graph of the Bazel boot bundle."""
 from contextlib import chdir
+from contextlib import redirect_stderr, redirect_stdout
 import errno
+import io
 import json
 import os
 from pathlib import Path
@@ -110,6 +112,57 @@ class BootBundleBridgeTest(unittest.TestCase):
         self.assertFalse(staged.samefile(source))
         self.assertEqual(staged.read_bytes(), source.read_bytes())
         self.assertEqual(list(staged.parent.iterdir()), [staged])
+
+    def test_bundle_cache_retries_preserve_options_and_sanitize_exhaustion(self):
+        repository = self.work / "inputs"
+        repository.mkdir()
+        execution_root = self.work / "execution"
+        execution_root.mkdir()
+        name = "external/" + bridge.REPO + "/bundle/boot/bundle.tar.gz"
+        relative = "bazel-out/" + name
+        output = execution_root / relative
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"verified bundle")
+        events = [
+            {"workspaceInfo": {"localExecRoot": str(execution_root)}},
+            {"namedSetOfFiles": {"files": [{"name": name, "pathPrefix": ["bazel-out"]}]}},
+        ]
+        options = ["--remote_cache=grpc://cache:9092", "--remote_header=authorization=private-value"]
+        for failures in (1, 3):
+            calls = []
+            console = io.StringIO()
+
+            def run(command, **kwargs):
+                calls.append(command)
+                process = mock.MagicMock()
+                process.__enter__.return_value = process
+                if len(calls) <= failures:
+                    process.stdout = iter(["ERROR: Failed to query remote execution "
+                                           "capabilities: Connection refused: /172.16.0.4:9092\n"])
+                    process.wait.return_value = 34
+                else:
+                    (self.work / "bundle.bep").write_text(
+                        "".join(json.dumps(event) + "\n" for event in events))
+                    process.stdout = iter(["Built bundle\n"])
+                    process.wait.return_value = 0
+                return process
+
+            with self.subTest(failures=failures), \
+                    mock.patch.object(bridge.subprocess, "Popen", side_effect=run), \
+                    mock.patch.object(bridge.command_log, "sleep"), \
+                    redirect_stdout(console), redirect_stderr(console):
+                if failures == 3:
+                    with self.assertRaises(SystemExit) as failure:
+                        bridge.build_target(repository, "bundle", "boot",
+                                            {"boot/bundle.tar.gz"}, None, options)
+                    self.assertEqual(str(failure.exception), "Bazel bundle build failed (exit 34)")
+                else:
+                    result = bridge.build_target(repository, "bundle", "boot",
+                                                 {"boot/bundle.tar.gz"}, None, options)
+                    self.assertEqual(result, {"boot/bundle.tar.gz": output})
+            self.assertEqual(len(calls), min(failures + 1, 3))
+            self.assertTrue(all(command == calls[0] for command in calls))
+            self.assertNotIn("private-value", console.getvalue())
 
     def test_archive_target_survives_new_tags_extra_images_and_new_checkout(self):
         def graph(directory, names):

@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from tools.bazel.ci import resolution, time_vs_image, resources
+from tools.bazel.ci import command_log, resolution, time_vs_image, resources
 
 MANIFEST = "kernel-packages.json"
 PROVENANCE = "kernel-provenance.json"
@@ -36,6 +36,7 @@ WATCHED = [
     ".gitmodules", "Makefile", "Makefile.work", "rules/linux-kernel.mk", "rules/linux-kernel.dep",
     "tools/bazel/ci/resolution.py", "tools/bazel/ci/time_vs_image.py",
     "tools/bazel/ci/resources.py",
+    "tools/bazel/ci/command_log.py",
     "tools/bazel/ci/kernel_make_smoke.py", "rules/config",
     "tools/bazel/kernel", "build_debian.sh", "slave.mk", "Makefile.cache",
     "tools/bazel/ci/kernel_install_smoke.sh", "scripts/build_sbom.py",
@@ -709,12 +710,38 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
             for command in ("cquery", "mod"):
                 profile = shlex.quote(str(timings / f"{command}.profile.json.gz"))
                 rc.write(f"{command} --profile={profile}\n")
+    def cache_diagnostics(error):
+        log = state / "build/build.log"
+        try:
+            if not log.is_file() or log.is_symlink():
+                return ""
+            with log.open() as stream:
+                return stream.read(2 * 1024 * 1024 + 1)
+        except (OSError, UnicodeError):
+            return ""
+
+    def retain_attempt(attempt, delay):
+        destination = state / f"cache-attempt-{attempt}"
+        destination.mkdir(mode=0o700)
+        for name in ("build.log", "profile.json.gz", "invocation.json"):
+            source = state / "build" / name
+            if source.is_file() and not source.is_symlink():
+                shutil.copyfile(source, destination / name)
+        (destination / "retry.json").write_text(json.dumps({
+            "attempt": attempt, "retry_delay_seconds": delay}) + "\n")
+
+    def run_launcher():
+        # A bootstrap/parser failure must not be classified using an older build log.
+        (state / "build/build.log").unlink(missing_ok=True)
+        if execute is None:
+            subprocess.run(prepared["argv"], cwd=workspace, check=True)
+        else:
+            execute(prepared["argv"], workspace)
+
     try:
         with time_vs_image.time_phase(timings, "launcher"):
-            if execute is None:
-                subprocess.run(prepared["argv"], cwd=workspace, check=True)
-            else:
-                execute(prepared["argv"], workspace)
+            command_log.retry_remote_cache(
+                run_launcher, diagnostics=cache_diagnostics, on_retry=retain_attempt)
     finally:
         if timings is not None:
             for name, destination in (("profile.json.gz", "build.profile.json.gz"),

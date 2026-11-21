@@ -38,6 +38,11 @@ args = sys.argv[1:]
 mode = pathlib.Path('mode').read_text()
 labels = {self.targets!r}
 if args[0] == 'build':
+    if mode == 'transient-cache' and not pathlib.Path('cache-failed-once').exists():
+        pathlib.Path('cache-failed-once').touch()
+        print('ERROR: Failed to query remote execution capabilities: Connection refused: /172.16.0.4:9092',
+              file=sys.stderr)
+        sys.exit(34)
     if mode == 'build_failure':
         raise SystemExit('fixture build failed')
     output = pathlib.Path('bazel-bin/archive outputs')
@@ -121,6 +126,26 @@ else:
         self.assertEqual(len(self.receipt['commands']), 1)
         self.assertEqual(self.receipt['commands'][0]['returncode'], 1)
         self.assertIn('fixture build failed', (self.directory / 'build.log').read_text())
+
+    def test_cache_recovery_precedes_archive_publication(self):
+        self.mode.write_text("transient-cache")
+        previous = self.directory / "telemetry.tar"
+        previous.write_bytes(b"previous publication")
+        before = previous.stat().st_mtime_ns
+
+        def wait(delay):
+            self.assertEqual(delay, 10)
+            self.assertEqual(previous.read_bytes(), b"previous publication")
+            self.assertEqual(previous.stat().st_mtime_ns, before)
+            self.assertEqual(self.receipt["artifacts"], {})
+
+        with mock.patch("tools.bazel.ci.command_log.sleep", side_effect=wait):
+            paths = self.collect()
+        self.assertEqual(paths["telemetry.tar"].read_bytes(), b"payload telemetry.tar")
+        entry = self.receipt["commands"][0]
+        self.assertEqual([attempt["returncode"] for attempt in entry["attempts"]], [34, 0])
+        self.assertEqual([entry["argv"][1] for entry in self.receipt["commands"]],
+                         ["build", "cquery", "cquery"])
 
     def test_failed_copy_keeps_prior_archive_and_no_completed_export_receipt(self):
         """Preserve the published archive and remove temporary output when copying fails."""

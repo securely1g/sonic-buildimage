@@ -158,6 +158,20 @@ endpoint does not guarantee a cache hit: the kernel action inputs must match.
 The retained kernel plan records `remote_cache` and `upload_local_results`;
 the launcher invocation records the effective remote policy.
 
+Recognized transient remote-cache failures are retried with the same pinned
+launcher, arguments, private consumer and Bazel work directory: at most three
+attempts, with 10-second and 30-second waits. The consumer uses the shared
+[cache retry policy](../ci/README.md#transient-remote-cache-retries).
+It does not retry compiler, unsupported-configuration or verification failures,
+disable the cache, fall back to Make, or weaken `linux-sandbox`.
+An exhausted outage remains a build failure.
+
+Failed retryable attempts retain private `cache-attempt-1`/`cache-attempt-2`
+directories in the state directory, with available build logs, profiles and
+launcher invocation plus backoff metadata. The plan and final invocation keep
+the requested cache/upload policy. Package publication still happens only after
+the successful launcher's sandbox, source resolution and DEB checks pass.
+
 ## Package contract
 
 The normal DEB directory contains these five kernel DEBs and two metadata

@@ -20,6 +20,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.build_helpers import cache_options, export_archive, remote_cache_options
+from tools.bazel.ci import command_log
 from tools.bazel.ci.build import execution_root_from_bep, resolve_output
 from tools.bazel.ci.cache_reuse import json_records
 from tools.bazel.oci.oci_layout import validate_layout
@@ -226,11 +227,14 @@ def build_target(repository, package, target, expected, evidence, options):
         command.append("--execution_log_json_file=" + str(log))
     command.append("@" + REPO + "//" + package + ":" + target)
     start = time.monotonic()
-    result = subprocess.run(command)
-    if result.returncode:
+    receipt = {"commands": []}
+    try:
+        command_log.execute(command, repository.parent, receipt, package + ".build",
+                            cwd=Path.cwd(), stream=True)
+    except subprocess.CalledProcessError as error:
         # Caller options may include private cache headers. Bazel already printed
         # the phase diagnostics, so avoid repeating credentials in a traceback.
-        raise SystemExit(f"Bazel {package} build failed (exit {result.returncode})")
+        raise SystemExit(f"Bazel {package} build failed (exit {error.returncode})") from None
     if evidence is not None:
         actions = defaultdict(Counter)
         for spawn in json_records(log):
@@ -238,6 +242,9 @@ def build_target(repository, package, target, expected, evidence, options):
             if name.startswith("SonicBoot"):
                 actions[name]["hits" if spawn.get("cacheHit") else "executed"] += 1
         evidence[package] = {"seconds": time.monotonic() - start, "actions": actions}
+        attempts = receipt["commands"][0].get("attempts")
+        if attempts:
+            evidence[package]["cache_attempts"] = len(attempts)
     root = execution_root_from_bep(events)
     outputs = {}
     with events.open() as stream:
