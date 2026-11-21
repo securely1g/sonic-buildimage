@@ -55,6 +55,37 @@ class VerificationWorkflowTest(unittest.TestCase):
                 self.assertNotIn("setup-bazel@", step.get("uses", ""))
                 self.assertNotRegex(step.get("run", ""), r"(?m)^\s*(?:make|bazel(?:isk)?)\s")
 
+    def test_container_artifacts_are_isolated_on_reused_runners_and_removed_after_upload(self):
+        """Two jobs sharing RUNNER_TEMP must never read, upload or remove another family's files."""
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        steps = jobs["validate_container"]["steps"]
+        allocate, = [step for step in steps if step.get("id") == "bundle"]
+        download, = [step for step in steps if "download-artifact@" in step.get("uses", "")]
+        probe, = [step for step in steps if "vs_container_probe.py" in step.get("run", "")]
+        publish, = [step for step in steps if "upload-artifact@" in step.get("uses", "")]
+        cleanup = steps[-1]
+        selected = "${{ steps.bundle.outputs.directory }}"
+        self.assertEqual(download["with"]["path"], selected)
+        self.assertEqual(probe["env"]["BUNDLE_DIR"], selected)
+        self.assertIn('--artifacts "$BUNDLE_DIR"', probe["run"])
+        self.assertEqual(publish["with"]["path"].splitlines(),
+                         [selected + "/vs-validation.json", selected + "/*.runtime.json"])
+        self.assertEqual(cleanup["env"]["BUNDLE_DIR"], selected)
+        self.assertEqual(cleanup["if"], "always() && steps.bundle.outcome == 'success'")
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "output"
+            env = dict(os.environ, RUNNER_TEMP=temporary, GITHUB_OUTPUT=str(output))
+            def run_allocation():
+                subprocess.run(["bash", "-eu", "-c", allocate["run"]], env=env, check=True)
+                return Path(output.read_text().splitlines()[-1].removeprefix("directory="))
+            previous = run_allocation()
+            (previous / "runtime.make.image.env").write_text("IMAGE_VERSION=previous-job\n")
+            current = run_allocation()
+            self.assertEqual(list(current.iterdir()), [])
+            subprocess.run(["bash", "-eu", "-c", cleanup["run"]], env=env | {"BUNDLE_DIR": str(current)}, check=True)
+            self.assertFalse(current.exists())
+            self.assertTrue((previous / "runtime.make.image.env").is_file())
+
     def test_installer_validation_reads_the_published_binary_before_container_checks(self):
         """Get the release from the shipped installer so a stale container bundle cannot choose its own version."""
         jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]

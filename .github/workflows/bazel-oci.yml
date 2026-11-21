@@ -1364,14 +1364,20 @@ jobs:
       - name: Check out the Sysmgr gNOI probe at the installer revision
         if: matrix.image == 'docker-sysmgr'
         run: git submodule update --init --depth 1 -- src/sonic-sysmgr/gnoi
+      - name: Allocate a fresh container artifact directory
+        id: bundle
+        run: |
+          directory=$(mktemp -d "$RUNNER_TEMP/vs-container.XXXXXXXX")
+          printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - name: Download the selected VS container
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.vs_container.outputs.artifact_prefix }}-${{ matrix.image }}
-          path: ${{ runner.temp }}/vs-container
+          path: ${{ steps.bundle.outputs.directory }}
       - name: Check the runner and installed service
         shell: bash
         env:
+          BUNDLE_DIR: ${{ steps.bundle.outputs.directory }}
           IMAGE: ${{ matrix.image }}
           BUILD_VERSION: ${{ needs.installer_validation.outputs.build_version }}
           DEBUG_LAYER: ${{ needs.vs_container.outputs.debug_layer }}
@@ -1379,7 +1385,7 @@ jobs:
           set -euo pipefail
           docker info >/dev/null
           python3 -B tools/bazel/ci/vs_container_probe.py \
-            --artifacts "$RUNNER_TEMP/vs-container" --image "$IMAGE" \
+            --artifacts "$BUNDLE_DIR" --image "$IMAGE" \
             --revision "$GITHUB_SHA" --debug-layer "$DEBUG_LAYER" --build-version "$BUILD_VERSION"
 
       - name: Retain the container validation result
@@ -1387,10 +1393,15 @@ jobs:
         with:
           name: validated-${{ matrix.image }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/vs-container/vs-validation.json
-            ${{ runner.temp }}/vs-container/*.runtime.json
+            ${{ steps.bundle.outputs.directory }}/vs-validation.json
+            ${{ steps.bundle.outputs.directory }}/*.runtime.json
           if-no-files-found: error
           retention-days: 7
+      - name: Remove this job's downloaded container archive
+        if: always() && steps.bundle.outcome == 'success'
+        env:
+          BUNDLE_DIR: ${{ steps.bundle.outputs.directory }}
+        run: rm -rf -- "$BUNDLE_DIR"
 
   archive_acceptance:
     name: Container archive (AMD64)

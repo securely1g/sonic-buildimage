@@ -181,7 +181,7 @@ def runtime_report(directory, bundle):
         vs_package_stages.verify(directory, bundle, variant, inventory, owners)
         if image in policy.FAMILIES:
             from tools.bazel.ci.vs_family_parent import verify_parent
-            verify_parent(directory, image, policy.FAMILIES[image], variant, inventory, owners)
+            verify_parent(directory, bundle, policy.FAMILIES[image], variant, inventory, owners)
         native, pairs = native_expectations(directory, bundle, variant, files, owners)
         if variant == "runtime":
             runtime_paths = set(files)

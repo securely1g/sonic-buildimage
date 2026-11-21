@@ -131,12 +131,12 @@ def verify_files(family, variant, parent, child, owners):
     check.verify_inherited_files(before, after, replacements, mutable, family)
 
 
-def verify_service_config(directory, family, variant, parent, current):
+def verify_service_config(directory, family, variant, parent, current, fixtures):
     if family not in ("dash_engine", "gnmi", "mgmt_framework"):
         return
     if family == "gnmi" and variant == "debug":
         parent = read_oci(directory, "runtime")
-    expected = parent_with_make_settings(directory, variant, parent["config"]["config"])
+    expected = parent_with_make_settings(directory, variant, parent["config"]["config"], fixtures)
     actual = current["config"]["config"]
     if family == "mgmt_framework":
         from tools.bazel.ci.mgmt_framework_image import verify_environment
@@ -152,16 +152,17 @@ def verify_service_config(directory, family, variant, parent, current):
         verify_config(actual, expected, manifest, version, runtime=variant == "runtime")
 
 
-def verify_parent(directory, image, family, variant, current, evidence):
+def verify_parent(directory, bundle, family, variant, current, evidence):
     """Reapply original parent contracts to this installer artifact and its selected variant."""
     if family in ("teamd", "frr"):
         return  # These services also compare their live filesystem in verify_full_parent.
+    image = bundle["image"]
     parent = read_oci(directory, "parent")
     record = json.loads((directory / "parent.json").read_bytes())
     check.require(record["image"] == PARENT_IMAGES[image] and record["diff_ids"] == parent["config"]["rootfs"]["diff_ids"],
                   "Wrong configured parent for " + image)
     ancestry(parent, current, image)
-    verify_service_config(directory, family, variant, parent, current)
+    verify_service_config(directory, family, variant, parent, current, bundle["fixtures"])
     verify_directory_aliases(current["files"])
     if image in GROUP_CHECKS:
         check_accounts(directory, family, variant, parent["files"], current["files"])

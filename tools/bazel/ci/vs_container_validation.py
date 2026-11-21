@@ -54,14 +54,14 @@ def verify_startup(image, settings):
         require(not settings.get("ExposedPorts"), "Unexpected exposed ports in " + image)
 
 
-def parent_with_make_settings(directory, variant, parent_config):
+def parent_with_make_settings(directory, variant, parent_config, fixtures):
     """Overlay the Make-declared key/value inputs before checking other inherited OCI settings."""
     config = dict(parent_config)
     for filename, key in (("components.labels", "Labels"), ("image.env", "Env")):
-        path = directory / (variant + ".make." + filename)
-        if not path.exists():
+        name = variant + ".make." + filename
+        if name not in fixtures:
             continue
-        declared = dict(line.split("=", 1) for line in path.read_text().splitlines())
+        declared = dict(line.split("=", 1) for line in (directory / name).read_text().splitlines())
         if key == "Labels":
             config[key] = {**config.get(key, {}), **declared}
         else:

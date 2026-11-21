@@ -20,16 +20,35 @@ class VSFamilyParentTest(unittest.TestCase):
             directory = Path(temporary)
             (directory / "runtime.make.manifest.json").write_text("{}")
             (directory / "runtime.make.components.labels").write_text("libswsscommon=1.0\n")
+            fixtures = {"runtime.make.components.labels", "runtime.make.manifest.json"}
             base = {"config": {"config": {"Env": ["LANG=C"], "Labels": {"parent": "yes"}}}}
             actual = {"config": {"config": {
                 "Entrypoint": ["/usr/local/bin/supervisord"],
                 "Env": ["LANG=C", "DEBIAN_FRONTEND=noninteractive", "IMAGE_VERSION=r1"],
                 "Labels": {"parent": "yes", "libswsscommon": "1.0", "Tag": "r1", "com.azure.sonic.manifest": "{}"},
             }}}
-            parent.verify_service_config(directory, "gnmi", "runtime", base, actual)
+            parent.verify_service_config(directory, "gnmi", "runtime", base, actual, fixtures)
             actual["config"]["config"]["Env"].append("UNDECLARED=1")
             with self.assertRaisesRegex(ValueError, "undeclared image environment"):
-                parent.verify_service_config(directory, "gnmi", "runtime", base, actual)
+                parent.verify_service_config(directory, "gnmi", "runtime", base, actual, fixtures)
+
+    def test_unlisted_make_inputs_cannot_change_the_framework_parent_contract(self):
+        """A leftover environment file for another service cannot authorize extra runtime or debug values."""
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            base = {"config": {"config": {"Env": ["PATH=/usr/bin"], "WorkingDir": "/"}}}
+            for variant in ("runtime", "debug"):
+                with self.subTest(variant=variant):
+                    env = variant + ".make.image.env"
+                    (directory / env).write_text("DEBIAN_FRONTEND=noninteractive\nIMAGE_VERSION=HEAD.0-c079810a\n")
+                    fixtures = {variant + ".make.manifest.json"}
+                    current = copy.deepcopy(base)
+                    rows = current["config"]["config"]["Env"]
+                    rows.append("DEBIAN_FRONTEND=noninteractive")
+                    parent.verify_service_config(directory, "mgmt_framework", variant, base, current, fixtures)
+                    rows.append("IMAGE_VERSION=HEAD.0-c079810a")
+                    with self.assertRaisesRegex(ValueError, "inherited configuration"):
+                        parent.verify_service_config(directory, "mgmt_framework", variant, base, current, fixtures)
 
     def test_only_the_service_owners_declared_replacement_may_override_its_parent(self):
         original = {"files": {"etc/debian_version": regular(), "etc/rsyslog.conf": regular()}}
