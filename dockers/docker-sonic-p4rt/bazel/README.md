@@ -42,7 +42,7 @@ for phase in prepare-owner build; do
   python3 -B tools/bazel/ci/p4rt_image.py "$phase" \
     --directory artifacts/p4rt --bazel "$BAZEL" \
     --owner-source src/sonic-p4rt/sonic-pins --owner-revision "$owner_revision" \
-    --owner-output-base "$HOME/.cache/sonic-p4rt-owner/manual" --jobs 2
+    --owner-output-base "$HOME/.cache/sonic-p4rt-owner/manual"
 done
 ```
 
@@ -57,14 +57,18 @@ mounts, shutdown order and excluded-profile producers are preserved.
 
 `BAZEL_CONTAINER_CACHE_DIR` and `BAZEL_CONTAINER_ARGS` also apply to the root SDK
 build. `P4RT_BAZEL`, `P4RT_BAZEL_OUTPUT_BASE` and `P4RT_BAZEL_JOBS` select the
-separate owner client. Keep each output base private to one active client and
+separate owner client. Like Bazel, the owner runs one job per available CPU
+unless `P4RT_BAZEL_JOBS` (or `--jobs`) caps it. Bazel 6 still bounds local
+actions by its default CPU and RAM budgets, and remote cache hits download in
+parallel. Keep each output base private to one active client and
 retain it for later builds; no clean is needed between image changes.
 In dedicated CI the helper stops its idle image Bazel server before the owner
 build and test phases. Make can run other producers concurrently, so it keeps
 the shared root server alive. The Make SDK build uses the image cache policy.
 The Bazel 6 owner reads the slave's repository/disk caches, the PINS source
 mirror rules and any selected remote cache. The VS pool's configured remote
-downloader is also available. The owner never uploads local action results.
+downloader is also available. Like the image producers, the owner uploads its
+local action results only when the selected cache allows writes (master pushes).
 
 ## Validate separately
 
@@ -93,8 +97,9 @@ In `bazel-oci.yml`, the AMD64 archive job runs in pinned Trixie on the
 output bases and checks that its filesystem has at least 90 GiB free. The PINS
 Bazel 6 client reads its own workspace configuration and the selected CI
 repository cache, disk cache and source-mirror rules. Trusted same-repository
-builds also read the pool's remote cache and downloader. The owner never
-uploads local action results. Fork builds use local caches and source mirrors.
+builds also read the pool's remote cache and downloader, and master pushes
+upload the owner's local action results. Fork builds use local caches and source
+mirrors.
 The Ubuntu 24.04 job downloads both archives and their evidence from that run,
 starts the services and checks them against the tested checkout. The required
 AMD64 archive check includes both jobs. ARM64 runs the existing helper checks.

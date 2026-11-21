@@ -1,15 +1,16 @@
 """Reject account loss while retaining the declared gearbox OpenSSH group."""
 
 import ast
+import contextlib
+import io
 import copy
 import json
-import os
-import subprocess
+import sys
+from types import SimpleNamespace
 from pathlib import Path
 import tempfile
 import unittest
 
-import yaml
 from unittest.mock import patch
 
 from tools.bazel.ci import gbsyncd_image
@@ -137,34 +138,97 @@ class GearboxVimReceipt(unittest.TestCase):
                 self.receipt({"returncode": code, "stdout": stdout})
 
 
-class GearboxEvidenceTest(unittest.TestCase):
-    def test_private_inspection_does_not_block_or_enter_the_public_upload(self):
-        workspace = gbsyncd_image.ROOT
-        workflow = yaml.safe_load((workspace / ".github/workflows/bazel-oci.yml").read_text())
-        steps = workflow["jobs"]["gearbox_archive"]["steps"]
-        review = next(s["run"] for s in steps if s.get("name") == "Review public gearbox evidence")
-        upload = next(s["with"]["path"] for s in steps if s.get("name") == "Retain gearbox archives and source evidence")
-        program = review.partition("\n")[2].rsplit("\nPYCODE", 1)[0]
-        public_json = next(node.value for node in ast.parse(program).body if isinstance(node, ast.Assign)
-                           and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "public_json")
-        published_json = {Path(pattern).name for pattern in upload.splitlines() if pattern.endswith(".json")}
-        self.assertEqual(set(ast.literal_eval(public_json)) | {"module-graph.json", "public-receipt.json"}, published_json)
+class GearboxBuildEvidenceTest(unittest.TestCase):
+    def test_installer_compares_dash_data_against_the_selected_source_receipt(self):
+        """A second DASH generation can change pipeline JSON even if the same libraries are installed."""
         with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary)
-            artifacts = destination / "artifacts/gbsyncd"
-            artifacts.mkdir(parents=True)
-            private = artifacts / "module-graph-inspection.json"
-            private.write_text(json.dumps({"argv": ["bazel", "mod", "graph"], "returncode": 0}))
-            self.assertFalse(any(private in destination.glob(pattern) for pattern in upload.splitlines()))
-            env = {**os.environ, "PYTHONPATH": str(workspace)}
-            subprocess.run(["bash", "-eu", "-c", review], cwd=destination, env=env, check=True)
-            public = artifacts / "validation.json"
-            public.write_text(json.dumps({"argv": ["private"]}))
-            self.assertTrue(any(public in destination.glob(pattern) for pattern in upload.splitlines()))
-            rejected = subprocess.run(["bash", "-eu", "-c", review], cwd=destination, env=env,
-                                      capture_output=True, text=True)
-            self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("diagnostic-json-field", rejected.stderr)
+            directory = Path(temporary)
+            pipeline = "etc/dash/dash_pipeline_p4rt.json"
+            license_file = "usr/share/doc/dash-sai/LICENSE"
+            changelog = "usr/share/doc/p4lang-bmv2/changelog.Debian.gz"
+            library = "usr/lib/x86_64-linux-gnu/libsai.so"
+            soname = "usr/lib/x86_64-linux-gnu/libsai.so.0"
+            regular = {"kind": "file", "mode": 0o644, "uid": 0, "gid": 0, "sha256": "1" * 64, "size": 173}
+            source = {pipeline: regular, license_file: regular, changelog: regular,
+                      library: dict(regular, elf_machine=62), soname: {"kind": "symlink", "mode": 0, "linkname": library}}
+            installed = dict(source)
+            del installed[changelog]
+            installed[soname] = dict(source[soname], mode=0o777)
+            contract = directory / "source-contract.json"
+            contract.write_text(json.dumps({"packages": [{"required_paths": {pipeline: "file"}}]}))
+            receipt = {"contract_sha256": gbsyncd_image.check.sha(contract), "payload": {"sha256": "2" * 64},
+                       "packages": [{"files": source}]}
+            (directory / "source-receipt.json").write_text(json.dumps(receipt))
+            (directory / "source-excludes.txt").write_text("usr/share/doc/*\n")
+            (directory / "source-includes.txt").write_text("usr/share/doc/*/LICENSE\n")
+            with patch.object(gbsyncd_image, "check_p4_inputs"):
+                for variant in ("runtime", "debug"):
+                    with self.subTest(variant=variant):
+                        gbsyncd_image.verify_installer_source_payload(directory, variant, installed, "2" * 64)
+                        changed = installed | {pipeline: dict(regular, sha256="3" * 64)}
+                        with self.assertRaisesRegex(ValueError, pipeline):
+                            gbsyncd_image.verify_installer_source_payload(directory, variant, changed, "2" * 64)
+                with self.assertRaisesRegex(ValueError, "built runtime TAR"):
+                    gbsyncd_image.verify_installer_source_payload(directory, "runtime", installed, "4" * 64)
+
+    def test_exported_packages_and_archives_match_the_validated_layouts(self):
+        """Validation must inspect the same build's payload as the published archives."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workspace = root / "checkout"
+            workspace.mkdir()
+            directory = root / "artifacts"
+            directory.mkdir()
+            outputs = {target: "outputs/" + name for name, target in gbsyncd_image.TARGETS.items()}
+            layouts = [gbsyncd_image.BASE, *[gbsyncd_image.OWNER + name for name in gbsyncd_image.IMAGES]]
+            outputs.update({target: "outputs/layout-" + str(index) for index, target in enumerate(layouts)})
+            bazel = root / "bazel"
+            bazel.write_text("#!" + sys.executable + "\n" + f"outputs = {outputs!r}\n" + r"""
+from pathlib import Path
+import sys
+if sys.argv[1] == 'build':
+    counter = Path('generation')
+    generation = int(counter.read_text()) + 1 if counter.exists() else 1
+    counter.write_text(str(generation))
+    # Re-execution may change generated payloads even for unchanged sources.
+    # Image archives depend on their layouts, which are built transitively.
+    for output in outputs.values():
+        path = Path(output)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('payload from build ' + str(generation))
+elif sys.argv[1] == 'cquery':
+    path = outputs[sys.argv[-1]]
+    if not Path(path).is_file():
+        raise SystemExit('output was not built')
+    print(path)
+else:
+    raise SystemExit('unexpected operation')
+""")
+            bazel.chmod(0o755)
+            execute = gbsyncd_image.command_log.execute
+
+            def command(argv, *args, **kwargs):
+                if argv[0] == "make":
+                    return ""
+                return execute(argv, *args, **kwargs)
+
+            with patch.object(gbsyncd_image, "ROOT", workspace), \
+                    patch.object(gbsyncd_image, "clean_source"), \
+                    patch.object(gbsyncd_image, "identity", return_value={"revision": "fixture"}), \
+                    patch.object(gbsyncd_image.platform, "machine", return_value="x86_64"), \
+                    patch.object(gbsyncd_image.platform, "freedesktop_os_release", return_value={"VERSION_CODENAME": "trixie"}), \
+                    patch.object(gbsyncd_image.command_log, "execute", side_effect=command), \
+                    patch.object(gbsyncd_image.bazel_commands, "audit_targets", return_value={}), \
+                    patch.object(gbsyncd_image.resolution, "collect", return_value={}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                gbsyncd_image.build_images(SimpleNamespace(bazel=str(bazel), image_version="fixture"), directory)
+            receipt = json.loads((directory / "build-receipt.json").read_text())
+            source_payload = (directory / "source-runtime.tar").read_bytes()
+            for image in gbsyncd_image.IMAGES:
+                with self.subTest(image=image):
+                    self.assertEqual((directory / (image + ".gz")).read_bytes(), source_payload)
+                    self.assertEqual((workspace / receipt["layouts"][image]).read_bytes(), source_payload)
+            self.assertEqual((workspace / receipt["base_layout"]).read_bytes(), source_payload)
 
 
 if __name__ == "__main__":

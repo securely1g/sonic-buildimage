@@ -1,6 +1,7 @@
 """Native VS pmon runtime and debug images."""
 
 load("@base_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_distroless//distroless:defs.bzl", "flatten")
 load("@rules_oci//oci:defs.bzl", "oci_image")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
@@ -12,7 +13,16 @@ load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(['lm-sensors.sh', 'docker-pmon.supervisord.conf.j2', 'docker_init.j2', 'critical_processes', 'etc/rsyslog.conf', 'ssd_tools/iSmart', 'ssd_tools/SmartCmd', 'base_image_files/cmd_wrapper'])
+exports_files([
+    "lm-sensors.sh",
+    "docker-pmon.supervisord.conf.j2",
+    "docker_init.j2",
+    "critical_processes",
+    "etc/rsyslog.conf",
+    "ssd_tools/iSmart",
+    "ssd_tools/SmartCmd",
+    "base_image_files/cmd_wrapper",
+])
 
 _COMPATIBLE = [
     "@platforms//os:linux",
@@ -20,8 +30,32 @@ _COMPATIBLE = [
     "@sonic_build_infra//platforms:trixie",
 ]
 
+# rules/config enables the PDDF platform API in the standard VS installer.
+bool_flag(
+    name = "pddf",
+    build_setting_default = True,
+)
+
+config_setting(
+    name = "pddf_enabled",
+    flag_values = {":pddf": "true"},
+)
+
 # Native source installations retain producer debug symbols.
-sonic_layer(name = "source_runtime", tars = ['@lm_sensors//:libsensors5.runtime', '@lm_sensors//:libsensors-config.runtime', '@lm_sensors//:lm-sensors.runtime', '@lm_sensors//:fancontrol.runtime', '@lm_sensors//:sensord.runtime', '//dockers/docker-platform-monitor/bazel/python:runtime'])
+sonic_layer(
+    name = "source_runtime",
+    tars = [
+        "@lm_sensors//:libsensors5.runtime",
+        "@lm_sensors//:libsensors-config.runtime",
+        "@lm_sensors//:lm-sensors.runtime",
+        "@lm_sensors//:fancontrol.runtime",
+        "@lm_sensors//:sensord.runtime",
+        "//dockers/docker-platform-monitor/bazel/python:runtime",
+    ] + select({
+        ":pddf_enabled": ["//dockers/docker-platform-monitor/bazel/pddf:runtime"],
+        "//conditions:default": [],
+    }),
+)
 
 apt_layer(
     name = "debian_runtime",
@@ -40,8 +74,16 @@ apt_layer(
     variant = "runtime",
 )
 
-filegroup(name = "runtime_apt_selection", srcs = [":debian_runtime"], output_group = "selection")
-sonic_layer(name = "runtime_debian_files", tars = [":debian_runtime"])
+filegroup(
+    name = "runtime_apt_selection",
+    srcs = [":debian_runtime"],
+    output_group = "selection",
+)
+
+sonic_layer(
+    name = "runtime_debian_files",
+    tars = [":debian_runtime"],
+)
 
 installed_packages(
     name = "installed_packages",
@@ -49,15 +91,30 @@ installed_packages(
     architecture = "amd64",
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
     controls = [label + ":control" for label in APT_INPUTS["pmon_runtime_debian"]["amd64"].values()],
-    owner_metadata = ['@lm_sensors//:runtime_packages.json'],
-    source_modules = {'lm-sensors': '@image_source_modules//:lm-sensors.MODULE.bazel'},
-    sources = {'libsensors5': '@lm_sensors//:libsensors5.runtime', 'libsensors-config': '@lm_sensors//:libsensors-config.runtime', 'lm-sensors': '@lm_sensors//:lm-sensors.runtime', 'fancontrol': '@lm_sensors//:fancontrol.runtime', 'sensord': '@lm_sensors//:sensord.runtime'},
+    owner_metadata = ["@lm_sensors//:runtime_packages.json"],
+    source_modules = {"lm-sensors": "@image_source_modules//:lm-sensors.MODULE.bazel"},
     source_spec = "//dockers/docker-platform-monitor/bazel:source_paths.json",
+    sources = {
+        "libsensors5": "@lm_sensors//:libsensors5.runtime",
+        "libsensors-config": "@lm_sensors//:libsensors-config.runtime",
+        "lm-sensors": "@lm_sensors//:lm-sensors.runtime",
+        "fancontrol": "@lm_sensors//:fancontrol.runtime",
+        "sensord": "@lm_sensors//:sensord.runtime",
+    },
 )
-filegroup(name = "runtime_package_metadata", srcs = [":installed_packages"], output_group = "metadata")
+
+filegroup(
+    name = "runtime_package_metadata",
+    srcs = [":installed_packages"],
+    output_group = "metadata",
+)
+
 tar(
     name = "runtime_package_state",
-    srcs = [":installed_packages", ":runtime_package_metadata"],
+    srcs = [
+        ":installed_packages",
+        ":runtime_package_metadata",
+    ],
     mtree = [
         "var/lib/dpkg/status uid=0 gid=0 mode=0644 time=0 type=file content=$(location :installed_packages)",
         "usr/share/sonic/bazel/pmon-packages.json uid=0 gid=0 mode=0644 time=0 type=file content=$(location :runtime_package_metadata)",
@@ -71,7 +128,12 @@ oci_image(
     env = "//tools/bazel/image/vs/metadata:docker-platform-monitor.environment",
     labels = "//dockers/docker-platform-monitor/config:labels",
     target_compatible_with = _COMPATIBLE,
-    tars = [":runtime_debian_files", ":source_runtime", "//dockers/docker-platform-monitor/config:files", ":runtime_package_state"],
+    tars = [
+        ":runtime_debian_files",
+        ":source_runtime",
+        "//dockers/docker-platform-monitor/config:files",
+        ":runtime_package_state",
+    ],
 )
 
 debug_symbols_layer(

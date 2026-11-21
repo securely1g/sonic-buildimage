@@ -21,7 +21,7 @@ from tools.bazel.oci import image_validation, oci_layout, source_base_validation
 OWNER = "//dockers/docker-sonic-otel:"
 IMAGES = ("docker-sonic-otel", "docker-sonic-otel-dbg")
 BASE = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie"
-OPTIONS = ["--platforms=@sonic_build_infra//platforms:x86_64_trixie",
+OPTIONS = [build.MAKE_METADATA_OPTION, "--platforms=@sonic_build_infra//platforms:x86_64_trixie",
            "--host_platform=@sonic_build_infra//platforms:x86_64_trixie"]
 TARGETS = {
     **{name + ".gz": OWNER + name + ".gz" for name in IMAGES},
@@ -122,8 +122,7 @@ def validate_images(directory):
         check.require(check.sha(directory / name) == artifact["sha256"], "artifact changed: " + name)
     parent = oci_layout.validate_layout(ROOT / receipt["base_layout"], "linux/amd64")
     inherited = base_images.installed_inventory(parent)
-    check.require(selection["base_manifest_digest"] == parent.descriptor["digest"] and
-                  selection["dependency_check"]["status"] == "satisfied", "OTEL APT parent/dependencies differ")
+    check.verify_apt_binding(selection, parent.descriptor["digest"])
     parent_selected, parent_origins = source_base_validation.inventory(parent)
     with tempfile.TemporaryDirectory(prefix="otel-parent-accounts-") as temporary:
         root = Path(temporary)

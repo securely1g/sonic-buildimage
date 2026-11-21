@@ -22,21 +22,22 @@ bazel_dep(name = "gawk", version = "5.3.2.sonic.1")
 bazel_dep(name = "googletest", version = "1.16.0")
 bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "redis-dump-load", version = "1.1.sonic.2", repo_name = "redis_dump_load")
 
-# PI and BMv2 export their native Bazel outputs as installation TARs.
-bazel_dep(name = "p4lang-pi", version = "0.1.3.sonic.6", repo_name = "p4lang_pi")
-bazel_dep(name = "p4lang-bmv2", version = "1.15.0.sonic.5", repo_name = "p4lang_bmv2")
-bazel_dep(name = "p4c", version = "1.2.4.2.sonic.4")
-bazel_dep(name = "sonic-dash", version = "0.0.1-a9b799bb664b3b3b9d6e9a19cedd38b620e769de", repo_name = "sonic_dash")
+# PI, BMv2, P4C and DASH export their native Bazel outputs as installation TARs.
+bazel_dep(name = "p4lang-pi", version = "0.1.3.sonic.7", repo_name = "p4lang_pi")
+bazel_dep(name = "p4lang-bmv2", version = "1.15.0.sonic.6", repo_name = "p4lang_bmv2")
+bazel_dep(name = "p4c", version = "1.2.4.2.sonic.7")
+bazel_dep(name = "sonic-dash", version = "0.0.1-d5c003dd7774c2b43f275c0233acc73a0ea28d2f", repo_name = "sonic_dash")
 
 # Use the source-owned Python binding metadata required by sonic-yang-mgmt.
 bazel_dep(name = "libyang-python", version = "3.1.0.sonic.6", repo_name = "libyang_python")
-bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "rules_pkg", version = "1.1.0")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # Share APT lock metadata across dependency sets.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.22")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.25")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -54,7 +55,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.38-0baa4acc9eac9ccc793b81104b1580d530271cbe",
+    version = "0.0.40-6c9cd9477816ad129bf8d4501c9259504f3f85ca",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(name = "grub", version = "2.12.sonic.1")
@@ -68,6 +69,12 @@ bazel_dep(
     version = "0.0.5-33443ea1666a23812365d03fb959066ee84c9aa0",
     repo_name = "sonic_sairedis",
 )
+bazel_dep(
+    name = "sonic-bmp",
+    version = "0.1.0-5548176381e6ea889276859b6dbf8a535e4c5182",
+    repo_name = "sonic_bmp",
+)
+
 bazel_dep(name = "sonic-swss", version = "0.0.3-9c3797990d4b5a79100a40fe7689927c18212361", repo_name = "sonic_swss")
 bazel_dep(name = "sonic-platform-common", version = "1.0.0", repo_name = "sonic_platform_common")
 bazel_dep(name = "sonic-snmpagent", version = "2.1.0-a27e093fac394f7871ec1b19bb12ca6739c29fa9", repo_name = "sonic_snmpagent")
@@ -123,13 +130,6 @@ python.toolchain(python_version = "3.11")
 
 pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
 
-# Keep the Redis dump behavior identical to Make by reusing its existing patch.
-# The second Make patch only changes setup.py, which is not part of the wheel.
-pip.override(
-    file = "redis_dump_load-1.1-py3-none-any.whl",
-    patch_strip = 1,
-    patches = ["//src/redis-dump-load.patch:0001-Use-pipelines-when-dumping-52.patch"],
-)
 pip.parse(
     # bitarray 2.8.1 builds from source on Python 3.13. Use the native GCC
     # execution tools installed by CI rather than standalone Python's clang.
@@ -295,7 +295,7 @@ oci.pull(
 use_repo(oci, "debian_trixie", "debian_trixie_linux_amd64", "debian_trixie_linux_arm64_v8")
 
 # Select the base and config-engine sets from the same canonical lock.
-use_repo(apt, "base_debian", "base_debug_debian", "config_engine_debian", "radv_runtime_debian")
+use_repo(apt, "bmp_runtime_debian", "base_debian", "base_debug_debian", "config_engine_debian", "radv_runtime_debian")
 
 apt_inputs(
     name = "base_apt_inputs",
@@ -360,6 +360,7 @@ source_modules(
         "@otelcol_contrib//:MODULE.bazel": "otelcol-contrib",
         "@sonic_mgmt_framework//:MODULE.bazel": "sonic-mgmt-framework",
         "@sonic_linkmgrd//:MODULE.bazel": "sonic-linkmgrd",
+        "@sonic_bmp//:MODULE.bazel": "sonic-bmp",
         "@libteam//:MODULE.bazel": "libteam",
         "@sonic_dash_api//:MODULE.bazel": "sonic-dash-api",
         "@sonic_dash_ha//:MODULE.bazel": "sonic-dash-ha",
@@ -703,29 +704,26 @@ apt_inputs(
     lock = "@sonic_build_infra//apt:apt.lock.json",
 )
 
-# The PMON image consumes the existing source installation interfaces.
-bazel_dep(name = "lm-sensors", version = "3.6.0.sonic.1", repo_name = "lm_sensors")
-single_version_override(
-    module_name = "lm-sensors",
-    version = "3.6.0.sonic.1",
-    patches = ["//dockers/docker-platform-monitor/bazel:lm-sensors-config-metadata.patch"],
-    patch_strip = 1,
-)
-bazel_dep(name = "blkinfo", version = "0.2.0.sonic.1", repo_name = "blkinfo")
-bazel_dep(name = "bitarray", version = "2.8.1.sonic.2", repo_name = "bitarray")
-bazel_dep(name = "redis-dump-load", version = "1.1.sonic.1", repo_name = "redis_dump_load")
+# Platform Daemons supplies the PMON service wheels. lm-sensors supplies the
+# native payloads and package metadata used by the installer and debug image.
+bazel_dep(name = "lm-sensors", version = "3.6.0.sonic.3", repo_name = "lm_sensors")
 bazel_dep(
     name = "sonic-platform-daemons",
     version = "1.0.0-9af1479fdae05cdea57219a686f9a61e883663e5",
     repo_name = "sonic_platform_daemons",
 )
-# Match the compiler embedded in the daemons' grpcio-tools 1.71.0.
-single_version_override(module_name = "protobuf", version = "29.0")
-use_repo(apt, "pmon_runtime_debian", "lm_sensors_debian")
+use_repo(apt, "pmon_runtime_debian")
 pip.parse(
     hub_name = "pmon_runtime_pip",
     python_version = "3.13",
     requirements_lock = "//dockers/docker-platform-monitor/bazel/python:requirements_lock.txt",
-    download_only = True,
 )
 use_repo(pip, "pmon_runtime_pip")
+
+pip.parse(
+    hub_name = "pmon_pddf_pip",
+    python_version = "3.13",
+    requirements_lock = "//dockers/docker-platform-monitor/bazel/pddf:requirements_lock.txt",
+    download_only = True,
+)
+use_repo(pip, "pmon_pddf_pip")

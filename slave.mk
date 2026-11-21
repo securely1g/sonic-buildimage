@@ -1605,6 +1605,9 @@ ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(addprefix $(TARGET_PATH)/,$(SONIC_RFS_TARGETS) $(SONIC_INSTALLERS)): | bazel-kernel-ensure
 endif
 
+vs_rfs_timing = $(filter 1:sonic-vs.bin__vs__rfs.squashfs,$(SONIC_VS_IMAGE_TIMINGS):$*)
+vs_rfs_cache_marker = $(if $(and $(vs_rfs_timing),$(call CHECK_WCACHE_ENABLED,$*)),echo '[ vs timing ] [ rootfs-cache-save ] [ $(1) ]' || :)
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
@@ -1622,6 +1625,13 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 	# Skip building the target if it is already loaded from cache
 	if [ -z '$($*_CACHE_LOADED)' ] ; then
 
+		# Keep the public timing markers on the original recipe stdout while
+		# build_debian.sh sends its normal output through the target log.
+		unset SONIC_VS_RFS_TIMING_FD
+		if [[ -n "$(vs_rfs_timing)" ]] && exec {SONIC_VS_RFS_TIMING_FD}>&1; then
+			export SONIC_VS_RFS_TIMING_FD
+			echo '[ vs timing ] [ rootfs-prepare ] [ start ]' || :
+		fi
 		$(eval installer=$($*_INSTALLER))
 		$(eval machine=$($*_MACHINE))
 
@@ -1658,11 +1668,33 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		ENABLE_SBOM="$(ENABLE_SBOM)" \
 			./build_debian.sh $(LOG)
 
+		$(call vs_rfs_cache_marker,start)
 		$(call SAVE_CACHE,$*,$@)
+		$(call vs_rfs_cache_marker,end)
 
 	fi
 
 	$(FOOTER)
+
+# An existing installer must be rebuilt when switching its image-store format.
+ifeq ($(CONFIGURED_PLATFORM),vs)
+vs_boot_mode_stamp := $(TARGET_PATH)/.installer-docker-load-on-boot
+ifeq ($(DOCKER_LOAD_ON_BOOT),y)
+vs_boot_bundle_inputs := files/docker/docker files/docker/load-images.conf files/docker/sonic-load-images \
+                        installer/install.sh onie-mk-demo.sh scripts/build_boot_packages.py \
+                        tools/bazel/image/boot_image_bundle.py tools/bazel/image/image_config.py \
+                        tools/bazel/oci/boot_layout.py tools/bazel/oci/oci_layout.py
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+vs_boot_bundle_inputs += tools/bazel/image/build_boot_bundle.py tools/bazel/image/boot_bundle.bzl \
+                         tools/bazel/image/boot_bundle_action.py tools/bazel/image/BUILD.bazel \
+                         tools/bazel/build_helpers.py tools/bazel/ci/build.py tools/bazel/ci/cache_reuse.py
+endif
+endif
+.PHONY: check-vs-boot-mode
+$(vs_boot_mode_stamp): check-vs-boot-mode
+	@mkdir -p "$(@D)"
+	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' | cmp -s - "$@" || printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' > "$@"
+endif
 
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
@@ -1672,6 +1704,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         onie-image.conf \
         build_debian.sh \
         scripts/validate_sonic_version.py \
+        $(vs_boot_mode_stamp) \
+        $(vs_boot_bundle_inputs) \
         files/build_templates/sonic_version.yml.j2 \
         files/build_templates/sonic_debian_extension.j2 \
         files/build_templates/docker_image_ctl.j2 \
@@ -1687,7 +1721,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         scripts/sbom_parse_lockfiles.py \
         scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
-        $$(if $$(filter sonic-vs.img.gz,$$*),scripts/image_timing.py scripts/build_kvm_image.sh) \
+        $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),scripts/image_timing.py) \
+        $$(if $$(filter sonic-vs.img.gz,$$*),scripts/build_kvm_image.sh) \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_INSTALLS)) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_INSTALLS)) \
@@ -1748,9 +1783,16 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(LINUX_KBUILD)-install)
 
 	$(HEADER)
+	case "$(DOCKER_LOAD_ON_BOOT)" in
+	    n) ;;
+	    y) case "$(CONFIGURED_PLATFORM):$($*_IMAGE_TYPE)" in vs:onie|vs:kvm|vs:raw) ;; *) echo "DOCKER_LOAD_ON_BOOT=y requires a VS ONIE, KVM or raw installer" >&2; exit 1;; esac ;;
+	    *) echo "DOCKER_LOAD_ON_BOOT must be y or n" >&2; exit 1 ;;
+	esac
+	export DOCKER_LOAD_ON_BOOT="$(DOCKER_LOAD_ON_BOOT)"
+	export BUILD_WITH_BAZEL_WHEN_AVAILABLE="$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)"
 	# The receipt is private; only the completed summary bypasses the target log.
 	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
-	if [ "$@" = "target/sonic-vs.img.gz" ]; then
+	if [[ "$@" = "target/sonic-vs.img.gz" || ( "$@" = "target/sonic-vs.bin" && "$${SONIC_VS_IMAGE_TIMINGS:-}" = 1 ) ]]; then
 		SONIC_IMAGE_TIMING_FILE=$$(python3 ./scripts/image_timing.py begin 2>/dev/null) || SONIC_IMAGE_TIMING_FILE=
 		export SONIC_IMAGE_TIMING_FILE
 		trap 'python3 ./scripts/image_timing.py discard 2>/dev/null || true' EXIT
@@ -2046,7 +2088,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	chmod a+x $@
 	# Reached only on success, after cleanup; relay outside the target log.
 	if [ -n "$${SONIC_IMAGE_TIMING_FILE:-}" ]; then
-		python3 ./scripts/image_timing.py end 2>/dev/null || true
+		python3 ./scripts/image_timing.py end "$@" 2>/dev/null || true
 	fi
 	$(FOOTER)
 

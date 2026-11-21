@@ -8,6 +8,9 @@ from tools.bazel.build_helpers import export_archive
 from tools.bazel.ci import artifact_validation, command_log
 
 
+MAKE_METADATA_OPTION = "--//tools/bazel/image/vs/metadata:use_make_metadata=true"
+
+
 def image_version_option(version):
     return "--//tools/bazel/oci:image_version=" + version
 
@@ -55,7 +58,7 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
     """
     if not targets or any(not name or Path(name).name != name or name in (".", "..") for name in targets):
         raise ValueError("archive declarations need nonempty, plain output filenames")
-    execute = partial(command_log.execute, cwd=workspace)
+    execute = partial(command_log.execute, cwd=workspace, retry_fetch=True)
     receipt.setdefault("artifacts", {})
     execute([bazel, "build", *options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"),
@@ -84,7 +87,7 @@ def collect_archives(workspace, directory, receipt, targets, *, bazel="bazel", o
 
 def collect_artifacts(workspace, directory, receipt, target, *, bazel="bazel", options=(), execution_log=None):
     """Build an owner filegroup and export its declared files under unique basenames."""
-    execute = partial(command_log.execute, cwd=workspace)
+    execute = partial(command_log.execute, cwd=workspace, retry_fetch=True)
     log_options = ["--execution_log_json_file=" + str(execution_log)] if execution_log is not None else []
     execute([bazel, "build", *options, *log_options,
              "--build_event_json_file=" + str(directory / "build-events.jsonl"), target],

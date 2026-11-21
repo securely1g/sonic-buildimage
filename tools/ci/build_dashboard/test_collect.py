@@ -347,6 +347,43 @@ class AssociationTests(unittest.TestCase):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_commit_title_uses_verified_source_subject_for_master_and_pull_requests(self):
+        master = run(event="push", head_branch="master", display_title="Workflow title")
+        first = dict(master, head_commit={"id": SHA, "message": "  Fix\timage  export\r\n\r\nCommit body."})
+        pr_run = run(run_id=12, head_sha="c" * 40, display_title="A public change",
+                     head_commit={"id": "c" * 40, "message": "Fix the VS installer\n\nDetails."})
+        missing = [dict(master, id=11, head_sha=OTHER_SHA, head_commit={"id": SHA, "message": "Wrong revision"}),
+                   dict(pr_run, id=13, head_sha="d" * 40, head_commit=None)]
+        snapshot = collector.collect(FakeAPI(latest=[first, pr_run, *missing]), REPO, empty(), log_jobs=0)
+        titles = {item["run_id"]: item.get("source_commit_title") for item in snapshot["runs"]}
+        self.assertEqual(titles, {10: "Fix image export", 11: None, 12: "Fix the VS installer", 13: None})
+        self.assertNotIn("Commit body.", json.dumps(snapshot))
+        self.assertIsNone(collector.commit_title("\n\nDetails only."))
+        self.assertEqual(collector.commit_title("Before\u202eafter"), "Before after")
+        self.assertEqual(collector.commit_title("A" * 1000), "A" * (collector.MAX_COMMIT_TITLE - 1) + "…")
+
+    def test_refresh_populates_cached_titles_by_revision_without_extra_api_requests(self):
+        pr_run = run()
+        master = run(run_id=11, event="schedule", head_branch="master")
+        initial = collector.collect(FakeAPI(latest=[pr_run, master]), REPO, empty(), log_jobs=0)
+        api = FakeAPI(latest=[dict(pr_run, head_commit={"id": SHA, "message": "Build the VS installer"})])
+        enriched = collector.collect(api, REPO, initial, log_jobs=0)
+        for entry in enriched["runs"]:  # Includes expired run 11 at the same source SHA.
+            self.assertEqual(entry["source_commit_title"], "Build the VS installer")
+        self.assertFalse(any("/commits/" in call or call.endswith("/jobs") for call in api.calls))
+        for backfill in (False, True):
+            with self.subTest(backfill=backfill):
+                updated = collector.collect(FakeAPI(latest=[master]), REPO, enriched, backfill=backfill, log_jobs=0)
+                self.assertEqual(updated["runs"], enriched["runs"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "history.json")
+            collector.write_atomic(path, enriched)
+            self.assertEqual(collector.load_history(path, REPO), enriched)
+            enriched["runs"][0]["source_sha"] = "invalid-sha"
+            collector.write_atomic(path, enriched)
+            with self.assertRaisesRegex(collector.CollectionError, "invalid source commit title"):
+                collector.load_history(path, REPO)
+
     def test_cached_retry_start_requires_matching_observed_provenance(self):
         retry_start = "2026-10-10T00:20:00Z"
         updated = "2026-10-10T00:21:00Z"
@@ -553,31 +590,37 @@ class IOTests(unittest.TestCase):
         history["pull_requests"][0]["title"] = "Build timings: \u6d4b\u8bd5"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.json"
+            path.write_text(json.dumps(history, indent=2))
+            self.assertEqual(collector.load_history(path, REPO), history)
             collector.write_atomic(path, history)
             encoded = path.read_bytes()
-            self.assertEqual(json.loads(encoded), history)
+            index = json.loads(encoded)
+            self.assertEqual(index["schema_version"], 2)
             self.assertEqual(collector.load_history(path, REPO), history)
             self.assertEqual(encoded, (
-                json.dumps(history, separators=(",", ":"), sort_keys=True, allow_nan=False) + "\n"
+                json.dumps(index, separators=(",", ":"), sort_keys=True, allow_nan=False) + "\n"
             ).encode())
-            self.assertLess(len(encoded), len(json.dumps(history, indent=2).encode()))
+            shard = (path.parent / index["run_shards"][0]["path"]).read_bytes()
+            self.assertEqual(json.loads(shard), history["runs"])
+            self.assertLess(len(encoded) + len(shard), len(json.dumps(history, indent=2).encode()))
             collector.write_atomic(path, history)
             self.assertEqual(path.read_bytes(), encoded)
 
-    def test_history_size_budget_checks_exact_output_bytes_before_replacement(self):
+    def test_index_size_budget_checks_exact_output_bytes_before_replacement(self):
         history = empty()
-        encoded = (json.dumps(history, separators=(",", ":"), sort_keys=True) + "\n").encode()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "history.json"
-            with mock.patch.object(collector, "MAX_HISTORY_BYTES", len(encoded)):
+            collector.write_atomic(path, history)
+            encoded = path.read_bytes()
+            with mock.patch.object(collector.history_store, "MAX_FILE_BYTES", len(encoded)):
                 collector.write_atomic(path, history)
             self.assertEqual(path.read_bytes(), encoded)
             for existing in (True, False):
                 with self.subTest(existing=existing):
                     if not existing:
                         path.unlink()
-                    with mock.patch.object(collector, "MAX_HISTORY_BYTES", len(encoded) - 1):
-                        with self.assertRaisesRegex(collector.CollectionError, "publication budget"):
+                    with mock.patch.object(collector.history_store, "MAX_FILE_BYTES", len(encoded) - 1):
+                        with self.assertRaisesRegex(collector.CollectionError, "publication limit"):
                             collector.write_atomic(path, history)
                     self.assertEqual(path.exists(), existing)
                     if existing:
@@ -587,7 +630,8 @@ class IOTests(unittest.TestCase):
     def test_cli_loads_reviewed_sibling_with_safe_path_outside_source_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             # A same-name module in the caller's directory must not be loaded.
-            Path(directory, "breakdown.py").write_text("raise RuntimeError('untrusted caller module')\n")
+            for name in ("breakdown.py", "history_store.py"):
+                Path(directory, name).write_text("raise RuntimeError('untrusted caller module')\n")
             result = subprocess.run(
                 [sys.executable, "-B", str(Path(collector.__file__).resolve()), "--help"],
                 cwd=directory, env=dict(os.environ, PYTHONSAFEPATH="1"),
@@ -649,9 +693,9 @@ class IOTests(unittest.TestCase):
             collector.write_atomic(path, empty())
             self.assertEqual(collector.load_history(path, REPO), empty())
             with mock.patch.object(collector.os, "replace", side_effect=OSError("disk failure")):
-                with self.assertRaises(OSError):
-                    collector.write_atomic(path, {"new": True})
-            self.assertEqual(json.loads(path.read_text()), empty())
+                with self.assertRaisesRegex(collector.CollectionError, "disk failure"):
+                    collector.write_atomic(path, dict(empty(), generated_at="2026-11-20T00:00:00Z"))
+            self.assertEqual(collector.load_history(path, REPO), empty())
             self.assertEqual(list(Path(directory).glob(".history-*")), [])
             path.write_text('{"schema_version": 99}')
             with self.assertRaises(collector.CollectionError):
