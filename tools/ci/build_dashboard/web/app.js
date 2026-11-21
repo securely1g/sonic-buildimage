@@ -845,6 +845,7 @@ function renderInstallerIntervals(breakdown, job, step) {
     ["Assemble the final ONIE installer", installer.offset_seconds, installerEnd, installer],
     ["Finish the Make invocation", installerEnd, section.duration_seconds],
   ];
+  let containerStage;
   for (const [label, start, end, marker] of intervals) {
     const disclosure = el("details", "installer-interval"), summary = el("summary", "timing-row");
     const name = el("span", "timing-name", label);
@@ -855,6 +856,7 @@ function renderInstallerIntervals(breakdown, job, step) {
     } else if (marker === batch) {
       const batch = containerBatchMeasurements(job, step);
       if (batch) {
+        containerStage = disclosure;
         const list = el("dl", "interval-receipts");
         const add = (target, label, elapsed) => {
           const pair = el("div", "interval-task");
@@ -877,7 +879,7 @@ function renderInstallerIntervals(breakdown, job, step) {
     if (!marker || spans.length) disclosure.append(intervalTaskList(spans, start, end, !marker));
     overview.append(disclosure);
   }
-  return overview;
+  return {overview, containerStage};
 }
 
 function hostInstallerStep(step) {
@@ -941,7 +943,7 @@ function renderStep(step, timelineShown = false) {
   row.append(name, timing);
   if (breakdown) {
     const timeline = hostInstallerStep(step) && breakdown.status === "available" && renderInstallerIntervals(breakdown);
-    const details = el("details", "step-breakdown"); details.append(row, timeline || renderBreakdown(breakdown)); item.append(details);
+    const details = el("details", "step-breakdown"); details.append(row, timeline?.overview || renderBreakdown(breakdown)); item.append(details);
   } else item.append(row);
   return item;
 }
@@ -1274,22 +1276,18 @@ function renderContainerMembers({profile, members}, wallSeconds) {
   return box;
 }
 
-function renderRecipeRows(rows, legacy, detail) {
+function renderRecipeRows(rows, title, group, batch) {
   const box = el("section", "recipe-list");
-  box.append(el("h3", "", legacy ? "Bazel timings for four image recipes" : "Bazel build breakdown"));
+  box.append(el("h3", "", title));
   if (!rows.length) {
     box.append(el("p", "stage-note", "No Bazel activity was recorded during this build."));
     return box;
   }
-  box.append(el("p", "stage-note", "Recipes are ordered by recorded Bazel and export command time. Expand a recipe for its breakdown."));
-  const list = el("ol"), group = rows.find(row => row.owner === "vs-container-images");
-  const batch = group && containerMembers(rows, detail);
-  const exportsInBatch = new Set(batch?.members.filter(({recipe}) =>
-    recipe.bazel_expected === 0 && recipe.profiles_expected === 0).map(({recipe}) => recipe.owner));
-  const topRows = rows.filter(row => !exportsInBatch.has(row.owner));
-  for (const row of topRows) {
+  if (rows.length > 1) box.append(el("p", "stage-note", "Recipes are ordered by recorded Bazel and export command time. Expand a recipe for its breakdown."));
+  const list = el("ol");
+  for (const row of rows) {
     const item = el("li"), details = el("details");
-    details.open = row === topRows[0];
+    details.open = row === rows[0];
     const summary = el("summary", "timing-row");
     const name = el("span", "timing-name", row.owner);
     if (row.failed) name.append(el("small", "recipe-failed", "Command failed"));
@@ -1317,12 +1315,22 @@ function renderRecipeRows(rows, legacy, detail) {
   return box;
 }
 
-function renderRecipeTimings(job, repository) {
+function renderRecipeTimings(job, repository, containerStage) {
   if (job.kind !== "make-vs" || !job.steps.some(step => step.name === HOST_VS_BUILD_STEP)) return null;
   const value = job.image_recipe_timings, rows = recipeRows(value);
   const box = el("div", "recipe-timings");
   if (rows) {
-    box.append(renderRecipeRows(rows, value.version === 1, value.container_breakdown));
+    const group = rows.find(row => row.owner === "vs-container-images");
+    const batch = group && containerMembers(rows, value.container_breakdown);
+    const exportsInBatch = new Set(batch?.members.filter(({recipe}) =>
+      recipe.bazel_expected === 0 && recipe.profiles_expected === 0).map(({recipe}) => recipe.owner));
+    const nested = group && containerStage;
+    if (nested) containerStage.append(renderRecipeRows([group], "Bazel container breakdown", group, batch));
+    const standalone = rows.filter(row => !exportsInBatch.has(row.owner) && !(nested && row === group));
+    if (standalone.length || !rows.length) {
+      const title = value.version === 1 ? "Bazel timings for four image recipes" : "Bazel build breakdown";
+      box.append(renderRecipeRows(standalone, title, group, batch));
+    }
   } else {
     let reason = value === undefined ? "not-recorded" : "invalid-timing";
     if ((value?.version === 1 || value?.version === 2) && value.status === "unavailable" &&
@@ -1392,7 +1400,7 @@ function renderDetails() {
   const hostStep = job.steps.find(hostInstallerStep);
   const hostBreakdown = hostStep && normalizeBreakdown(hostStep.breakdown);
   const timeline = hostBreakdown?.status === "available" && renderInstallerIntervals(hostBreakdown, job, hostStep);
-  if (timeline) box.append(timeline);
+  if (timeline) box.append(timeline.overview);
   const phases = job.phases || {};
   const total = PHASES.reduce((sum, phase) => sum + (seconds(phases[phase]) || 0), 0);
   const bar = el("div", "stage-bar"); bar.setAttribute("aria-label", "Recorded step time by phase");
@@ -1403,8 +1411,8 @@ function renderDetails() {
     const item = el("span"); item.append(el("i", `stage-${phase}`), document.createTextNode(phase[0].toUpperCase() + phase.slice(1)), el("b", "", duration(value))); legend.append(item);
   }
   box.append(bar, legend, el("p", "stage-note", "Stage totals sum recorded step durations. They may not equal job elapsed time, and the build phase can include more work than the image build step. Step times exclude queue time. Total elapsed can include waiting for a runner when a job never starts. Cache state and runner comparability are unknown."));
-  const recipes = renderRecipeTimings(job, state.data.repository);
-  if (recipes) box.append(recipes);
+  const recipes = renderRecipeTimings(job, state.data.repository, timeline?.containerStage);
+  if (recipes?.children.length) box.append(recipes);
   const targetRows = recipes && recipeRows(job.image_recipe_timings);
   if (analysis && targetRows?.length) {
     analysis.append(renderBuildExplanations(targetRows, `Run ${run.run_id} · ${job.name}`));

@@ -1396,9 +1396,11 @@ test("historical native installer boundaries account for all five intervals with
   assert.doesNotMatch(view.textContent, /Collect build-version metadata|P4RT source build|Compress the intermediate squashfs/);
 }));
 
-test("Run details exposes the five wall-clock stages before the separate Bazel breakdown", async () => {
+test("the container stage owns its recipe and table while independent recipes stay at job level", async () => {
   const point = installerPoint(nativeInstallerStep());
-  point.job.image_recipe_timings = sharedContainerJob().image_recipe_timings;
+  const receipt = sharedContainerJob().image_recipe_timings;
+  point.job.image_recipe_timings = receipt;
+  receipt.recipes.push({...receipt.recipes[0], owner: "linux-kernel"});
   const {details} = await loadDashboard([point]);
   const overview = details.children.find(section => section.children.some(node =>
     /^h[1-6]$/.test(node.tagName) && node.textContent === "Image build steps"));
@@ -1408,10 +1410,23 @@ test("Run details exposes the five wall-clock stages before the separate Bazel b
   assert.equal(installerStages(details).length, 5, "the raw CI steps should not repeat the same five stages");
   assert.match(stages[1].textContent, /Shared Bazel command/);
   assert.match(stages[1].textContent, /Export docker-sflow\.gz/);
-  const bazel = details.children.find(section => descendants(section, node =>
-    /^h[1-6]$/.test(node.tagName) && node.textContent === "Bazel build breakdown").length);
-  assert.ok(details.children.indexOf(bazel) > details.children.indexOf(overview));
-  assert.match(bazel.textContent, /docker-sflow\.gz/);
+  const tables = view => descendants(view, node => node.attributes?.["aria-label"] === "Container timings");
+  assert.equal(tables(details).length, 1);
+  assert.equal(tables(stages[1]).length, 1);
+  assert.match(stages[1].textContent, /vs-container-images200s.*Containers \(1\)/);
+  assert.doesNotMatch(stages[1].textContent, /linux-kernel/);
+  const bazel = details.children.find(section => section.className === "recipe-timings");
+  assert.match(bazel.textContent, /Bazel build breakdown.*linux-kernel/);
+  assert.doesNotMatch(bazel.textContent, /vs-container-images|docker-sflow/);
+});
+
+test("a batch that cannot be matched to one stage keeps its job-level container table", async () => {
+  const step = nativeInstallerStep(), point = installerPoint(step);
+  point.job.image_recipe_timings = sharedContainerJob().image_recipe_timings;
+  point.job.image_recipe_timings.recipes[0].bazel_expected = 2;
+  const {details} = await loadDashboard([point]);
+  assert.doesNotMatch(installerStages(details)[1].textContent, /Containers \(1\)/);
+  assert.match(details.textContent, /Bazel build breakdown.*Containers \(1\)/);
 });
 
 test("Run details keeps raw CI evidence for an untimed legacy build and a failed installer step", async () => {
