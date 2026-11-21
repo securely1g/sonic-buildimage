@@ -69,6 +69,30 @@ class InstallerRootfsHandoffTest(unittest.TestCase):
                 self.assertFalse(self.run_handoff("restore"))
                 self.assertEqual(self.file.read_bytes(), b"fixture rootfs")
 
+    def test_host_base_receipt_rejects_cache_hits_and_requires_matching_fresh_outputs(self):
+        receipt = self.work / "host-base-cache.json"
+        archive = handoff.archive_identity(self.archive)
+        image = {"sha256": archive["sha256"], "bytes": archive["stat"][2]}
+        for contents, expected in (
+                (None, False),
+                ("{", False),
+                ("[]", False),
+                (json.dumps({"cache_hit": True, "outputs": {"image": image}}), False),
+                (json.dumps({"cache_hit": False}), False),
+                (json.dumps({"cache_hit": False, "outputs": {"image": {
+                    "sha256": "0" * 64, "bytes": image["bytes"]}}}), False),
+                (json.dumps({"cache_hit": False, "outputs": {"image": image}}), True)):
+            with self.subTest(contents=contents):
+                (self.session / "state.json").unlink(missing_ok=True)
+                receipt.unlink(missing_ok=True)
+                if contents is not None:
+                    receipt.write_text(contents)
+                self.assertEqual(handoff.handoff(
+                    "store", self.session, self.root, self.archive, receipt), expected)
+                if expected:
+                    self.assertTrue(self.run_handoff("restore"))
+                self.assertEqual(self.file.read_bytes(), b"fixture rootfs")
+
     @unittest.skipUnless(shutil.which("mksquashfs") and shutil.which("unsquashfs"),
                          "requires squashfs-tools")
     def test_real_squashfs_extraction_and_handoff_preserve_rootfs_metadata(self):

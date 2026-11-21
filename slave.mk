@@ -1701,7 +1701,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 				. ./onie-image.conf
 				sudo python3 scripts/installer_rootfs_handoff.py store \
 					--session "$$SONIC_VS_RFS_HANDOFF_SESSION" --root "$$FILESYSTEM_ROOT" \
-					--archive "$@"
+					--archive "$@" $(if $(vs_host_base_cache),--host-base-receipt artifacts/vs/host-base-cache.json)
 			)
 		fi
 

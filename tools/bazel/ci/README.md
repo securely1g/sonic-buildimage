@@ -329,6 +329,12 @@ are deliberately retained; this optimization does not skip its compression.
 The offline image bundle, Docker first-start import and installed-image
 validators retain their formats and integrity checks.
 
+When the host-base cache is enabled, staging also requires its current
+`artifacts/vs/host-base-cache.json` receipt to report a native cache miss and
+match the SquashFS digest and size. Cache hits, missing or invalid receipts,
+and mismatched archives use ordinary extraction, even if an older rootfs tree
+remains in the checkout.
+
 Unset `SONIC_VS_RFS_HANDOFF` to disable the handoff. The wrapper reports
 `restored`, `miss`, `stored` or `unused`, plus available store/restore timings.
 Require `restored` before attributing an extraction saving to this feature.

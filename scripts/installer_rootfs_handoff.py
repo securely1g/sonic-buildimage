@@ -71,7 +71,7 @@ def archive_identity(path):
     return {"stat": file_stat(after), "sha256": digest.hexdigest()}
 
 
-def handoff(action, directory, root, archive):
+def handoff(action, directory, root, archive, host_base_receipt=None):
     started = time.monotonic()
     session = session_directory(directory)
     root, archive = Path(root), Path(archive)
@@ -86,7 +86,17 @@ def handoff(action, directory, root, archive):
         if action == "store":
             if (session / "state.json").exists() or not root.is_dir() or has_mounts(root):
                 return False
-            value = {"status": "stored", "archive": archive_identity(archive),
+            producer = None
+            if host_base_receipt is not None:
+                with Path(host_base_receipt).open() as stream:
+                    producer = json.load(stream)
+                if not isinstance(producer, dict) or producer.get("cache_hit") is not False:
+                    return False
+            identity = archive_identity(archive)
+            if producer is not None and producer["outputs"]["image"] != {
+                    "sha256": identity["sha256"], "bytes": identity["stat"][2]}:
+                return False
+            value = {"status": "stored", "archive": identity,
                      "archive_path": str(archive.resolve())}
             root.rename(payload)
             info = payload.stat()
@@ -145,6 +155,8 @@ def main():
     parser.add_argument("--session", required=True)
     parser.add_argument("--root")
     parser.add_argument("--archive")
+    parser.add_argument("--host-base-receipt",
+                        help="Require a cache-miss receipt matching the archive before storing.")
     args = parser.parse_args()
     try:
         if args.action == "cleanup":
@@ -152,7 +164,7 @@ def main():
             return 0
         if not args.root or not args.archive:
             parser.error("--root and --archive are required")
-        success = handoff(args.action, args.session, args.root, args.archive)
+        success = handoff(args.action, args.session, args.root, args.archive, args.host_base_receipt)
         return 0 if success or args.action == "store" else 1
     except (OSError, ValueError):
         print("[ installer rootfs handoff ] unavailable", flush=True)
