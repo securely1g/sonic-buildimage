@@ -604,6 +604,9 @@ jobs:
             --output artifacts/repository-inputs \
             > artifacts/repository-inputs/receipt.json
 
+      - name: Check P4RT dependency pins against the resolved root graph
+        run: python3 -B tools/bazel/ci/p4rt_acceptance.py --module-graph artifacts/repository-inputs/module-graph.json
+
       - name: Prepare repository graph failure receipt
         id: repository_graph_failure
         if: always() && steps.repository_inputs.outcome == 'failure'
