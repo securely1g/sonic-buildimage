@@ -95,6 +95,32 @@ sudo() {
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(events[-1], SAVE + " [ start ]")
 
+    def test_handoff_runs_after_successful_compression_and_cache_save_only(self):
+        (self.work / "onie-image.conf").write_text("FILESYSTEM_ROOT=fsroot-vs\n")
+        self.script("sudo", 'echo HANDOFF >> handoff-events')
+        self.script("save", 'echo SAVE >> handoff-events; exit "${SAVE_STATUS:-0}"')
+        options = dict(SONIC_VS_RFS_HANDOFF_SESSION=".vs-rootfs-handoff.fixture",
+                       CONFIGURED_ARCH="amd64")
+        result, _ = self.run_make(**options)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.work / "handoff-events").read_text().splitlines(), ["SAVE", "HANDOFF"])
+        (self.work / "handoff-events").unlink()
+        result, _ = self.run_make(**options, SAVE_STATUS="32")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.work / "handoff-events").read_text().splitlines(), ["SAVE"])
+
+    def test_cached_rootfs_does_not_stage_an_unrelated_existing_tree(self):
+        self.script("sudo", 'echo HANDOFF >> handoff-events')
+        options = {
+            "SONIC_VS_RFS_HANDOFF_SESSION": ".vs-rootfs-handoff.fixture",
+            "CONFIGURED_ARCH": "amd64",
+            Path(TARGET).name + "_CACHE_LOADED": "1",
+        }
+        result, events = self.run_make(**options)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, [])
+        self.assertFalse((self.work / "handoff-events").exists())
+
     def test_direct_invocation_ignores_stale_or_invalid_timing_descriptors(self):
         for fd in ("999", "invalid-file"):
             result = subprocess.run(["./build_debian.sh"], cwd=self.work, capture_output=True, text=True,

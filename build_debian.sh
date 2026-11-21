@@ -62,6 +62,12 @@ TRUSTED_GPG_DIR=$BUILD_TOOL_PATH/trusted.gpg.d
 if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y ]]; then
     export FILESYSTEM_DOCKERFS=sonic-images.tar.gz
 fi
+installer_rootfs_handoff=n
+if [[ -n ${SONIC_VS_RFS_HANDOFF_SESSION:-} && ${TARGET_MACHINE:-} == vs &&
+      ${IMAGE_TYPE:-} == onie && $CONFIGURED_ARCH == amd64 &&
+      ${CROSS_BUILD_ENVIRON:-n} != y && ${MULTIARCH_QEMU_ENVIRON:-n} != y ]]; then
+    installer_rootfs_handoff=y
+fi
 [ -n "$ONIE_IMAGE_PART_SIZE" ] || {
     echo "Error: Invalid ONIE_IMAGE_PART_SIZE in onie image config file"
     exit 1
@@ -689,9 +695,14 @@ if [[ $RFS_SPLIT_LAST_STAGE == y ]]; then
     ## ensure proc is mounted
     sudo mount proc /proc -t proc || true
 
-    sudo fuser -vm $FILESYSTEM_ROOT || true
-    sudo rm -rf $FILESYSTEM_ROOT
-    sudo unsquashfs -d $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME
+    if [[ $installer_rootfs_handoff != y ]] ||
+        ! sudo python3 scripts/installer_rootfs_handoff.py restore \
+            --session "$SONIC_VS_RFS_HANDOFF_SESSION" --root "$FILESYSTEM_ROOT" \
+            --archive "$TARGET_PATH/$RFS_SQUASHFS_NAME"; then
+        sudo fuser -vm $FILESYSTEM_ROOT || true
+        sudo rm -rf $FILESYSTEM_ROOT
+        sudo unsquashfs -d $FILESYSTEM_ROOT $TARGET_PATH/$RFS_SQUASHFS_NAME
+    fi
 
     ## make / as a mountpoint in chroot env, needed by dockerd
     pushd $FILESYSTEM_ROOT

@@ -23,6 +23,23 @@ fi
 if [[ ${SONIC_VS_RETRY_GO_FETCH:-} == 1 ]]; then
     builder_args+=" -e SONIC_VS_RETRY_GO_FETCH"
 fi
+unset SONIC_VS_RFS_HANDOFF_SESSION
+if [[ ${SONIC_VS_RFS_HANDOFF:-} == 1 ]]; then
+    export SONIC_VS_RFS_HANDOFF_SESSION
+    SONIC_VS_RFS_HANDOFF_SESSION=$(mktemp -d .vs-rootfs-handoff.XXXXXXXX)
+    builder_args+=" -e SONIC_VS_RFS_HANDOFF_SESSION"
+    cleanup_rootfs_handoff() {
+        local status=$?
+        trap - EXIT
+        if ! sudo python3 scripts/installer_rootfs_handoff.py cleanup \
+            --session "$SONIC_VS_RFS_HANDOFF_SESSION"; then
+            echo 'ERROR: failed to clean the private rootfs handoff directory' >&2
+            if (( status == 0 )); then status=1; fi
+        fi
+        exit "$status"
+    }
+    trap cleanup_rootfs_handoff EXIT
+fi
 options=(
     BUILD_WITH_BAZEL_WHEN_AVAILABLE=y INCLUDE_VS_DASH_SAI=y INCLUDE_FIPS=y
     ENABLE_ASAN=n ENABLE_SYNCD_RPC=n

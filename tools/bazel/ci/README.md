@@ -290,6 +290,27 @@ It does not request those archives again or run the post-build validators.
 This target does not require KVM. BIOS/UEFI VM disk generation and guest boot
 checks belong to `target/sonic-vs.img.gz` and are not exercised by this `.bin`
 CI path. The separate VM target retains those checks.
+
+Native VS CI enables `SONIC_VS_RFS_HANDOFF=1` for a job-local handoff of a
+freshly built stage-one rootfs. The wrapper creates private staging for each
+invocation and cleans it after Make succeeds or fails. After stage-one
+compression and normal cache publication succeed, the native AMD64 VS ONIE
+recipe moves the unmounted tree into staging. Final assembly verifies the
+archive path, stat and SHA256 and the tree identity, then consumes it once
+instead of deleting it and running `unsquashfs`. Cached or already-existing
+archives, missing or invalid staging, other images and cross builds retain
+ordinary extraction. The intermediate SquashFS and its cache publication
+are deliberately retained; this optimization does not skip its compression.
+Master's offline image bundle, Docker first-start import, final packing and
+installed-image validators are unchanged.
+
+Unset `SONIC_VS_RFS_HANDOFF` to disable the handoff. The wrapper reports
+`restored`, `miss`, `stored` or `unused`, plus available store/restore timings.
+Require `restored` before attributing an extraction saving to this feature.
+Archive hashing is real overhead: compare total build time and final assembly
+on comparable runners with identical inputs, rather than treating a skipped
+extraction as a measured end-to-end speedup.
+
 The build publishes the installer, its Make image list and one Actions artifact
 per selected OCI family. Each family includes the OCI configuration, ordered
 layer and archive digests, and the inputs needed by its installed probe. It

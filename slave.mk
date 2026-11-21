@@ -1608,11 +1608,14 @@ endif
 vs_rfs_timing = $(filter 1:sonic-vs.bin__vs__rfs.squashfs,$(SONIC_VS_IMAGE_TIMINGS):$*)
 vs_rfs_cache_marker = $(if $(and $(vs_rfs_timing),$(call CHECK_WCACHE_ENABLED,$*)),echo '[ vs timing ] [ rootfs-cache-save ] [ $(1) ]' || :)
 
+export SONIC_VS_RFS_HANDOFF_SESSION
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
         .platform \
         build_debian.sh \
+        scripts/installer_rootfs_handoff.py \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL) $(if $(filter y,$(INSTALL_DEBUG_TOOLS)),$(LINUX_KERNEL_DBG))) \
         $(SONIC_BAZEL_KERNEL_INPUTS) \
@@ -1672,6 +1675,18 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		$(call SAVE_CACHE,$*,$@)
 		$(call vs_rfs_cache_marker,end)
 
+		if [[ -n "$${SONIC_VS_RFS_HANDOFF_SESSION:-}" && "$*" == sonic-vs.bin__vs__rfs.squashfs &&
+		      "$(CONFIGURED_ARCH)" == amd64 && "$(CROSS_BUILD_ENVIRON)" != y &&
+		      "$(MULTIARCH_QEMU_ENVIRON)" != y ]]; then
+			(
+				TARGET_MACHINE=vs
+				. ./onie-image.conf
+				sudo python3 scripts/installer_rootfs_handoff.py store \
+					--session "$$SONIC_VS_RFS_HANDOFF_SESSION" --root "$$FILESYSTEM_ROOT" \
+					--archive "$@"
+			)
+		fi
+
 	fi
 
 	$(FOOTER)
@@ -1721,6 +1736,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         scripts/sbom_parse_lockfiles.py \
         scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
+        scripts/installer_rootfs_handoff.py \
         $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),scripts/image_timing.py) \
         $$(if $$(filter sonic-vs.img.gz,$$*),scripts/build_kvm_image.sh) \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
