@@ -310,7 +310,10 @@ retag a cached store for a different version or change version-generation rules.
 
 The initial supported profile excludes cross/VM builds, Kubernetes pulls,
 additional package-manager installs, image-size optimization, custom tar options
-and organization hooks. Unsupported profiles, missing/corrupt entries,
+and custom organization hooks. The shipped no-op `organization_extensions.sh`
+is accepted only at its reviewed SHA256, which is also included in the key.
+A modified or symlinked extension, or any `build_debian.organization.sh`, still
+disables caching. Unsupported profiles, missing/corrupt entries,
 inaccessible caches and failed publication fall back to normal assembly.
 If an already-restored output changes after image loading was skipped, the
 build fails rather than accidentally packaging an empty live daemon.
@@ -326,7 +329,8 @@ Checksum validation detects corruption; it does not authenticate an untrusted
 cache writer. Do not share this cache across untrusted build tenants.
 
 The timing artifact contains `installer-docker-store-cache.json`, including
-hit/miss/disabled state, opaque key, preparation time (fingerprinting plus
+hit/miss/disabled state, a fixed reason code for disabled/unavailable inputs or
+entries, opaque key, preparation time (fingerprinting plus
 lookup/restore), skip flags and publication time/bytes when applicable.
 The existing `docker-load` phase includes cache probing/restoration on hits;
 the Docker-store compression phase then contains only the skip check.

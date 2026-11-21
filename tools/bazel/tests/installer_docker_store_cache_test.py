@@ -41,6 +41,8 @@ class InstallerDockerStoreCacheTest(unittest.TestCase):
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(name)
+        shutil.copyfile(ROOT / "files/build_templates/organization_extensions.sh",
+                        self.source / "files/build_templates/organization_extensions.sh")
         (self.source / ".arch").write_text("amd64")
         generator = self.root / "usr/local/bin/generate_shutdown_order.py"
         generator.parent.mkdir(parents=True)
@@ -59,6 +61,7 @@ class InstallerDockerStoreCacheTest(unittest.TestCase):
             "TARGET_MACHINE": "vs", "IMAGE_TYPE": "onie", "SONIC_IMAGE_VERSION": "version-1",
             "installer_images": f"swss|dockers/example||{self.archive}:1",
             "sonic_utilities_py3_wheel_path": str(wheel),
+            "enable_organization_extensions": "y",
             "SONIC_INSTALLER_DOCKER_STORE_RECEIPT": str(self.directory / "receipt.json"),
         }
         self.addCleanup(mock.patch.stopall)
@@ -117,6 +120,7 @@ class InstallerDockerStoreCacheTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "hit")
         self.assertTrue(receipt["loading_skipped"])
         self.assertTrue(receipt["packing_skipped"])
+        self.assertIsNone(receipt["reason"])
         self.output.write_bytes(b"changed after loading was skipped")
         with self.assertRaises(ValueError):
             cache.hit(self.state)
@@ -213,10 +217,38 @@ class InstallerDockerStoreCacheTest(unittest.TestCase):
             with self.subTest(settings=settings), mock.patch.dict(os.environ, settings):
                 self.assertFalse(self.prepare())
                 self.assertEqual(cache.read_json(self.state)["status"], "disabled")
-        hook = self.source / "files/build_templates/build_debian.organization.sh"
-        hook.write_text("custom hook")
+
+    def test_custom_organization_hooks_still_disable_cache(self):
+        for name, reason in (("build_debian.organization.sh", "organization-build-hook"),
+                             ("organization_extensions.sh", "organization-extension")):
+            hook = self.source / "files/build_templates" / name
+            original = hook.read_bytes() if hook.exists() else None
+            with self.subTest(hook=name):
+                hook.write_text("#!/bin/bash\necho custom organization hook\n")
+                self.assertFalse(self.prepare())
+                state = cache.read_json(self.state)
+                self.assertEqual(state["status"], "disabled")
+                self.assertEqual(state["reason"], reason)
+                self.assertEqual(cache.read_json(self.directory / "receipt.json")["reason"], reason)
+                self.assertNotIn("key", state)
+            if original is None:
+                hook.unlink()
+            else:
+                hook.write_bytes(original)
+
+    def test_symlinked_stock_extension_is_not_eligible(self):
+        hook = self.source / "files/build_templates/organization_extensions.sh"
+        hook.unlink()
+        hook.symlink_to(ROOT / "files/build_templates/organization_extensions.sh")
         self.assertFalse(self.prepare())
-        self.assertEqual(cache.read_json(self.state)["status"], "disabled")
+        self.assertEqual(cache.read_json(self.state)["reason"], "organization-extension")
+        self.assertNotIn("key", cache.read_json(self.state))
+
+    def test_missing_organization_extension_remains_supported(self):
+        (self.source / "files/build_templates/organization_extensions.sh").unlink()
+        self.seed()
+        self.assertTrue(self.prepare())
+        self.assertTrue(cache.hit(self.state))
 
 
 if __name__ == "__main__":

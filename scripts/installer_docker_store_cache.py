@@ -21,6 +21,12 @@ MAX_JSON = 256 * 1024
 CACHE_BUDGET = 16 * 1024**3
 ORDERS = ("fast-reboot_order", "warm-reboot_order")
 HERE = Path(__file__).resolve().parents[1]
+# Only the reviewed, shipped no-op extension is safe without modeling custom hooks.
+STOCK_ORGANIZATION_EXTENSIONS_SHA256 = "3df60a480aefbb2bea60326c787b2b1fe43dee1a6ed0c0d3ec608f25c13f3e25"
+
+
+class UnsupportedProfile(ValueError):
+    pass
 
 
 def encoded(value):
@@ -81,10 +87,17 @@ def inputs(root, host, template, env):
             or any(env.get(name, "").strip() for name in ("sonic_packages", "sonic_local_packages"))
             or any(env.get(name) == "y" for name in
                    ("include_kubernetes", "include_kubernetes_master", "BUILD_REDUCE_IMAGE_SIZE"))
-            or env.get("TAR_OPTIONS")
-            or any((HERE / "files/build_templates" / name).exists() for name in
-                   ("build_debian.organization.sh", "organization_extensions.sh"))):
-        raise ValueError("unsupported build profile")
+            or env.get("TAR_OPTIONS")):
+        raise UnsupportedProfile("unsupported-profile")
+    build_hook = HERE / "files/build_templates/build_debian.organization.sh"
+    if build_hook.exists() or build_hook.is_symlink():
+        raise UnsupportedProfile("organization-build-hook")
+    extension = HERE / "files/build_templates/organization_extensions.sh"
+    if extension.is_symlink():
+        raise UnsupportedProfile("organization-extension")
+    extension_digest = digest(extension) if extension.exists() else None
+    if extension_digest not in (None, STOCK_ORGANIZATION_EXTENSIONS_SHA256):
+        raise UnsupportedProfile("organization-extension")
     info = json.loads(subprocess.check_output(
         docker_command(root, host, "info", "--format", "{{json .}}"), text=True))
     if info["Images"] != 0 or info["Containers"] != 0:
@@ -102,6 +115,7 @@ def inputs(root, host, template, env):
     files = {
         "rendered-template": digest(template), "utilities-wheel": digest(wheel),
         "shutdown-generator": digest(root / "usr/local/bin/generate_shutdown_order.py"),
+        "files/build_templates/organization_extensions.sh": extension_digest,
     }
     for name in ("build_debian.sh", "scripts/installer_docker_store_cache.py",
                  "files/docker/docker", "files/build_templates/packages.json.j2",
@@ -163,14 +177,14 @@ def install_orders(root, orders):
 
 def prepare(root, host, template, state, output, cache, mode):
     started = time.monotonic()
-    value = {"version": VERSION, "status": "disabled"}
+    value = {"version": VERSION, "status": "disabled", "reason": "not-enabled"}
     temporary = None
     try:
         if mode not in ("read", "readwrite") or not cache:
             return False
         expected = inputs(root, host, template, os.environ)
         key = hashlib.sha256(encoded(expected)).hexdigest()
-        value.update(status="miss", key=key, inputs=expected, output=str(output.resolve()))
+        value.update(status="miss", reason=None, key=key, inputs=expected, output=str(output.resolve()))
         # A miss state is needed later for trusted publication.
         write_json(state, value)
         entry = Path(cache) / key
@@ -197,7 +211,11 @@ def prepare(root, host, template, state, output, cache, mode):
         write_json(state, restored)
         value = restored
         return True
+    except UnsupportedProfile as error:
+        value["reason"] = str(error)
+        return False
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        value["reason"] = "cache-entry-unavailable" if value["status"] == "miss" else "inputs-unavailable"
         return False
     finally:
         if temporary is not None:
@@ -208,9 +226,9 @@ def prepare(root, host, template, state, output, cache, mode):
         except (OSError, ValueError):
             pass
         print("[ installer Docker-store cache ] " + json.dumps(
-            {name: value[name] for name in ("status", "key", "prepare_seconds") if name in value}),
+            {name: value[name] for name in ("status", "reason", "key", "prepare_seconds") if name in value}),
               flush=True)
-        report(status=value["status"], key=value.get("key"), mode=mode,
+        report(status=value["status"], reason=value.get("reason"), key=value.get("key"), mode=mode,
                prepare_seconds=value["prepare_seconds"],
                loading_skipped=value["status"] == "hit", packing_skipped=False)
 

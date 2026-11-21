@@ -157,7 +157,7 @@ sudo() {
     printf '%s\\n' "$*" >> events
     if [[ $* == *" inspect "* ]]; then echo '{}'; fi
 }
-jq() { if [[ $1 != -e ]]; then echo '{}'; fi; }
+jq() { if [[ $1 != -e ]]; then cat >/dev/null; echo '{}'; fi; }
 python3() { echo prepare >> events; return "$PREPARE_STATUS"; }
 '''
             script = stub + loading.replace("/tmp/manifest.json", str(directory / "manifest.json")) + "\n" + shutdown
