@@ -1420,6 +1420,46 @@ test("the container stage owns its recipe and table while independent recipes st
   assert.doesNotMatch(bazel.textContent, /vs-container-images|docker-sflow/);
 });
 
+test("kernel preparation shows measured wall time and partial Bazel receipts in separate columns", async () => {
+  const step = nativeInstallerStep();
+  step.breakdown.sections[0].tasks.push({id: "kernel-prep-1", offset_seconds: 20, duration_seconds: 153.118, outcome: "finished"});
+  const point = installerPoint(step), receipt = sharedContainerJob().image_recipe_timings;
+  receipt.recipes.push({...receipt.recipes[0], owner: "linux-kernel", bazel_seconds: 135.521, exports: 1,
+    exports_expected: 1, export_seconds: 4.836, profiles: 1, profiles_expected: 3, compile_seconds: 0,
+    lock_seconds: 0, foreign_seconds: 0, fetch_seconds: 30.704});
+  point.job.image_recipe_timings = receipt;
+  const {details} = await loadDashboard([point]);
+  const [preparation, containers] = installerStages(details);
+  const matches = node => node.attributes?.["aria-label"] === "Kernel Bazel breakdown";
+  assert.equal(descendants(details, matches).length, 1);
+  const [table] = descendants(preparation, matches);
+  assert.equal(table.tabIndex, 0);
+  const [header, data] = descendants(table, node => node.tagName === "tr");
+  assert.deepEqual(header.children.map(c => c.textContent), ["Target", "Total elapsed", "Recorded command time",
+    "Bazel launcher", "Lock wait", "Compile time", "Nested build", "Cache fetch", "Stage DEBs"]);
+  assert.deepEqual(data.children.map(c => c.textContent), ["linux-kernel", "153.118s", "140.357s",
+    "135.521s", "0s (1/3)", "0s (1/3)", "0s (1/3)", "30.704s (1/3)", "4.836s"]);
+  assert.doesNotMatch(containers.textContent, /linux-kernel/);
+  assert.doesNotMatch(details.textContent, /Bazel build breakdown/);
+});
+
+test("ambiguous kernel preparation or repeated commands keep their timings at job level", async () => {
+  const task = {id: "kernel-prep-1", offset_seconds: 1, duration_seconds: 120, outcome: "finished"};
+  for (const [tasks, launches] of [
+    [[], 1], [[task, {...task, id: "kernel-prep-2"}], 1],
+    [[{...task, offset_seconds: 2020}], 1], [[{...task, outcome: "cached"}], 1], [[task], 2],
+  ]) {
+    const step = nativeInstallerStep();
+    step.breakdown.sections[0].tasks.push(...tasks);
+    const point = installerPoint(step), receipt = sharedContainerJob().image_recipe_timings;
+    receipt.recipes.push({...receipt.recipes[0], owner: "linux-kernel", bazel_expected: launches});
+    point.job.image_recipe_timings = receipt;
+    const {details} = await loadDashboard([point]);
+    assert.doesNotMatch(installerStages(details)[0].textContent, /Kernel Bazel breakdown/);
+    assert.match(details.textContent, /Bazel build breakdown.*linux-kernel/);
+  }
+});
+
 test("a batch that cannot be matched to one stage keeps its job-level container table", async () => {
   const step = nativeInstallerStep(), point = installerPoint(step);
   point.job.image_recipe_timings = sharedContainerJob().image_recipe_timings;

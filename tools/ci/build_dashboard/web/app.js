@@ -822,6 +822,11 @@ function intervalTaskList(spans, start, end, reportUncovered) {
   return body;
 }
 
+function onlyHostBuild(job, step) {
+  return job?.kind === "make-vs" && step?.name === HOST_VS_BUILD_STEP && step.conclusion === "success" &&
+    Array.isArray(job.steps) && job.steps.includes(step) && job.steps.filter(item => item.name === HOST_VS_BUILD_STEP).length === 1;
+}
+
 function renderInstallerIntervals(breakdown, job, step) {
   const [section] = breakdown.sections;
   if (breakdown.sections.length !== 1 || section.kind !== "vs-image" || section.offset_seconds !== 0 ||
@@ -845,12 +850,19 @@ function renderInstallerIntervals(breakdown, job, step) {
     ["Assemble the final ONIE installer", installer.offset_seconds, installerEnd, installer],
     ["Finish the Make invocation", installerEnd, section.duration_seconds],
   ];
-  let containerStage;
-  for (const [label, start, end, marker] of intervals) {
+  const kernelTasks = section.tasks.filter(task => task.kind === "kernel-prep");
+  let kernelStage, containerStage;
+  for (const [index, [label, start, end, marker]] of intervals.entries()) {
     const disclosure = el("details", "installer-interval"), summary = el("summary", "timing-row");
     const name = el("span", "timing-name", label);
     name.append(el("span", "timing-hint", `+${duration(start, true)} to +${duration(end, true)} from build start`));
     summary.append(name, el("span", "timing-duration", duration(end - start, true))); disclosure.append(summary);
+    if (index === 0 && kernelTasks.length === 1 && onlyHostBuild(job, step)) {
+      const [kernel] = kernelTasks;
+      if (kernel.outcome === "finished" && kernel.offset_seconds + kernel.duration_seconds <= end) {
+        kernelStage = {section: disclosure, elapsed: kernel.duration_seconds};
+      }
+    }
     if (marker === installer) {
       disclosure.append(renderPhaseBreakdown(installer.phase_breakdown));
     } else if (marker === batch) {
@@ -879,7 +891,7 @@ function renderInstallerIntervals(breakdown, job, step) {
     if (!marker || spans.length) disclosure.append(intervalTaskList(spans, start, end, !marker));
     overview.append(disclosure);
   }
-  return {overview, containerStage};
+  return {overview, containerStage, kernelStage};
 }
 
 function hostInstallerStep(step) {
@@ -1195,9 +1207,7 @@ function containerMembers(rows, detail) {
 }
 
 function containerBatchMeasurements(job, step) {
-  if (job?.kind !== "make-vs" || step?.name !== HOST_VS_BUILD_STEP || step.conclusion !== "success" ||
-      !Array.isArray(job.steps) || !job.steps.includes(step) ||
-      job.steps.filter(item => item.name === HOST_VS_BUILD_STEP).length !== 1) return null;
+  if (!onlyHostBuild(job, step)) return null;
   const receipts = job.image_recipe_timings;
   if (receipts?.version !== 2) return null;
   const rows = recipeRows(receipts);
@@ -1276,6 +1286,25 @@ function renderContainerMembers({profile, members}, wallSeconds) {
   return box;
 }
 
+function recipeMetricText(row, metric, count, expected) {
+  if (!row[expected]) return "N/A";
+  const samples = row[count] < row[expected] ? ` (${row[count]}/${row[expected]})` : "";
+  return recipeSeconds(row[metric]) + samples;
+}
+
+function renderKernelTimings(row, elapsed) {
+  const columns = ["Target", "Total elapsed", "Recorded command time", "Bazel launcher", "Lock wait",
+    "Compile time", "Nested build", "Cache fetch", "Stage DEBs"];
+  const partial = row.bazel_phases < row.bazel_expected || row.exports < row.exports_expected;
+  const recorded = recipeSeconds(row.recorded) + (partial && row.recorded !== null ? " (partial)" : "");
+  const values = [row.owner, recipeSeconds(elapsed), recorded,
+    ...RECIPE_METRICS.map(([metric, , count, expected]) => recipeMetricText(row, metric, count, expected))];
+  const section = evidenceTable("Kernel Bazel breakdown", columns, [values]);
+  section.className += " kernel-timings";
+  section.append(el("p", "stage-note", "Total elapsed covers the kernel preparation task. Recorded command time is the sum of the launcher and Debian package staging times. Lock wait, compilation, nested Make and cache fetch can overlap within the launcher."));
+  return section;
+}
+
 function renderRecipeRows(rows, title, group, batch) {
   const box = el("section", "recipe-list");
   box.append(el("h3", "", title));
@@ -1315,7 +1344,7 @@ function renderRecipeRows(rows, title, group, batch) {
   return box;
 }
 
-function renderRecipeTimings(job, repository, containerStage) {
+function renderRecipeTimings(job, repository, timeline) {
   if (job.kind !== "make-vs" || !job.steps.some(step => step.name === HOST_VS_BUILD_STEP)) return null;
   const value = job.image_recipe_timings, rows = recipeRows(value);
   const box = el("div", "recipe-timings");
@@ -1324,9 +1353,12 @@ function renderRecipeTimings(job, repository, containerStage) {
     const batch = group && containerMembers(rows, value.container_breakdown);
     const exportsInBatch = new Set(batch?.members.filter(({recipe}) =>
       recipe.bazel_expected === 0 && recipe.profiles_expected === 0).map(({recipe}) => recipe.owner));
-    const nested = group && containerStage;
-    if (nested) containerStage.append(renderRecipeRows([group], "Bazel container breakdown", group, batch));
-    const standalone = rows.filter(row => !exportsInBatch.has(row.owner) && !(nested && row === group));
+    const nestedGroup = timeline?.containerStage && group;
+    if (nestedGroup) timeline.containerStage.append(renderRecipeRows([group], "Bazel container breakdown", group, batch));
+    const kernel = timeline?.kernelStage && rows.find(row => row.owner === "linux-kernel" && !row.failed &&
+      row.bazel_expected === 1 && row.exports_expected <= 1);
+    if (kernel) timeline.kernelStage.section.append(renderKernelTimings(kernel, timeline.kernelStage.elapsed));
+    const standalone = rows.filter(row => !exportsInBatch.has(row.owner) && row !== nestedGroup && row !== kernel);
     if (standalone.length || !rows.length) {
       const title = value.version === 1 ? "Bazel timings for four image recipes" : "Bazel build breakdown";
       box.append(renderRecipeRows(standalone, title, group, batch));
@@ -1411,7 +1443,7 @@ function renderDetails() {
     const item = el("span"); item.append(el("i", `stage-${phase}`), document.createTextNode(phase[0].toUpperCase() + phase.slice(1)), el("b", "", duration(value))); legend.append(item);
   }
   box.append(bar, legend, el("p", "stage-note", "Stage totals sum recorded step durations. They may not equal job elapsed time, and the build phase can include more work than the image build step. Step times exclude queue time. Total elapsed can include waiting for a runner when a job never starts. Cache state and runner comparability are unknown."));
-  const recipes = renderRecipeTimings(job, state.data.repository, timeline?.containerStage);
+  const recipes = renderRecipeTimings(job, state.data.repository, timeline);
   if (recipes?.children.length) box.append(recipes);
   const targetRows = recipes && recipeRows(job.image_recipe_timings);
   if (analysis && targetRows?.length) {

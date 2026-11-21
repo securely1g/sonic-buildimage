@@ -217,7 +217,7 @@ Each heading expands independently. For example, the master build at `9bbd301c` 
 
 | Image build step | Time in that run | What to look for when expanded |
 | --- | ---: | --- |
-| Prepare kernel, packages and P4RT | 33m 44s | Device data, kernel preparation and P4RT dependency audit, SDK, source build and handoff |
+| Prepare kernel, packages and P4RT | 33m 44s | Kernel Bazel timing table, device data, and P4RT preparation and handoff |
 | Build and export Bazel container images | 46m 57s | Shared Bazel command, archive exports and the per-container timing table |
 | Finish Make containers and stage the root filesystem | 14m 32s | Make container builds, cached targets, base image loads and intermediate SquashFS |
 | Assemble the final ONIE installer | 15m 20s | Docker image loading, filesystem and store compression, payload ZIP and ONIE wrapping |
@@ -227,10 +227,15 @@ The headings use each run's elapsed time. Inner rows require measurements from
 that run. For example, the historical log recorded the ONIE recipe's total but
 lacked its internal phase markers. Recent instrumented runs can show those phases.
 Overlapping tasks count once when calculating uncovered wall time, and nested
-P4RT and root filesystem subtasks are included in the parent duration. Expand **Build and export Bazel container images** to see the batch's compiler,
-cache and lock-wait timings and its per-container table. Independent recipes,
-such as the kernel, appear in the job-level Bazel breakdown. Older runs that
-cannot tie a batch to one stage also keep their table at job level.
+P4RT and root filesystem subtasks are included in the parent duration.
+
+Expand **Build and export Bazel container images** to see the batch's compiler,
+cache and lock-wait timings and its per-container table. The first stage shows
+the kernel recipe in a horizontal table when the kernel preparation task
+finishes before the container batch. For example, on master
+`b65761475de4`, kernel preparation took 153.118 seconds, including 135.521
+seconds in the Bazel launcher and 4.836 seconds staging Debian packages.
+Recipes whose stage cannot be identified remain in the job-level breakdown.
 
 The host Make step uses `TERM=dumb` to emit build and finish markers. Historical
 direct-slave terminal redraws lack task end times. A Make `cached` marker alone
