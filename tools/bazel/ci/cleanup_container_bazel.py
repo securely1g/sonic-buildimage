@@ -392,9 +392,16 @@ def main():
             prefix = os.environ["GITHUB_REPOSITORY"] + "/.github/workflows/"
             reference = os.environ["GITHUB_WORKFLOW_REF"]
             workflow = reference.removeprefix(prefix).split("@", 1)[0]
+            job = os.environ["GITHUB_JOB"]
+            # In a local reusable workflow GitHub reports the caller's workflow
+            # ref and the callee's job ID. Authorize only this same-ref FRR call.
+            if (workflow, job) == ("bazel-oci.yml", "packages"):
+                callee = prefix + "bazel-frr-python.yml@" + reference.partition("@")[2]
+                if os.environ.get("BAZEL_CLEANUP_JOB_WORKFLOW_REF") == callee:
+                    workflow = "bazel-frr-python.yml"
             if (os.environ.get("RUNNER_ENVIRONMENT") != "self-hosted" or
                     not reference.startswith(prefix) or "@" not in reference or
-                    os.environ["GITHUB_JOB"] not in MIGRATED_JOBS.get(workflow, set())):
+                    job not in MIGRATED_JOBS.get(workflow, set())):
                 raise ValueError("Cleanup requires an explicitly supported migrated self-hosted job")
         elif os.environ["GITHUB_JOB"] not in SUPPORTED_JOBS:
             raise ValueError("Cleanup requires a supported Bazel job")

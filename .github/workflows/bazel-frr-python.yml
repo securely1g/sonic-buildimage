@@ -47,6 +47,12 @@ jobs:
             autoconf automake binutils binutils-gold build-essential ca-certificates \
             git libtool libxml2 pkg-config python3 tar unzip zstd
 
+      - name: Record the called workflow identity for cleanup
+        if: inputs.vs_artifact_id != ''
+        env:
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+        run: printf 'BAZEL_CLEANUP_JOB_WORKFLOW_REF=%s\n' "$JOB_WORKFLOW_REF" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -250,7 +250,35 @@ class MigratedCleanupTest(unittest.TestCase):
                 subject.main()
             prepare.assert_not_called()
 
+    def test_reusable_frr_job_requires_the_matching_caller_callee_job_and_ref(self):
+        """Only the local OCI caller's FRR packages job can enter cleanup with its caller's workflow ref."""
+        repo = "securely1g/project/.github/workflows/"
+        ref = "@refs/pull/282/merge"
+        environment = {
+            "GITHUB_JOB": "packages",
+            "GITHUB_WORKFLOW_REF": repo + "bazel-oci.yml" + ref,
+            "BAZEL_CLEANUP_JOB_WORKFLOW_REF": repo + "bazel-frr-python.yml" + ref,
+        }
+        with mock.patch.dict(os.environ, environment), mock.patch.object(subject.Path, "is_file", return_value=False):
+            for change in (
+                    {"GITHUB_JOB": "native"},
+                    {"GITHUB_WORKFLOW_REF": repo + "bazel-make-cache.yml" + ref},
+                    {"BAZEL_CLEANUP_JOB_WORKFLOW_REF": ""},
+                    {"BAZEL_CLEANUP_JOB_WORKFLOW_REF": repo + "bazel-kernel-bundle.yml" + ref},
+                    {"BAZEL_CLEANUP_JOB_WORKFLOW_REF": repo + "bazel-frr-python.yml@refs/heads/master"},
+                    {"BAZEL_CLEANUP_JOB_WORKFLOW_REF": "other/project/.github/workflows/bazel-frr-python.yml" + ref}):
+                with self.subTest(change=change), mock.patch.dict(os.environ, change), \
+                        mock.patch.object(sys, "argv", ["cleanup", "--migrated-job", "--prepare"]), \
+                        mock.patch.object(subject, "prepare") as prepare, contextlib.redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    subject.main()
+                prepare.assert_not_called()
+            self.assert_cli_lifecycle()
+
     def test_host_cli_runs_the_complete_lifecycle(self):
+        self.assert_cli_lifecycle()
+
+    def assert_cli_lifecycle(self):
         with mock.patch.object(subject.Path, "is_file", return_value=False):
             with mock.patch.object(sys, "argv", ["cleanup", "--migrated-job", "--prepare"]), \
                     contextlib.redirect_stdout(io.StringIO()) as output:
@@ -315,6 +343,24 @@ class MigratedWorkflowCleanupTest(unittest.TestCase):
                     self.assertIn(".github/actions/bazel-post-job-cleanup/**", event["paths"])
                     self.assertIn("tools/bazel/ci/cleanup_container_bazel.py", event["paths"])
                     self.assertIn("tools/bazel/tests/migrated_job_cleanup_test.py", event["paths"])
+
+    def test_oci_frr_caller_passes_the_server_workflow_identity_to_cleanup(self):
+        """Keep the reusable call and the real prepare/authorize/post environment wired together."""
+        workflows = ROOT / ".github/workflows"
+        caller = yaml.safe_load((workflows / "bazel-oci.yml").read_text())["jobs"]["frr_python_amd64"]
+        self.assertEqual(caller["uses"], "./.github/workflows/bazel-frr-python.yml")
+        steps = yaml.safe_load((workflows / "bazel-frr-python.yml").read_text())["jobs"]["packages"]["steps"]
+        identity = next(step for step in steps if "JOB_WORKFLOW_REF" in step.get("env", {}))
+        register = next(step for step in steps if step.get("id") == "runner_cleanup")
+        self.assertLess(steps.index(identity), steps.index(register))
+        self.assertEqual(identity["env"], {"JOB_WORKFLOW_REF": "${{ job.workflow_ref }}"})
+        self.assertEqual(identity["if"], "inputs.vs_artifact_id != ''")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "env"
+            reference = "securely1g/project/.github/workflows/bazel-frr-python.yml@refs/pull/282/merge"
+            subprocess.run(["bash", "-eu", "-c", identity["run"]], check=True,
+                           env=dict(os.environ, GITHUB_ENV=str(output), JOB_WORKFLOW_REF=reference))
+            self.assertEqual(output.read_text(), f"BAZEL_CLEANUP_JOB_WORKFLOW_REF={reference}\n")
 
     def test_only_stateless_migrated_jobs_need_no_workspace_hook(self):
         stateless = set()
