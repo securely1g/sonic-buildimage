@@ -19,7 +19,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
-from tools.bazel.ci import bazel_commands, build, command_log, p4rt_handoff, resolution, time_vs_image
+from tools.bazel.ci import bazel_commands, build, command_log, p4rt_handoff, p4rt_vs_tests, resolution, time_vs_image
 from tools.bazel.p4rt_common_sdk import prepare_repository
 from tools.bazel.build_helpers import cache_options, export_archive, remote_cache_options
 from tools.bazel.ci.preserve_setup_bazel_cache import PRIVATE_CACHE_ENDPOINT
@@ -222,6 +222,23 @@ def stage_vs_parent(directory, revision, preparation, receipt):
                                   'sha256': actual}
 
 
+def prepare_sdk(preparation, sdk, revision):
+    module = (preparation / 'common.MODULE.bazel').read_text()
+    check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
+                  'The fetched Common owner differs from the selected image parent')
+    prepare_repository(preparation / 'common-sdk.tar', sdk, 'amd64', {
+        'producer_bazel_version': '8.5.1', 'producer_target': PREPARATION_TARGETS['common-sdk.tar'],
+        'common_source_commit': COMMON_REVISION, 'common_source_has_tracked_changes': False,
+        'common_module_sha256': check.sha(preparation / 'common.MODULE.bazel'),
+        'image_source_revision': revision, 'yang_modules': True,
+    }, libnl_archives={PREPARATION_TARGETS[name]: preparation / name
+                       for name in ('libnl-nf-sdk.tar', 'libnl-genl-sdk.tar')},
+        libyang_archive=preparation / 'libyang-runtime.tar',
+        parent_archive=preparation / 'config-engine.source.tar')
+    return p4rt_handoff.same_common_library(sdk,
+        preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')
+
+
 def prepare_owner(args, *, make_build=False):
     native()
     directory, preparation, sdk, output = locations(args)
@@ -257,20 +274,7 @@ def prepare_owner(args, *, make_build=False):
                                    options=options, use_execution_root=True)
             if vs_parent:
                 stage_vs_parent(vs_parent, revision, preparation, receipt)
-            module = (preparation / 'common.MODULE.bazel').read_text()
-            check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
-                          'The fetched Common owner differs from the selected image parent')
-            prepare_repository(preparation / 'common-sdk.tar', sdk, 'amd64', {
-                'producer_bazel_version': '8.5.1', 'producer_target': PREPARATION_TARGETS['common-sdk.tar'],
-                'common_source_commit': COMMON_REVISION, 'common_source_has_tracked_changes': False,
-                'common_module_sha256': check.sha(preparation / 'common.MODULE.bazel'),
-                'image_source_revision': revision, 'yang_modules': True,
-            }, libnl_archives={PREPARATION_TARGETS[name]: preparation / name
-                               for name in ('libnl-nf-sdk.tar', 'libnl-genl-sdk.tar')},
-                libyang_archive=preparation / 'libyang-runtime.tar',
-                parent_archive=preparation / 'config-engine.source.tar')
-            receipt['parent_common'] = p4rt_handoff.same_common_library(sdk,
-                preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')
+            receipt['parent_common'] = prepare_sdk(preparation, sdk, revision)
         with phase('p4rt-owner'):
             run_owner(args, sdk, output, 'build', preparation, receipt, make_build=make_build)
         with phase('p4rt-handoff'):
@@ -284,6 +288,26 @@ def prepare_owner(args, *, make_build=False):
         raise
     finally:
         write(directory / 'owner-preparation.json', receipt)
+
+
+def restore_vs_owner(args):
+    """Check the Make-produced owner against this clean checkout before running any tests."""
+    from tools.bazel.ci.p4rt_vs_inputs import copy_inputs, read_inputs
+
+    native()
+    directory, preparation, sdk, output = locations(args)
+    revision = source_identity(directory)
+    p4rt_handoff.source_identity(args.owner_source, args.owner_revision)
+    receipt = read_inputs(args.vs_owner, revision, args.owner_revision)
+    copy_inputs(args.vs_owner, directory)
+    parent = prepare_sdk(preparation, sdk, revision)
+    check.require(parent == receipt['parent_common'], 'VS parent and reconstructed SDK disagree')
+    handoff = p4rt_handoff.stage(args.owner_source, args.owner_revision, sdk, output,
+                                ROOT / '.bazel-inputs/p4rt-owner', parent)
+    check.require(handoff == receipt['owner_handoff'], 'VS handoff differs from the verified source outputs')
+    # This is a local preparation record. Only owner_tests can record a passing run.
+    receipt.update(status='prepared', input_source='vs-installer')
+    write(directory / 'owner-preparation.json', receipt)
 
 
 def prepared(args):
@@ -435,7 +459,7 @@ def build_images(args):
 
 def owner_tests(args):
     native()
-    directory, preparation, sdk, output, _ = prepared(args)
+    directory, preparation, sdk, output, preparation_receipt = prepared(args)
     runtime = directory / 'prepared-owner-runtime.json'
     check.require(runtime.is_file(), 'Run the explicit prepare-owner-runtime step before owner-tests')
     selected_runtime = json.loads(runtime.read_text())
@@ -445,7 +469,11 @@ def owner_tests(args):
                   runtime_inventory(preparation)), 'Prepared runtime receipt differs from declared payloads')
     receipt = {'status': 'testing', 'owner_revision': args.owner_revision, 'commands': []}
     try:
-        run_owner(args, sdk, output, 'test', directory, receipt, runtime)
+        if preparation_receipt.get('input_source') == 'vs-installer':
+            p4rt_vs_tests.run(args, sdk, output, runtime)
+            receipt['installed_package_test'] = 'vs-artifacts'
+        else:
+            run_owner(args, sdk, output, 'test', directory, receipt, runtime)
         prepared(args)
         receipt['status'] = 'passed'
     except Exception as error:
@@ -457,20 +485,23 @@ def owner_tests(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('prepare-owner', 'prepare-make-owner', 'prepare-owner-runtime', 'build', 'owner-tests'))
+    parser.add_argument('phase', choices=('prepare-owner', 'prepare-make-owner', 'restore-vs-owner', 'prepare-owner-runtime', 'build', 'owner-tests'))
     parser.add_argument('--directory', required=True, type=Path)
     parser.add_argument('--bazel', default='bazel', help='Root image/Common Bazel 8.5.1 launcher')
     parser.add_argument('--owner-bazel', default='bazel', help='Separate owner Bazelisk or Bazel 6.4.0 launcher')
     parser.add_argument('--vs-parent', type=Path, help='P4RT validation bundle from the matching VS run')
+    parser.add_argument('--vs-owner', type=Path, help='Immutable P4RT inputs from the selected VS installer build')
     parser.add_argument('--owner-source', required=True, type=Path)
     parser.add_argument('--owner-revision', required=True)
     parser.add_argument('--owner-output-base', required=True, type=Path)
     # Bazel's own default: one job per available CPU.
     parser.add_argument('--jobs', type=int, default=len(os.sched_getaffinity(0)))
     args = parser.parse_args()
+    if args.phase == 'restore-vs-owner' and args.vs_owner is None:
+        parser.error('restore-vs-owner requires --vs-owner')
     check.require(args.jobs > 0, 'Owner jobs must be positive')
     actions = {'prepare-owner': prepare_owner, 'prepare-make-owner': partial(prepare_owner, make_build=True),
-               'prepare-owner-runtime': prepare_runtime, 'build': build_images, 'owner-tests': owner_tests}
+               'restore-vs-owner': restore_vs_owner, 'prepare-owner-runtime': prepare_runtime, 'build': build_images, 'owner-tests': owner_tests}
     with time_vs_image.log_make_phase('p4rt-prep', vs_make=args.phase == 'prepare-make-owner'):
         actions[args.phase](args)
 

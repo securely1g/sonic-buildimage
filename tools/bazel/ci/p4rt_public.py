@@ -14,7 +14,9 @@ from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci.public_artifacts import (
     REVISION, bep_summary, dependency_json, digest, integer, label, load_json, relative_name, safe_json,
 )
+from tools.bazel.ci.p4rt_handoff import SOURCE_FIELDS
 from tools.bazel.ci.p4rt_image import PREPARATION_TARGETS
+from tools.bazel.ci.p4rt_vs_tests import INSTALLED
 from tools.bazel.ci.python_packages import test_result
 
 
@@ -135,6 +137,8 @@ def sdk_preparation_summary(directory, source):
               'action_audit': audit_view, 'sdk_build': sdk_view,
               'parent_common': {key: parent[key] for key in ('sha256', 'common_runtime_tar_sha256', 'parent_source_tar_sha256')},
               'original_sha256': originals}
+    if prepared.get('input_source') == 'vs-installer':
+        result['input_source'] = 'vs-installer'
     safe_json(result)
     return result
 
@@ -151,11 +155,25 @@ def owner_test_summary(directory):
                   'Expected a unique nonempty owner test selection')
     check.require((owner / 'test-targets.txt').read_text().splitlines() == targets,
                   'Owner test selection changed after build')
+    native_targets = targets
+    installed = {}
+    if receipt.get('installed_package_test') == 'vs-artifacts':
+        # A direct invocation has an installed-file report, not a Bazel test event or XML.
+        path = owner / 'installed-packages.json'
+        report = json.loads(path.read_text())
+        check.require(INSTALLED in targets and report['status'] == 'passed' and report['architecture'] == 'amd64' and
+                      report['runtime_tar_sha256'] == source['tar_sha256']['p4rt_runtime.tar'] and
+                      report['debug_tar_sha256'] == source['tar_sha256']['p4rt_runtime_debug.tar'] and
+                      report['common_library_sha256'] == source['sdk_inventory']['lib/libswsscommon.so.0']['sha256'],
+                      'Installed test report differs from the VS owner artifacts')
+        installed = {'installed_package_test': {'target': INSTALLED, 'input_source': 'vs-installer',
+                     'status': 'passed', 'report_sha256': check.sha(path)}}
+        native_targets = [target for target in targets if target != INSTALLED]
     statuses = json.loads((owner / 'test-results.json').read_text())
-    check.require(set(statuses) == set(targets) and all(x == 'PASSED' for x in statuses.values()),
+    check.require(set(statuses) == set(native_targets) and all(x == 'PASSED' for x in statuses.values()),
                   'Every selected owner test needs a passing BEP status')
     results, total_bytes = {}, 0
-    for target in targets:
+    for target in native_targets:
         label(target)
         check.require(target.startswith(('//p4rt_app/', '//p4rt_app:')) and target.count(':') == 1,
                       'Unexpected owner test target')
@@ -173,8 +191,8 @@ def owner_test_summary(directory):
                       'Owner tests must execute without skipped cases')
         results[target] = {'status': statuses[target], 'xml_sha256': check.sha(path), **counts}
     return {'status': 'passed', 'owner_revision': source['commit'],
-            'target_count': len(results), 'testcase_count': sum(x['tests'] for x in results.values()),
-            'tests': results}
+            'target_count': len(targets), 'testcase_count': sum(x['tests'] for x in results.values()),
+            'tests': results, **installed}
 
 
 def prepare(directory):
@@ -214,8 +232,7 @@ def prepare(directory):
     source_receipt = owner / 'source.json'
     if source_receipt.exists():
         source = json.loads(source_receipt.read_text())
-        write('owner-source.json', {key: source[key] for key in
-              ('commit', 'bazel', 'architecture', 'test_targets', 'sdk_inventory', 'tar_sha256', 'contract_sha256')})
+        write('owner-source.json', {key: source[key] for key in SOURCE_FIELDS})
         write('sdk-preparation.json', sdk_preparation_summary(directory, source))
         for name, expected in source['contract_sha256'].items():
             check.require(Path(name).name == name and check.sha(owner / name) == expected,

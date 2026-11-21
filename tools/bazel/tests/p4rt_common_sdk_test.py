@@ -80,6 +80,16 @@ elif command == "info":
         bazel.chmod(0o755)
         return str(bazel)
 
+    def test_generated_sdk_modes_match_across_worker_umasks(self):
+        """PINS verifies file modes when a VS-produced SDK is reconstructed on its test worker."""
+        old = os.umask(0o077)
+        try:
+            self.prepare()
+        finally:
+            os.umask(old)
+        for name in ("WORKSPACE.bazel", "BUILD.bazel", "sdk-build.json"):
+            self.assertEqual((self.output / name).stat().st_mode & 0o777, 0o644)
+
     def test_replacing_sdk_removes_old_headers_and_preserves_both_entry_points(self):
         self.sdk_archive(extra={"include/swss/removed.h": b"old"})
         self.prepare()

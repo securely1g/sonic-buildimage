@@ -13,6 +13,9 @@ from tools.bazel.ci import artifact_validation as check
 
 FILES = ('p4rt_runtime.tar', 'p4rt_runtime_debug.tar',
          'p4rt_runtime_contract.json', 'p4rt_runtime_debug_contract.json')
+# The source owner also records absolute Bazel options. Only these fields travel between jobs.
+SOURCE_FIELDS = ('commit', 'bazel', 'architecture', 'test_targets', 'sdk_inventory',
+                 'tar_sha256', 'contract_sha256')
 KIND = 'sonic-p4rt-owner-payload'
 WORKSPACE = 'workspace(name = "p4rt_owner_payload")\n'
 BUILD = 'exports_files(' + json.dumps([*FILES, 'handoff.json']) + ', visibility = ["//visibility:public"])\n'
