@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import pwd
 import shutil
 import subprocess
 import tempfile
@@ -34,8 +33,9 @@ class SupervisorTest(unittest.TestCase):
         self.workspace = self.work / "sonic-buildimage" / "sonic-buildimage"
         self.checkout = self.workspace / "vs-123-2"
         self.checkout.mkdir(parents=True)
+        self.uid = os.getuid()
         self.config = {
-            "runner_user": pwd.getpwuid(os.getuid()).pw_name,
+            "runner_user": "fixture-runner",
             "runner_dir": str(self.runner), "work_root": str(self.work),
             "repository": "securely1g/sonic-buildimage", "runner_name": "test-canary",
             "job_name": "VS installer in SONiC slave (AMD64)",
@@ -43,13 +43,12 @@ class SupervisorTest(unittest.TestCase):
         }
         self.github = Mock()
         self.github.conclusion.return_value = "success"
-        self.supervisor = module.Supervisor(self.config, self.state_dir, self.github)
+        self.supervisor = self.make_supervisor()
         self.supervisor.state = {"phase": "listening", "session": "test-session",
                                  "runner_id": 456, "started": 1,
                                  "work_device": self.work.stat().st_dev,
                                  "work_inode": self.work.stat().st_ino}
         self.supervisor.save()
-        self.uid = os.getuid()
         self.events = []
         self.guard = self.enterContext(patch.object(
             self.supervisor, "check_idle", side_effect=lambda: self.events.append("idle")))
@@ -62,6 +61,21 @@ class SupervisorTest(unittest.TestCase):
         self.remove = self.enterContext(patch.object(
             module, "cleanup_checkout", side_effect=lambda *_: shutil.rmtree(self.checkout)))
         self.caches = self.enterContext(patch.object(module, "cleanup_caches"))
+
+    def make_supervisor(self):
+        account = SimpleNamespace(pw_uid=self.uid or 1, pw_gid=os.getgid(),
+                                  pw_name="fixture-runner", pw_dir=str(self.root))
+        with patch.object(module.pwd, "getpwnam", return_value=account):
+            supervisor = module.Supervisor(self.config, self.state_dir, self.github)
+        # Listener launches are mocked; local socket clients use the test process UID,
+        # which is root in OCI CI, independently of the non-root account validation.
+        account.pw_uid = self.uid
+        return supervisor
+
+    def test_root_listener_account_is_rejected(self):
+        with patch.object(module.pwd, "getpwnam", return_value=SimpleNamespace(pw_uid=0)):
+            with self.assertRaisesRegex(ValueError, "must not run as root"):
+                module.Supervisor(self.config, self.state_dir, self.github)
 
     def fake_command(self, arguments, **kwargs):
         self.events.append(arguments)
@@ -238,7 +252,7 @@ class SupervisorTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "NFS"):
             self.supervisor.finish()
         self.caches.assert_not_called()
-        recovered = module.Supervisor(self.config, self.state_dir, self.github)
+        recovered = self.make_supervisor()
         with patch.object(recovered, "check_idle"), patch.object(recovered, "no_containers"), \
                 patch.object(recovered, "check_storage"), \
                 patch.object(recovered, "validate_nfs"), \
