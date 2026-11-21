@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shutil
 import signal
 import socket
 import struct
@@ -29,6 +30,7 @@ from tools.bazel.ci.cleanup_vs_workspace import checkout_path
 
 
 LABEL = "vs-cleanup-canary"
+HOST_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 LIMIT = 65536
 FINAL_RESULTS = {"success", "failure", "cancelled", "timed_out", "action_required",
                  "neutral", "skipped", "stale"}
@@ -250,12 +252,18 @@ class Supervisor:
                 path.unlink(missing_ok=True)
 
     def command(self, arguments, *, user=False, capture=False):
-        env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        env = {"PATH": HOST_PATH,
                "HOME": self.account.pw_dir if user else "/root", "LANG": "C.UTF-8"}
         if user:
-            arguments = ["runuser", "-u", self.account.pw_name, "--", *arguments]
+            arguments = [self.launcher(), "-u", self.account.pw_name, "--", *arguments]
         return subprocess.run(arguments, check=True, text=True, env=env,
                               capture_output=capture, timeout=900)
+
+    def launcher(self):
+        executable = shutil.which("runuser", path=HOST_PATH)
+        if not executable:
+            raise ValueError("Host runuser executable is unavailable")
+        return executable
 
     def check_idle(self):
         service = self.config["original_service"]
@@ -322,7 +330,7 @@ class Supervisor:
             token = self.github.registration()
             owner = self.config["repository"].split("/")[0]
             target = owner if self.config.get("registration_scope", "repo") == "org" else self.config["repository"]
-            arguments = ["runuser", "-u", self.account.pw_name, "--",
+            arguments = [self.launcher(), "-u", self.account.pw_name, "--",
                          str(self.runner_dir / "config.sh"), "--unattended",
                          "--url", "https://github.com/" + target, "--token", token,
                          "--name", self.config["runner_name"], "--work", str(self.work_root),
@@ -398,23 +406,45 @@ class Supervisor:
         self.state = {"phase": "idle"}
         self.save()
 
-    def cycle(self):
+    def recover(self):
         if self.state and self.state["phase"] != "idle":
-            self.finish()
+            if self.state["phase"] == "not_started" and not self.state.get("record"):
+                self.check_idle()
+                atomic_json(self.state_dir / (self.state["session"] + ".json"), self.state)
+                self.state = {"phase": "idle"}
+                self.save()
+            else:
+                self.finish()
+
+    def cycle(self):
+        self.recover()
         self.admission()
+        executable = self.launcher()
         runner_id = self.configure()
         identity = self.work_root.stat()
         with self.mutex:
-            self.state = {"phase": "listening", "session": uuid.uuid4().hex,
+            self.state = {"phase": "starting", "session": uuid.uuid4().hex,
                           "runner_id": runner_id, "started": time.time(),
                           "work_device": identity.st_dev, "work_inode": identity.st_ino}
             self.save()
         print(f"Starting canary session {self.state['session']}", flush=True)
         environment = {"HOME": self.account.pw_dir, "LANG": "C.UTF-8",
-                       "PATH": "/usr/local/bin:/usr/bin:/bin"}
-        with subprocess.Popen(
-                ["runuser", "-u", self.account.pw_name, "--", str(self.runner_dir / "run.sh")],
-                cwd=self.runner_dir, env=environment, start_new_session=True) as listener:
+                       "PATH": HOST_PATH}
+        try:
+            process = subprocess.Popen(
+                [executable, "-u", self.account.pw_name, "--", str(self.runner_dir / "run.sh")],
+                cwd=self.runner_dir, env=environment, start_new_session=True)
+        except OSError as error:
+            # Failed exec proves no listener started; interrupted listeners remain ambiguous.
+            with self.mutex:
+                self.state["phase"] = "not_started"
+                self.state["spawn_error"] = type(error).__name__
+                self.save()
+            raise RuntimeError(f"Canary listener could not start ({type(error).__name__})") from None
+        with process as listener:
+            with self.mutex:
+                self.state["phase"] = "listening"
+                self.save()
             try:
                 status = listener.wait()
             finally:
@@ -449,8 +479,7 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             supervisor = Supervisor(config, state_dir)
             if args.recover_only:
-                if supervisor.state and supervisor.state["phase"] != "idle":
-                    supervisor.finish()
+                supervisor.recover()
             else:
                 with supervisor.server(runtime / "control.sock"):
                     while True:

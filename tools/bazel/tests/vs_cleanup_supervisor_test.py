@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -319,6 +320,53 @@ class SupervisorTest(unittest.TestCase):
                              side_effect=lambda: self.events.append("cleanup")):
             self.supervisor.cycle()
         self.assertLess(self.events.index("listener-exit"), self.events.index("cleanup"))
+
+    def test_real_child_inherits_path_for_sbin_tools(self):
+        self.supervisor.state = {"phase": "idle"}
+        executable = self.root / "test-launcher"
+        result = self.root / "child-result"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import pathlib, subprocess\n"
+            "subprocess.run(['runuser', '--version'], check=True, stdout=subprocess.DEVNULL)\n"
+            f"pathlib.Path({str(result)!r}).write_text('completed')\n")
+        executable.chmod(0o755)
+        with patch.object(self.supervisor, "admission"), \
+                patch.object(self.supervisor, "configure", return_value=456), \
+                patch.object(module.shutil, "which", return_value=str(executable)), \
+                patch.object(self.supervisor, "finish") as finish:
+            self.supervisor.cycle()
+        self.assertEqual(result.read_text(), "completed")
+        finish.assert_called_once()
+
+    def test_missing_launcher_blocks_registration_before_start_journal(self):
+        self.supervisor.state = {"phase": "idle"}
+        with patch.object(self.supervisor, "admission"), \
+                patch.object(self.supervisor, "configure") as configure, \
+                patch.object(module.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(ValueError, "runuser executable"):
+                self.supervisor.cycle()
+        configure.assert_not_called()
+        self.assertEqual(self.supervisor.state["phase"], "idle")
+
+    def test_failed_exec_preserves_record_and_can_recover_without_claiming_a_job(self):
+        self.supervisor.state = {"phase": "idle"}
+        with patch.object(self.supervisor, "admission"), \
+                patch.object(self.supervisor, "configure", return_value=456), \
+                patch.object(module.subprocess, "Popen", side_effect=FileNotFoundError("launcher")):
+            with self.assertRaisesRegex(RuntimeError, "could not start"):
+                self.supervisor.cycle()
+        session = self.supervisor.state["session"]
+        self.assertEqual(json.loads(self.supervisor.journal.read_text())["phase"], "not_started")
+        recovered = self.make_supervisor()
+        with patch.object(recovered, "check_idle"), \
+                patch.object(recovered, "admission", side_effect=ValueError("stop after archive")):
+            with self.assertRaisesRegex(ValueError, "stop after archive"):
+                recovered.cycle()
+        self.assertEqual(recovered.state["phase"], "idle")
+        archive = json.loads((self.state_dir / (session + ".json")).read_text())
+        self.assertEqual(archive["spawn_error"], "FileNotFoundError")
+        self.assertNotIn("record", archive)
 
 
 class GitHubResultTest(unittest.TestCase):

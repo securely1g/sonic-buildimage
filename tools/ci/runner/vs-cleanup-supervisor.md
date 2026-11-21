@@ -185,6 +185,12 @@ sudo python3 -B /opt/sonic-vs-cleanup/tools/ci/runner/vs_cleanup_supervisor.py \
   --recover-only
 ```
 
+The host resolves `runuser` from a fixed PATH including `/usr/sbin`; listeners
+inherit that PATH as well. A failed exec is recorded as `not_started`, proving
+no listener accepted a job. A subsequent start preserves that record in the
+session archive before repeating admission. This does not apply to older
+`listening` records or interrupted listeners with unknown job outcomes.
+
 Unknown job outcomes, an interrupted session without enrollment, changed
 checkout identity or an unidentifiable job require operator investigation.
 Never delete the pending record just to reopen admission. For an unenrolled
