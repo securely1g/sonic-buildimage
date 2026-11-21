@@ -46,13 +46,11 @@ tar(
         out = "manifest" + suffix + ".labels",
         manifest = "//:target/bazel-manifests/docker-dhcp-relay" + suffix + "/manifest.json",
         package_receipt = "//dockers/docker-dhcp-relay:runtime_package_metadata",
+        # Match Make's cross-image component contract. Relay-owned programs
+        # are not components supplied by the database package dependency.
         version_packages = [
             "libswsscommon",
             "sonic-supervisord-utilities-rs",
-            "isc-dhcp-relay",
-            "sonic-dhcp4relay",
-            "sonic-dhcp6relay",
-            "sonic-dhcpmon",
         ],
     )
     for suffix in ["", "-dbg"]
