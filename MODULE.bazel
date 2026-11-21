@@ -63,6 +63,12 @@ bazel_dep(
     version = "0.0.40-6c9cd9477816ad129bf8d4501c9259504f3f85ca",
     repo_name = "sonic_build_infra",
 )
+# Commit suffixes sort lexically, so P4RT's older .40 snapshot sorts above
+# the published wheel-metadata release required by DHCP. Keep that release selected.
+single_version_override(
+    module_name = "sonic-build-infra",
+    version = "0.0.40-6c9cd9477816ad129bf8d4501c9259504f3f85ca",
+)
 bazel_dep(name = "grub", version = "2.12.sonic.1")
 bazel_dep(
     name = "sonic-dash-api",
