@@ -158,7 +158,8 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         cleanup = next(step for step in job["steps"]
                        if step.get("name") == "Remove only this job's build containers")
         self.assertEqual(cleanup["working-directory"], "${{ github.workspace }}")
-        self.assertEqual(cleanup["if"], "always()")
+        self.assertEqual(cleanup["if"],
+                         "always() && steps.vs_cleanup_handoff.outputs.enrolled != 'true'")
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             docker = directory / "docker"
@@ -192,13 +193,16 @@ class ArchiveCachePolicyTest(unittest.TestCase):
 
     def test_checkout_cleanup_follows_uploads_and_requires_successful_container_cleanup(self):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
-        cleanup = job["steps"][-1]
+        cleanup = next(step for step in job["steps"]
+                       if step["name"] == "Remove only this run's checkout")
         containers = next(step for step in job["steps"]
                           if step.get("id") == "vs_container_cleanup")
         self.assertEqual(containers["id"], "vs_container_cleanup")
         self.assertLess(job["steps"].index(containers), job["steps"].index(cleanup))
         self.assertEqual(cleanup["name"], "Remove only this run's checkout")
-        self.assertIn("always() && steps.vs_container_cleanup.outcome == 'success'", cleanup["if"])
+        self.assertIn("always()", cleanup["if"])
+        self.assertIn("steps.vs_container_cleanup.outcome == 'success'", cleanup["if"])
+        self.assertIn("steps.vs_cleanup_handoff.outputs.enrolled != 'true'", cleanup["if"])
         for upload in ("vs_receipts_upload", "vs_installer_upload"):
             self.assertIn(f"steps.{upload}.outcome == 'success'", cleanup["if"])
             self.assertTrue(any(step.get("id") == upload and "upload-artifact@" in step.get("uses", "")
