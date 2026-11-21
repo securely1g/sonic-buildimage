@@ -19,18 +19,19 @@ def collect(workspace, state, output, architecture="amd64", debs_directory=None)
     if not packages.is_absolute():
         packages = workspace / packages
     verified = kernel.verify(packages, workspace, architecture=architecture)
-    selected = verified["provenance"]["resolution"]
     records = {}
-    for name, path, hash_field in (
-        ("MODULE.bazel.lock", state / "consumer/MODULE.bazel.lock", "lock_sha256"),
-        ("module-graph.json", state / "build/module-graph.json", "graph_sha256"),
-        ("kernel-source.json", state / "build/kernel-source.json", "kernel_source_json_sha256"),
-        ("infra-source.json", state / "build/infra-source.json", "infra_source_json_sha256"),
-    ):
-        data = kernel.regular(path).read_bytes()
-        kernel.require(hashlib.sha256(data).hexdigest() == selected[hash_field],
-                       "kernel dependency record differs from verified provenance")
-        records[name] = hashlib.sha256(data).hexdigest()
+    if verified["provenance"].get("schema") != 3:
+        selected = verified["provenance"]["resolution"]
+        for name, path, hash_field in (
+            ("MODULE.bazel.lock", state / "consumer/MODULE.bazel.lock", "lock_sha256"),
+            ("module-graph.json", state / "build/module-graph.json", "graph_sha256"),
+            ("kernel-source.json", state / "build/kernel-source.json", "kernel_source_json_sha256"),
+            ("infra-source.json", state / "build/infra-source.json", "infra_source_json_sha256"),
+        ):
+            data = kernel.regular(path).read_bytes()
+            kernel.require(hashlib.sha256(data).hexdigest() == selected[hash_field],
+                           "kernel dependency record differs from verified provenance")
+            records[name] = hashlib.sha256(data).hexdigest()
     artifacts = []
     for item in verified["manifest"]["packages"]:
         artifacts.append({key: item[key] for key in ("name", "sha256", "size")})
@@ -68,12 +69,12 @@ def collect(workspace, state, output, architecture="amd64", debs_directory=None)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--debs-directory", type=Path)
     parser.add_argument("--architecture", choices=("amd64", "arm64"), default=kernel.native_architecture())
     args = parser.parse_args()
-    collect(args.workspace.resolve(strict=True), args.state_dir.resolve(strict=True), args.output,
+    collect(args.workspace.resolve(strict=True), args.state_dir.resolve(strict=True) if args.state_dir else None, args.output,
             args.architecture, args.debs_directory)
     print("Kernel artifacts and public validation summary verified.")
 

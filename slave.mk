@@ -604,7 +604,7 @@ include Makefile.cache
 # Track Bazel kernel inputs for downstream Make consumers.
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(foreach pkg,$(SONIC_RFS_TARGETS) $(IXGBE_DRIVER) $(GENL_PACKET_MODULE), \
-        $(eval $(pkg)_DEP_FILES += $(SONIC_BAZEL_KERNEL_INPUTS) tools/bazel/kernel/prepare.py))
+        $(eval $(pkg)_DEP_FILES += $(SONIC_BAZEL_KERNEL_INPUTS) tools/bazel/kernel/packages.py MODULE.bazel))
 endif
 
 
