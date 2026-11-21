@@ -46,6 +46,8 @@ PARENT_IMAGES = {
     "docker-router-advertiser": CONFIG, "docker-snmp": CONFIG, "docker-sonic-gnmi": CONFIG,
     "docker-sonic-mgmt-framework": CONFIG, "docker-sonic-otel": CONFIG, P4RT: CONFIG,
     "docker-syncd-vs": CONFIG, "docker-sysmgr": CONFIG,
+    "docker-gnmi-sidecar": CONFIG, "docker-restapi-sidecar": CONFIG,
+    "docker-gnmi-watchdog": CONFIG, "docker-bmp-watchdog": CONFIG,
     "docker-dash-ha": SWSS, "docker-fpm-frr": SWSS, "docker-macsec": SWSS,
     "docker-sflow": SWSS, "docker-teamd": SWSS,
 }
@@ -234,14 +236,17 @@ def redis_config(source_tar):
 
 
 def stage_probe_fixtures(image, artifacts, bundle):
-    from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES
+    from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES, SUPERVISED
 
     # Standalone checks use the owner records projected in *.owners.json.
     # P4RT also needs the original parent TAR for its separate SDK test.
     if image in STANDALONE_IMAGES:
         for name in ("base.source.tar", "config-engine.source.tar", "syncd.source.tar", "source-runtime.tar"):
             artifacts.pop(name, None)
-    elif image != "docker-sonic-p4rt":
+    if image in SUPERVISED:
+        for name in ("service.files.tar", "watchdog.source.tar", "all-debug.tar"):
+            artifacts.pop(name, None)
+    elif image not in STANDALONE_IMAGES and image != "docker-sonic-p4rt":
         for name in ("config-engine-source.tar", "config-engine.source.tar"):
             source = artifacts.pop(name, None)
             if source is None:

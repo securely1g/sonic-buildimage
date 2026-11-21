@@ -7,6 +7,23 @@ module(
 )
 
 include("//src/sonic-supervisord-utilities-rs:deps.MODULE.bazel")
+
+watchdog_crates = use_extension("@rules_rs//rs:extensions.bzl", "crate")
+watchdog_crates.from_cargo(
+    name = "gnmi_watchdog_crates",
+    cargo_lock = "//dockers/docker-gnmi-watchdog/watchdog:Cargo.lock",
+    cargo_toml = "//dockers/docker-gnmi-watchdog/watchdog:Cargo.toml",
+    platform_triples = ["x86_64-unknown-linux-gnu"],
+    use_legacy_rules_rust_platforms = True,
+)
+watchdog_crates.from_cargo(
+    name = "bmp_watchdog_crates",
+    cargo_lock = "//dockers/docker-bmp-watchdog/watchdog:Cargo.lock",
+    cargo_toml = "//dockers/docker-bmp-watchdog/watchdog:Cargo.toml",
+    platform_triples = ["x86_64-unknown-linux-gnu"],
+    use_legacy_rules_rust_platforms = True,
+)
+use_repo(watchdog_crates, "bmp_watchdog_crates", "gnmi_watchdog_crates")
 include("//src/sonic-frr:deps.MODULE.bazel")
 
 # Cache Go module ZIPs by reviewed archive digests.
@@ -103,6 +120,17 @@ bazel_dep(
     name = "sonic-yang-models",
     version = "1.0.1-b0a9362a7a1b4b5e1b7188c019d256f7c8aaff9f",
     repo_name = "sonic_yang_models",
+)
+
+# These source owners live in this checkout. Use Make's exact models and
+# management library for both Common's schema generator and the image layer.
+local_path_override(
+    module_name = "sonic-yang-mgmt",
+    path = "src/sonic-yang-mgmt",
+)
+local_path_override(
+    module_name = "sonic-yang-models",
+    path = "src/sonic-yang-models",
 )
 
 # Dependency overrides do not propagate from Common. Keep its cgo header
