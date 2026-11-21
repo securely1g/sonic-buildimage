@@ -109,13 +109,33 @@ bazel_options+=(--//tools/bazel/image/vs/metadata:use_make_metadata=true
     --platforms=@sonic_build_infra//platforms:x86_64_trixie
     --host_platform=@sonic_build_infra//platforms:x86_64_trixie)
 
+validation_timings=""
+if [[ ${SONIC_VS_IMAGE_TIMINGS:-} == 1 ]]; then
+    validation_phases=(build-swss-policy cquery-swss-policy build-syncd-policy cquery-syncd-policy)
+    if ! "$runtime_only"; then
+        validation_phases=(test-swss-images test-syncd-p4-images "${validation_phases[@]}")
+    fi
+    validation_timings=$(python3 -B tools/bazel/ci/time_vs_image.py start-recipe . vs-validation \
+        --bazel "${validation_phases[@]}" --profiles "${validation_phases[@]}" --exports)
+fi
+
+run_bazel() {
+    local phase=$1
+    shift
+    if [[ -n $validation_timings ]]; then
+        python3 -B tools/bazel/ci/time_vs_image.py "$validation_timings" "$phase" "${BAZEL:-bazel}" "$@"
+    else
+        "${BAZEL:-bazel}" "$@"
+    fi
+}
+
 # cquery alone does not materialize cached policy outputs.
 write_installed_policy() {
     local family=$1 variant=$2 policy label
     shift 2
     label="//tools/bazel/tests:${family}_${variant}installed_images_policy"
-    "${BAZEL:-bazel}" build "${bazel_options[@]}" "$@" "$label"
-    policy=$("${BAZEL:-bazel}" cquery "${bazel_options[@]}" "$@" --output=files "$label")
+    run_bazel "build-${family}-policy" build "${bazel_options[@]}" "$@" "$label"
+    policy=$(run_bazel "cquery-${family}-policy" cquery "${bazel_options[@]}" "$@" --output=files "$label")
     cp --remove-destination -- "$policy" "artifacts/vs/$family-installed-images-policy.json"
 }
 
@@ -138,11 +158,11 @@ collect_test_results() {
 
 # Retain each result before another Bazel invocation changes bazel-testlogs.
 test_status=0
-"${BAZEL:-bazel}" test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
+run_bazel test-swss-images test "${bazel_options[@]}" //tools/bazel/tests:swss_images_test \
     --nocache_test_results --nozip_undeclared_test_outputs \
     2>&1 | tee artifacts/vs/swss-images.log || test_status=$?
 collect_test_results swss_images_test swss-images
-"${BAZEL:-bazel}" test "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
+run_bazel test-syncd-p4-images test "${bazel_options[@]}" --config=syncd-dash //tools/bazel/tests:syncd_p4_images_test \
     --nocache_test_results --nozip_undeclared_test_outputs \
     2>&1 | tee artifacts/vs/syncd-p4-images.log || test_status=$?
 collect_test_results syncd_p4_images_test syncd-p4-images

@@ -46,7 +46,7 @@ def inspect_actions(path):
     return result
 
 
-def audit_targets(bazel, options, targets, *, workspace, output, startup_options=()):
+def audit_targets(bazel, options, targets, *, workspace, output, startup_options=(), profile=None):
     """Reject package-producing actions before executing the selected targets."""
     import subprocess
     import tempfile
@@ -54,10 +54,12 @@ def audit_targets(bazel, options, targets, *, workspace, output, startup_options
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    profile_options = ([f"--profile={Path(profile).resolve()}", "--noslim_profile"]
+                       if profile is not None else [])
     # Action graphs may contain command environments; retain only this summary.
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as graph:
-        subprocess.run([bazel, *startup_options, "aquery", *options, "--output=jsonproto",
-                        "deps(set(" + " ".join(targets) + "))"],
+        subprocess.run([bazel, *startup_options, "aquery", *options, *profile_options,
+                        "--output=jsonproto", "deps(set(" + " ".join(targets) + "))"],
                        cwd=workspace, stdout=graph, check=True)
         graph.flush()
         report = inspect_actions(Path(graph.name))

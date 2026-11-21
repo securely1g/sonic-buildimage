@@ -23,8 +23,8 @@ class VsOciSessionTest(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
-        for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/build_helpers.py",
-                       "tools/bazel/cache/credentials.py"):
+        for source in ("tools/bazel/ci/verify_vs_oci.sh", "tools/bazel/ci/time_vs_image.py",
+                       "tools/bazel/build_helpers.py", "tools/bazel/cache/credentials.py"):
             destination = self.directory / source
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / source, destination)
@@ -99,7 +99,7 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
 	@echo 'Validation must not request container producers' >&2; exit 41
 ''')
         self.environment = dict(os.environ, BAZEL=str(self.bazel))
-        for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL",
+        for name in ("MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES", "MAKELEVEL", "SONIC_VS_IMAGE_TIMINGS",
                      "BAZEL_CONTAINER_ARGS", "BAZEL_SWSS_ARGS", "BAZEL_CONTAINER_CACHE_DIR", "BAZEL_SWSS_CACHE_DIR"):
             self.environment.pop(name, None)
 
@@ -294,6 +294,39 @@ $(addprefix target/,docker-orchagent.gz docker-orchagent-dbg.gz docker-syncd-vs.
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.producers(), [])
         self.assertFalse((self.directory / "bazel-arguments.jsonl").exists())
+
+    def test_timings_record_validation_profiles_and_preserve_cquery_outputs(self):
+        for runtime_only, phases in (
+            (True, ["build-swss-policy", "cquery-swss-policy", "build-syncd-policy", "cquery-syncd-policy"]),
+            (False, ["test-swss-images", "test-syncd-p4-images",
+                     "build-swss-policy", "cquery-swss-policy", "build-syncd-policy", "cquery-syncd-policy"]),
+        ):
+            with self.subTest(runtime_only=runtime_only):
+                shutil.rmtree(self.directory / "artifacts", ignore_errors=True)
+                (self.directory / "bazel-arguments.jsonl").unlink(missing_ok=True)
+                result = self.run_verifier(runtime_only=runtime_only, SONIC_VS_IMAGE_TIMINGS="1")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                recipes = list((self.directory / "artifacts/vs/image-timings/vs-validation").glob("recipe-*"))
+                self.assertEqual(len(recipes), 1)
+                recipe = recipes[0].resolve()
+                self.assertEqual(json.loads((recipe / "recipe.json").read_text()), {
+                    "bazel": phases, "profiles": phases, "exports": [],
+                })
+                for phase in phases:
+                    self.assertEqual(json.loads((recipe / f"{phase}.timing.json").read_text())["exit_code"], 0)
+                calls = [json.loads(line) for line in (self.directory / "bazel-arguments.jsonl").read_text().splitlines()]
+                self.assertEqual(len(calls), len(phases))
+                for phase, call in zip(phases, calls):
+                    self.assertEqual(call[:4], [
+                        phase.split("-", 1)[0],
+                        f"--profile={recipe / (phase + '.profile.json.gz')}",
+                        "--noslim_profile",
+                        "--experimental_profile_include_target_label",
+                    ])
+                variant = "runtime_" if runtime_only else ""
+                for family in ("swss", "syncd"):
+                    policy = self.directory / "artifacts/vs" / f"{family}-installed-images-policy.json"
+                    self.assertEqual(policy.read_text(), f"//tools/bazel/tests:{family}_{variant}installed_images_policy")
 
 
 if __name__ == "__main__":

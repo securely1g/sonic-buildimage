@@ -4189,17 +4189,6 @@ jobs:
             cat "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Preserve VS Bazel profiles, timings and Make logs
-        id: vs_image_timings_upload
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: sonic-vs-bazel-timings-amd64
-          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings/
-          if-no-files-found: warn
-          retention-days: 14
-
       - name: Validate the installer release and selected container archives
         run: |
           set -euo pipefail
@@ -4221,12 +4210,16 @@ jobs:
 
       - name: Validate the installer and retained container pairs
         if: env.SONIC_ENABLE_DEBUG_LAYER == 'y'
+        env:
+          SONIC_VS_IMAGE_TIMINGS: "1"
         run: |
           set -euo pipefail
           bash tools/bazel/ci/validate_vs.sh 2>&1 | tee artifacts/vs/validation.log
 
       - name: Prepare runtime-only installed image checks
         if: env.SONIC_ENABLE_DEBUG_LAYER == 'n'
+        env:
+          SONIC_VS_IMAGE_TIMINGS: "1"
         run: |
           set -euo pipefail
           bash tools/bazel/ci/validate_vs.sh --runtime-only 2>&1 | tee artifacts/vs/validation.log
@@ -4260,6 +4253,17 @@ jobs:
             SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD=n \
             SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL --cgroupns=private" \
             SONIC_RUN_CMDS="bash artifacts/vs/verify-installed-images.sh $SONIC_ENABLE_DEBUG_LAYER"
+
+      - name: Preserve VS Bazel profiles, timings and Make logs
+        id: vs_image_timings_upload
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonic-vs-bazel-timings-amd64
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Publish the installer and matching container archives
         id: vs_installer_upload

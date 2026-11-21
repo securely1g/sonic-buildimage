@@ -140,7 +140,7 @@ def server_process(pid):
     return {'state': fields[0], 'started': int(fields[19]), 'rss_pages': int(fields[21])}
 
 
-def make_owner_launcher(directory, bazel):
+def make_owner_launcher(directory, bazel, *, timings=None):
     # Keep PINS' workspace rc and the slave's system rc for its mounted
     # repository/disk caches. Its Bazel 6 client cannot consume root Bzlmod
     # settings, --local_resources, or Bazel 8's spelling of --downloader_config.
@@ -161,18 +161,32 @@ def make_owner_launcher(directory, bazel):
                               if not option.startswith('--remote_upload_local_results=')) +
                       'build --remote_upload_local_results=' + upload + '\n')
     launcher = directory / 'bazel'
-    launcher.write_text('#!/bin/sh\nexec ' + shlex.join([bazel, '--bazelrc=' + str(config)]) + ' "$@"\n')
+    if timings is None:
+        launcher.write_text('#!/bin/sh\nexec ' + shlex.join([bazel, '--bazelrc=' + str(config)]) + ' "$@"\n')
+    else:
+        profiles = {name: str(Path(timings).resolve() / f'owner-{name}.profile.json.gz')
+                    for name in ('aquery', 'build')}
+        launcher.write_text(
+            '#!' + sys.executable + ' -B\n'
+            'import os, sys\n'
+            f'bazel, rc, profiles = {bazel!r}, {("--bazelrc=" + str(config))!r}, {profiles!r}\n'
+            'args = sys.argv[1:]\n'
+            'index = next((i for i, arg in enumerate(args) if not arg.startswith("-")), None)\n'
+            'if index is not None and args[index] in profiles:\n'
+            '    args = [*args[:index + 1], "--profile=" + profiles[args[index]], "--noslim_profile", *args[index + 1:]]\n'
+            'os.execvp(bazel, [bazel, rc, *args])\n'
+        )
     launcher.chmod(0o755)
     return str(launcher)
 
 
-def run_owner(args, sdk, output, phase, directory, receipt, runtime=None, *, make_build=False):
+def run_owner(args, sdk, output, phase, directory, receipt, runtime=None, *, make_build=False, timings=None):
     execute = partial(command_log.execute, cwd=ROOT)
     if make_build:
         # The normal Make recipes may use the checkout's root server in
         # parallel. Only this PINS invocation owns its output base/shutdown.
         with tempfile.TemporaryDirectory(prefix='p4rt-owner-client-', dir=directory) as scratch:
-            client = make_owner_launcher(Path(scratch), args.owner_bazel)
+            client = make_owner_launcher(Path(scratch), args.owner_bazel, timings=timings)
             return execute(owner_command(args, sdk, output, phase, runtime, bazel=client),
                            directory, receipt, 'owner-build')
 
@@ -229,12 +243,26 @@ def prepare_owner(args, *, make_build=False):
         revision = receipt['revision'] = identity()
         if not make_build:
             prepare_manifests(execute, preparation, receipt)
+        timings = None
+        if make_build and os.environ.get('SONIC_VS_IMAGE_TIMINGS') == '1':
+            timing_workspace = ROOT if directory.is_relative_to(ROOT) else directory.parent
+            timings = time_vs_image.start_recipe(
+                timing_workspace, 'bazel-p4rt-owner',
+                ['audit', 'sdk', 'owner'],
+                ['audit', 'sdk-build', 'owner-aquery', 'owner-build'],
+                ['handoff'],
+            )
         phase = partial(time_vs_image.log_make_phase, vs_make=make_build)
-        with phase('p4rt-audit'):
-            receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, list(PREPARATION_TARGETS.values()),
-                workspace=ROOT, output=preparation / 'action-audit.json')
-        with phase('p4rt-sdk'):
-            build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options, use_execution_root=True)
+        with phase('p4rt-audit'), time_vs_image.time_phase(timings, 'audit'):
+            receipt['action_audit'] = bazel_commands.audit_targets(
+                args.bazel, options, list(PREPARATION_TARGETS.values()),
+                workspace=ROOT, output=preparation / 'action-audit.json',
+                profile=(timings / 'audit.profile.json.gz') if timings is not None else None)
+        with phase('p4rt-sdk'), time_vs_image.time_phase(timings, 'sdk'):
+            build.collect_archives(
+                ROOT, preparation, receipt, PREPARATION_TARGETS,
+                bazel=args.bazel, options=options, use_execution_root=True,
+                profile=(timings / 'sdk-build.profile.json.gz') if timings is not None else None)
             module = (preparation / 'common.MODULE.bazel').read_text()
             check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
                           'The fetched Common owner differs from the selected image parent')
@@ -249,9 +277,9 @@ def prepare_owner(args, *, make_build=False):
                 parent_archive=preparation / 'config-engine.source.tar')
             receipt['parent_common'] = p4rt_handoff.same_common_library(sdk,
                 preparation / 'common-runtime.tar', preparation / 'config-engine.source.tar')
-        with phase('p4rt-owner'):
-            run_owner(args, sdk, output, 'build', preparation, receipt, make_build=make_build)
-        with phase('p4rt-handoff'):
+        with phase('p4rt-owner'), time_vs_image.time_phase(timings, 'owner'):
+            run_owner(args, sdk, output, 'build', preparation, receipt, make_build=make_build, timings=timings)
+        with phase('p4rt-handoff'), time_vs_image.time_phase(timings, 'handoff'):
             receipt['owner_handoff'] = p4rt_handoff.stage(args.owner_source, args.owner_revision, sdk, output,
                 ROOT / '.bazel-inputs/p4rt-owner', receipt['parent_common'])
             check.require(identity() == revision, 'Image source changed during owner preparation')

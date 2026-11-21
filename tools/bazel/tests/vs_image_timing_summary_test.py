@@ -457,6 +457,31 @@ class ImageTimingSummaryTest(unittest.TestCase):
             self.assertEqual(records[1]["evidence"]["values"][0]["name"], "//:apt+example")
             self.assertTrue(all(len(line.encode()) <= 4096 for line in result.stdout.splitlines()))
 
+    def test_p4rt_owner_preparation_recipe_validates_in_dashboard_summary(self):
+        from tools.ci.build_dashboard import breakdown
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            recipe = time_vs_image.start_recipe(
+                workspace, "bazel-p4rt-owner",
+                ["audit", "sdk", "owner"],
+                ["audit", "sdk-build", "owner-aquery", "owner-build"],
+                ["handoff"],
+            )
+            for phase in ("audit", "sdk", "owner", "handoff"):
+                with time_vs_image.time_phase(recipe, phase):
+                    pass
+            for phase in ("audit", "sdk-build", "owner-aquery", "owner-build"):
+                with gzip.open(recipe / f"{phase}.profile.json.gz", "wt") as stream:
+                    json.dump({"traceEvents": [event("remote output download", "download outputs", 0, 2)]}, stream)
+            receipt, markdown = report(workspace / "artifacts/vs/image-timings")
+            self.assertTrue(breakdown.valid_recipes({"version": 2, "status": "available", **receipt}))
+            row, = receipt["recipes"]
+            self.assertEqual(row["owner"], "bazel-p4rt-owner")
+            self.assertEqual((row["bazel_phases"], row["profiles"], row["exports"]), (3, 4, 1))
+            self.assertEqual(row["fetch_seconds"], 8)
+            self.assertIn("bazel-p4rt-owner", markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

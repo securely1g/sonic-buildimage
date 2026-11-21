@@ -80,6 +80,31 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn('--experimental_downloader_config=', settings)
         self.assertIn('--remote_upload_local_results=false', settings)
 
+    def test_make_owner_timings_profile_only_aquery_and_build_commands(self):
+        backend = self.root / 'owner-bazel'
+        backend.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+        backend.chmod(0o755)
+        timings = self.root / 'timings'
+        timings.mkdir()
+        with patch.dict(os.environ, {}, clear=True):
+            launcher = image.make_owner_launcher(self.root, str(backend), timings=timings)
+        for subcommand in ('aquery', 'build'):
+            recorded = subprocess.check_output(
+                [launcher, '--output_base=/owner-base', subcommand, '--config=p4rt-runtime', '//p4rt_app:runtime'],
+                text=True,
+            ).splitlines()
+            self.assertEqual(recorded[1:5], [
+                '--output_base=/owner-base', subcommand,
+                '--profile=' + str(timings.resolve() / f'owner-{subcommand}.profile.json.gz'),
+                '--noslim_profile',
+            ])
+        for subcommand in ('version', 'query', 'info', 'cquery'):
+            recorded = subprocess.check_output(
+                [launcher, '--output_base=/owner-base', subcommand, '//p4rt_app:runtime'],
+                text=True,
+            ).splitlines()
+            self.assertFalse(any(arg.startswith('--profile=') for arg in recorded))
+
     def run_phase(self, phase='build', after=None, shutdown_error=None):
         def execute(command, *args, **kwargs):
             if command == ['root-bazel', 'shutdown'] and shutdown_error:

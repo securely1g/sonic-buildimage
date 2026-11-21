@@ -149,9 +149,13 @@ else:
         self.assertEqual([path.name for path in (self.root / "artifacts/vs").iterdir()], ["build-revision.txt"])
 
     def test_profile_opt_in_reaches_the_builder(self):
-        result = self.run_script("build_vs.sh", SONIC_VS_IMAGE_TIMINGS="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS", self.calls()[0]["args"])
+        self.prepare_build()
+        for script, goal in (("build_vs.sh", "target/sonic-vs.bin"), ("validate_vs.sh", "sonic-slave-run")):
+            (self.root / "calls.jsonl").unlink(missing_ok=True)
+            result = self.run_script(script, SONIC_VS_IMAGE_TIMINGS="1")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            call = next(call for call in self.calls() if call["goal"] == goal)
+            self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS", call["args"])
 
     def test_go_fetch_retry_reaches_the_full_installer_builder(self):
         result = self.run_script("build_vs.sh", SONIC_VS_RETRY_GO_FETCH="1")
@@ -320,10 +324,13 @@ else:
         self.assertIn("controlled capture-pairs", validation_log)
         self.assertIn("controlled verify-pairs", validation_log)
 
-    def test_vs_installer_retains_all_bazel_recipe_diagnostics_before_validation(self):
+    def test_vs_installer_retains_build_and_validation_bazel_profiles(self):
         job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
         build = next(step for step in job["steps"] if step.get("id") == "native_build")
-        self.assertEqual(build["env"]["SONIC_VS_IMAGE_TIMINGS"], "1")
+        validations = [step for step in job["steps"] if "tools/bazel/ci/validate_vs.sh" in step.get("run", "")]
+        self.assertEqual(len(validations), 2)
+        for step in (build, *validations):
+            self.assertEqual(step["env"]["SONIC_VS_IMAGE_TIMINGS"], "1")
         self.assertNotIn("SONIC_VS_IMAGE_TIMINGS", job["env"])
         self.assertEqual(job["env"]["SONIC_VS_REUSE_BAZEL_PRODUCERS"], "1")
 
@@ -334,10 +341,10 @@ else:
         checkout = job["defaults"]["run"]["working-directory"] + "/"
         self.assertEqual(upload["with"]["path"], checkout + "artifacts/vs/image-timings/")
         summary = next(step for step in job["steps"] if "summarize_vs_image_timings.py" in step.get("run", ""))
-        validation = next(step for step in job["steps"] if "tools/bazel/ci/validate_vs.sh" in step.get("run", ""))
         self.assertLess(job["steps"].index(build), job["steps"].index(summary))
-        self.assertLess(job["steps"].index(summary), job["steps"].index(upload))
-        self.assertLess(job["steps"].index(upload), job["steps"].index(validation))
+        for validation in validations:
+            self.assertLess(job["steps"].index(summary), job["steps"].index(validation))
+            self.assertLess(job["steps"].index(validation), job["steps"].index(upload))
         self.assertIn("steps.vs_image_timings_upload.outcome == 'success'", job["steps"][-1]["if"])
 
     def test_dashboard_reads_measurements_from_the_real_summary_step(self):
