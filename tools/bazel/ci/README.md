@@ -222,12 +222,18 @@ artifacts. Its strict source check receives the pinned merge's actual base and
 PR head from `checkout_identity.py`, not the potentially stale event base.
 Archive revision and runtime checkout equality checks remain enabled.
 
-The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
-ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
-and manual runs remain read-only. The archive job overrides the default in its
-ignored `.bazelrc.user`, which the shared Bazel configuration imports without
-modifying tracked files. The active `vs_container` job and the disabled legacy
-`vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. When the
+The Bazel OCI workflow enables remote action-cache uploads for AMD64 and ARM64
+archive builds only on pushes to `master`; their pull requests and manual runs
+remain read-only. The archive job overrides the default in its ignored
+`.bazelrc.user`, which the shared Bazel configuration imports without modifying
+tracked files. The active `vs_container` job also enables writes for all
+same-repository pull requests, forwarding `SONIC_BAZEL_REMOTE_UPLOAD=y` into the
+builder. Fork pull requests remain excluded by the VS job gate, and manual VS
+runs remain read-only. VS builds write to `grpc://172.16.0.4:9092`, storing Bazel
+action results and content-addressed output blobs, including prepared boot
+layers. This does not enable writes to the Make/DEB cache at
+`/nfs/dpkg_cache/vs`. The disabled legacy `vs` job retains its master-only
+upload policy through `BAZEL_CONTAINER_ARGS`. When the
 Gearbox archive job uploads, it also sets `--remote_timeout=600s`: it uploads
 the 6-9 GB Syncd debug layer and Gearbox debug archive, and the cache does not
 resume interrupted writes, so with the 60 s default each upload fails after
@@ -315,6 +321,54 @@ It does not request those archives again or run the post-build validators.
 This target does not require KVM. BIOS/UEFI VM disk generation and guest boot
 checks belong to `target/sonic-vs.img.gz` and are not exercised by this `.bin`
 CI path. The separate VM target retains those checks.
+
+Native VS CI enables `SONIC_VS_RFS_HANDOFF=1` for a job-local handoff of a
+freshly built stage-one rootfs. The wrapper creates private staging for each
+invocation and cleans it after Make succeeds or fails. After stage-one
+compression and normal cache publication succeed, the native AMD64 VS ONIE
+recipe moves the unmounted tree into staging. Final assembly verifies the
+archive path, stat and SHA256 and the tree identity, then consumes it once
+instead of deleting it and running `unsquashfs`. Cached or already-existing
+archives, missing or invalid staging, other images and cross builds retain
+ordinary extraction. The intermediate SquashFS and its cache publication
+are deliberately retained; this optimization does not skip its compression.
+The offline image bundle, Docker first-start import and installed-image
+validators retain their formats and integrity checks.
+
+Unset `SONIC_VS_RFS_HANDOFF` to disable the handoff. The wrapper reports
+`restored`, `miss`, `stored` or `unused`, plus available store/restore timings.
+Require `restored` before attributing an extraction saving to this feature.
+Archive hashing is real overhead: compare total build time and final assembly
+on comparable runners with identical inputs, rather than treating a skipped
+extraction as a measured end-to-end speedup.
+
+Native VS CI also enables `SONIC_VS_FAST_ASSEMBLY=1`. In `build_vs.sh` this
+selects `SONIC_BOOT_LAYER_GZIP_LEVEL=1` for layers that need gzip normalization
+and `SONIC_SQUASHFS_ZSTD_LEVEL=3` for the final rootfs. Existing gzip layers
+are verified and reused without recompression. Compression levels are
+declared Bazel action inputs; changing the profile also invalidates an
+existing VS installer through its Make stamp. Explicit level overrides take
+precedence. Ordinary builds retain gzip level 6 and the existing SquashFS
+default; unset the fast flag and both overrides to use those defaults.
+The faster profile trades installer size for compression time, not a new
+compression format. Compare size, installation, first boot and total build
+time on matched runners before claiming an end-to-end improvement.
+
+Archive publication and fallback member projection attempt Linux reflinks,
+then copy normally when the filesystem does not support them. The destination
+has an independent inode, so later writes cannot corrupt a Bazel/cache source.
+Publication still uses a temporary file and atomic replacement.
+
+With `SONIC_VS_IMAGE_TIMINGS=1`, the wrapper also preserves fixed-label
+command durations under `artifacts/vs/image-timings/installer-steps`.
+Receipts cover restoration/extraction, the extension, initramfs, version
+collection, package cleanup, size scans/optimization and SquashFS. They do
+not capture command arguments or output, and recording failure does not
+change a completed command's status. Extension time includes offline-bundle
+work; these nested measurements must not be added to the existing phase
+totals. Boot-bundle receipts additionally report native/archive selection,
+layer action counts, compression level, graph setup and total wall time.
+
 The build publishes the installer, its Make image list and one Actions artifact
 per selected OCI family. Each family includes the OCI configuration, ordered
 layer and archive digests, and the inputs needed by its installed probe. It

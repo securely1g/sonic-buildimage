@@ -109,7 +109,9 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         self.assertEqual(job["env"]["SONIC_BAZEL_REMOTE_CACHE"], "grpc://172.16.0.4:9092")
         self.assertEqual(
             job["env"]["SONIC_BAZEL_REMOTE_UPLOAD"],
-            "${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'y' || 'n' }}")
+            "${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || "
+            "(github.event_name == 'pull_request' && "
+            "github.event.pull_request.head.repo.full_name == github.repository)) && 'y' || 'n' }}")
         self.assertEqual(job["env"]["SONIC_BUILD_JOBS"], "1")
         for flag in (
             "--remote_local_fallback", "--incompatible_remote_local_fallback_for_remote_cache",
@@ -265,6 +267,7 @@ class SourceWorkflowTest(unittest.TestCase):
         self.commands.mkdir()
         (self.directory / "artifacts/vs").mkdir(parents=True)
         for name in (".bazelversion", "tools/bazel/build_helpers.py",
+                     "tools/bazel/image/file_copy.py",
                      "tools/bazel/ci/prepare_image_submodules.sh",
                      "tools/bazel/cache/credentials.py",
                      "platform/vs/docker-syncd-vs/BUILD.bazel"):
