@@ -326,8 +326,8 @@ instead of deleting it and running `unsquashfs`. Cached or already-existing
 archives, missing or invalid staging, other images and cross builds retain
 ordinary extraction. The intermediate SquashFS and its cache publication
 are deliberately retained; this optimization does not skip its compression.
-Master's offline image bundle, Docker first-start import, final packing and
-installed-image validators are unchanged.
+The offline image bundle, Docker first-start import and installed-image
+validators retain their formats and integrity checks.
 
 Unset `SONIC_VS_RFS_HANDOFF` to disable the handoff. The wrapper reports
 `restored`, `miss`, `stored` or `unused`, plus available store/restore timings.
@@ -335,6 +335,33 @@ Require `restored` before attributing an extraction saving to this feature.
 Archive hashing is real overhead: compare total build time and final assembly
 on comparable runners with identical inputs, rather than treating a skipped
 extraction as a measured end-to-end speedup.
+
+Native VS CI also enables `SONIC_VS_FAST_ASSEMBLY=1`. In `build_vs.sh` this
+selects `SONIC_BOOT_LAYER_GZIP_LEVEL=1` for layers that need gzip normalization
+and `SONIC_SQUASHFS_ZSTD_LEVEL=3` for the final rootfs. Existing gzip layers
+are verified and reused without recompression. Compression levels are
+declared Bazel action inputs; changing the profile also invalidates an
+existing VS installer through its Make stamp. Explicit level overrides take
+precedence. Ordinary builds retain gzip level 6 and the existing SquashFS
+default; unset the fast flag and both overrides to use those defaults.
+The faster profile trades installer size for compression time, not a new
+compression format. Compare size, installation, first boot and total build
+time on matched runners before claiming an end-to-end improvement.
+
+Archive publication and fallback member projection attempt Linux reflinks,
+then copy normally when the filesystem does not support them. The destination
+has an independent inode, so later writes cannot corrupt a Bazel/cache source.
+Publication still uses a temporary file and atomic replacement.
+
+With `SONIC_VS_IMAGE_TIMINGS=1`, the wrapper also preserves fixed-label
+command durations under `artifacts/vs/image-timings/installer-steps`.
+Receipts cover restoration/extraction, the extension, initramfs, version
+collection, package cleanup, size scans/optimization and SquashFS. They do
+not capture command arguments or output, and recording failure does not
+change a completed command's status. Extension time includes offline-bundle
+work; these nested measurements must not be added to the existing phase
+totals. Boot-bundle receipts additionally report native/archive selection,
+layer action counts, compression level, graph setup and total wall time.
 
 The build publishes the installer, its Make image list and one Actions artifact
 per selected OCI family. Each family includes the OCI configuration, ordered

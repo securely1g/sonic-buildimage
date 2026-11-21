@@ -45,6 +45,8 @@ with pathlib.Path("calls.jsonl").open("a") as output:
         "bazel_args": os.environ.get("BAZEL_CONTAINER_ARGS"),
         "override_build_vars": os.environ.get("SONIC_OVERRIDE_BUILD_VARS"),
         "rootfs_handoff_session": os.environ.get("SONIC_VS_RFS_HANDOFF_SESSION"),
+        "gzip_level": os.environ.get("SONIC_BOOT_LAYER_GZIP_LEVEL"),
+        "zstd_level": os.environ.get("SONIC_SQUASHFS_ZSTD_LEVEL"),
         "build_vars": os.environ.get("SONIC_BUILD_VARS"),
         "build_revision": pathlib.Path("artifacts/vs/build-revision.txt").read_text().strip()}) + "\n")
 print("controlled " + action)
@@ -97,6 +99,8 @@ else:
                      "SONIC_OVERRIDE_BUILD_VARS", "SONIC_BUILD_VARS", "FAIL_ONCE_GOAL",
                      "SONIC_VS_IMAGE_TIMINGS", "SONIC_VS_RETRY_GO_FETCH", "SONIC_ENABLE_DEBUG_LAYER",
                      "DOCKER_LOAD_ON_BOOT", "SONIC_VS_DEFER_BUILDER_CLEANUP"):
+            self.environment.pop(name, None)
+        for name in ("SONIC_VS_FAST_ASSEMBLY", "SONIC_BOOT_LAYER_GZIP_LEVEL", "SONIC_SQUASHFS_ZSTD_LEVEL"):
             self.environment.pop(name, None)
         self.environment.pop("SONIC_VS_RFS_HANDOFF", None)
         self.environment.pop("SONIC_VS_RFS_HANDOFF_SESSION", None)
@@ -250,6 +254,31 @@ else:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_profile(self.calls()[0], "target/sonic-vs.bin", "y")
 
+    def test_fast_assembly_profile_is_opt_in_and_allows_valid_overrides(self):
+        result = self.run_script("build_vs.sh", SONIC_VS_FAST_ASSEMBLY="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[-1]
+        builder = next(arg for arg in call["args"] if arg.startswith("SONIC_BUILDER_EXTRA_CMDLINE="))
+        self.assertIn("-e SONIC_BOOT_LAYER_GZIP_LEVEL", builder)
+        self.assertIn("-e SONIC_SQUASHFS_ZSTD_LEVEL", builder)
+        self.assertEqual((call["gzip_level"], call["zstd_level"]), ("1", "3"))
+        result = self.run_script("build_vs.sh", SONIC_VS_FAST_ASSEMBLY="1",
+                                 SONIC_BOOT_LAYER_GZIP_LEVEL="6", SONIC_SQUASHFS_ZSTD_LEVEL="15")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[-1]
+        self.assertEqual((call["gzip_level"], call["zstd_level"]), ("6", "15"))
+        for name, value in (("SONIC_BOOT_LAYER_GZIP_LEVEL", "0"), ("SONIC_SQUASHFS_ZSTD_LEVEL", "23"),
+                            ("SONIC_BOOT_LAYER_GZIP_LEVEL", "1 --bad"),
+                            ("SONIC_SQUASHFS_ZSTD_LEVEL", "3 --bad")):
+            before = len(self.calls())
+            result = self.run_script("build_vs.sh", **{name: value})
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(len(self.calls()), before)
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        enabled = [step["id"] for job in workflow["jobs"].values() for step in job.get("steps", [])
+                   if step.get("env", {}).get("SONIC_VS_FAST_ASSEMBLY") == "1"]
+        self.assertEqual(enabled, ["native_build"])
+
     def test_ci_builds_and_verifies_the_boot_bundle(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         jobs = workflow["jobs"]
@@ -307,7 +336,9 @@ else:
     def test_profile_opt_in_reaches_the_builder(self):
         result = self.run_script("build_vs.sh", SONIC_VS_IMAGE_TIMINGS="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS", self.calls()[0]["args"])
+        self.assertIn(self.profile_options()[-1] + " -e SONIC_VS_IMAGE_TIMINGS"
+                      " -e SONIC_INSTALLER_EVIDENCE_DIR=artifacts/vs/image-timings/installer-steps",
+                      self.calls()[0]["args"])
 
     def test_go_fetch_retry_reaches_the_full_installer_builder(self):
         result = self.run_script("build_vs.sh", SONIC_VS_RETRY_GO_FETCH="1")

@@ -1709,7 +1709,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 	$(FOOTER)
 
-# An existing installer must be rebuilt when switching its image-store format.
+# Rebuild when the image-store format or compression profile changes.
 ifeq ($(CONFIGURED_PLATFORM),vs)
 vs_boot_mode_stamp := $(TARGET_PATH)/.installer-docker-load-on-boot
 ifeq ($(DOCKER_LOAD_ON_BOOT),y)
@@ -1720,13 +1720,15 @@ vs_boot_bundle_inputs := files/docker/docker files/docker/load-images.conf files
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 vs_boot_bundle_inputs += tools/bazel/image/build_boot_bundle.py tools/bazel/image/boot_bundle.bzl \
                          tools/bazel/image/boot_bundle_action.py tools/bazel/image/BUILD.bazel \
+                         tools/bazel/image/file_copy.py \
                          tools/bazel/build_helpers.py tools/bazel/ci/build.py tools/bazel/ci/cache_reuse.py
 endif
 endif
 .PHONY: check-vs-boot-mode
 $(vs_boot_mode_stamp): check-vs-boot-mode
 	@mkdir -p "$(@D)"
-	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' | cmp -s - "$@" || printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' > "$@"
+	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' | cmp -s - "$@" || \
+	    printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' > "$@"
 endif
 
 # targets for building installers with base image
@@ -1737,6 +1739,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         onie-image.conf \
         build_debian.sh \
         scripts/validate_sonic_version.py \
+        scripts/installer_step_timing.py \
         $(vs_boot_mode_stamp) \
         $(vs_boot_bundle_inputs) \
         files/build_templates/sonic_version.yml.j2 \
@@ -1824,6 +1827,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	esac
 	export DOCKER_LOAD_ON_BOOT="$(DOCKER_LOAD_ON_BOOT)"
 	export BUILD_WITH_BAZEL_WHEN_AVAILABLE="$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)"
+	export SONIC_BOOT_LAYER_GZIP_LEVEL="$(or $(SONIC_BOOT_LAYER_GZIP_LEVEL),6)"
+	export SONIC_SQUASHFS_ZSTD_LEVEL="$(SONIC_SQUASHFS_ZSTD_LEVEL)"
 	# The receipt is private; only the completed summary bypasses the target log.
 	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
 	if [[ "$@" = "target/sonic-vs.img.gz" || ( "$@" = "target/sonic-vs.bin" && "$${SONIC_VS_IMAGE_TIMINGS:-}" = 1 ) ]]; then
