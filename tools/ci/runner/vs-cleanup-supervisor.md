@@ -49,7 +49,8 @@ fresh removal token from the matching registration scope. Never edit `.runner`
 by hand or remove the original runner. The supervisor will configure a fresh
 registration with the correct absolute work root. Alternatively, an already
 configured canary is accepted if its name, ephemeral setting, work root and
-single label match the host configuration.
+single label match the host configuration. Runner-managed `.runner` metadata
+is accepted with or without a UTF-8 BOM; do not rewrite that file manually.
 
 Provision `/etc/sonic-vs-cleanup/github-token` through your private credential
 mechanism, root-owned mode `0600`. Do not commit the token, put it in a job

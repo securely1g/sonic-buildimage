@@ -145,6 +145,20 @@ class SupervisorTest(unittest.TestCase):
         self.github.runner.return_value["labels"] = [{"name": "vs-cleanup-canary"}]
         self.assertEqual(self.supervisor.configure(), 456)
 
+    def test_bom_prefixed_runner_metadata_is_accepted_without_relaxing_profile_checks(self):
+        settings = {"agentId": 456, "ephemeral": True, "workFolder": str(self.work)}
+        path = self.runner / ".runner"
+        path.write_text(json.dumps(settings), encoding="utf-8-sig")
+        self.github.runner.return_value = {
+            "name": "test-canary", "busy": False, "status": "offline",
+            "labels": [{"name": "vs-cleanup-canary"}]}
+        self.assertEqual(self.supervisor.configure(), 456)
+        self.github.registration.assert_not_called()
+        settings["ephemeral"] = False
+        path.write_text(json.dumps(settings), encoding="utf-8-sig")
+        with self.assertRaisesRegex(ValueError, "not ephemeral"):
+            self.supervisor.configure()
+
     def test_bad_peer_or_job_cannot_enroll_or_authorize(self):
         with self.assertRaises(ValueError):
             self.supervisor.handoff(self.message(), self.uid + 1)

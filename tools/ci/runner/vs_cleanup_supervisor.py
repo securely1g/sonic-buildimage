@@ -331,7 +331,7 @@ class Supervisor:
             result = subprocess.run(arguments, cwd=self.runner_dir, capture_output=True, timeout=120)
             if result.returncode:
                 raise RuntimeError("Ephemeral registration failed")
-        value = json.loads(settings.read_text())
+        value = json.loads(settings.read_text(encoding="utf-8-sig"))
         folder = Path(value["workFolder"])
         if not folder.is_absolute():
             folder = self.runner_dir / folder
