@@ -37,7 +37,7 @@ def sha256(path):
 def drive_bazel(command):
     # Explicitly override RC- and environment-supplied caches at the last CLI
     # position. Keep the build's repository cache, downloader and toolchain args.
-    opts = ["--remote_cache=", "--remote_executor=", "--remote_accept_cached=true",
+    opts = ["--remote_cache=", "--remote_executor=", "--experimental_remote_downloader=", "--remote_accept_cached=true",
             "--remote_upload_local_results=true", "--disk_cache=" + os.environ["PAIRED_DISK_CACHE"],
             "--noannounce_rc", "--symlink_prefix=/"]
     binary = os.environ["PAIRED_BAZEL"]
