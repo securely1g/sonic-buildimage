@@ -755,7 +755,7 @@ jobs:
       SONIC_BUILD_VARS: >-
         P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
         SONIC_INSTALLER_DOCKER_STORE_CACHE=/dpkg_cache/installer-docker-store-v1
-        SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && 'readwrite' || 'read' }}
+        SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=${{ ((github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'pull_request' && github.event.pull_request.number == 276 && github.event.pull_request.head.repo.full_name == github.repository)) && 'readwrite' || 'read' }}
       PREFER_DEBIAN_REPO: "y"
       SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
       SONIC_VS_VALIDATION_BUNDLES: "1"

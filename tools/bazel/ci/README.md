@@ -284,10 +284,17 @@ The downstream installer verification job extracts the release and commit from t
 The native AMD64 VS ONIE job also trials a prepared Docker-store cache,
 independently of container-build caching. It sets
 `SONIC_INSTALLER_DOCKER_STORE_CACHE=/dpkg_cache/installer-docker-store-v1`
-inside the slave, using the existing shared package-cache mount. Only master
-pushes set `SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=readwrite`; PR and manual
-runs use `read`. Other builds default to `off`. These settings are passed in
-`SONIC_BUILD_VARS`; set the mode to `off` to restore the original assembly path.
+inside the slave, using the existing shared package-cache mount. Master pushes
+and same-repository runs of trial PR #276 set
+`SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE=readwrite`; other PR and manual
+runs use `read`. Fork PRs do not run this job. Other builds default to `off`.
+These settings are passed in `SONIC_BUILD_VARS`; set the mode to `off` to
+restore the original assembly path.
+
+On the host/NFS mount, entries live under
+`/nfs/dpkg_cache/vs/installer-docker-store-v1/<input-key>/`, each containing
+`dockerfs.tar.gz` and `manifest.json`. This shared cache persists independently
+of the run's checkout and GitHub workflow artifacts.
 
 On a hit, the build copies and SHA256-verifies the compressed Docker-store
 archive, restores the two generated shutdown-order files, and skips image
@@ -339,9 +346,11 @@ installed, while the verified compressed store goes directly into the payload.
 
 For an actual cold/warm trial, run two fresh builds with identical selected
 archives, version tags and keyed tools/configuration. Use a private writable
-cache for local experiments, or let a trusted master push seed the shared cache
-before a matching reader run. An unseeded PR run is expected to miss and cannot
-publish to the shared cache. Require the second receipt to say `hit`, both skip
+cache for local experiments, or let a master push or same-repository PR #276
+run seed the shared cache before a matching run. Rerun the same unchanged
+commit and inputs for this trial; a new revision normally has a different key.
+Other unseeded PR runs are expected to miss and cannot publish to the shared
+cache. Require the second receipt to say `hit`, both skip
 flags to be true and the existing validators to pass, then compare the entire
 final recipe rather than adding together old phase estimates.
 
