@@ -152,13 +152,14 @@ class InstallerRootfsHandoffTest(unittest.TestCase):
         (self.work / "scripts").mkdir()
         (self.work / "scripts/installer_rootfs_handoff.py").symlink_to(
             ROOT / "scripts/installer_rootfs_handoff.py")
+        timing = source[source.index("installer_timed()\n"):source.index("\nORGANIZATION_BUILD_HOOK=")]
         shell = '''set -eu
 sudo() {
     if [[ $1 == python3 ]]; then command "$@"
     else printf '%s\\n' "$1" >> fallback-events
     fi
 }
-''' + block
+''' + timing + block
         env = dict(os.environ, installer_rootfs_handoff="y",
                    SONIC_VS_RFS_HANDOFF_SESSION=str(self.session),
                    FILESYSTEM_ROOT=str(self.root), TARGET_PATH=str(self.archive.parent),
