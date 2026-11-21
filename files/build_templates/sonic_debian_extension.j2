@@ -1005,14 +1005,15 @@ if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y ]]; then
     trap_push 'rm -rf "$boot_work"'
     boot_images=()
 fi
-installer_store_cache_hit=n
+installer_store_loading_skipped=n
 if [[ -n ${SONIC_INSTALLER_DOCKER_STORE_STATE:-} ]] &&
    python3 scripts/installer_docker_store_cache.py prepare --root "$FILESYSTEM_ROOT" \
        --host "$DOCKER_HOST" --template "$0" --state "$SONIC_INSTALLER_DOCKER_STORE_STATE" \
        --output "$SONIC_INSTALLER_DOCKER_STORE_OUTPUT"; then
-    installer_store_cache_hit=y
+    installer_store_loading_skipped={{ "n" if sonic_local_packages.strip() else "y" }}
 fi
-if [[ $installer_store_cache_hit != y ]]; then
+# Local package installation needs live images to validate dependencies and create services.
+if [[ $installer_store_loading_skipped != y ]]; then
 {% for docker_installation_target in installer_images.strip().split() -%}
 {% set pkgname, docker_build_path, machine, image = docker_installation_target.split('|') %}
 {% set imagefilepath = image.split(':')|first -%}
@@ -1098,7 +1099,7 @@ if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y ]]; then
     sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot "$FILESYSTEM_ROOT" "${boot_package_manager[@]}" shutdown-order
     package_install=("${boot_package_manager[@]}" install)
 else
-    if [[ $installer_store_cache_hit != y ]]; then
+    if [[ $installer_store_loading_skipped != y ]]; then
         sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT /usr/local/bin/generate_shutdown_order.py
     fi
     package_install=(sonic-package-manager install -y -v DEBUG)

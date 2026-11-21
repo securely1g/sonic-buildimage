@@ -140,12 +140,10 @@ SONIC_INSTALLER_DOCKER_STORE_CACHE_MODE := read
 sonic-vs.bin_DOCKERS += docker-other.gz
 docker-other.gz_MACHINE := other
 ''', expected_cache=("fixture-cache", "read"))
-        loading = "installer_store_cache_hit=n" + rendered.split(
-            "installer_store_cache_hit=n", 1)[1].split(
+        loading = "installer_store_loading_skipped=n" + rendered.split(
+            "installer_store_loading_skipped=n", 1)[1].split(
                 '\nif [[ -n ${SONIC_IMAGE_TIMING_FILE:-}', 1)[0]
-        shutdown = re.search(
-            r'if \[\[ \$installer_store_cache_hit != y \]\]; then\n'
-            r'    sudo[^\n]+generate_shutdown_order.py\nfi', rendered).group()
+        shutdown = rendered.split("# Generate shutdown order\n", 1)[1].split("\n\n", 1)[0]
         with tempfile.TemporaryDirectory(prefix="installer-cache-template-") as directory:
             directory = Path(directory)
             env = dict(os.environ, TARGET_MACHINE="vs", FILESYSTEM_ROOT="fixture-root",
@@ -179,6 +177,53 @@ python3() { echo prepare >> events; return "$PREPARE_STATUS"; }
                         self.assertEqual(sum("docker tag " in event for event in events), 4)
                         self.assertEqual(sum("generate_shutdown_order.py" in event for event in events), 1)
                         self.assertFalse(any("docker-other" in event for event in events))
+
+    def test_local_package_cache_hit_preserves_loading_installation_and_shutdown_generation(self):
+        rendered, _ = self.render('''SONIC_PACKAGES_LOCAL := docker-macsec.gz docker-dhcp-relay.gz
+docker-macsec.gz_DEFAULT_FEATURE_STATE_ENABLED := y
+docker-dhcp-relay.gz_DEFAULT_FEATURE_STATE_ENABLED := y
+''')
+        loading = "installer_store_loading_skipped=n" + rendered.split(
+            "installer_store_loading_skipped=n", 1)[1].split(
+                '\nif [[ -n ${SONIC_IMAGE_TIMING_FILE:-}', 1)[0]
+        shutdown = rendered.split("# Generate shutdown order\n", 1)[1].split("\n\n", 1)[0]
+        start = rendered.index('sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT '
+                               '"${package_install[@]}" --from-tarball')
+        packages = rendered[start:rendered.index('sudo umount $FILESYSTEM_ROOT/target', start)]
+        with tempfile.TemporaryDirectory(prefix="installer-cache-local-packages-") as directory:
+            directory = Path(directory)
+            stub = '''
+set -euo pipefail
+sudo() {
+    printf '%s\\n' "$*" >> events
+    if [[ $* == *" inspect "* ]]; then echo '{}'; fi
+    if [[ $* == *" images "* ]]; then echo latest; fi
+}
+jq() { if [[ $1 != -e ]]; then cat >/dev/null; echo '{}'; fi; }
+python3() { echo prepare >> events; return "$PREPARE_STATUS"; }
+'''
+            script = stub + loading.replace("/tmp/manifest.json", str(directory / "manifest.json"))
+            script += "\n" + shutdown + "\n" + packages
+            for status in ("0", "1"):
+                with self.subTest(status=status):
+                    (directory / "events").write_text("")
+                    result = subprocess.run(
+                        ["bash", "-c", script], cwd=directory,
+                        env=dict(os.environ, TARGET_MACHINE="vs", FILESYSTEM_ROOT="fixture-root",
+                                 DOCKER_HOST="fixture-socket", SONIC_IMAGE_VERSION="fixture-version",
+                                 SONIC_INSTALLER_DOCKER_STORE_STATE="fixture-state",
+                                 SONIC_INSTALLER_DOCKER_STORE_OUTPUT="dockerfs.tar.gz",
+                                 PREPARE_STATUS=status),
+                        text=True, capture_output=True, timeout=10)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    events = (directory / "events").read_text().splitlines()
+                    self.assertEqual(sum("docker load " in event for event in events), 2)
+                    self.assertEqual(sum("generate_shutdown_order.py" in event for event in events), 1)
+                    self.assertEqual(sum("install -y -v DEBUG --from-tarball target/docker-" in event
+                                         for event in events), 2)
+                    self.assertEqual(sum("docker tag docker-macsec:latest" in event for event in events), 1)
+                    self.assertEqual(sum("docker tag docker-dhcp-relay:latest" in event
+                                         for event in events), 1)
 
     def test_verified_hit_skips_packing_but_damaged_restored_output_cannot_fall_back_to_empty_store(self):
         source = (ROOT / "build_debian.sh").read_text()

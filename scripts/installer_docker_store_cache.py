@@ -84,7 +84,7 @@ def inputs(root, host, template, env):
             or env.get("DOCKER_LOAD_ON_BOOT") == "y"
             or env.get("CROSS_BUILD_ENVIRON") == "y" or env.get("MULTIARCH_QEMU_ENVIRON") == "y"
             or (HERE / ".arch").read_text().strip() != "amd64"
-            or any(env.get(name, "").strip() for name in ("sonic_packages", "sonic_local_packages"))
+            or env.get("sonic_packages", "").strip()
             or any(env.get(name) == "y" for name in
                    ("include_kubernetes", "include_kubernetes_master", "BUILD_REDUCE_IMAGE_SIZE"))
             or env.get("TAR_OPTIONS")):
@@ -111,6 +111,12 @@ def inputs(root, host, template, env):
         archives.append({"name": path.name, "sha256": digest(path)})
     if not archives or len({entry["name"] for entry in archives}) != len(archives):
         raise ValueError("missing or duplicate installer archives")
+    local_archives = []
+    for item in env.get("sonic_local_packages", "").split():
+        name, archive, owner, enabled = item.split("|")
+        local_archives.append({
+            "name": name, "sha256": digest(archive), "owner": owner, "enabled": enabled,
+        })
     wheel = Path(env["sonic_utilities_py3_wheel_path"])
     files = {
         "rendered-template": digest(template), "utilities-wheel": digest(wheel),
@@ -136,8 +142,9 @@ def inputs(root, host, template, env):
     mask = os.umask(0)
     os.umask(mask)
     return {
-        "version": VERSION, "archives": archives, "files": files,
+        "version": VERSION, "archives": archives, "local_archives": local_archives, "files": files,
         "installer_images": env["installer_images"],
+        "sonic_local_packages": env.get("sonic_local_packages", ""),
         "image_version": env["SONIC_IMAGE_VERSION"],
         "docker": {name: info[name] for name in
                    ("ServerVersion", "Driver", "DriverStatus", "Architecture", "OSType", "KernelVersion")},
@@ -230,7 +237,9 @@ def prepare(root, host, template, state, output, cache, mode):
               flush=True)
         report(status=value["status"], reason=value.get("reason"), key=value.get("key"), mode=mode,
                prepare_seconds=value["prepare_seconds"],
-               loading_skipped=value["status"] == "hit", packing_skipped=False)
+               loading_skipped=(value["status"] == "hit"
+                                and not value["inputs"]["sonic_local_packages"].strip()),
+               packing_skipped=False)
 
 
 def hit(state):

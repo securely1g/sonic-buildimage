@@ -145,6 +145,40 @@ class InstallerDockerStoreCacheTest(unittest.TestCase):
             self.assertFalse(self.prepare())
             self.assertNotEqual(cache.read_json(self.state)["key"], original_key)
 
+    def test_local_packages_reuse_packing_but_keep_live_loading_and_invalidate_on_changes(self):
+        local_archive = self.directory / "docker-macsec.gz"
+        local_archive.write_bytes(b"local package image and manifest")
+        setting = f"docker-macsec.gz|{local_archive}||y"
+        with mock.patch.dict(os.environ, {"sonic_local_packages": setting}):
+            self.seed()
+            original_key = cache.read_json(self.state)["key"]
+            self.assertTrue(self.prepare())
+            self.assertTrue(cache.hit(self.state))
+            receipt = cache.read_json(self.directory / "receipt.json")
+            self.assertFalse(receipt["loading_skipped"])
+            self.assertTrue(receipt["packing_skipped"])
+            local_archive.write_bytes(b"changed local package")
+            self.assertFalse(self.prepare())
+            self.assertEqual(cache.read_json(self.state)["status"], "miss")
+            self.assertNotEqual(cache.read_json(self.state)["key"], original_key)
+            local_archive.write_bytes(b"local package image and manifest")
+            for replacement in (setting.replace("||y", "|local|y"),
+                                setting.replace("||y", "||n"), ""):
+                with self.subTest(setting=replacement), mock.patch.dict(
+                        os.environ, {"sonic_local_packages": replacement}):
+                    self.assertFalse(self.prepare())
+                    self.assertNotEqual(cache.read_json(self.state)["key"], original_key)
+
+    def test_missing_or_malformed_local_packages_cannot_restore_or_publish(self):
+        for setting in ("docker-macsec.gz|/missing/package.gz||y", "malformed"):
+            with self.subTest(setting=setting), mock.patch.dict(
+                    os.environ, {"sonic_local_packages": setting}):
+                self.assertFalse(self.prepare("readwrite"))
+                self.assertEqual(cache.read_json(self.state)["status"], "disabled")
+                self.assertFalse(cache.hit(self.state))
+                cache.publish(self.root, self.state, self.output, str(self.store), "readwrite")
+                self.assertFalse(self.store.exists())
+
     def test_corruption_and_incomplete_entries_fall_back_without_replacing_output(self):
         entry = self.seed()
         original = self.output.read_bytes()
@@ -217,6 +251,20 @@ class InstallerDockerStoreCacheTest(unittest.TestCase):
             with self.subTest(settings=settings), mock.patch.dict(os.environ, settings):
                 self.assertFalse(self.prepare())
                 self.assertEqual(cache.read_json(self.state)["status"], "disabled")
+
+    def test_boot_image_bundle_cannot_restore_or_publish_a_prepared_docker_store(self):
+        self.seed()
+        original = self.output.read_bytes()
+        with mock.patch.dict(os.environ, {"DOCKER_LOAD_ON_BOOT": "y"}):
+            self.assertFalse(self.prepare("readwrite"))
+            self.assertFalse(cache.hit(self.state))
+            cache.publish(self.root, self.state, self.output, str(self.store), "readwrite")
+        self.assertEqual(self.output.read_bytes(), original)
+        self.assertEqual(cache.read_json(self.state)["status"], "disabled")
+        self.assertNotIn("key", cache.read_json(self.state))
+        receipt = cache.read_json(self.directory / "receipt.json")
+        self.assertFalse(receipt["loading_skipped"])
+        self.assertFalse(receipt["packing_skipped"])
 
     def test_custom_organization_hooks_still_disable_cache(self):
         for name, reason in (("build_debian.organization.sh", "organization-build-hook"),
