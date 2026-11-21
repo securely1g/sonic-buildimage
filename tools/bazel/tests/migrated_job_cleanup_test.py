@@ -280,7 +280,7 @@ class MigratedWorkflowCleanupTest(unittest.TestCase):
             value = yaml.safe_load((ROOT / ".github/workflows" / filename).read_text())
             actual = {name for name, job in value["jobs"].items()
                       if any(step.get("with", {}).get("migrated-job") == "true"
-                             for step in job["steps"])}
+                             for step in job.get("steps", []))}
             self.assertEqual(actual, names)
             for name in names:
                 with self.subTest(workflow=filename, job=name):
@@ -324,7 +324,7 @@ class MigratedWorkflowCleanupTest(unittest.TestCase):
                 if "ubuntu-x64" not in str(job.get("runs-on")) or name in stateful:
                     continue
                 stateless.add((filename, name))
-                for step in job["steps"]:
+                for step in job.get("steps", []):
                     self.assertNotIn("checkout@", step.get("uses", ""))
                     self.assertNotIn("setup-bazel@", step.get("uses", ""))
                     self.assertNotIn("upload-artifact@", step.get("uses", ""))

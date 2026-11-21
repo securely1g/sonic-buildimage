@@ -195,6 +195,10 @@ def prepare_repository(archive, output_dir, arch, receipt, *, libnl_archives=Non
             **({"libnl": libnl} if libnl is not None else {}),
             **({"libyang": libyang} if libyang is not None else {}),
         }, indent=2, sort_keys=True) + "\n")
+        # The PINS SDK inventory includes modes. The Make and CI workers may
+        # have different umasks when recreating these three generated files.
+        for name in ("WORKSPACE.bazel", "BUILD.bazel", "sdk-build.json"):
+            (staging / name).chmod(0o644)
         if output_dir.exists():
             shutil.rmtree(output_dir)
         staging.rename(output_dir)

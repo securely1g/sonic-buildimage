@@ -21,7 +21,7 @@ LOCAL_CACHES = (*CACHE_NAMES, "bazelisk")
 UPLOAD_PREFIX = "bazel_upload_"
 AUTHORIZATION = "bazel-cleanup-authorization.json"
 IDENTITY = "job-identity.json"
-CONTAINER_JOBS = {"archive", "gearbox_archive", "dash_engine_archive", "radv_native", "native", "otel_archive",
+CONTAINER_JOBS = {"archive", "package_amd64", "gearbox_archive", "dash_engine_archive", "radv_native", "native", "otel_archive",
                   "p4rt_owner"}
 SUPPORTED_JOBS = CONTAINER_JOBS | {"package"}
 MIGRATED_JOBS = {
@@ -355,7 +355,7 @@ def cleanup(home, workspace, runner_temp, directory, bazel="bazel", host=False, 
             print("No container-local Bazel caches to remove")
     elif not migrated:
         cleanup_host_bases(home, workspace, bazel)
-    if os.environ["GITHUB_JOB"] == "archive":
+    if os.environ["GITHUB_JOB"] in {"archive", "package_amd64"}:
         # Source probes may be interrupted before an artifact upload is eligible.
         remove_selected(directory, ("archive-bazel",))
     cleanup_artifacts(workspace, runner_temp, directory, host=host, migrated=migrated)

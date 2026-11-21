@@ -197,6 +197,27 @@ class P4rtPublicTest(unittest.TestCase):
         self.assertNotIn('/private/', json.dumps(result))
         self.assertNotIn(str(self.directory), json.dumps(result))
 
+    def test_transferred_packages_have_native_events_and_a_separate_installed_report(self):
+        """Only Bazel-run native targets have BEP and XML. The installed test binds both VS TARs."""
+        installed, native = self.targets
+        self.source['tar_sha256'] = {'p4rt_runtime.tar': 'a' * 64, 'p4rt_runtime_debug.tar': 'b' * 64}
+        self.write(self.owner / 'source.json', self.source)
+        self.write(self.directory / 'owner-tests.json', {
+            'status': 'passed', 'owner_revision': self.revision, 'installed_package_test': 'vs-artifacts'})
+        self.write(self.owner / 'test-results.json', {native: 'PASSED'})
+        self.xml[0].unlink()
+        report = {'status': 'passed', 'architecture': 'amd64', 'runtime_tar_sha256': 'a' * 64,
+                  'debug_tar_sha256': 'b' * 64,
+                  'common_library_sha256': self.source['sdk_inventory']['lib/libswsscommon.so.0']['sha256']}
+        self.write(self.owner / 'installed-packages.json', report)
+        summary = p4rt_public.owner_test_summary(self.directory)
+        self.assertEqual(set(summary['tests']), {native})
+        self.assertEqual(summary['installed_package_test']['target'], installed)
+        self.assertEqual((summary['target_count'], summary['testcase_count']), (2, 3))
+        self.write(self.owner / 'installed-packages.json', {**report, 'runtime_tar_sha256': '0' * 64})
+        with self.assertRaisesRegex(ValueError, 'differs from the VS'):
+            p4rt_public.owner_test_summary(self.directory)
+
     def test_owner_revision_must_match(self):
         self.write(self.directory / 'owner-tests.json', {'status': 'passed', 'owner_revision': 'b' * 40})
         with self.assertRaisesRegex(ValueError, 'differs from the built source'):
