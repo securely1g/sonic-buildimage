@@ -47,8 +47,6 @@ jobs:
     timeout-minutes: 360
     env:
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
-      # Pin the reviewed registry; update alongside the DHCP source registration.
-      SONIC_BASE_REVIEW_REGISTRY: bb1fec1be28d52588c20121eb73ac92923412d6b
       SOURCE_REVISION: ${{ inputs.source_revision }}
       BAZELISK_GITHUB_TOKEN: ""
       SOURCE_INPUTS_RUN: ${{ inputs.source_inputs_run }}

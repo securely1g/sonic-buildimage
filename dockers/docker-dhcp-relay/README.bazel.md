@@ -61,11 +61,12 @@ does not select the full VS installer or other container builds.
 
 The review branch consumes the merged [relay source PR #5](https://github.com/securely1g/sonic-dhcp-relay/pull/5)
 through the merged [registry PR #235](https://github.com/securely1g/sonic-bazel-registry/pull/235).
-The shared wheel metadata adapter is under review in
-[Infra PR #127](https://github.com/securely1g/sonic-build-infra/pull/127).
-The dedicated workflow pins its temporary registry entry. After that adapter
-and its registry registration merge, select the actual merged source version
-and remove the temporary registry endpoint before merging this integration.
+The shared wheel metadata adapter from merged
+[Infra PR #127](https://github.com/securely1g/sonic-build-infra/pull/127)
+is published by [registry PR #444](https://github.com/securely1g/sonic-bazel-registry/pull/444).
+The integration consumes `sonic-build-infra@0.0.40-6c9cd9477816ad129bf8d4501c9259504f3f85ca`
+from the maintained registry, using the same registry selection in ordinary and
+dedicated DHCP workflows.
 
 The existing Make build remains the fallback for unsupported profiles. A fresh
 Make reference build can generate DEBs and is outside this task's validation
