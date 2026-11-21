@@ -28,7 +28,7 @@ env:
 
 jobs:
   archive:
-    name: Container archive (ARM64)
+    name: Container archive (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -370,7 +370,7 @@ jobs:
         run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --mark-artifacts
 
   package_amd64:
-    name: Container package tests (AMD64)
+    name: Container package tests (${{ matrix.name }})
     needs: [checks, vs_container]
     # Fork PRs and explicit source-only runs retain their standalone package tests.
     if: >-

@@ -126,6 +126,11 @@ class VerificationWorkflowTest(unittest.TestCase):
 
         amd64 = jobs["package_amd64"]
         self.assertIn("vs_container", amd64["needs"])
+        for name, required in (("archive", "Container archive (ARM64)"), ("package_amd64", "Container package tests (AMD64)")):
+            job = jobs[name]
+            row, = job["strategy"]["matrix"]["include"]
+            self.assertIn("${{ matrix.name }}", job["name"])  # A literal name makes Actions append every matrix value.
+            self.assertEqual(job["name"].replace("${{ matrix.name }}", row["name"]), required)
         self.assertNotIn("needs", jobs["archive"])  # ARM64 has its own native inputs.
         steps = {s["name"]: s for s in amd64["steps"]}
         download = steps["Download wheels used by VS"]["with"]
