@@ -801,7 +801,7 @@ jobs:
           # Accept only the index downloaded for this attempt, even if the checkout contains one.
           rm -rf -- artifacts/vs/kernel-cache-input artifacts/vs/kernel-cache-output
           index=artifacts/vs/kernel-cache-download/index.json
-          if [[ "$KERNEL_INDEX_DOWNLOAD" == success && -f "$index" && ! -L "$index" ]]; then
+          if [[ "${KERNEL_INDEX_DOWNLOAD:-}" == success && -f "$index" && ! -L "$index" ]]; then
             install -D -m 0644 -- "$index" artifacts/vs/kernel-cache-input/index.json
           fi
           if [[ ${HOST_BASE_DIR:-} == success ]]; then
