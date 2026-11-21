@@ -164,11 +164,12 @@ class Supervisor:
         self.state_dir = Path(state_dir)
         self.journal = self.state_dir / "pending.json"
         self.state = json.loads(self.journal.read_text()) if self.journal.exists() else None
-        self.mutex = threading.Lock()
+        self.mutex = threading.RLock()
         self.github = github or GitHub(config)
 
     def save(self):
-        atomic_json(self.journal, self.state)
+        with self.mutex:
+            atomic_json(self.journal, self.state)
 
     def handoff(self, message, uid):
         if uid != self.account.pw_uid:
@@ -347,7 +348,10 @@ class Supervisor:
     def finish(self):
         self.check_idle()
         self.check_storage()
-        record = self.state.get("record")
+        with self.mutex:
+            self.state["phase"] = "awaiting_result"
+            record = self.state.get("record")
+            self.save()
         if not record:
             raise ValueError("Interrupted/unenrolled session requires operator inspection")
         deadline = time.monotonic() + self.config.get("completion_timeout", 300)
@@ -400,10 +404,11 @@ class Supervisor:
         self.admission()
         runner_id = self.configure()
         identity = self.work_root.stat()
-        self.state = {"phase": "listening", "session": uuid.uuid4().hex,
-                      "runner_id": runner_id, "started": time.time(),
-                      "work_device": identity.st_dev, "work_inode": identity.st_ino}
-        self.save()
+        with self.mutex:
+            self.state = {"phase": "listening", "session": uuid.uuid4().hex,
+                          "runner_id": runner_id, "started": time.time(),
+                          "work_device": identity.st_dev, "work_inode": identity.st_ino}
+            self.save()
         print(f"Starting canary session {self.state['session']}", flush=True)
         environment = {"HOME": self.account.pw_dir, "LANG": "C.UTF-8",
                        "PATH": "/usr/local/bin:/usr/bin:/bin"}
@@ -418,8 +423,10 @@ class Supervisor:
                     listener.wait()
         if status:
             raise ValueError("Listener exited unsuccessfully; cleanup requires recovery")
-        self.state["listener_exited"] = time.time()
-        self.save()
+        with self.mutex:
+            self.state["phase"] = "awaiting_result"
+            self.state["listener_exited"] = time.time()
+            self.save()
         self.finish()
 
 

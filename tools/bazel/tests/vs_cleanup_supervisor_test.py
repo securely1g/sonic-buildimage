@@ -204,6 +204,20 @@ class SupervisorTest(unittest.TestCase):
         self.remove.assert_not_called()
         self.assertTrue(self.supervisor.journal.exists())
 
+    def test_late_authorization_is_rejected_while_final_result_is_pending(self):
+        self.enroll(False)
+
+        def final_result(*_):
+            with self.assertRaisesRegex(ValueError, "No active listener"):
+                self.supervisor.handoff(
+                    self.message("authorize", artifact_id=["10", "11"]), self.uid)
+            return "success"
+
+        self.github.conclusion.side_effect = final_result
+        self.supervisor.finish()
+        self.remove.assert_not_called()
+        self.assertTrue(self.checkout.exists())
+
     def test_replacement_and_wrong_artifact_leave_pending_recovery(self):
         self.enroll()
         self.github.verify_artifacts.side_effect = ValueError("wrong artifact")
