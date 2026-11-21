@@ -1,6 +1,7 @@
 "use strict";
 
 // Public CI metadata only. Text is rendered through DOM textContent, never HTML.
+const FULL_COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const IMAGE_KINDS = new Set(["make-vs", "bazel-vs"]);
 const PENDING_JOB_TEXT = {
   queued: "is queued for a runner", in_progress: "is running", requested: "has been requested",
@@ -535,7 +536,7 @@ function renderFilters() {
   allCommits.value = "all";
   commits.replaceChildren(allCommits);
   const masterRuns = state.data.runs.filter(run => buildSource(run) === "master" &&
-    /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(run.source_sha)).sort(latestRunFirst);
+    FULL_COMMIT_SHA.test(run.source_sha)).sort(latestRunFirst);
   const revisions = new Map(), prefixCounts = new Map();
   for (const run of masterRuns) {
     const sha = run.source_sha;
@@ -653,8 +654,11 @@ function renderTrend() {
     const build = BUILD_SOURCES[buildSource(item.run)];
     const prs = prNumbers(item.run).map(number => `PR #${number}`).join(", ");
     const context = [build.label, prs || (item.run.branch === "master" ? "" : item.run.branch)].filter(Boolean).join(" · ");
-    const source = String(item.run.source_sha || "unknown").slice(0, 12), breakdown = imageBreakdownLabel(item.job);
-    const label = `${context} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · Source ${source} · ${breakdown} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
+    const sha = item.run.source_sha;
+    const commit = `Commit ${String(sha || "unknown").slice(0, 12)}`;
+    const subject = item.run.source_commit_title || "Commit message unavailable";
+    const breakdown = imageBreakdownLabel(item.job);
+    const label = `${commit} · ${subject}\n${context} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · ${breakdown} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
@@ -662,8 +666,11 @@ function renderTrend() {
     const inspect = () => {
       const heading = el("div", "chart-preview-heading");
       heading.append(el("strong", "", duration(item.job.image_build_seconds)), el("span", "", imageSeries(item.job).label));
-      preview.replaceChildren(heading,
-        el("p", "", `${item.run.workflow_name || "Workflow"} · ${context} · ${source} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`),
+      const revision = el("p");
+      const commitId = FULL_COMMIT_SHA.test(sha) ? link(commit, `https://github.com/${state.data.repository}/commit/${sha}`) : el("span", "", commit);
+      revision.append(commitId, document.createTextNode(` · ${subject}`));
+      preview.replaceChildren(heading, revision,
+        el("p", "", `${item.run.workflow_name || "Workflow"} · ${context} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`),
         el("p", "", `${imageMeasurement(item.job).label}. ${breakdown}.`));
     };
     point.addEventListener("mouseenter", inspect);

@@ -699,13 +699,38 @@ test("chart overview is scatter-only with a visible-series legend and keyboard p
   const point = descendants(nodes.trend, node => node.attributes?.class === "chart-point")[0];
   assert.equal(point.attributes.tabindex, "0");
   point.listeners.focus();
-  assert.match(nodes["trend-preview"].textContent, /2m 0s.*Outer Make .bin.*Bazel OCI.*abcdef012345.*VM generation and boot checks excluded.*Breakdown not recorded/);
+  assert.match(nodes["trend-preview"].textContent, /2m 0s.*Outer Make .bin.*abcdef012345.*Bazel OCI.*VM generation and boot checks excluded.*Breakdown not recorded/);
   nodes["series-filter"].value = imageSeries(points[0].job).key;
   render();
   assert.equal(descendants(nodes.trend, node => node.tagName === "polyline").length, 1);
   assert.equal(nodes["history-legend"].children.length, 1);
   assert.doesNotMatch(nodes["history-legend"].textContent, /Direct slave/);
   assert.match(nodes["trend-note"].textContent, /Showing all 2.*one build source/);
+});
+
+test("the hover tooltip and keyboard preview identify the commit used for each build", () => {
+  const master = datedPoint(1, "2026-11-10T00:00:00Z"), pr = datedPoint(2, "2026-11-11T00:00:00Z");
+  Object.assign(master.run, {source_sha: "a".repeat(40), source_commit_title: "Build <installer> from source"});
+  Object.assign(pr.run, {event: "pull_request", pr_numbers: [270], source_sha: "b".repeat(40),
+    source_commit_title: "Require debug producers only for paired VS verification"});
+  const {nodes, render} = chartFixture([master, pr]);
+  nodes["source-filter"].value = "combined";
+  render();
+  const dots = descendants(nodes.trend, node => node.attributes?.class === "chart-point");
+  assert.equal(dots.length, 2);
+  for (const [index, {run}] of [master, pr].entries()) {
+    const dot = dots[index], expected = `Commit ${run.source_sha.slice(0, 12)} · ${run.source_commit_title}`;
+    assert.equal(dot.children[0].tagName, "title");
+    assert.equal(dot.children[0].textContent.split("\n")[0], expected);
+    assert.equal(dot.attributes["aria-label"], dot.children[0].textContent);
+    for (const event of ["mouseenter", "focus"]) {
+      dot.listeners[event]();
+      const preview = nodes["trend-preview"];
+      assert.ok(preview.textContent.includes(expected));
+      assert.equal(descendants(preview, node => node.tagName === "a")[0].href,
+        `https://github.com/securely1g/sonic-buildimage/commit/${run.source_sha}`);
+    }
+  }
 });
 
 test("unknown boundaries never gain trend lines and empty filters clear stale chart details", () => {
@@ -859,7 +884,7 @@ test("page startup wires chart-only filters without hiding retained workflow his
   nodes["series-filter"].value = imageSeries(points[1].job).key;
   nodes["series-filter"].listeners.change();
   const point = descendants(nodes.trend, node => node.attributes?.class === "chart-point")[0];
-  assert.match(point.attributes["aria-label"], /Source abcdef012345.*Breakdown not recorded/);
+  assert.match(point.attributes["aria-label"], /Commit abcdef012345 · Commit message unavailable.*Breakdown not recorded/s);
   point.listeners.mouseenter();
   assert.match(nodes["trend-preview"].textContent, /Direct slave .bin/);
   let activated = false;

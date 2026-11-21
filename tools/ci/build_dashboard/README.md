@@ -66,8 +66,11 @@ unknown** points. Date ranges end at snapshot time and
 use verified image execution starts. Carried retries count once at the original
 execution time. The chart shows the newest 10 matching measurements by default.
 Choose **Newest 60**, **Newest 120**, or **Show all** to see more. Hover or
-focus a point to see its measurement and revision. Select it to open the
-full-width **Run details**.
+focus a point to see the measured commit's short SHA and the first line of
+its message. For example, the master point for `b65761475de4` shows
+“Skip duplicate checks and nondeterminism stripping in sonic-device-data (#274)”.
+The commit link in the preview opens the full message on GitHub. Select the
+point itself to open the full-width **Run details**.
 
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
