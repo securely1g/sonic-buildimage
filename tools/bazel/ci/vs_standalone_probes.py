@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import uuid
 
-from tools.bazel.ci import artifact_validation, base_images, bmp_loaded, frr_image, swss_layer, teamd_image, vs_container_validation
+from tools.bazel.ci import artifact_validation, base_images, bmp_loaded, frr_image, swss_layer, teamd_image, verify_dhcp_relay, vs_container_validation
 from tools.bazel.ci.artifact_validation import require, sha
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -20,7 +20,8 @@ TEAM = "docker-teamd"
 FRR = "docker-fpm-frr"
 NAT = "docker-nat"
 BMP = "docker-sonic-bmp"
-STANDALONE_IMAGES = {BASE, CONFIG, SWSS, SYNCD, TEAM, FRR, NAT, BMP}
+DHCP = "docker-dhcp-relay"
+STANDALONE_IMAGES = {BASE, CONFIG, SWSS, SYNCD, TEAM, FRR, NAT, BMP, DHCP}
 
 
 def extra_standalone_targets(image, debug_selected):
@@ -39,6 +40,11 @@ def extra_standalone_targets(image, debug_selected):
             "config-engine.startup.tar": "//dockers/docker-config-engine-trixie:config_files",
             "config-engine.packages.json": "//dockers/docker-config-engine-trixie:runtime_package_metadata",
         })
+    if image == DHCP:
+        package = "//dockers/docker-dhcp-relay:"
+        targets.update({"dhcp-relay-source.tar": package + "source_runtime",
+                        "runtime-packages.json": package + "runtime_package_metadata",
+                        "runtime.status": package + "installed_packages"})
     if image == SWSS:
         targets.update({name: swss_layer.TARGETS[name] for name in
                         ("source-runtime.tar", "packages.json", "installed.status", "apt-selection.json")})
@@ -208,6 +214,9 @@ def standalone(image, directory, bundle, report):
                 elif image == NAT:
                     script = (ROOT / "dockers/docker-nat/verify-installed.sh").read_text()
                     run(tag, "/bin/sh", ["-s", "--", name], stdin=script)
+                elif image == DHCP:
+                    run(tag, "/bin/sh", ["-ec", verify_dhcp_relay.PROBE],
+                        options=["--env", "PYTHONDONTWRITEBYTECODE=1"])
                 elif image == BMP:
                     run(tag, "/bin/sh", ["-ec", bmp_loaded.PROBE_SCRIPT],
                         options=["--env", "PYTHONDONTWRITEBYTECODE=1"])
