@@ -66,8 +66,11 @@ unknown** points. Date ranges end at snapshot time and
 use verified image execution starts. Carried retries count once at the original
 execution time. The chart shows the newest 10 matching measurements by default.
 Choose **Newest 60**, **Newest 120**, or **Show all** to see more. Hover or
-focus a point to see its measurement and revision. Select it to open the
-full-width **Run details**.
+focus a point to see the measured commit's short SHA and the first line of
+its message. For example, the master point for `b65761475de4` shows
+“Skip duplicate checks and nondeterminism stripping in sonic-device-data (#274)”.
+The commit link in the preview opens the full message on GitHub. Select the
+point itself to open the full-width **Run details**.
 
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
@@ -209,14 +212,13 @@ recipe. Its internal phase times were not recorded, so the dashboard shows that
 limitation instead of estimating a split. Adding the instrumentation cannot
 recover those missing measurements; a subsequent image build supplies them.
 On a native host-Make build with both the shared container batch and final
-installer markers, **Run details → Image build steps** opens directly above the
-separate **Bazel build breakdown**. Each of the five headings expands
-independently. For example, the master build at `9bbd301c` took 1h 55m 30s.
+installer markers, **Run details → Image build steps** shows five stages.
+Each heading expands independently. For example, the master build at `9bbd301c` took 1h 55m 30s.
 
 | Image build step | Time in that run | What to look for when expanded |
 | --- | ---: | --- |
-| Prepare kernel, packages and P4RT | 33m 44s | Device data, kernel preparation and P4RT dependency audit, SDK, source build and handoff |
-| Build and export Bazel container images | 46m 57s | Shared Bazel command and recorded export times by container |
+| Prepare kernel, packages and P4RT | 33m 44s | Kernel Bazel timing table, device data, and P4RT preparation and handoff |
+| Build and export Bazel container images | 46m 57s | Shared Bazel command, archive exports and the per-container timing table |
 | Finish Make containers and stage the root filesystem | 14m 32s | Make container builds, cached targets, base image loads and intermediate SquashFS |
 | Assemble the final ONIE installer | 15m 20s | Docker image loading, filesystem and store compression, payload ZIP and ONIE wrapping |
 | Finish the Make invocation | 4m 57s | Version metadata, builder exit and Trixie and Bookworm cleanup |
@@ -225,9 +227,15 @@ The headings use each run's elapsed time. Inner rows require measurements from
 that run. For example, the historical log recorded the ONIE recipe's total but
 lacked its internal phase markers. Recent instrumented runs can show those phases.
 Overlapping tasks count once when calculating uncovered wall time, and nested
-P4RT and root filesystem subtasks are included in the parent duration. The
-separate Bazel breakdown still reports compiler, cache and lock-wait time and the
-per-container activity in the shared command.
+P4RT and root filesystem subtasks are included in the parent duration.
+
+Expand **Build and export Bazel container images** to see the batch's compiler,
+cache and lock-wait timings and its per-container table. The first stage shows
+the kernel recipe in a horizontal table when the kernel preparation task
+finishes before the container batch. For example, on master
+`b65761475de4`, kernel preparation took 153.118 seconds, including 135.521
+seconds in the Bazel launcher and 4.836 seconds staging Debian packages.
+Recipes whose stage cannot be identified remain in the job-level breakdown.
 
 The host Make step uses `TERM=dumb` to emit build and finish markers. Historical
 direct-slave terminal redraws lack task end times. A Make `cached` marker alone
@@ -267,15 +275,17 @@ persists the new JSON before the static site is deployed through the official
 Pages artifact/deployment actions. Publications are serialized through the end
 of deployment to prevent an older run from replacing a newer site.
 
-History is serialized as compact, deterministically ordered JSON; all collected
-records and the schema remain unchanged. Existing indented history is read
-normally and compacted on the next successful collection. The collector reports
-the output byte size and rejects files above 95 MiB before replacing the output,
-leaving headroom below GitHub's 100 MiB per-file limit. It does not silently prune
-older records to meet this budget. If compact history eventually reaches that
-budget, split storage and update the collector and dashboard readers together;
-retrying the same oversized output or enabling Git LFS alone does not fix the
-static JSON publication path.
+The published `data.json` is a small index. It contains the PR list and the
+paths and record counts of the files in `history/`. Each of those files holds
+complete workflow attempts. For example, a 101 MiB snapshot can now be published
+as an index and roughly thirteen files instead of crossing GitHub's per-file
+limit. The collector targets 8 MiB per file and keeps a large individual attempt
+together. Every published file must fit within 95 MiB.
+
+The first refresh reads the existing single-file snapshot. Later refreshes
+read the index and verify each file's SHA-256 and record count before updating
+the history. There is no age or count limit on retained attempts. Older snapshots
+remain accessible in the Git history of `build-metrics`.
 
 The publishing job always uses trusted `master` code. A `workflow_run` event
 never supplies executable PR code, artifacts, scripts, or cached executables.

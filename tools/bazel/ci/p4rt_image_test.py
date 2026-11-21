@@ -288,6 +288,17 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual([value for value in options if value.startswith('--jobs=')][-1], '--jobs=1')
         self.assertEqual([value for value in options if value.startswith('--platforms=')][-1], image.OPTIONS[-2])
 
+    def test_root_and_owner_builds_leave_job_scheduling_to_bazel(self):
+        with patch.dict(os.environ, {}, clear=True):
+            options = image.root_options()
+        self.assertEqual([value for value in options if value.startswith(('--jobs=', '--local_resources='))], [])
+        argv = ['p4rt_image.py', 'build', '--directory', str(self.root), '--owner-source', str(self.root),
+                '--owner-revision', 'a' * 40, '--owner-output-base', str(self.root / 'output')]
+        with patch('sys.argv', argv), patch.object(image.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4, 5}), \
+                patch.object(image, 'build_images') as build:
+            image.main()
+        self.assertEqual(build.call_args.args[0].jobs, 6)
+
     def test_make_legacy_fallback_and_empty_container_override(self):
         with patch.dict(os.environ, {'BAZEL_SWSS_ARGS': '--jobs=3'}, clear=True):
             self.assertIn('--jobs=3', image.root_options())
@@ -350,6 +361,30 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(prepare.call_args.kwargs['libyang_archive'], preparation / 'libyang-runtime.tar')
         self.assertEqual(prepare.call_args.kwargs['parent_archive'], preparation / 'config-engine.source.tar')
         owner.assert_not_called()
+
+    def test_owner_tests_reuse_only_the_parent_tar_from_the_matching_vs_artifact(self):
+        """Bind the normalized common-library source to the producer's revision and bytes."""
+        bundle = self.root / 'download'
+        bundle.mkdir()
+        name = 'config-engine.source.tar'
+        source = bundle / name
+        source.write_bytes(b'normalized VS parent bytes')
+        revision = 'b' * 40
+        metadata = {'image': 'docker-sonic-p4rt', 'architecture': 'amd64', 'revision': revision,
+                    'fixtures': {name: image.check.sha(source)}}
+        (bundle / 'bundle.json').write_text(json.dumps(metadata))
+        receipt = {'artifacts': {}}
+        target = self.root / 'preparation'
+        image.stage_vs_parent(bundle, revision, target, receipt)
+        self.assertEqual((target / name).read_bytes(), source.read_bytes())
+        self.assertEqual(receipt['artifacts'][name], {'target': image.PREPARATION_TARGETS[name],
+                         'sha256': metadata['fixtures'][name], 'bytes': source.stat().st_size})
+        with self.assertRaisesRegex(ValueError, 'different P4RT build'):
+            image.stage_vs_parent(bundle, 'a' * 40, target, receipt)
+        source.write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, 'source TAR changed'):
+            image.stage_vs_parent(bundle, revision, target, receipt)
+        self.assertEqual((target / name).read_bytes(), b'normalized VS parent bytes')
 
     def test_runtime_link_cannot_escape_private_root(self):
         outside = self.root.parent / (self.root.name + '-outside.so')

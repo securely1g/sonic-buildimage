@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import bazel_commands, build, command_log, p4rt_handoff, resolution, time_vs_image
 from tools.bazel.p4rt_common_sdk import prepare_repository
-from tools.bazel.build_helpers import cache_options, remote_cache_options
+from tools.bazel.build_helpers import cache_options, export_archive, remote_cache_options
 from tools.bazel.ci.preserve_setup_bazel_cache import PRIVATE_CACHE_ENDPOINT
 from tools.bazel.oci.oci_inventory import resolve_path
 
@@ -30,8 +30,7 @@ IMAGES = ('docker-sonic-p4rt', 'docker-sonic-p4rt-dbg')
 BASE = '//dockers/docker-config-engine-trixie:docker-config-engine-trixie'
 RUNTIME_INPUTS = ('owner-test-runtime.tar',)
 COMMON_REVISION = '334389eae54afd1f4f5ee69f89c3a7ad2062ee61'
-OPTIONS = ['--jobs=2', '--local_resources=cpu=2', '--local_resources=memory=8000',
-           '--@sonic_swss_common//tools/bazel:yang_modules=True',
+OPTIONS = ['--@sonic_swss_common//tools/bazel:yang_modules=True',
            '--platforms=@sonic_build_infra//platforms:x86_64_trixie',
            '--host_platform=@sonic_build_infra//platforms:x86_64_trixie']
 PREPARATION_TARGETS = {
@@ -79,8 +78,9 @@ def root_options(*, make_build=False):
         extra += remote_cache_options()
     check.require(all(value and not any(char in value for char in '\r\n\0') for value in extra),
                   'Bazel options must be nonempty single-line arguments')
-    # Preserve cache/custom options, then enforce the recorded YANG/native profile.
-    return [*OPTIONS[:3], *extra, *OPTIONS[3:], build.MAKE_METADATA_OPTION]
+    # Like the other image producers, leave job and CPU scheduling to Bazel. Preserve
+    # cache/custom options, then enforce the recorded YANG/native profile.
+    return [*extra, *OPTIONS, build.MAKE_METADATA_OPTION]
 
 
 def write(path, value):
@@ -207,6 +207,21 @@ def prepare_manifests(execute, directory, receipt):
              'DOCKERS_PATH=dockers'], directory, receipt, 'manifests')
 
 
+def stage_vs_parent(directory, revision, preparation, receipt):
+    """Reuse the selected parent's normalized source TAR from the VS installer build."""
+    name = 'config-engine.source.tar'
+    bundle = json.loads((directory / 'bundle.json').read_bytes())
+    check.require(bundle['image'] == 'docker-sonic-p4rt' and bundle['architecture'] == 'amd64' and
+                  bundle['revision'] == revision, 'The VS parent input belongs to a different P4RT build')
+    source = directory / name
+    actual = check.sha(source)
+    check.require(bundle['fixtures'][name] == actual, 'The downloaded VS parent source TAR changed')
+    destination = preparation / name
+    export_archive(source, destination)
+    receipt['artifacts'][name] = {'target': PREPARATION_TARGETS[name], 'bytes': destination.stat().st_size,
+                                  'sha256': actual}
+
+
 def prepare_owner(args, *, make_build=False):
     native()
     directory, preparation, sdk, output = locations(args)
@@ -234,7 +249,14 @@ def prepare_owner(args, *, make_build=False):
             receipt['action_audit'] = bazel_commands.audit_targets(args.bazel, options, list(PREPARATION_TARGETS.values()),
                 workspace=ROOT, output=preparation / 'action-audit.json')
         with phase('p4rt-sdk'):
-            build.collect_archives(ROOT, preparation, receipt, PREPARATION_TARGETS, bazel=args.bazel, options=options, use_execution_root=True)
+            targets = PREPARATION_TARGETS.copy()
+            vs_parent = getattr(args, 'vs_parent', None)
+            if vs_parent:
+                del targets['config-engine.source.tar']
+            build.collect_archives(ROOT, preparation, receipt, targets, bazel=args.bazel,
+                                   options=options, use_execution_root=True)
+            if vs_parent:
+                stage_vs_parent(vs_parent, revision, preparation, receipt)
             module = (preparation / 'common.MODULE.bazel').read_text()
             check.require(re.search(r'version\s*=\s*[\"\']0\.0\.9-' + COMMON_REVISION + r'[\"\']', module),
                           'The fetched Common owner differs from the selected image parent')
@@ -439,10 +461,12 @@ def main():
     parser.add_argument('--directory', required=True, type=Path)
     parser.add_argument('--bazel', default='bazel', help='Root image/Common Bazel 8.5.1 launcher')
     parser.add_argument('--owner-bazel', default='bazel', help='Separate owner Bazelisk or Bazel 6.4.0 launcher')
+    parser.add_argument('--vs-parent', type=Path, help='P4RT validation bundle from the matching VS run')
     parser.add_argument('--owner-source', required=True, type=Path)
     parser.add_argument('--owner-revision', required=True)
     parser.add_argument('--owner-output-base', required=True, type=Path)
-    parser.add_argument('--jobs', type=int, default=1)
+    # Bazel's own default: one job per available CPU.
+    parser.add_argument('--jobs', type=int, default=len(os.sched_getaffinity(0)))
     args = parser.parse_args()
     check.require(args.jobs > 0, 'Owner jobs must be positive')
     actions = {'prepare-owner': prepare_owner, 'prepare-make-owner': partial(prepare_owner, make_build=True),

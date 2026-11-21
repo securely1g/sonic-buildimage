@@ -110,8 +110,9 @@ def build_images(args, directory):
             workspace=ROOT, output=directory / "action-audit.json")
         # Retain completed independent source actions even if another target fails.
         build_options = [*options, "--keep_going"]
-        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=build_options)
-        execute([args.bazel, "build", *build_options, *layouts], directory, receipt, "layouts")
+        # Export archives and inspect layouts from the same build invocation.
+        build.collect_archives(ROOT, directory, receipt, TARGETS, bazel=args.bazel, options=build_options,
+                               additional_targets=layouts)
         receipt["layouts"] = {name: execute([args.bazel, "cquery", *options, "--output=files", OWNER + name],
             directory, receipt, name + ".layout").strip() for name in IMAGES}
         receipt["base_layout"] = execute([args.bazel, "cquery", *options, "--output=files", BASE], directory, receipt, "base.layout").strip()
@@ -139,6 +140,23 @@ def declared_image_policy(policy, image_version, environment_file):
     check.require(settings.get("environment") == {"DEBIAN_FRONTEND": "noninteractive"},
                   "package policy changed its declared public environment")
     return {**policy, "image_validation": {**settings, "environment": expected}}
+
+
+def verify_installer_source_payload(directory, variant, files, source_sha256):
+    """Compare the selected installer image with every retained source-package member."""
+    contract = directory / "source-contract.json"
+    receipt_path = directory / "source-receipt.json"
+    check_p4_inputs(contract, receipt_path)
+    receipt = json.loads(receipt_path.read_bytes())
+    check.require(receipt["contract_sha256"] == check.sha(contract) and receipt["payload"]["sha256"] == source_sha256,
+                  "Gearbox receipt differs from the source contract or built runtime TAR")
+    expected = {path: item for package in receipt["packages"] for path, item in package["files"].items()}
+    expected = image_validation.filtered_source_runtime(expected, json.loads(contract.read_bytes()),
+                                                         directory / "source-excludes.txt", directory / "source-includes.txt")
+    # Match apply_layer's Linux symlink mode, including packages whose TAR headers store 0000.
+    expected = {path: dict(item, mode=0o777) if item["kind"] == "symlink" else item for path, item in expected.items()
+                if variant == "runtime" or item["kind"] != "directory"}
+    image_validation.assert_payload(expected, files, variant + " source package payload")
 
 
 def validate_images(directory):
