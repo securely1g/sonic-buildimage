@@ -4189,7 +4189,7 @@ jobs:
             cat "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Preserve VS Bazel profiles, timings and Make logs
+      - name: Preserve VS Bazel profiles, sanitized BEP JSON, timings and Make logs
         id: vs_image_timings_upload
         if: always()
         continue-on-error: true

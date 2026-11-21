@@ -293,6 +293,23 @@ records that invocation and its profile. The container rows record their
 archive exports. The normal installer selects runtime containers, and
 a debug installer requires `INSTALL_DEBUG_TOOLS=y` and `SONIC_ENABLE_DEBUG_LAYER=y`.
 
+The `sonic-vs-bazel-timings-amd64` workflow artifact also includes sanitized
+`<owner>/recipe-*/build.bep.json` and `test.bep.json` files for instrumented
+Bazel build/test commands. These are JSON-lines BEP event subsets, not the
+profile-derived `summary.json`. They retain Bazel version/command, numeric build
+metrics, reviewed runner/mnemonic names, target/test results and the original
+terminal marker when present. Commands, environment values, progress text,
+metadata, local paths, output locations and event-graph links are omitted.
+The files are therefore not full BEP streams for graph-replay tools.
+Incomplete streams are not marked complete. Invalid or unsafe streams are not
+published and produce a fixed warning without changing the build exit status.
+Capture reuses an existing caller-owned BEP without modifying it; otherwise
+the raw stream is created in a private temporary directory and removed after
+sanitization. The nested kernel launcher uses its existing BEP. Capture runs
+on success and failure; disabled timing and query-only commands are unchanged.
+No execution logging, cache-policy changes or BEP-derived dashboard analysis
+is enabled by this artifact publication.
+
 The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
 the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
 registry login, Make reuses a local computed-tag slave image, pulls the matching
@@ -574,7 +591,9 @@ Container CI uses `public_artifacts.py` from the public upload work in
 [Image12](https://github.com/securely1g/sonic-buildimage/pull/12). It uploads
 explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
-out of public artifacts. A failed job publishes only a validated partial summary.
+out of public artifacts. The VS timing artifact may additionally publish the
+sanitized BEP metric/result events described above; raw events stay private.
+A failed job's container-evidence selection publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
 
 ## Debian download mirrors
