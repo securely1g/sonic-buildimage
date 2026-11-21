@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+from time import sleep
 
 
 def transient_cache_failure(returncode, diagnostics):
@@ -55,7 +56,7 @@ def retry_remote_cache(run, *, diagnostics=None, on_retry=None):
                 on_retry(attempt, delay)
             print(f"Transient Bazel remote-cache failure; retrying in {delay}s "
                   f"(attempt {attempt + 1}/3)", file=sys.stderr, flush=True)
-            time.sleep(delay)
+            sleep(delay)
 
 
 def execute(command, directory, receipt, name, *, cwd, output_path=None, stream=False):

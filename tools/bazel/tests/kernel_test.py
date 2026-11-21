@@ -576,7 +576,7 @@ class KernelBundleTest(unittest.TestCase):
                     "remote_cache": remote, "remote_cache_read_only": False, "disk_cache": None}))
 
             with self.subTest(failures=failures), \
-                    patch.object(kernel.command_log.time, "sleep") as sleep, redirect_stderr(io.StringIO()):
+                    patch.object(kernel.command_log, "sleep") as sleep, redirect_stderr(io.StringIO()):
                 if failures == 3:
                     with self.assertRaises(subprocess.CalledProcessError) as failure:
                         kernel.build(self.root, state, remote, True, execute=execute)
@@ -604,6 +604,8 @@ class KernelBundleTest(unittest.TestCase):
 
         def execute(command, workspace):
             calls.append(command)
+            subprocess.run([sys.executable, "-c", "import time; time.sleep(0.05)"],
+                           timeout=5, check=True)
             workdir = Path(command[command.index("--work-dir") + 1])
             workdir.mkdir(parents=True, exist_ok=True)
             if len(calls) == 1:
@@ -612,7 +614,7 @@ class KernelBundleTest(unittest.TestCase):
                 raise subprocess.CalledProcessError(34, command)
             raise subprocess.CalledProcessError(1, command)
 
-        with patch.object(kernel.command_log.time, "sleep") as sleep, \
+        with patch.object(kernel.command_log, "sleep") as sleep, \
                 redirect_stderr(io.StringIO()), self.assertRaises(subprocess.CalledProcessError) as failure:
             kernel.build(self.root, state, "grpc://cache:9092", False, execute=execute)
         self.assertEqual(failure.exception.returncode, 1)

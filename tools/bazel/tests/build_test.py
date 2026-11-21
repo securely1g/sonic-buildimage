@@ -139,7 +139,7 @@ else:
             self.assertEqual(previous.stat().st_mtime_ns, before)
             self.assertEqual(self.receipt["artifacts"], {})
 
-        with mock.patch("tools.bazel.ci.command_log.time.sleep", side_effect=wait):
+        with mock.patch("tools.bazel.ci.command_log.sleep", side_effect=wait):
             paths = self.collect()
         self.assertEqual(paths["telemetry.tar"].read_bytes(), b"payload telemetry.tar")
         entry = self.receipt["commands"][0]

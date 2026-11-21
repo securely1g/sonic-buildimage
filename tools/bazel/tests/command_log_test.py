@@ -85,7 +85,7 @@ class CommandEvidenceTest(unittest.TestCase):
                 subprocess.CompletedProcess(command, 0, stdout="runtime.tar\n", stderr=""),
             ]
             with mock.patch.object(command_log.subprocess, "run", side_effect=responses) as run, \
-                    mock.patch.object(command_log.time, "sleep") as sleep, \
+                    mock.patch.object(command_log, "sleep") as sleep, \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 output = command_log.execute(command, directory, receipt, "query", cwd=directory)
             self.assertEqual(output, "runtime.tar\n")
@@ -107,7 +107,7 @@ class CommandEvidenceTest(unittest.TestCase):
             command = ["bazel", "build", "--remote_upload_local_results=true", "//:archive"]
             result = subprocess.CompletedProcess(command, 34, stdout="", stderr=OUTAGE)
             with mock.patch.object(command_log.subprocess, "run", return_value=result) as run, \
-                    mock.patch.object(command_log.time, "sleep"), \
+                    mock.patch.object(command_log, "sleep"), \
                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(subprocess.CalledProcessError) as failure:
                     command_log.execute(command, directory, receipt, "build", cwd=directory)
@@ -122,7 +122,7 @@ class CommandEvidenceTest(unittest.TestCase):
             1, ["bazel", "build", "//:archive"], stderr=
             "ERROR: Error reading from the remote cache: Unexpected HTTP response code: 503\n")
         run = mock.Mock(side_effect=[error, "runtime.tar"])
-        with mock.patch.object(command_log.time, "sleep") as sleep, \
+        with mock.patch.object(command_log, "sleep") as sleep, \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(command_log.retry_remote_cache(run), "runtime.tar")
         self.assertEqual(run.call_count, 2)
@@ -150,7 +150,7 @@ class CommandEvidenceTest(unittest.TestCase):
 
             receipt = {"commands": []}
             with mock.patch.object(command_log.subprocess, "Popen", side_effect=start), \
-                    mock.patch.object(command_log.time, "sleep"), \
+                    mock.patch.object(command_log, "sleep"), \
                     contextlib.redirect_stdout(console), contextlib.redirect_stderr(console):
                 self.assertEqual(command_log.execute(
                     ["bazel", "build", "//:archive"], directory, receipt, "build",
@@ -177,7 +177,7 @@ class CommandEvidenceTest(unittest.TestCase):
                     stderr=OUTAGE if len(calls) == 1 else "")
 
             with mock.patch.object(command_log.subprocess, "run", side_effect=run), \
-                    mock.patch.object(command_log.time, "sleep"), \
+                    mock.patch.object(command_log, "sleep"), \
                     contextlib.redirect_stdout(console), contextlib.redirect_stderr(console):
                 self.assertEqual(command_log.execute(
                     ["bazel", "aquery", "//:target"], directory, receipt, "query",
@@ -210,7 +210,7 @@ class CommandEvidenceTest(unittest.TestCase):
                     command = ["bazel", "build", "//:archive"]
                     result = subprocess.CompletedProcess(command, code, stdout="", stderr=diagnostic)
                     with mock.patch.object(command_log.subprocess, "run", return_value=result) as run, \
-                            mock.patch.object(command_log.time, "sleep") as sleep, \
+                            mock.patch.object(command_log, "sleep") as sleep, \
                             contextlib.redirect_stdout(io.StringIO()):
                         with self.assertRaises(subprocess.CalledProcessError):
                             command_log.execute(command, directory, {"commands": []}, "build", cwd=directory)

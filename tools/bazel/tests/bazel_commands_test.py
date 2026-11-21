@@ -85,7 +85,7 @@ class ActionAuditTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stderr="")
 
             with mock.patch("subprocess.run", side_effect=query), \
-                    mock.patch("tools.bazel.ci.command_log.time.sleep"), \
+                    mock.patch("tools.bazel.ci.command_log.sleep"), \
                     self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
                 bazel_commands.audit_targets(
                     "bazel", ["--platforms=native", "--remote_header=authorization=private-cache-value"],

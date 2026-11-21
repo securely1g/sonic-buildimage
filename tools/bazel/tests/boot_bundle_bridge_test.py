@@ -149,7 +149,7 @@ class BootBundleBridgeTest(unittest.TestCase):
 
             with self.subTest(failures=failures), \
                     mock.patch.object(bridge.subprocess, "Popen", side_effect=run), \
-                    mock.patch.object(bridge.command_log.time, "sleep"), \
+                    mock.patch.object(bridge.command_log, "sleep"), \
                     redirect_stdout(console), redirect_stderr(console):
                 if failures == 3:
                     with self.assertRaises(SystemExit) as failure:
