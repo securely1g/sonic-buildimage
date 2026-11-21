@@ -197,12 +197,18 @@ artifacts. Its strict source check receives the pinned merge's actual base and
 PR head from `checkout_identity.py`, not the potentially stale event base.
 Archive revision and runtime checkout equality checks remain enabled.
 
-The Bazel OCI workflow enables remote action-cache uploads for the AMD64 and
-ARM64 archive builds and VS builds only on pushes to `master`. Pull requests
-and manual runs remain read-only. The archive job overrides the default in its
-ignored `.bazelrc.user`, which the shared Bazel configuration imports without
-modifying tracked files. The active `vs_container` job and the disabled legacy
-`vs` job forward the same policy through `BAZEL_CONTAINER_ARGS`. When the
+The Bazel OCI workflow enables remote action-cache uploads for AMD64 and ARM64
+archive builds only on pushes to `master`; their pull requests and manual runs
+remain read-only. The archive job overrides the default in its ignored
+`.bazelrc.user`, which the shared Bazel configuration imports without modifying
+tracked files. The active `vs_container` job also enables writes for all
+same-repository pull requests, forwarding `SONIC_BAZEL_REMOTE_UPLOAD=y` into the
+builder. Fork pull requests remain excluded by the VS job gate, and manual VS
+runs remain read-only. VS builds write to `grpc://172.16.0.4:9092`, storing Bazel
+action results and content-addressed output blobs, including prepared boot
+layers. This does not enable writes to the Make/DEB cache at
+`/nfs/dpkg_cache/vs`. The disabled legacy `vs` job retains its master-only
+upload policy through `BAZEL_CONTAINER_ARGS`. When the
 Gearbox archive job uploads, it also sets `--remote_timeout=600s`: it uploads
 the 6-9 GB Syncd debug layer and Gearbox debug archive, and the cache does not
 resume interrupted writes, so with the 60 s default each upload fails after
