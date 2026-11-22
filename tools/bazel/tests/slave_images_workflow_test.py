@@ -606,6 +606,65 @@ elif name == "stat":
                     ["docker", "tag", remote, image],
                 ])
 
+    def collection_create(self, label):
+        source = (ROOT / "scripts/collect_docker_version_files.sh").read_text()
+        inputs = "\n".join(line for line in source.splitlines()
+                           if line.startswith(("DOCKER_IMAGE=", "DOCKER_IMAGE_TAG=",
+                                               "DOCKER_CONTAINER=")))
+        # Stop at creation, as an interrupted preparation may never reach removal.
+        create = source.split("# Remove the old docker container if existing\n", 1)[1]
+        create = create.split("\ndocker cp ", 1)[0]
+        scripts = self.directory / "scripts"
+        scripts.mkdir(exist_ok=True)
+        collector = scripts / "collect_docker_version_files.sh"
+        collector.write_text("#!/bin/bash\n" + inputs + "\n" + create + "\n")
+        collector.chmod(0o755)
+        makefile = self.directory / "collect.mk"
+        makefile.write_text(
+            "SHELL := /bin/bash\n"
+            "SLAVE_BASE_IMAGE := sonic-slave-bookworm\n"
+            "SLAVE_BASE_TAG := 51028aacb27\nSLAVE_DIR := sonic-slave-bookworm\n"
+            + assignment((ROOT / "Makefile.work").read_text(), "COLLECT_DOCKER")
+            + "\nall:\n\t@$(COLLECT_DOCKER)\n")
+        environment = dict(self.environment)
+        if label is None:
+            environment.pop("SONIC_CI_CONTAINER_LABEL")
+        else:
+            environment["SONIC_CI_CONTAINER_LABEL"] = label
+        self.calls.unlink(missing_ok=True)
+        result = subprocess.run(
+            ["/usr/bin/make", "-s", "-f", str(makefile)],
+            cwd=self.directory, env=environment, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.recorded()
+        creates = [call for call in calls if call[:2] == ["docker", "create"]]
+        self.assertEqual(len(creates), 1, calls)
+        self.assertNotIn(
+            ["docker", "container", "rm", "sonic-slave-bookworm-51028aacb27"], calls)
+        return creates[0]
+
+    def test_interrupted_slave_collection_has_exact_job_label_at_creation(self):
+        for label in (
+                self.consumer["env"]["SONIC_CI_CONTAINER_LABEL"]
+                .replace("${{ github.repository }}", "securely1g/sonic-buildimage")
+                .replace("${{ github.run_id }}", "45071528114")
+                .replace("${{ github.run_attempt }}", "2"),
+                "fixture=label value with spaces"):
+            with self.subTest(label=label):
+                self.assertEqual(self.collection_create(label), [
+                    "docker", "create", "--label", label,
+                    "--name", "sonic-slave-bookworm-51028aacb27",
+                    "--entrypoint", "/bin/bash", "sonic-slave-bookworm:51028aacb27",
+                ])
+
+    def test_slave_collection_without_ci_label_preserves_creation_arguments(self):
+        for label in (None, ""):
+            with self.subTest(label=label):
+                self.assertEqual(self.collection_create(label), [
+                    "docker", "create", "--name", "sonic-slave-bookworm-51028aacb27",
+                    "--entrypoint", "/bin/bash", "sonic-slave-bookworm:51028aacb27",
+                ])
+
     def test_generic_and_vs_slave_tags_match_with_repository_defaults(self):
         source = (ROOT / "Makefile.work").read_text()
         registry = ("ifneq ($(DEFAULT_CONTAINER_REGISTRY),)"
