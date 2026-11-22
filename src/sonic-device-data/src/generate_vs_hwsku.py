@@ -177,6 +177,7 @@ def generate_lanemap(target_dir, port_config_path, has_chassis, reserve_midplane
             f.write("\n".join(coremap_lines) + "\n")
             if has_chassis:
                 f.write("Cpu0:0,0\n")
+
 def hwsku_directories(device_base):
     for platform_dir in Path(device_base).iterdir():
         if not platform_dir.is_dir():

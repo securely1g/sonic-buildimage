@@ -1806,9 +1806,9 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		export SONIC_IMAGE_TIMING_FILE
 		trap 'python3 ./scripts/image_timing.py discard 2>/dev/null || true' EXIT
 	fi
-	export installer_device_data_tar="$(installer_device_data_tar)"
 	# Pass initramfs and linux kernel explicitly. They are used for all platforms
 	export debs_path="$(IMAGE_DISTRO_DEBS_PATH)"
+	export installer_device_data_tar="$(installer_device_data_tar)"
 	export files_path="$(FILES_PATH)"
 	export python_debs_path="$(PYTHON_DEBS_PATH)"
 	export initramfs_tools="$(IMAGE_DISTRO_DEBS_PATH)/$(INITRAMFS_TOOLS)"

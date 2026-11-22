@@ -1,4 +1,5 @@
 """Produce the installed VS device-data layout for the Bazel TAR rule."""
+
 import hashlib
 import json
 import os
@@ -38,50 +39,60 @@ PREFERRED_PLATFORM = {
     "pddf": "x86_64-cel_ds1000-r0",
 }
 
+
 def files_below(root):
     for directory, _, files in os.walk(root, followlinks=True):
         for name in sorted(files):
             yield Path(directory, name)
 
+
 def file_digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
 
 def validate(device, tests, platforms, vs_asic):
     # Each owner checker accepts the complete file list in one invocation.
     # Keep its working directory for config_checker's permitted_list.
     inputs = sorted(files_below(device))
     for checker, pattern in (
-        ("config_checker", "*.config.bcm"), ("media_checker", "media_settings.json"),
-        ("platform_json_checker", "platform.json"), ("hwsku_json_checker", "hwsku.json"),
+        ("config_checker", "*.config.bcm"),
+        ("media_checker", "media_settings.json"),
+        ("platform_json_checker", "platform.json"),
+        ("hwsku_json_checker", "hwsku.json"),
     ):
         matches = [f.absolute() for f in inputs if f.match(pattern)]
         if matches:
-            result = subprocess.run([sys.executable, checker, *matches], cwd=tests,
-                                    stdout=subprocess.PIPE, text=True)
+            result = subprocess.run(
+                [sys.executable, checker, *matches], cwd=tests, capture_output=True, text=True
+            )
             if result.returncode:
-                sys.stderr.write(result.stdout)
+                sys.stderr.write(result.stdout + result.stderr)
                 result.check_returncode()
     check = runpy.run_path(str(tests / "platform_asic_checker"))["check_device_tree"]
     if not check(str(device), set(platforms), {f"virtual/{KVM}": str(vs_asic)}):
         raise ValueError("invalid platform ASIC selection")
+
 
 def mtree_escape(path):
     # BSD mtree uses octal escapes, including for spaces in source paths.
     return "".join(chr(c) if 33 <= c < 127 and c not in b"#\\=" else f"\\{c:03o}"
                    for c in os.fsencode(path))
 
+
 def prepare(device, owner, meta, changelog, generated, output):
     metadata = json.loads(meta.read_text())
     executable = set(metadata["executables"])
     files = {}
     sources = {}
+
     def mode(path):
         if path.is_relative_to(device) and str(path.relative_to(device)) in executable:
             # dh_fixperms clears executable bits on shared libraries.
             if not path.name.endswith(".so"):
                 return 0o755
         return 0o644
+
     for source in sorted(files_below(device)):
         parts = source.relative_to(device).parts
         if len(parts) < 3 or any(p.startswith(".") for p in parts[:2]):
@@ -95,11 +106,17 @@ def prepare(device, owner, meta, changelog, generated, output):
         sources.setdefault(file_digest(source), source)
 
     generated.mkdir(exist_ok=True, parents=True)
+
     def copy_file(src, dst):
         src = Path(src)
         shutil.copyfile(src, dst)
         Path(dst).chmod(mode(src))
         return dst
+
+    def sku_order(sku):
+        # The first platform wins when the same SKU appears in multiple trees.
+        return (sku.parent.name != PREFERRED_PLATFORM.get(sku.name), sku)
+
     with tempfile.TemporaryDirectory() as temp:
         stage = Path(temp)
         virtual = stage / "device" / KVM
@@ -107,7 +124,7 @@ def prepare(device, owner, meta, changelog, generated, output):
         vs_asic = virtual / "platform_asic"
         vs_asic.write_text("vs\n")
         validate(device, owner / "tests", metadata["platforms"], vs_asic)
-        for sku in sorted(hwsku_directories(device), key=lambda p: (p.parent.name != PREFERRED_PLATFORM.get(p.name), p)):
+        for sku in sorted(hwsku_directories(device), key=sku_order):
             process_hwsku(sku, stage, device, templates=owner / "src", copy_file=copy_file)
 
         # Most virtual profiles are identical to a declared physical input.
@@ -135,6 +152,7 @@ def prepare(device, owner, meta, changelog, generated, output):
             else:
                 source, bits = files[path]
                 manifest.write(f"{name} type=file mode={bits:04o} content={mtree_escape(source)}\n")
+
 
 if __name__ == "__main__":
     device_anchor, owner_anchor, *inputs = map(Path, sys.argv[1:])
