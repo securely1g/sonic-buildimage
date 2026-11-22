@@ -50,6 +50,7 @@ SOURCES = (
 )
 OPTIONAL = ("platform/vs/asic_table.j2", "platform/vs/peripheral_table.j2", "platform/vs/zero_profiles.j2")
 SITE_FILES = ("files/build_templates/constants.yml.overlay.j2",
+              "files/build_templates/init_cfg_organization.j2",
               "files/build_templates/sonic_debian_extension_organization_packages.j2",
               "files/build_templates/sonic_debian_extension_organization_docker_images.j2")
 
