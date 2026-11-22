@@ -433,7 +433,7 @@ class Supervisor:
         try:
             process = subprocess.Popen(
                 [executable, "-u", self.account.pw_name, "--", str(self.runner_dir / "run.sh")],
-                cwd=self.runner_dir, env=environment, start_new_session=True)
+                cwd=self.runner_dir, env=environment, start_new_session=True, umask=0o022)
         except OSError as error:
             # Failed exec proves no listener started; interrupted listeners remain ambiguous.
             with self.mutex:

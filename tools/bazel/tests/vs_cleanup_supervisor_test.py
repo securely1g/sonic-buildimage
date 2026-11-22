@@ -321,22 +321,32 @@ class SupervisorTest(unittest.TestCase):
             self.supervisor.cycle()
         self.assertLess(self.events.index("listener-exit"), self.events.index("cleanup"))
 
-    def test_real_child_inherits_path_for_sbin_tools(self):
+    def test_real_child_gets_build_umask_and_sbin_path(self):
         self.supervisor.state = {"phase": "idle"}
         executable = self.root / "test-launcher"
         result = self.root / "child-result"
+        directory = self.root / "child-directory"
         executable.write_text(
             f"#!{sys.executable}\n"
             "import pathlib, subprocess\n"
             "subprocess.run(['runuser', '--version'], check=True, stdout=subprocess.DEVNULL)\n"
-            f"pathlib.Path({str(result)!r}).write_text('completed')\n")
+            f"pathlib.Path({str(result)!r}).write_text('completed')\n"
+            f"pathlib.Path({str(directory)!r}).mkdir()\n")
         executable.chmod(0o755)
-        with patch.object(self.supervisor, "admission"), \
-                patch.object(self.supervisor, "configure", return_value=456), \
-                patch.object(module.shutil, "which", return_value=str(executable)), \
-                patch.object(self.supervisor, "finish") as finish:
-            self.supervisor.cycle()
+        previous_umask = os.umask(0o077)
+        try:
+            with patch.object(self.supervisor, "admission"), \
+                    patch.object(self.supervisor, "configure", return_value=456), \
+                    patch.object(module.shutil, "which", return_value=str(executable)), \
+                    patch.object(self.supervisor, "finish") as finish:
+                self.supervisor.cycle()
+            self.assertEqual(os.umask(0o077), 0o077)
+        finally:
+            os.umask(previous_umask)
         self.assertEqual(result.read_text(), "completed")
+        self.assertEqual(result.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(directory.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(self.supervisor.journal.stat().st_mode & 0o777, 0o600)
         finish.assert_called_once()
 
     def test_missing_launcher_blocks_registration_before_start_journal(self):

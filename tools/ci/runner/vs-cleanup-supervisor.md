@@ -112,6 +112,8 @@ sudo systemctl daemon-reload
 Keep it disabled at boot until the pilot passes. The service deliberately has
 `Restart=no` and `KillMode=control-group`: a failure does not silently reopen
 admission, and stopping the service stops its owned runner processes.
+The supervisor keeps umask `0077` for private data; only the runner child uses
+`0022`, as required by host VS preflight and Docker build users.
 
 ## First controlled job: retain workflow cleanup
 
