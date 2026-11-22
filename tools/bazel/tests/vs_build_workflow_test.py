@@ -119,6 +119,106 @@ else:
                                         f"SONIC_ENABLE_DEBUG_LAYER={debug_layer}"])
         self.assertEqual(call["bazel_args"], self.environment["BAZEL_CONTAINER_ARGS"])
 
+    def test_actions_install_only_the_downloaded_kernel_index_and_publish_only_on_master(self):
+        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
+        steps = {step["id"]: step for step in job["steps"] if "id" in step}
+        select, download, build = (steps[key] for key in ("kernel_index_source", "kernel_index_download", "native_build"))
+        publish = next(step for step in job["steps"]
+                       if step.get("with", {}).get("name") == "vs-kernel-cache-index-amd64-v1")
+        self.assertEqual(build["env"]["SONIC_VS_KERNEL_REMOTE_REUSE"], "1")
+        self.assertNotIn("GITHUB_TOKEN", build["env"])
+        self.assertTrue(select["continue-on-error"])
+        self.assertTrue(download["continue-on-error"])
+        self.assertEqual(download["with"]["run-id"], "${{ steps.kernel_index_source.outputs.run_id }}")
+        self.assertEqual(download["with"]["artifact-ids"], "${{ steps.kernel_index_source.outputs.artifact_id }}")
+        self.assertEqual(download["with"]["path"], job["defaults"]["run"]["working-directory"]
+                         + "/artifacts/vs/kernel-cache-download")
+        self.assertEqual(build["env"]["KERNEL_INDEX_DOWNLOAD"], "${{ steps.kernel_index_download.outcome }}")
+        self.assertLess(job["steps"].index(download), job["steps"].index(build))
+        self.assertLess(job["steps"].index(build), job["steps"].index(publish))
+        self.assertEqual(publish["if"], "github.event_name == 'push' && github.ref == 'refs/heads/master' "
+                         "&& steps.native_build.outcome == 'success'")
+        self.assertTrue(publish["with"]["path"].endswith("/artifacts/vs/kernel-cache-output/index.json"))
+
+        download_dir = self.root / "artifacts/vs/kernel-cache-download"
+        download_dir.mkdir(parents=True)
+        (download_dir / "index.json").write_text("checkout")
+        subprocess.run(["bash", "-e", "-c", select["run"].split("python3 -B -m", 1)[0]],
+                       cwd=self.root, check=True)
+        self.assertFalse(download_dir.exists())
+        download_dir.mkdir()
+        (download_dir / "index.json").write_text("trusted")
+        command = build["run"].split("bash tools/bazel/ci/build_vs.sh", 1)[0]
+        input_file = self.root / "artifacts/vs/kernel-cache-input/index.json"
+        output_file = self.root / "artifacts/vs/kernel-cache-output/index.json"
+        for outcome in ("failure", "skipped", "success"):
+            with self.subTest(outcome=outcome):
+                for path in (input_file, output_file):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("checkout")
+                subprocess.run(["bash", "-c", command], cwd=self.root, check=True, env=dict(
+                    self.environment, KERNEL_INDEX_DOWNLOAD=outcome, HOST_BASE_DIR="skipped"))
+                self.assertFalse(output_file.exists())
+                if outcome == "success":
+                    self.assertEqual(input_file.read_text(), "trusted")
+                else:
+                    self.assertFalse(input_file.exists())
+
+    def test_actions_host_base_snapshot_is_scoped_and_saved_only_on_cache_miss(self):
+        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["vs_container"]
+        by_id = {step["id"]: step for step in job["steps"] if "id" in step}
+        prepare = by_id["host_base_dir"]
+        selector = by_id["host_base_source"]
+        download = by_id["host_base_download"]
+        publish = by_id["host_base_publish"]
+        save = next(step for step in job["steps"] if step["name"] == "Retain the VS host base for subsequent commits")
+        cleanup = next(step for step in job["steps"] if step["name"] == "Remove this job's host-base cache snapshot")
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
+        self.assertIn("vs_host_base_snapshot.py", selector["run"])
+        self.assertEqual(download["with"]["run-id"], "${{ steps.host_base_source.outputs.read_run_id }}")
+        self.assertEqual(download["with"]["artifact-ids"], "${{ steps.host_base_source.outputs.read_artifact_id }}")
+        self.assertEqual(save["with"]["name"], "${{ steps.host_base_source.outputs.write_name }}")
+        self.assertTrue(download["with"]["path"].endswith("/host-base-transfer/download"))
+        self.assertEqual(save["with"]["path"], download["with"]["path"].removesuffix("/download") + "/publish")
+        self.assertEqual(save["if"], "steps.host_base_publish.outputs.ready == 'true'")
+        self.assertFalse(publish.get("continue-on-error"))
+        self.assertFalse(save.get("continue-on-error"))
+        self.assertIn("pull_request.head.repo.full_name == github.repository", job["if"])
+
+        workspace = self.root / "runner workspace"
+        checkout = workspace / "vs-run-attempt"
+        artifacts = checkout / "artifacts/vs"
+        artifacts.mkdir(parents=True)
+        (checkout / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
+        snapshot = workspace / ".sonic-vs-host-base-cache"
+        output = self.root / "github-output"
+        summary = self.root / "github-summary"
+        env = dict(os.environ, GITHUB_WORKSPACE=str(workspace), GITHUB_OUTPUT=str(output),
+                   GITHUB_STEP_SUMMARY=str(summary))
+
+        def run(step):
+            subprocess.run(["bash", "-e", "-c", step["run"]], cwd=checkout, env=env, check=True)
+
+        run(prepare)
+        self.assertEqual(snapshot.stat().st_mode & 0o777, 0o700)
+        (snapshot / "previous-key").mkdir()
+        key = "a" * 64
+        (snapshot / key).mkdir(mode=0o700)
+        (snapshot / key / "cas").mkdir()
+        (snapshot / key / "cas" / "blob").write_bytes(b"test-data")
+        receipt = artifacts / "host-base-cache.json"
+        run(publish)  # native fallback produces no receipt
+        receipt.write_text(json.dumps({"identity_sha256": key, "cache_hit": True}))
+        run(publish)
+        self.assertFalse(output.exists())
+        receipt.write_text(json.dumps({"identity_sha256": key, "cache_hit": False}))
+        run(publish)
+        self.assertEqual(output.read_text(), "ready=true\n")
+        self.assertEqual((artifacts / "host-base-transfer/publish" / key / "cas/blob").read_bytes(), b"test-data")
+        run(cleanup)
+        self.assertFalse(snapshot.exists())
+        self.assertTrue(receipt.exists())
+
     def test_build_records_revision_before_one_make_without_validation_receipts(self):
         result = self.run_script("build_vs.sh", FORBID_VALIDATION="1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

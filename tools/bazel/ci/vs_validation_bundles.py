@@ -20,17 +20,21 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.build import execution_root_from_bep
 from tools.bazel.ci.artifact_validation import require, sha
+from tools.bazel.ci.vs_container_validation import PMON, static_i386_files
 from tools.bazel.oci import oci_inventory
+from tools.bazel.oci.boot_layout import direct_layout_for_archive
 from tools.bazel.oci.package_state import file_bytes
 
 BASE = "docker-base-trixie"
 CONFIG = "docker-config-engine-trixie"
 SWSS = "docker-swss-layer-trixie"
 P4RT = "docker-sonic-p4rt"
-P4RT_SYMBOLS = "//dockers/docker-sonic-p4rt:p4rt_with_symbols"
-# Standalone parent probes also run on the original parents used by this build.
-PARENTS = (BASE, SWSS)
-GNMI_DIALOUT = "@sonic_gnmi//tools/bazel:enable_dialout"
+# Each shared image needs its parent's inventory before its own probe can be staged.
+PARENTS = (BASE, CONFIG, SWSS)
+MAKE_FEATURES = {
+    "docker-sonic-gnmi": ("dialout_enabled", "@sonic_gnmi//tools/bazel:enable_dialout"),
+    PMON: ("pddf_enabled", "//dockers/docker-platform-monitor:pddf"),
+}
 DASH_LOCK = "@sonic_build_infra//apt:apt.lock.json"
 APT_REPORT_FAMILIES = {"docker-orchagent", "docker-sonic-gnmi", "docker-sonic-otel", "docker-dash-engine", P4RT}
 
@@ -39,14 +43,16 @@ APT_REPORT_FAMILIES = {"docker-orchagent", "docker-sonic-gnmi", "docker-sonic-ot
 PARENT_IMAGES = {
     CONFIG: BASE, "docker-dash-engine": BASE,
     SWSS: CONFIG, "docker-database": CONFIG, "docker-eventd": CONFIG, "docker-gbsyncd-vs": CONFIG,
-    "docker-lldp": CONFIG, "docker-mux": CONFIG, "docker-orchagent": CONFIG,
+    "docker-lldp": CONFIG, "docker-mux": CONFIG, "docker-orchagent": CONFIG, PMON: CONFIG,
     "docker-router-advertiser": CONFIG, "docker-snmp": CONFIG, "docker-sonic-gnmi": CONFIG,
     "docker-sonic-mgmt-framework": CONFIG, "docker-sonic-otel": CONFIG, P4RT: CONFIG,
     "docker-syncd-vs": CONFIG, "docker-sysmgr": CONFIG,
+    "docker-gnmi-sidecar": CONFIG, "docker-restapi-sidecar": CONFIG,
+    "docker-gnmi-watchdog": CONFIG, "docker-bmp-watchdog": CONFIG,
     "docker-dash-ha": SWSS, "docker-fpm-frr": SWSS, "docker-macsec": SWSS,
     "docker-sflow": SWSS, "docker-teamd": SWSS,
 }
-FULL_PARENT_INVENTORY = PARENT_IMAGES.keys() - {CONFIG, "docker-syncd-vs"}
+FULL_PARENT_INVENTORY = PARENT_IMAGES.keys() - {CONFIG, PMON, "docker-syncd-vs"}
 
 # These owners validate the contents of allowed account merges. The remaining
 # files, including gshadow, are compared using the complete filesystem hashes.
@@ -100,14 +106,6 @@ def validation_targets(archives, registered_debug, debug_enabled, validation_onl
             entry["sources"]["libteam-source-receipt.json"] = package + ":libteam_source_receipt"
         if image == "docker-dash-engine":
             entry["apt_lock"] = DASH_LOCK
-        if image == P4RT:
-            for name in ["handoff.json", "p4rt_runtime_contract.json"]:
-                entry["sources"][name] = "@p4rt_owner_payload//:" + name
-        if image == P4RT and with_debug:
-            entry["sources"]["p4rt_runtime_debug_contract.json"] = "@p4rt_owner_payload//:p4rt_runtime_debug_contract.json"
-            entry["sources"]["symbols-apt.json"] = package + ":symbols_apt_selection"
-            # This layout is already an input of the selected debug archive.
-            entry["symbols_layout"] = P4RT_SYMBOLS
     return families
 
 
@@ -186,6 +184,24 @@ def copy_output(source, output):
         shutil.copyfile(source, output)
 
 
+def stage_archive(selected, output, producer, handoff):
+    """Keep the installer archive's identity intact when publishing validation artifacts."""
+    if handoff and direct_layout_for_archive(selected, handoff):
+        # Linking target/<archive> here changes ctime and invalidates the current
+        # boot handoff. Its producer output was copied or compared byte for byte.
+        if selected.samefile(producer):
+            shutil.copyfile(selected, output)
+        else:
+            copy_output(producer, output)
+        digest = sha(selected)
+        if direct_layout_for_archive(selected, handoff):
+            return digest
+        # A concurrent publisher replaced the selected file while staging it.
+        output.unlink()
+    copy_output(selected, output)
+    return sha(output)
+
+
 def layout_metadata(directory):
     def blob(descriptor):
         digest = descriptor["digest"]
@@ -204,7 +220,7 @@ def layout_metadata(directory):
     return manifest_descriptor, manifest, metadata(manifest["config"]), [blob(item) for item in manifest["layers"]]
 
 
-def write_inventory(directory, variant, bundle, prefixes, *, account_layers, retain=False):
+def write_inventory(directory, variant, bundle, prefixes, *, account_layers, retain=False, static_i386=None):
     descriptor, manifest, config, layers = layout_metadata(directory)
     digests = tuple(layer["digest"] for layer in manifest["layers"])
     # The installer emits many siblings with identical immutable parent layers.
@@ -212,7 +228,7 @@ def write_inventory(directory, variant, bundle, prefixes, *, account_layers, ret
     prefix = max((key for key in prefixes if digests[:len(key)] == key), key=len, default=())
     files = prefixes.get(prefix, {}).copy()
     for layer in layers[len(prefix):]:
-        entries = oci_inventory.apply_layer(layer, files)
+        entries = oci_inventory.apply_layer(layer, files, static_i386=static_i386)
         for name in ACCOUNT_PATHS:
             item = entries.get(name, {})
             if item.get("kind") == "file":
@@ -239,14 +255,17 @@ def redis_config(source_tar):
 
 
 def stage_probe_fixtures(image, artifacts, bundle):
-    from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES
+    from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES, SUPERVISED
 
     # Standalone checks use the owner records projected in *.owners.json.
     # P4RT also needs the original parent TAR for its separate SDK test.
     if image in STANDALONE_IMAGES:
         for name in ("base.source.tar", "config-engine.source.tar", "syncd.source.tar", "source-runtime.tar"):
             artifacts.pop(name, None)
-    elif image != "docker-sonic-p4rt":
+    if image in SUPERVISED:
+        for name in ("service.files.tar", "watchdog.source.tar", "all-debug.tar"):
+            artifacts.pop(name, None)
+    elif image not in STANDALONE_IMAGES and image != "docker-sonic-p4rt":
         for name in ("config-engine-source.tar", "config-engine.source.tar"):
             source = artifacts.pop(name, None)
             if source is None:
@@ -302,9 +321,20 @@ def stage_parent(bundle, image, references, account_layers):
     return fixtures
 
 
-def write_bundles(args, families, paths, version, *, dialout=None):
+def make_features(image, build_settings):
+    """Record what Make requested so probes can compare it with the installed image."""
+    if image not in MAKE_FEATURES:
+        return {}
+    name, flag = MAKE_FEATURES[image]
+    value = build_settings.get(flag)
+    require(value in ("true", "false"), f"missing Make-selected {flag} setting for {image}")
+    return {name: value == "true"}
+
+
+def write_bundles(args, families, paths, build_settings):
     from tools.bazel.ci import vs_probe_policy
 
+    version = build_settings["//tools/bazel/oci:image_version"]
     destination = args.validation_directory
     destination.parent.mkdir(parents=True, exist_ok=True)
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -312,17 +342,13 @@ def write_bundles(args, families, paths, version, *, dialout=None):
         staged = Path(work) / "containers"
         staged.mkdir()
         prefixes, references, account_layers = {}, {}, {}
-        parents = ["docker-base-trixie", "docker-config-engine-trixie", "docker-swss-layer-trixie"]
-        for image in [name for name in parents if name in families] + sorted(families.keys() - set(parents)):
+        for image in [name for name in PARENTS if name in families] + sorted(families.keys() - set(PARENTS)):
             entry = families[image]
             bundle = staged / image
             bundle.mkdir()
             source_paths = {name: paths[label] for name, label in entry["sources"].items()}
             archive_specs = {}
-            settings = {}
-            if image == "docker-sonic-gnmi":
-                require(dialout in ("true", "false"), "missing Make-selected gNMI dialout setting")
-                settings["dialout_enabled"] = dialout == "true"
+            settings = make_features(image, build_settings)
             if "apt_lock" in entry:
                 settings["apt_lock_sha256"] = sha(paths[entry["apt_lock"]])
                 settings["apt_layers"] = {}
@@ -330,17 +356,18 @@ def write_bundles(args, families, paths, version, *, dialout=None):
             # Only P4RT has a separate symbols layout between runtime and
             # final debug. Reuse its own runtime inventory while indexing both.
             image_prefixes = prefixes.copy() if "symbols_layout" in entry else prefixes
+            static_i386 = static_i386_files(image)
             for variant in sorted(entry["members"], key=lambda name: name == "debug"):
                 archive, label, layout_label = entry["members"][variant]
                 layout_path = paths[layout_label]
-                parent = image in parents and variant == "runtime"
+                parent = image in PARENTS and variant == "runtime"
                 if variant == "debug" and "symbols_layout" in entry:
                     symbols, *_ = write_inventory(paths[entry["symbols_layout"]], "symbols", bundle, image_prefixes,
                                                   account_layers=account_layers, retain=True)
                     fixtures[symbols.name] = sha(symbols)
                 inventory, manifest, config, common_files = write_inventory(
                     layout_path, variant, bundle, image_prefixes, account_layers=account_layers,
-                    retain=parent or (variant == "runtime" and "symbols_layout" in entry))
+                    retain=parent or (variant == "runtime" and "symbols_layout" in entry), static_i386=static_i386)
                 fixtures.update(stage_accounts(bundle, image, variant, common_files, account_layers))
                 if "apt_lock" in entry:
                     payload = source_paths["engine.runtime-apt.tar" if variant == "runtime" else "engine.debug-tools.tar"]
@@ -351,9 +378,10 @@ def write_bundles(args, families, paths, version, *, dialout=None):
                 # Use the actual target/ file when Make selected this member.
                 # Auxiliary parents come from the same completed batch build.
                 source = args.target_path / archive if archive in args.archive else paths[label]
-                copy_output(source, bundle / archive)
+                digest = stage_archive(source, bundle / archive, paths[label],
+                                       os.environ.get("SONIC_VS_BOOT_HANDOFF") if archive in args.archive else None)
                 archive_specs[variant] = {
-                    "file": archive, "sha256": sha(bundle / archive),
+                    "file": archive, "sha256": digest,
                     "config_digest": manifest["config"]["digest"],
                     "layers": manifest["layers"], "rootfs": config["rootfs"],
                 }
