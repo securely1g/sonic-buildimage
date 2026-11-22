@@ -38,8 +38,7 @@ def measure(mode):
     with TemporaryDirectory(dir=os.environ["RUNNER_TEMP"]) as directory:
         work = Path(directory)
         log = work / "execution.json"
-        # Time Make's actual build/query/export entry point. Only its build
-        # invocation writes the execution log, so a later cquery can't replace it.
+        # Time Make's production build and export from a fresh Bazel output base.
         wrapper = work / "bazel-benchmark"
         wrapper.write_text("""#!/bin/bash
 set -eu
@@ -60,7 +59,7 @@ exec bazel "--output_base=$BENCH_DIR/base" "--host_jvm_args=-Djavax.net.ssl.trus
         tar = work / "sonic-device-data-vs.tar"
         start = time.monotonic()
         try:
-            subprocess.run(["bash", "tools/bazel/image/vs/build_device_data.sh", str(tar)], env=env, check=True)
+            subprocess.run(["python3", "-B", "tools/bazel/image/vs/build_device_data.py", str(tar)], env=env, check=True)
             build_seconds = time.monotonic() - start
         finally:
             subprocess.run([wrapper, "shutdown"], env=env, check=False)

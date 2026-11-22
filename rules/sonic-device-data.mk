@@ -23,7 +23,7 @@ $(TARGET_PATH)/sonic-vs.bin: private installer_device_data_tar := $(vs_device_da
 $(vs_device_data_tar): check-vs-device-data
 	@mkdir -p "$(@D)"
 	$(HEADER)
-	bash tools/bazel/image/vs/build_device_data.sh "$@" $(LOG)
+	python3 -B tools/bazel/image/vs/build_device_data.py "$@" $(LOG)
 	$(FOOTER)
 
 SONIC_TARGET_LIST += $(vs_device_data_tar)
