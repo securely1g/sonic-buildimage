@@ -1044,7 +1044,7 @@ if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y ]]; then
     build_boot_bundle() {
         local packager=tools/bazel/image/boot_image_bundle.py
         if [[ ${BUILD_WITH_BAZEL_WHEN_AVAILABLE:-n} == y ]]; then
-            packager=tools/bazel/image/build_boot_bundle.py
+            packager=tools/bazel/image/paired.py
         fi
         python3 "$packager" --platform "linux/$CONFIGURED_ARCH" \
             --output "$FILESYSTEM_DOCKERFS" --inventory "$boot_work/inventory.json" \
