@@ -13,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tools/bazel/ci"))
 import vs_configured_host as host
+import vs_host_pypi as pypi
 
 
 class ConfiguredHostTest(unittest.TestCase):
@@ -65,6 +66,16 @@ mksquashfs "$root" "$2" -noappend -processors 1 >/dev/null
 
     def key(self):
         return host.identity(self.repo, self.cfg, self.builder, [self.package, self.wheel])
+
+    def test_offline_wheelhouse_includes_pyangbind_transient_dependency(self):
+        constraints = ROOT / pypi.CONSTRAINTS
+        archives = list(pypi.archives(pypi.LOCK, constraints))
+        self.assertIn("enum34-1.1.10-py3-none-any.whl", [filename for filename, _, _ in archives])
+        without_enum = self.repo / "incomplete.lock"
+        without_enum.write_text("\n".join(line for line in pypi.LOCK.read_text().splitlines()
+                                          if not line.startswith("enum34==")))
+        with self.assertRaisesRegex(ValueError, "missing transient.*enum34"):
+            list(pypi.archives(without_enum, constraints))
 
     def test_stock_fips_and_local_containers_preserve_release_independence(self):
         env = dict(self.cfg, RFS_SPLIT_FIRST_STAGE="n", RFS_SPLIT_LAST_STAGE="y", DOCKER_LOAD_ON_BOOT="y",
