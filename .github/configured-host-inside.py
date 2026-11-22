@@ -164,7 +164,51 @@ fi
 '''
 
 
+def mount_table():
+    result=[]
+    for line in Path('/proc/self/mountinfo').read_text().splitlines():
+        left,right=line.split(' - ',1); fields=left.split()
+        result.append((Path(fields[4]),fields[2],Path(fields[3]),fields[6:],right.split()[0]))
+    return result
+
+
+def release_benchmark_root(arm, hostns, slot):
+    # build_debian.sh self-binds fsroot. Production starts a new container per
+    # invocation; our benchmark deliberately keeps the same native container.
+    root=ROOT/'fsroot'
+    check(ROOT==Path('/sonic') and Path.cwd()==ROOT and ROOT.resolve()==ROOT and root.resolve()==root,
+          'unexpected retained installer root')
+    check(SHARED.resolve()==SHARED and os.geteuid()>0 and hostns.isdecimal() and
+          os.stat('/proc/self/ns/mnt').st_ino!=int(hostns),'expected a private benchmark container namespace')
+    scopes=mount_table()
+    workspace=[m for m in scopes if m[0]==ROOT]
+    check(len(workspace)==1 and not any(v.startswith('shared:') for v in workspace[0][3]),
+          'unexpected shared workspace mount')
+    nested=[m for m in scopes if m[0]==root or root in m[0].parents]
+    # Only the exact known Make self-bind is expected to survive a completed
+    # installer. Any child or foreign mount is a reason to leave it untouched.
+    check(all(m[0]==root and m[1]==workspace[0][1] and m[2]==workspace[0][2]/'fsroot' and
+              m[4]==workspace[0][4] and not any(v.startswith('shared:') for v in m[3]) for m in nested),
+          'unexpected mounted filesystem under retained installer root')
+    start=time.monotonic()
+    for unused in nested:
+        subprocess.run(['sudo','-n','umount','--',str(root)],check=True)
+    check(not any(m[0]==root or root in m[0].parents for m in mount_table()),'installer root still mounted')
+    if root.exists():
+        check(root.is_dir() and not root.is_symlink(),'invalid retained installer root')
+        # Move the previous private scratch tree aside atomically. Every timed
+        # recipe starts with an empty destination. The normal workflow teardown
+        # frees these trees along with the rest of this one job's workspace.
+        retire=SHARED/('retired-fsroot-'+arm+'-'+slot)
+        check(not os.path.lexists(retire),'retained installer root destination exists')
+        subprocess.run(['sudo','-n','mv','-T','--',str(root),str(retire)],check=True)
+    write(PUBLIC/arm/('fixture-cleanup-'+slot+'.json'),dict(self_binds=len(nested),
+          elapsed_seconds=time.monotonic()-start,separate_mount_namespace=True,runner_host_mounts=0))
+
+
 def run(arm,version):
+    if arm in ('restored-b','paired-control-b','changed-deb-b'):
+        release_benchmark_root(arm,os.environ.get('SONIC_HOSTBENCH_CALLER_MNTNS',''),os.environ.get('SONIC_HOSTBENCH_RECOVERY_SLOT','0'))
     state=read(PRIVATE/'native.json')
     os.chdir(state['cwd']); resume=os.environ.get('SONIC_HOSTBENCH_INNER_RESUME',''); os.environ.clear();os.environ.update(state['env']); os.environ['SONIC_HOSTBENCH_INNER_RESUME']=resume
     # The exact inputs are physically retained in the native container.
