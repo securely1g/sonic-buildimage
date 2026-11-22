@@ -220,7 +220,7 @@ def current_native(arm, version):
     session=read(ROOT/'.configured-host-bench/connection.json')
     allowed=shell('docker','ps','--quiet','--no-trunc','--filter','label='+os.environ['SONIC_CI_CONTAINER_LABEL'],capture_output=True,text=True).stdout.split()
     require(allowed==[session['id']],"expected exactly one retained builder for this run")
-    root=ROOT/'fsroot'; require(root.resolve()==root,'unexpected installer root on the runner')
+    root=ROOT/'fsroot-vs'; require(root.resolve()==root,'unexpected installer root on the runner')
     for line in Path('/proc/self/mountinfo').read_text().splitlines():
         mount=Path(line.split(' - ',1)[0].split()[4]);require(mount!=root and root not in mount.parents,'runner host has a mount under the installer scratch tree')
     slot=os.environ.get('SONIC_HOSTBENCH_RESUME_SLOT','0');require(slot in ('0','1','2'),'unexpected recovery slot')

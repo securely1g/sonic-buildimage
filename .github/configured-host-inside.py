@@ -175,7 +175,9 @@ def mount_table():
 def release_benchmark_root(arm, hostns, slot):
     # build_debian.sh self-binds fsroot. Production starts a new container per
     # invocation; our benchmark deliberately keeps the same native container.
-    root=ROOT/'fsroot'
+    root=ROOT/'fsroot-vs'
+    expected='FILESYSTEM_ROOT=./fsroot-${TARGET_MACHINE}'
+    check(expected in (ROOT/'onie-image.conf').read_text().splitlines(),'unexpected pinned ONIE filesystem root')
     check(ROOT==Path('/sonic') and Path.cwd()==ROOT and ROOT.resolve()==ROOT and root.resolve()==root,
           'unexpected retained installer root')
     check(SHARED.resolve()==SHARED and os.geteuid()>0 and hostns.isdecimal() and
@@ -187,7 +189,7 @@ def release_benchmark_root(arm, hostns, slot):
     nested=[m for m in scopes if m[0]==root or root in m[0].parents]
     # Only the exact known Make self-bind is expected to survive a completed
     # installer. Any child or foreign mount is a reason to leave it untouched.
-    check(all(m[0]==root and m[1]==workspace[0][1] and m[2]==workspace[0][2]/'fsroot' and
+    check(all(m[0]==root and m[1]==workspace[0][1] and m[2]==workspace[0][2]/'fsroot-vs' and
               m[4]==workspace[0][4] and not any(v.startswith('shared:') for v in m[3]) for m in nested),
           'unexpected mounted filesystem under retained installer root')
     start=time.monotonic()
