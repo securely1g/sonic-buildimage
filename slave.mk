@@ -599,7 +599,17 @@ SONIC_TARGET_LIST += $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS))
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 $(shell DBGOPT='$(DBGOPT)' scripts/prepare_slave_container_buildinfo.sh $(SLAVE_DIR) $(CONFIGURED_ARCH) $(BLDENV))
 endif
+
+# The cache include evaluates the package dependency rules while Make parses
+# them, before any package recipe can emit its own build marker.
+ifeq ($(SONIC_VS_IMAGE_TIMINGS):$(BLDENV):$(MAKECMDGOALS),1:trixie:$(TARGET_PATH)/sonic-vs.bin)
+ifeq ($(CONFIGURED_PLATFORM):$(CONFIGURED_ARCH):$(filter y,$(CROSS_BUILD_ENVIRON) $(MULTIARCH_QEMU_ENVIRON)),vs:amd64:)
+vs_trixie_cache_marker = $(info [ vs timing ] [ trixie-cache-eval ] [ $(1) ])
+endif
+endif
+$(call vs_trixie_cache_marker,start)
 include Makefile.cache
+$(call vs_trixie_cache_marker,end)
 
 # Track Bazel kernel inputs for downstream Make consumers.
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
@@ -1605,8 +1615,16 @@ ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(addprefix $(TARGET_PATH)/,$(SONIC_RFS_TARGETS) $(SONIC_INSTALLERS)): | bazel-kernel-ensure
 endif
 
+# A retained Make target may belong to an earlier checkout. Re-evaluate the
+# host's actual input key before using a cached VS SquashFS or its inventory.
+ifneq ($(strip $(SONIC_HOSTBASE_CACHE_DIR)),)
+.PHONY: check-vs-host-base
+$(TARGET_PATH)/sonic-vs.bin__vs__rfs.squashfs: check-vs-host-base
+$(TARGET_PATH)/sonic-vs.bin__vs__rfs.squashfs: private vs_host_base_cache := y
+endif
+
 vs_rfs_timing = $(filter 1:sonic-vs.bin__vs__rfs.squashfs,$(SONIC_VS_IMAGE_TIMINGS):$*)
-vs_rfs_cache_marker = $(if $(and $(vs_rfs_timing),$(call CHECK_WCACHE_ENABLED,$*)),echo '[ vs timing ] [ rootfs-cache-save ] [ $(1) ]' || :)
+vs_rfs_cache_marker = $(if $(and $(if $(vs_host_base_cache),,y),$(vs_rfs_timing),$(call CHECK_WCACHE_ENABLED,$*)),echo '[ vs timing ] [ rootfs-cache-save ] [ $(1) ]' || :)
 
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
@@ -1623,7 +1641,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
     # $(call LOAD_CACHE,$*,$@)
 
 	# Skip building the target if it is already loaded from cache
-	if [ -z '$($*_CACHE_LOADED)' ] ; then
+	if [ -n '$(vs_host_base_cache)' ] || [ -z '$($*_CACHE_LOADED)' ] ; then
 
 		# Keep the public timing markers on the original recipe stdout while
 		# build_debian.sh sends its normal output through the target log.
@@ -1666,15 +1684,35 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		MASTER_KUBERNETES_VERSION=$(MASTER_KUBERNETES_VERSION) \
 		MASTER_CRI_DOCKERD=$(MASTER_CRI_DOCKERD) \
 		ENABLE_SBOM="$(ENABLE_SBOM)" \
-			./build_debian.sh $(LOG)
+			$(if $(vs_host_base_cache),python3 -B tools/bazel/ci/vs_host_base.py,./build_debian.sh) $(LOG)
 
 		$(call vs_rfs_cache_marker,start)
-		$(call SAVE_CACHE,$*,$@)
+		$(if $(vs_host_base_cache),,$(call SAVE_CACHE,$*,$@))
 		$(call vs_rfs_cache_marker,end)
 
 	fi
 
 	$(FOOTER)
+
+# An existing installer must be rebuilt when switching its image-store format.
+ifeq ($(CONFIGURED_PLATFORM),vs)
+vs_boot_mode_stamp := $(TARGET_PATH)/.installer-docker-load-on-boot
+ifeq ($(DOCKER_LOAD_ON_BOOT),y)
+vs_boot_bundle_inputs := files/docker/docker files/docker/load-images.conf files/docker/sonic-load-images \
+                        installer/install.sh onie-mk-demo.sh scripts/build_boot_packages.py \
+                        tools/bazel/image/boot_image_bundle.py tools/bazel/image/image_config.py \
+                        tools/bazel/oci/boot_layout.py tools/bazel/oci/oci_layout.py
+ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
+vs_boot_bundle_inputs += tools/bazel/image/build_boot_bundle.py tools/bazel/image/boot_bundle.bzl \
+                         tools/bazel/image/boot_bundle_action.py tools/bazel/image/BUILD.bazel \
+                         tools/bazel/build_helpers.py tools/bazel/ci/build.py tools/bazel/ci/cache_reuse.py
+endif
+endif
+.PHONY: check-vs-boot-mode
+$(vs_boot_mode_stamp): check-vs-boot-mode
+	@mkdir -p "$(@D)"
+	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' | cmp -s - "$@" || printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' > "$@"
+endif
 
 # targets for building installers with base image
 $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : private export PASSWORD := $(PASSWORD)
@@ -1684,6 +1722,8 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         onie-image.conf \
         build_debian.sh \
         scripts/validate_sonic_version.py \
+        $(vs_boot_mode_stamp) \
+        $(vs_boot_bundle_inputs) \
         files/build_templates/sonic_version.yml.j2 \
         files/build_templates/sonic_debian_extension.j2 \
         files/build_templates/docker_image_ctl.j2 \
@@ -1761,6 +1801,13 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(LINUX_KBUILD)-install)
 
 	$(HEADER)
+	case "$(DOCKER_LOAD_ON_BOOT)" in
+	    n) ;;
+	    y) case "$(CONFIGURED_PLATFORM):$($*_IMAGE_TYPE)" in vs:onie|vs:kvm|vs:raw) ;; *) echo "DOCKER_LOAD_ON_BOOT=y requires a VS ONIE, KVM or raw installer" >&2; exit 1;; esac ;;
+	    *) echo "DOCKER_LOAD_ON_BOOT must be y or n" >&2; exit 1 ;;
+	esac
+	export DOCKER_LOAD_ON_BOOT="$(DOCKER_LOAD_ON_BOOT)"
+	export BUILD_WITH_BAZEL_WHEN_AVAILABLE="$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)"
 	# The receipt is private; only the completed summary bypasses the target log.
 	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
 	if [[ "$@" = "target/sonic-vs.img.gz" || ( "$@" = "target/sonic-vs.bin" && "$${SONIC_VS_IMAGE_TIMINGS:-}" = 1 ) ]]; then

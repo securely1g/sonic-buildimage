@@ -66,8 +66,11 @@ unknown** points. Date ranges end at snapshot time and
 use verified image execution starts. Carried retries count once at the original
 execution time. The chart shows the newest 10 matching measurements by default.
 Choose **Newest 60**, **Newest 120**, or **Show all** to see more. Hover or
-focus a point to see its measurement and revision. Select it to open the
-full-width **Run details**.
+focus a point to see the measured commit's short SHA and the first line of
+its message. For example, the master point for `b65761475de4` shows
+“Skip duplicate checks and nondeterminism stripping in sonic-device-data (#274)”.
+The commit link in the preview opens the full message on GitHub. Select the
+point itself to open the full-width **Run details**.
 
 The PR result comes from recognized image jobs (`make-vs` or `bazel-vs`), not
 the surrounding workflow conclusion. A successful workflow whose image job was
@@ -209,14 +212,13 @@ recipe. Its internal phase times were not recorded, so the dashboard shows that
 limitation instead of estimating a split. Adding the instrumentation cannot
 recover those missing measurements; a subsequent image build supplies them.
 On a native host-Make build with both the shared container batch and final
-installer markers, **Run details → Image build steps** opens directly above the
-separate **Bazel build breakdown**. Each of the five headings expands
-independently. For example, the master build at `9bbd301c` took 1h 55m 30s.
+installer markers, **Run details → Image build steps** shows five stages.
+Each heading expands independently. For example, the master build at `9bbd301c` took 1h 55m 30s.
 
 | Image build step | Time in that run | What to look for when expanded |
 | --- | ---: | --- |
-| Prepare kernel, packages and P4RT | 33m 44s | Device data, kernel preparation and P4RT dependency audit, SDK, source build and handoff |
-| Build and export Bazel container images | 46m 57s | Shared Bazel command and recorded export times by container |
+| Prepare kernel, packages and P4RT | 33m 44s | Kernel Bazel timing table, device data, and P4RT preparation and handoff |
+| Build and export Bazel container images | 46m 57s | Shared Bazel command, archive exports and the per-container timing table |
 | Finish Make containers and stage the root filesystem | 14m 32s | Make container builds, cached targets, base image loads and intermediate SquashFS |
 | Assemble the final ONIE installer | 15m 20s | Docker image loading, filesystem and store compression, payload ZIP and ONIE wrapping |
 | Finish the Make invocation | 4m 57s | Version metadata, builder exit and Trixie and Bookworm cleanup |
@@ -225,9 +227,24 @@ The headings use each run's elapsed time. Inner rows require measurements from
 that run. For example, the historical log recorded the ONIE recipe's total but
 lacked its internal phase markers. Recent instrumented runs can show those phases.
 Overlapping tasks count once when calculating uncovered wall time, and nested
-P4RT and root filesystem subtasks are included in the parent duration. The
-separate Bazel breakdown still reports compiler, cache and lock-wait time and the
-per-container activity in the shared command.
+P4RT and root filesystem subtasks are included in the parent duration.
+
+In **Prepare kernel, packages and P4RT**, the dashboard can recover the Bookworm
+Make invocation and paired Debian package and Python wheel build/cache and
+install operations from existing installer logs. Each package row shows its
+invocation count and the wall time during which at least one was active.
+For [build `a32f3340c63d`](https://github.com/securely1g/sonic-buildimage/actions/runs/44954951829/job/137003009031),
+these operations account for another 51.315 seconds, leaving 2m 42s unattributed.
+New instrumented runs also measure Trixie package cache rule evaluation and
+container manifest generation, including manifests whose contents are unchanged.
+
+Expand **Build and export Bazel container images** to see the batch's compiler,
+cache and lock-wait timings and its per-container table. The first stage shows
+the kernel recipe in a horizontal table when the kernel preparation task
+finishes before the container batch. For example, on master
+`b65761475de4`, kernel preparation took 153.118 seconds, including 135.521
+seconds in the Bazel launcher and 4.836 seconds staging Debian packages.
+Recipes whose stage cannot be identified remain in the job-level breakdown.
 
 The host Make step uses `TERM=dumb` to emit build and finish markers. Historical
 direct-slave terminal redraws lack task end times. A Make `cached` marker alone
@@ -235,15 +252,17 @@ cannot establish the Bazel cache-hit rate. Repeated target invocations remain
 separate observations. Log timestamps have finer precision than Actions step
 timestamps, so their totals can differ slightly.
 
-The collector reads at most 20 eligible missing job logs per refresh, newest
+The collector reads at most 20 eligible job logs per refresh, newest
 first. Each download has a 32 MiB size limit and a 45-second deadline. It retains
 only known task identifiers, fixed labels, outcomes and numeric timings; raw
 logs, command lines and machine details never enter the published snapshot.
 Completed measurements are cached with their exact run, attempt, job and step
 identity. Expired or unsupported logs are shown as unavailable. Temporary read
-failures can be retried without discarding the ordinary step timings. Older
-unsupported or incomplete results are retried once with the current parser
-revision, within the same log-read budget; successful measurements are retained.
+failures can be retried without discarding the ordinary step timings. Logs
+marked unsupported or incomplete by revision 1 are eligible for a bounded
+retry. Earlier successful host installer measurements with a container batch
+are refreshed for preparation attribution within the same budget. When an old
+log has expired or cannot be parsed, its existing measurements remain available.
 Step boundaries match both the start and end timestamps, so a preceding short
 setup step in the same timestamp second does not make the build ambiguous.
 Older snapshots without breakdowns remain supported and gain details incrementally.

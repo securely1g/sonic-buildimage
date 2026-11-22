@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -46,25 +47,77 @@ def remote_cache_options():
     ]
 
 
-def export_archive(source, destination):
-    """Leave the previous image intact if copying a new archive fails."""
-    if destination.is_file() and filecmp.cmp(source, destination, shallow=False):
+def boot_layout_labels(bazel, labels):
+    """Archive owners can opt into the native layout handoff; legacy aliases still export archives."""
+    candidates = {label + ".boot-oci" for label in labels if label.startswith("//") and ":" in label}
+    if not candidates:
+        return set()
+    packages = sorted({label.rsplit(":", 1)[0] + ":all" for label in candidates})
+    expression = 'filter("[.]boot-oci$", set(' + " ".join(packages) + "))"
+    result = subprocess.run([bazel, "query", "--output=label", expression], check=True,
+                            stdout=subprocess.PIPE, text=True)
+    return candidates.intersection(result.stdout.splitlines())
+
+
+def matching_archive(source, destination):
+    """Identify the already exported file by its open descriptor during comparison."""
+    try:
+        current = destination.open("rb")
+    except FileNotFoundError:
+        return None
+    with current, source.open("rb") as incoming:
+        original = os.fstat(current.fileno())
+        if original.st_size == os.fstat(incoming.fileno()).st_size:
+            while chunk := incoming.read(1024 * 1024):
+                if chunk != current.read(len(chunk)):
+                    return None
+            # A replacement cannot bind another inode to our layout. An in-place
+            # write invalidates this pre-comparison ctime.
+            return original
+    return None
+
+
+def export_archive(source, destination, *, bind_identity=False):
+    """Atomically publish an archive, optionally identifying the exact file exported."""
+    if bind_identity:
+        original = matching_archive(source, destination)
+        if original is not None:
+            return original
+    elif destination.is_file() and filecmp.cmp(source, destination, shallow=False):
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=destination.name + ".",
                                      delete=False) as output:
         temporary = Path(output.name)
-    try:
-        shutil.copyfile(source, temporary)
-        temporary.chmod(0o644)
-        temporary.replace(destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            shutil.copyfile(source, temporary)
+            temporary.chmod(0o644)
+            if bind_identity:
+                before = os.fstat(output.fileno())
+            temporary.replace(destination)
+            if bind_identity:
+                published = os.fstat(output.fileno())
+                if (published.st_size, published.st_mtime_ns) == (before.st_size, before.st_mtime_ns):
+                    return published
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def export_image(source, destination, layout=None):
+    """Export Make's archive and hand off only its matching configured OCI output."""
+    handoff = os.environ.get("SONIC_VS_BOOT_HANDOFF") if layout is not None else None
+    published = export_archive(source, destination, bind_identity=bool(handoff))
+    if layout is not None:
+        from tools.bazel.oci.boot_layout import publish_layout
+        publish_layout(layout, source, destination, handoff=handoff, published=published)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    layouts = commands.add_parser("boot-layouts", help="Print available OCI layout targets for archive labels")
+    layouts.add_argument("--bazel", required=True)
+    layouts.add_argument("--label", action="append", required=True)
     options = commands.add_parser("options", help="Print one Bazel option per line")
     options.add_argument("--cache-directory")
     options.add_argument("--arguments", default="", help="Additional shell-quoted Bazel options")
@@ -72,8 +125,12 @@ def main():
     export.add_argument("--query-output", required=True)
     export.add_argument("--output", type=Path, required=True)
     export.add_argument("--execution-root", type=Path)
+    export.add_argument("--layout-query-output", type=Path)
     args = parser.parse_args()
-    if args.command == "options":
+    if args.command == "boot-layouts":
+        for label in sorted(boot_layout_labels(args.bazel, args.label)):
+            print(label)
+    elif args.command == "options":
         arguments = cache_options(args.cache_directory) + shlex.split(args.arguments)
         try:
             # Apply the shared cache policy after caller options so Make image
@@ -96,7 +153,7 @@ def main():
             source = args.execution_root / source
         if not source.is_file() or not source.stat().st_size:
             parser.error("Bazel did not produce a nonempty archive")
-        export_archive(source, args.output)
+        export_image(source, args.output, args.layout_query_output)
 
 
 if __name__ == "__main__":

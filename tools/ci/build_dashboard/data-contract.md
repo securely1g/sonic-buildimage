@@ -38,12 +38,12 @@ and dashboard can also read the original version 1 single-file snapshots.
   `event`, `status`, `conclusion`, `pr_numbers`, `pr_association`, `pr_association_note`, `started_at`, `started_at_source`,
   `completed_at`, `updated_at`, `url`, `jobs`, `event_bases`.
   `source_sha` is GitHub's run `head_sha`; it is not replaced by the current PR
-  head. For master builds, optional `source_commit_title` contains the first
+  head. For all build sources, optional `source_commit_title` contains the first
   line of GitHub's `head_commit.message` when `head_commit.id` matches the
   run's full `source_sha`. The collector normalizes whitespace and bounds the
-  title to 256 characters. A normal refresh also fills in earlier master runs
+  title to 256 characters. A normal refresh also fills in earlier runs
   at the same SHA using the workflow metadata it already reads. A revision
-  without a verified title keeps its SHA and date in the picker.
+  without a verified title shows its SHA with “Commit message unavailable” on the chart.
   `pr_association` is `github` (run's explicit PR links), `commit` (exact
   current same-repository PR head, or a unique exact fork repository/branch/head
   match for a `pull_request` event), `branch` (unique same-repository feature
@@ -196,9 +196,13 @@ and dashboard can also read the original version 1 single-file snapshots.
   the existing step duration or successful-image measurement:
   - `version`: `1`; `source`: `github-job-log`.
   - Optional `parser_revision`: the parser revision used for this result
-    (absent means `1`). Old unsupported/incomplete results are eligible for
-    one bounded retry with the current parser. Successful measurements and
-    expired logs are not invalidated by a parser update.
+    (absent means `1`). Unsupported/incomplete results from revision 1 are eligible for
+    one bounded retry with the current parser. Revision 3 also refreshes
+    retained successful host VS installer steps with a recorded container
+    batch, within the same per-collection log budget. A permanent refresh
+    failure preserves the original measurements and parser revision, recording
+    the newer `refresh_attempt_revision` to avoid repeat fetches. A temporary
+    failure leaves the step eligible for retry.
   - `status`: `available` or `unavailable`; `reason`: a fixed reason or `null`.
   - `duration_seconds`: observed log interval, or `null` when unavailable.
   - `sections`: sequential outer Make invocations. Each contains a known `id`,
@@ -213,6 +217,16 @@ and dashboard can also read the original version 1 single-file snapshots.
     version collection, builder exit and host cleanup. Intermediate root filesystem
     timings must occur within the corresponding ONIE squashfs target's markers. A completed pair produces a task from the
     same fixed vocabulary. An unmatched optional marker contributes no duration.
+  - The native installer preparation stage recognizes the Bookworm submake by
+    its command and matching directory entry and exit. Before the shared
+    container batch, matched Trixie Debian package and Python wheel target
+    markers distinguish build/cache lookup from installation. The parser uses
+    target names to match pairs and publishes only the task category and ordinal.
+    New `trixie-cache-eval` start/end markers bracket Make's evaluation of
+    `Makefile.cache`. The `container-manifest` markers pair by container so
+    concurrent renders can finish in any order. The dashboard combines the
+    measured intervals per package category and for manifest generation,
+    counting overlapping wall time once within each stage.
   - A final-image task may additionally contain `phase_breakdown`:
     - `version`: `1`; `source`: `build-phase-markers`.
     - `status`: `available` or `unavailable`; `reason`: `null`, `not-recorded`,

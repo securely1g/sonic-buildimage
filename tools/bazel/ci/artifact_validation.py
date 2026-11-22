@@ -21,6 +21,17 @@ def sha(path):
     return sha256(path)
 
 
+def verify_apt_binding(selection, base_digest, *, metadata=None, selection_sha=None):
+    """Require APT and installed-package records from the same completed OCI base."""
+    records = (selection,) if metadata is None else (selection, metadata)
+    for record in records:
+        require(record.get("base_manifest_digest") == base_digest, "package stage uses a different completed OCI base")
+        require(record.get("dependency_check", {}).get("status") == "satisfied", "unsatisfied stage package dependencies")
+    if metadata is not None:
+        require(selection_sha and metadata.get("apt_selection_sha256") == selection_sha,
+                "package state does not bind the checked APT selection")
+
+
 def verify_make_archives(inputs):
     for variant in ("runtime", "debug"):
         archive = inputs[f"make_{variant}_archive"]
@@ -63,15 +74,71 @@ def elf_header(prefix, name):
     return {"elf_type": elf_type, "elf_machine": elf_machine}
 
 
-def file_metadata(stream, name):
-    """Hash a file stream in bounded memory and record its ELF header when present."""
+def static_i386_header(stream, size, name):
+    """Check the pinned compatibility program using the ELF32 program headers."""
+    def read(offset, count):
+        require(0 <= offset <= size and 0 <= count <= size - offset,
+                "compatibility ELF metadata exceeds file: " + name)
+        stream.seek(offset)
+        return stream.read(count)
+
+    header = struct.unpack("<HHIIIIIHHHHHH", read(16, 36))
+    kind, machine, version, _, offset, _, _, header_size, entry_size, count, _, _, _ = header
+    require(kind == 2 and machine == 3 and version == 1 and header_size == 52,
+            "compatibility ELF must be an i386 executable: " + name)
+    require(entry_size == 32 and count > 0 and count <= (size - offset) // entry_size,
+            "invalid compatibility ELF program headers: " + name)
+    for index in range(count):
+        program = struct.unpack("<IIIIIIII", read(offset + index * entry_size, entry_size))
+        require(program[0] != 3, "compatibility ELF has PT_INTERP: " + name)
+        if program[0] == 2:
+            require(program[4] % 8 == 0, "invalid compatibility ELF dynamic table: " + name)
+            require(program[1] <= size and program[4] <= size - program[1],
+                    "compatibility ELF dynamic table exceeds file: " + name)
+            for position in range(0, program[4], 8):
+                tag, _ = struct.unpack("<iI", read(program[1] + position, 8))
+                require(tag != 1, "compatibility ELF has DT_NEEDED: " + name)
+                if tag == 0:
+                    break
+    return {"elf_type": kind, "elf_machine": machine}
+
+
+def file_metadata(stream, name, *, static_i386=None):
+    """Hash and inspect payloads; static_i386 pins approved base paths by SHA-256.
+
+    The caller must declare an AMD64 compatibility policy. Unlisted ELF32 files
+    retain the default rejection, and matched bytes must be static EM_386.
+    """
     prefix = stream.read(64)
     hasher = hashlib.sha256(prefix)
     size = len(prefix)
     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
         hasher.update(chunk)
         size += len(chunk)
-    return {"sha256": hasher.hexdigest(), "size": size, **elf_header(prefix, name)}
+    digest = hasher.hexdigest()
+    if prefix[:6] == b"\x7fELF\x01\x01" and static_i386 and static_i386.get(name) == digest:
+        header = static_i386_header(stream, size, name)
+    else:
+        header = elf_header(prefix, name)
+    return {"sha256": digest, "size": size, **header}
+
+
+def verify_swss_component_labels(labels, packages):
+    """Verify the version labels inherited from the installed SONiC base packages."""
+    for name in ("libswsscommon", "sonic-supervisord-utilities-rs"):
+        require(labels.get("com.azure.sonic.versions." + name) == packages[name]["Version"],
+                "Inherited component label differs: " + name)
+
+
+def verify_inherited_files(parent, installed, replacements, mutable, image):
+    """Verify all parent files, matching permitted replacements to independent owner TAR metadata."""
+    for path, original in parent.items():
+        if original["kind"] == "directory" or path in mutable:
+            continue
+        expected = replacements.get(path, original)
+        actual = installed.get(path, {})
+        require(all(actual.get(key) == value for key, value in expected.items()),
+                image + " changed inherited payload: " + path)
 
 
 def payload(path, require_root=True):

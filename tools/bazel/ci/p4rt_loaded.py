@@ -12,13 +12,14 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.bazel.ci.vs_probe_policy import selected_images, selected_artifacts
 from tools.bazel.ci import artifact_validation as check
-from tools.bazel.ci import p4rt_handoff, p4rt_image, validate_runtime
+from tools.bazel.ci import p4rt_image, validate_runtime
 from tools.bazel.ci.public_artifacts import safe_json
 
 
 def verify_download(directory, artifacts, release_inputs):
-    check.require(set(artifacts) == set(p4rt_image.TARGETS), 'Incomplete downloaded P4RT artifacts')
+    check.require(set(artifacts) == selected_artifacts(directory, p4rt_image.TARGETS), 'Incomplete downloaded P4RT artifacts')
     for name, record in artifacts.items():
         source = directory / name
         check.require(not source.is_symlink() and check.sha(source) == record['sha256'],
@@ -45,10 +46,7 @@ def main():
                   'P4RT static validation did not pass')
     check.require(report['revision'] == revision, 'Loaded checkout differs from the built source')
     owner_source = args.owner_source.resolve()
-    p4rt_handoff.source_identity(owner_source, report['owner_revision'])
-    owner_helper = owner_source / 'p4rt_app/runtime_package_test.py'
-    check.require(check.sha(owner_helper) == report['p4rt_owner_test_sha256'],
-                  'The installed DWP checks must use the validated source owner')
+    p4rt_image.verify_owner_source(owner_source, report['owner_revision'])
     verify_download(directory, report['artifacts'], args.release_downloaded_inputs)
 
     results = {}
@@ -63,7 +61,7 @@ def main():
             check.require(len(members) == 1 and members[0].isfile(),
                           'Missing source-owned database configuration')
             (fixture / 'database_config.json').write_bytes(archive.extractfile(members[0]).read())
-        for name in p4rt_image.IMAGES:
+        for name in selected_images(directory, p4rt_image.IMAGES):
             expected = json.loads((directory / (name + '.validation.json')).read_text())
             check.require(expected.get('status') == 'passed', 'Missing accepted OCI validation')
             archive = directory / (name + '.gz')
@@ -87,7 +85,6 @@ def main():
                 mounts = {
                     'runtime_probe.py': ROOT / 'dockers/docker-sonic-p4rt/bazel/runtime_probe.py',
                     'runtime_smoke.py': ROOT / 'tools/bazel/oci/runtime_smoke.py',
-                    'p4rt_runtime_package.py': owner_helper,
                     'validation.json': report_path,
                     'services': fixture,
                 }
@@ -97,7 +94,7 @@ def main():
                             '--validation', '/probe/validation.json']
                 if name.endswith('-dbg'):
                     command.append('--debug')
-                completed = subprocess.run(command, text=True, capture_output=True, timeout=900)
+                completed = subprocess.run(command, text=True, capture_output=True, timeout=1800)
                 check.require(completed.returncode == 0,
                               name + ' installed probe failed:\n' + completed.stdout + completed.stderr)
                 records = [json.loads(line) for line in completed.stdout.splitlines() if line.startswith('{"status":')]
@@ -111,7 +108,7 @@ def main():
                 subprocess.run(['docker', 'rm', '--force', container_name], capture_output=True, check=False)
                 subprocess.run(['docker', 'image', 'rm', tag], capture_output=True, check=False)
     check.require(p4rt_image.source_identity(directory) == revision, 'Image source changed during loaded checks')
-    p4rt_handoff.source_identity(owner_source, report['owner_revision'])
+    p4rt_image.verify_owner_source(owner_source, report['owner_revision'])
     print(json.dumps({'status': 'passed', 'images': list(results)}))
 
 

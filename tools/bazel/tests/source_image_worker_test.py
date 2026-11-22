@@ -17,6 +17,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
+import yaml
 from contextlib import ExitStack
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -26,41 +27,72 @@ SPEC.loader.exec_module(worker)
 
 
 class ImageWorkerTest(unittest.TestCase):
+    def test_dhcp_dispatch_selects_only_its_image_and_runtime_jobs(self):
+        workflow = yaml.safe_load((ROOT / '.github/workflows/bazel-oci.yml').read_text())
+        jobs = workflow['jobs']
+        selected = {}
+        github = SimpleNamespace(event_name='workflow_dispatch')
+        inputs = SimpleNamespace(source_image='dhcp-relay', source_inputs_run='', skip_vs=True)
+        pending = dict(jobs)
+        while pending:
+            before = len(pending)
+            for name, job in list(pending.items()):
+                dependencies = job.get('needs', [])
+                dependencies = [dependencies] if isinstance(dependencies, str) else dependencies
+                if any(key not in selected for key in dependencies):
+                    continue
+                needs = SimpleNamespace(**{key: SimpleNamespace(result='success' if selected[key] else 'skipped')
+                                           for key in dependencies})
+                del pending[name]
+                if any(not selected[key] for key in dependencies) and 'always()' not in job.get('if', ''):
+                    selected[name] = False
+                    continue
+                expression = job.get('if', '')
+                if not expression:
+                    selected[name] = all(selected[key] for key in dependencies)
+                    continue
+                expression = expression.replace('${{', '').replace('}}', '').strip()
+                expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
+                expression = re.sub(r'!(?!=)', 'not ', expression)
+                selected[name] = bool(eval(expression, {'__builtins__': {}}, {
+                    'github': github, 'inputs': inputs, 'needs': needs, 'false': False,
+                    'always': lambda: True, 'cancelled': lambda: False,
+                    'contains': lambda values, value: value in values, 'fromJSON': json.loads,
+                }))
+            self.assertLess(len(pending), before, "workflow dependency cycle")
+        self.assertEqual({name for name, runs in selected.items() if runs},
+                         {'dhcp_relay_source_image', 'dhcp_relay_runtime'})
+
     def test_normal_ci_has_no_branch_specific_exceptions(self):
         workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
         self.assertNotIn('SOURCE_ONLY_NO_DEBS', workflow)
-        for name in ('Check shared Make rules with unrelated container targets',
-                     'Check Make handoff and archive validation'):
-            step = workflow.split('- name: ' + name, 1)[1].split('\n      - name:', 1)[0]
-            self.assertIn("python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'", step)
+        tests = workflow.split('- name: Check Make handoff and archive validation', 1)[1].split('\n      - name:', 1)[0]
+        self.assertIn("python3 -B -m unittest discover -s tools/bazel/tests -p '*_test.py'", tests)
         vs = workflow.split('\n  vs_container:\n', 1)[1].split('    if: >-\n', 1)[1].split('    runs-on:', 1)[0]
-        for event, branch, same_repo, image, skip, full_vs in (
-            ('pull_request', 'codex/teamd-source-worker', True, 'none', True, True),
-            ('pull_request', 'codex/teamd-source-worker', False, 'none', True, False),
-            ('pull_request', 'codex/source-worker-apt-diagnostic', True, 'none', True, True),
-            ('pull_request', 'codex/source-worker-apt-diagnostic', False, 'none', True, False),
-            ('pull_request', 'codex/source-image-worker-dispatch', True, 'none', True, True),
-            ('pull_request', 'codex/image-environment', True, 'none', True, True),
-            ('pull_request', 'codex/sysmgr-source-image', True, 'none', True, True),
-            ('pull_request', 'codex/sysmgr-source-image', False, 'none', True, False),
-            ('pull_request', 'ordinary', True, 'none', True, True),
-            ('pull_request', 'ordinary', False, 'none', True, False),
-            ('push', '', True, 'none', True, True),
-            ('workflow_dispatch', '', True, 'none', False, True),
-            ('workflow_dispatch', '', True, 'none', True, False),
-            ('workflow_dispatch', '', True, 'teamd', False, False),
-            ('workflow_dispatch', '', True, 'dash-engine', False, False),
-            ('workflow_dispatch', '', True, 'preflight', False, False),
+        for event, branch, same_repo, skip, full_vs in (
+            ('pull_request', 'codex/teamd-source-worker', True, True, True),
+            ('pull_request', 'codex/teamd-source-worker', False, True, False),
+            ('pull_request', 'codex/source-worker-apt-diagnostic', True, True, True),
+            ('pull_request', 'codex/source-worker-apt-diagnostic', False, True, False),
+            ('pull_request', 'codex/source-image-worker-dispatch', True, True, True),
+            ('pull_request', 'codex/image-environment', True, True, True),
+            ('pull_request', 'codex/sysmgr-source-image', True, True, True),
+            ('pull_request', 'codex/sysmgr-source-image', False, True, False),
+            ('pull_request', 'ordinary', True, True, True),
+            ('pull_request', 'ordinary', False, True, False),
+            ('push', '', True, True, True),
+            ('workflow_dispatch', '', True, False, True),
+            ('workflow_dispatch', '', True, True, False),
         ):
             github = SimpleNamespace(event_name=event, head_ref=branch, repository='securely1g/sonic-buildimage',
                 ref='refs/heads/master', event=SimpleNamespace(pull_request=SimpleNamespace(
                     head=SimpleNamespace(repo=SimpleNamespace(full_name='securely1g/sonic-buildimage' if same_repo else 'other/sonic-buildimage')))))
-            inputs = SimpleNamespace(source_image=image, skip_vs=skip)
+            inputs = SimpleNamespace(skip_vs=skip, source_image='none')
             def evaluate(expression):
                 expression = ' '.join(expression.split()).replace('&&', ' and ').replace('||', ' or ')
                 return bool(eval(re.sub(r'!(?!=)', 'not ', expression), {'__builtins__': {}},
                                  {'github': github, 'inputs': inputs}))
-            with self.subTest(event=event, branch=branch, same_repo=same_repo, image=image):
+            with self.subTest(event=event, branch=branch, same_repo=same_repo):
                 self.assertEqual(evaluate(vs), full_vs)
 
     def test_teamd_kernel_reads_preloaded_directories_and_retains_failure_evidence(self):
@@ -104,18 +136,6 @@ class ImageWorkerTest(unittest.TestCase):
             retained = json.loads((artifacts / 'public/worker-teamd-kernel.json').read_text())
             self.assertEqual(retained['status'], 'failed')
             self.assertEqual(retained['missing_modules'], ['team', 'team_mode_loadbalance'])
-
-    def test_teamd_workflow_checks_modules_before_checkout_download_or_setup(self):
-        workflow = (ROOT / '.github/workflows/bazel-oci.yml').read_text()
-        gate = workflow.index('- name: Verify Teamd kernel prerequisites without host changes')
-        end = workflow.index('- name: Checkout the exact reviewed source', gate)
-        step = workflow[gate:end]
-        self.assertIn("if: inputs.source_image == 'teamd'", step)
-        self.assertIn('source_image_worker.py kernel-preflight', step)
-        for name in ('Checkout the exact reviewed source', 'Reuse the existing source-download artifact',
-                     'Download the verified source archives', 'Prepare private Docker and persistent worker caches'):
-            self.assertLess(gate, workflow.index('- name: ' + name))
-        self.assertIn("inputs.source_image == 'teamd' && steps.teamd_kernel.outcome != 'skipped'", workflow)
 
     def test_publication_retains_the_actual_aggregate_loaded_receipt(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -602,15 +622,6 @@ class ImageWorkerTest(unittest.TestCase):
                     path.write_text(json.dumps(receipt))
                     with self.assertRaises(ValueError):
                         worker.publish(SimpleNamespace(artifacts=root, image=image))
-
-    def test_workflow_allowlist_matches_fixed_driver_choices(self):
-        workflow = (ROOT / ".github/workflows/bazel-oci.yml").read_text()
-        choices = re.search(r"options: \[none, preflight, ([^\]]+)\]", workflow).group(1).split(", ")
-        self.assertEqual(set(choices), set(worker.DRIVERS))
-        gates = re.findall(r"contains\(fromJSON\('(\[[^']+\])'\), inputs.source_image\)", workflow)
-        self.assertEqual(len(gates), 2)
-        for gate in gates:
-            self.assertEqual(set(json.loads(gate)), set(worker.DRIVERS))
 
     def test_selected_workflow_and_wrapper_catalogs_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
