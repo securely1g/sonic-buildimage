@@ -275,8 +275,8 @@ def batch_image_starts(epoch_ms, bounds, archives, build_record):
     build_start = build_record["start_epoch_seconds"]
     build_end = build_start + build_record["seconds"]
     phases = defaultdict(set)
-    for archive, (owner, _) in archives.items():
-        phases[owner].add(f"export-{archive}")
+    for archive, (owner, label) in archives.items():
+        phases[owner].add(("layout-" if label.endswith(".boot-oci") else "export-") + archive)
     starts = {}
     for owner, (first_us, last_us) in bounds.items():
         first = epoch_ms / 1000 + first_us / 1e6
