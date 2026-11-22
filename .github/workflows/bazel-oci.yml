@@ -1088,12 +1088,16 @@ jobs:
 
       - name: Prepare runner-local Bazel repository contents cache
         env:
-          CACHE_PARENT: ${{ runner.workspace }}/vs-cache/repo-contents
+          VS_RUNNER_WORKSPACE: ${{ runner.workspace }}
           CACHE_SCOPE: ${{ github.event_name == 'push' && 'master' || github.event_name == 'pull_request' && 'review' || 'dispatch' }}
         run: |
           set -euo pipefail
-          cache="$CACHE_PARENT/$CACHE_SCOPE"
-          test "$(realpath -m -- "$cache")" = "$cache"
+          workspace=$(realpath -e -- "$VS_RUNNER_WORKSPACE")
+          cache="$workspace/vs-cache/repo-contents/$CACHE_SCOPE"
+          if [[ $(realpath -m -- "$cache") != "$cache" ]]; then
+            echo 'Refusing redirected repository cache below the runner workspace' >&2
+            exit 1
+          fi
           install -d -m 0700 -- "$cache"
           test -w "$cache"
           printf 'SONIC_BAZEL_REPO_CONTENTS_SOURCE=%s\n' "$cache" >> "$GITHUB_ENV"

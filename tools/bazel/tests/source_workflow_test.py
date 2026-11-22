@@ -47,7 +47,7 @@ class ArchiveCachePolicyTest(unittest.TestCase):
         job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["vs_container"]
         step = next(step for step in job["steps"]
                     if step.get("name") == "Prepare runner-local Bazel repository contents cache")
-        self.assertEqual(step["env"]["CACHE_PARENT"], "${{ runner.workspace }}/vs-cache/repo-contents")
+        self.assertEqual(step["env"]["VS_RUNNER_WORKSPACE"], "${{ runner.workspace }}")
         self.assertEqual(step["env"]["CACHE_SCOPE"],
                          "${{ github.event_name == 'push' && 'master' || "
                          "github.event_name == 'pull_request' && 'review' || 'dispatch' }}")
@@ -55,17 +55,25 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                       job["env"]["BAZEL_CONTAINER_ARGS"].split())
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            parent = directory / "vs-cache" / "repo-contents"
+            disk = directory / "data disk"
+            disk.mkdir()
+            workspace = directory / "runner workspace"
+            workspace.symlink_to(disk, target_is_directory=True)
+            parent = disk / "vs-cache" / "repo-contents"
+            environment_file = directory / "github-env"
+            summary_file = directory / "summary"
+
+            def prepare(scope):
+                environment_file.write_text("")
+                summary_file.write_text("")
+                return subprocess.run(
+                    ["bash", "-c", step["run"]], text=True, capture_output=True,
+                    env=dict(os.environ, VS_RUNNER_WORKSPACE=str(workspace), CACHE_SCOPE=scope,
+                             GITHUB_ENV=str(environment_file), GITHUB_STEP_SUMMARY=str(summary_file)))
+
             for scope, expected in (("review", 0), ("dispatch", 0), ("master", 0), ("review", 1)):
                 with self.subTest(scope=scope, entries=expected):
-                    environment_file = directory / "github-env"
-                    summary_file = directory / "summary"
-                    environment_file.write_text("")
-                    summary_file.write_text("")
-                    result = subprocess.run(
-                        ["bash", "-c", step["run"]], text=True, capture_output=True,
-                        env=dict(os.environ, CACHE_PARENT=str(parent), CACHE_SCOPE=scope,
-                                 GITHUB_ENV=str(environment_file), GITHUB_STEP_SUMMARY=str(summary_file)))
+                    result = prepare(scope)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     cache = parent / scope
                     self.assertEqual(environment_file.read_text().splitlines(),
@@ -77,6 +85,16 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                     else:
                         marker.parent.mkdir()
                         marker.write_bytes(b"cached")
+
+            parent.rename(disk / "previous cache")
+            outside = directory / "outside"
+            outside.mkdir()
+            parent.symlink_to(outside, target_is_directory=True)
+            result = prepare("review")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Refusing redirected repository cache", result.stderr)
+            self.assertEqual(list(outside.iterdir()), [])
+            self.assertEqual(environment_file.read_text(), "")
 
     def test_local_bazel_cache_is_step_scoped_and_shared_package_cache_is_preserved(self):
         workflow = yaml.safe_load(WORKFLOW.read_text())
