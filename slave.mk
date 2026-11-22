@@ -1684,7 +1684,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 
 	$(FOOTER)
 
-# An existing installer must be rebuilt when switching its image-store format.
+# Rebuild retained VS installers when their image store or device-data input changes.
 ifeq ($(CONFIGURED_PLATFORM),vs)
 vs_boot_mode_stamp := $(TARGET_PATH)/.installer-docker-load-on-boot
 ifeq ($(DOCKER_LOAD_ON_BOOT),y)
@@ -1701,7 +1701,8 @@ endif
 .PHONY: check-vs-boot-mode
 $(vs_boot_mode_stamp): check-vs-boot-mode
 	@mkdir -p "$(@D)"
-	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' | cmp -s - "$@" || printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' > "$@"
+	@mode='$(DOCKER_LOAD_ON_BOOT):$(vs_device_data_tar)'
+	@printf '%s\n' "$$mode" | cmp -s - "$@" || printf '%s\n' "$$mode" > "$@"
 endif
 
 # targets for building installers with base image
@@ -1736,10 +1737,10 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_INSTALLS)) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_BUILD_INSTALLS)) \
 		$$(addprefix $(PYTHON_WHEELS_PATH)/,$$($$*_PYTHON_WHEELS)) \
+        $$(installer_device_data_inputs) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) \
                 $(LINUX_KERNEL) \
                 $(LINUX_KBUILD) \
-                $(SONIC_DEVICE_DATA) \
                 $(IFUPDOWN2) \
                 $(MAKEDUMPFILE) \
                 $(KDUMP_TOOLS) \
@@ -1805,6 +1806,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 		export SONIC_IMAGE_TIMING_FILE
 		trap 'python3 ./scripts/image_timing.py discard 2>/dev/null || true' EXIT
 	fi
+	export installer_device_data_tar="$(installer_device_data_tar)"
 	# Pass initramfs and linux kernel explicitly. They are used for all platforms
 	export debs_path="$(IMAGE_DISTRO_DEBS_PATH)"
 	export files_path="$(FILES_PATH)"
