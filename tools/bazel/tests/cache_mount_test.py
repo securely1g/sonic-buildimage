@@ -112,26 +112,29 @@ print(json.dumps({'output': str(args.output)}))
                                      sentinel.stat().st_uid, sentinel.stat().st_mode,
                                      sentinel.stat().st_mtime_ns, sentinel.read_bytes()))
 
-    def make(self, makefile, mode="n", source=None, package_cache=None, run_as=None, cwd=ROOT):
+    def make(self, makefile, mode="n", source=None, package_cache=None, run_as=None, cwd=ROOT,
+             repo_contents=None):
         config = (ROOT / "rules/config").read_text().splitlines()
         defaults = "\n".join(line for line in config if line.startswith(
             ("BUILD_WITH_BAZEL_WHEN_AVAILABLE ?=", "SONIC_BAZEL_CACHE_SOURCE ?=",
-             "SONIC_DPKG_CACHE_SOURCE ?=")))
+             "SONIC_DPKG_CACHE_SOURCE ?=", "SONIC_BAZEL_REPO_CONTENTS_SOURCE ?=")))
         environment = dict(os.environ)
         for name in ("BUILD_WITH_BAZEL_WHEN_AVAILABLE", "SONIC_BAZEL_CACHE_SOURCE",
-                     "SONIC_DPKG_CACHE_SOURCE", "MAKEFLAGS", "MFLAGS"):
+                     "SONIC_DPKG_CACHE_SOURCE", "SONIC_BAZEL_REPO_CONTENTS_SOURCE", "MAKEFLAGS", "MFLAGS"):
             environment.pop(name, None)
         credentials = ({} if run_as is None else
                        {"user": run_as.pw_uid, "group": run_as.pw_gid, "extra_groups": []})
         return subprocess.run(
             ["make", "--no-print-directory", "-f", "-", "check", f"BUILD_WITH_BAZEL_WHEN_AVAILABLE={mode}"]
             + ([] if source is None else [f"SONIC_BAZEL_CACHE_SOURCE={source}"])
-            + ([] if package_cache is None else [f"SONIC_DPKG_CACHE_SOURCE={package_cache}"]),
+            + ([] if package_cache is None else [f"SONIC_DPKG_CACHE_SOURCE={package_cache}"])
+            + ([] if repo_contents is None else [f"SONIC_BAZEL_REPO_CONTENTS_SOURCE={repo_contents}"]),
             input=defaults + "\n" + makefile, cwd=cwd, env=environment,
             text=True, capture_output=True, check=False, **credentials,
         )
 
-    def cache_mount(self, directory, mode="n", source=None, package_cache=None, run_as=None):
+    def cache_mount(self, directory, mode="n", source=None, package_cache=None, run_as=None,
+                    repo_contents=None):
         work = (ROOT / "Makefile.work").read_text()
         start = work.index("# Reuse downloads and action outputs")
         end = work.index('# User name and tag for "docker-*" images', start)
@@ -159,7 +162,7 @@ check:
 	@$(DOCKER_RUN) builder-image
 """
         return self.make(makefile, mode, source, package_cache, run_as=run_as,
-                         cwd=directory if run_as else ROOT)
+                         cwd=directory if run_as else ROOT, repo_contents=repo_contents)
 
     def test_default_uses_package_cache_location_independently_of_selector(self):
         """Retain the shared cache location for all Bazel consumers and allow an explicit opt-out."""
@@ -219,10 +222,23 @@ check:
                 result = self.cache_mount(directory, mode, package_cache=package_cache)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 record = json.loads(result.stdout)
+                self.assertNotIn("/bazel_repo_contents_cache", record["mounts"])
                 self.assertEqual(record["mounts"]["/bazel_cache"], [str(source), "rw"])
                 self.assertEqual(record["source_owner"], os.getuid())
                 self.assertTrue((source / "container-cache-write").is_file())
                 self.assert_system_cache_settings(record)
+
+    def test_prepared_repository_mount_is_separate_from_action_and_download_caches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            cache = directory / "existing caches"
+            prepared = directory / "runner's prepared repositories"
+            prepared.mkdir()
+            result = self.cache_mount(directory, source=cache, repo_contents=prepared)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            mounts = json.loads(result.stdout)["mounts"]
+            self.assertEqual(mounts["/bazel_cache"], [str(cache), "rw"])
+            self.assertEqual(mounts["/bazel_repo_contents_cache"], [str(prepared), "rw"])
 
     def test_explicit_empty_cache_adds_no_cache_mount_or_system_rc(self):
         """Disabling the cache must also avoid an RC that refers to an unmounted shared path."""

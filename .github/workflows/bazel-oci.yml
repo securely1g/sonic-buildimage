@@ -27,6 +27,10 @@ on:
         description: Run source and packaging tests without building or validating VS containers
         type: boolean
         default: true
+      vs_runner_label:
+        description: Additional VS runner label for repeat builds on the same host
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -951,7 +955,7 @@ jobs:
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && inputs.source_image == 'none' && !inputs.skip_vs))
-    runs-on: [self-hosted, linux, bazel-x64, vs]
+    runs-on: [self-hosted, linux, bazel-x64, vs, "${{ inputs.vs_runner_label || 'X64' }}"]
     timeout-minutes: 720
     defaults:
       run:
@@ -988,6 +992,7 @@ jobs:
       # cache. Keep the output base and shared remote/repository caches available.
       BAZEL_CONTAINER_ARGS: >-
         ${{ inputs.enable_debug_layer && '--disk_cache=' || '' }}
+        --repo_contents_cache=/bazel_repo_contents_cache
         --remote_local_fallback
         --incompatible_remote_local_fallback_for_remote_cache
         --experimental_remote_downloader=grpc://172.16.0.4:9092
@@ -1080,6 +1085,20 @@ jobs:
             --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json
           printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
             "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
+
+      - name: Prepare runner-local Bazel repository contents cache
+        env:
+          CACHE_PARENT: ${{ runner.workspace }}/vs-cache/repo-contents
+          CACHE_SCOPE: ${{ github.event_name == 'push' && 'master' || github.event_name == 'pull_request' && 'review' || 'dispatch' }}
+        run: |
+          set -euo pipefail
+          cache="$CACHE_PARENT/$CACHE_SCOPE"
+          test "$(realpath -m -- "$cache")" = "$cache"
+          install -d -m 0700 -- "$cache"
+          test -w "$cache"
+          printf 'SONIC_BAZEL_REPO_CONTENTS_SOURCE=%s\n' "$cache" >> "$GITHUB_ENV"
+          entries=$(find "$cache" -mindepth 2 -maxdepth 2 -type f -name '*.recorded_inputs' -printf . | wc -c)
+          printf 'Prepared repository cache entries at job start (%s): %s\n' "$CACHE_SCOPE" "$entries" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Authenticate to the slave image registry
         env:
