@@ -833,3 +833,10 @@ bazel_dep(name = "bash-tacplus", version = "1.0.0.sonic.1", repo_name = "bash_ta
 local_path_override(module_name = "bash-tacplus", path = "src/tacacs/bash_tacplus")
 
 use_repo(apt, "vs_host_debian")
+
+# Published Python, data and Rust installation interfaces for the VS host.
+bazel_dep(
+    name = "sonic-host-services",
+    version = "1.0.0-0e4c6a355c80396345a31232e30d20168060ae10",
+    repo_name = "sonic_host_services",
+)
