@@ -217,7 +217,7 @@ jobs:
         run: |
           umask 077
           verification_script="$(bazel cquery --output=files @sonic_linux_kernel//tools/bazel:verify_debug.py)"
-          execution_root="$(bazel info execution_root)"
+          execution_root="$(dirname "$(realpath bazel-out)")"
           verification_tools="$(dirname -- "$(realpath -- "$execution_root/$verification_script")")"
           docker run --rm --platform "linux/${{ matrix.arch }}" \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/sonic,readonly" \
