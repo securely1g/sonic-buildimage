@@ -61,30 +61,27 @@ class ArchiveCachePolicyTest(unittest.TestCase):
             workspace.symlink_to(disk, target_is_directory=True)
             parent = disk / "vs-cache" / "repo-contents"
             environment_file = directory / "github-env"
-            summary_file = directory / "summary"
 
             def prepare(scope):
                 environment_file.write_text("")
-                summary_file.write_text("")
                 return subprocess.run(
                     ["bash", "-c", step["run"]], text=True, capture_output=True,
                     env=dict(os.environ, VS_RUNNER_WORKSPACE=str(workspace), CACHE_SCOPE=scope,
-                             GITHUB_ENV=str(environment_file), GITHUB_STEP_SUMMARY=str(summary_file)))
+                             GITHUB_ENV=str(environment_file)))
 
-            for scope, expected in (("review", 0), ("dispatch", 0), ("master", 0), ("review", 1)):
-                with self.subTest(scope=scope, entries=expected):
+            for scope in ("review", "dispatch", "master"):
+                with self.subTest(scope=scope):
                     result = prepare(scope)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     cache = parent / scope
                     self.assertEqual(environment_file.read_text().splitlines(),
                                      [f"SONIC_BAZEL_REPO_CONTENTS_SOURCE={cache}"])
-                    self.assertIn(f"({scope}): {expected}", summary_file.read_text())
-                    marker = cache / "llvm" / "prepared.recorded_inputs"
-                    if expected:
-                        self.assertEqual(marker.read_bytes(), b"cached")
-                    else:
-                        marker.parent.mkdir()
-                        marker.write_bytes(b"cached")
+                    self.assertEqual(list(cache.iterdir()), [])
+                    (cache / "prepared-input").write_text(scope)
+
+            result = prepare("review")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((parent / "review" / "prepared-input").read_text(), "review")
 
             parent.rename(disk / "previous cache")
             outside = directory / "outside"

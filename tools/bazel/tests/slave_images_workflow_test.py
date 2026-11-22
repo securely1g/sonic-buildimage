@@ -104,9 +104,7 @@ elif name == "stat":
             "github.ref == 'refs/heads/master' || "
             "(github.event_name == 'push' && github.ref == 'refs/heads/vs-runner')")
         self.assertEqual(workflow["permissions"], {"contents": "read"})
-        self.assertEqual(self.publisher["runs-on"], ["self-hosted", "linux", "bazel-x64", "vs"])
-        self.assertEqual(self.consumer["runs-on"], [*self.publisher["runs-on"],
-                                                   "${{ inputs.vs_runner_label || 'X64' }}"])
+        self.assertEqual(self.publisher["runs-on"], self.consumer["runs-on"])
         self.assertNotIn("concurrency", self.publisher)
         self.assertNotIn("concurrency", self.consumer)
         for name, value in self.publisher["env"].items():

@@ -327,12 +327,6 @@ each use a separate directory. The builder mounts the selected directory at
 reproducible contents across fresh output bases, including the SymCrypt LLVM
 distribution. The job still clears its download and action caches before building.
 
-For a cold/warm comparison, dispatch `Bazel OCI` twice at the same revision
-with `skip_vs=false` and the same unique `vs_runner_label`. Verify the runner
-ID and the initial repository entry count in each run. Compare LLVM repository
-spans in the raw `vs-container-images` build profile and the duration of the
-`Build sonic-vs.bin through the host Make wrapper` step.
-
 The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
 the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
 registry login, Make reuses a local computed-tag slave image, pulls the matching
