@@ -11,9 +11,9 @@ SOCKET = "/run/sonic-vs-cleanup/control.sock"
 LIMIT = 65536
 
 
-def request(message, path=SOCKET):
+def request(message, path=SOCKET, timeout=30):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(30)
+        connection.settimeout(timeout)
         connection.connect(str(path))
         connection.sendall(json.dumps(message).encode() + b"\n")
         with connection.makefile("rb") as stream:

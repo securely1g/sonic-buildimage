@@ -115,6 +115,54 @@ admission, and stopping the service stops its owned runner processes.
 The supervisor keeps umask `0077` for private data; only the runner child uses
 `0022`, as required by host VS preflight and Docker build users.
 
+## Stop an idle canary for maintenance
+
+Use the installed, root-owned supervisor's maintenance command, **not**
+`systemctl stop`, when the current listener has not accepted a job:
+
+```bash
+sudo python3 -B /opt/sonic-vs-cleanup/tools/ci/runner/vs_cleanup_supervisor.py \
+  --stop-idle
+sudo systemctl show sonic-vs-cleanup.service \
+  --property=ActiveState --property=SubState
+```
+
+The command acknowledges a stop request; wait until the service is **inactive**
+and the journal is exactly `{"phase": "idle"}` before changing settings or
+installing code. Keep the previous session archive. After maintenance, start
+the service normally and verify a fresh `Listening for Jobs` message. No journal
+reset, manual registration removal, checkout deletion or cache reclamation is
+performed for a verified idle stop.
+
+Only a root peer may request this operation. The running supervisor must have
+observed the listener's version and readiness, no pre-worker `Running job:`
+announcement, and no enrollment. It checks the exact canary's server identity,
+labels and idle status, signals only its owned `Runner.Listener` using a pidfd,
+and reaps it. It then requires complete listener output, the **actual listener's**
+successful-exit marker, no worker or container, and the same runner offline and
+not busy before persisting an `idle_stopped` archive and idle journal.
+`run.sh` alone can return success after an underlying listener error, so its exit
+status is not proof. Output is still forwarded to the service journal.
+
+The verified output protocol is limited to Actions runner **v2.338.2**. Other
+versions, truncated/invalid output, retries, missing exit proof, API errors and
+unidentifiable processes fail closed. Listener interruption is bounded to 120
+seconds; offline confirmation uses `completion_timeout`. A failed command or
+failed service must be inspected, not treated as completed maintenance.
+
+Assignment can race with the request. If that job enrolls, the supervisor uses
+normal final-result/cleanup recovery and exits without admitting a successor.
+If job activity is observed without enrollment, it retains the ambiguous
+journal and stops out of service. Never interpret absence of enrollment as
+absence of a job. Ordinary `systemctl stop` remains an interrupt and preserves
+the existing enrolled-session recovery behavior.
+
+For the first upgrade from a revision without this command, the already running
+daemon cannot verify its past listener output. Use the existing controlled
+**enrolled-session interruption** procedure, install while stopped, and restart
+with the enrolled journal intact. Do not run the new command against an old
+daemon or reset an unenrolled journal just to install the fix.
+
 ## First controlled job: retain workflow cleanup
 
 Keep `defer_cleanup=false` and `reclaim_caches=false`. Start the service manually
@@ -147,7 +195,7 @@ No separate probe workflow is required.
 
 ## Enable deferred cleanup only after validation
 
-Drain the canary, stop its supervisor when idle, and set `defer_cleanup=true`
+Drain the canary, stop its supervisor with `--stop-idle`, and set `defer_cleanup=true`
 and `reclaim_caches=true` in the root-owned config. Restart and dispatch a
 controlled build. Do not make these settings production defaults.
 

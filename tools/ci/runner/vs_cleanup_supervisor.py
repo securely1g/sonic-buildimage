@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 from tools.bazel.ci.cleanup_runner_bazel_cache import cleanup as cleanup_caches
 from tools.bazel.ci.cleanup_vs_workspace import cleanup as cleanup_checkout
 from tools.bazel.ci.cleanup_vs_workspace import checkout_path
+from tools.ci.runner.vs_cleanup_client import request
 
 
 LABEL = "vs-cleanup-canary"
@@ -35,6 +36,9 @@ HOST_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 LIMIT = 65536
 FINAL_RESULTS = {"success", "failure", "cancelled", "timed_out", "action_required",
                  "neutral", "skipped", "stale"}
+IDLE_STOP_VERSION = "2.338.2"
+IDLE_STOP_PROOF = {"runner_version": IDLE_STOP_VERSION, "output_complete": True,
+                   "no_job_started": True, "orderly_exit": True}
 
 
 def positive(value):
@@ -70,6 +74,70 @@ def atomic_json(path, value):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+class ListenerOutput:
+    """Observe the listener's pre-worker job announcement, not workflow output."""
+
+    def __init__(self):
+        self.mutex = threading.Lock()
+        self.version = None
+        self.versions = 0
+        self.listening = 0
+        self.exiting = 0
+        self.success = 0
+        self.job_started = False
+        self.error = False
+        self.complete = False
+
+    def read(self, stream):
+        try:
+            while True:
+                raw = stream.readline(LIMIT + 1)
+                if not raw:
+                    with self.mutex:
+                        self.complete = True
+                    break
+                if not isinstance(raw, bytes):
+                    raise ValueError("Unexpected listener output")
+                try:
+                    line = raw.decode("utf-8")
+                except UnicodeError:
+                    with self.mutex:
+                        self.error = True
+                    line = raw.decode("utf-8", errors="replace")
+                with self.mutex:
+                    if len(raw) > LIMIT or not raw.endswith(b"\n"):
+                        self.error = True
+                    version = re.fullmatch(r"Current runner version: '([^']+)'\n", line)
+                    if version:
+                        self.version = version[1]
+                        self.versions += 1
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z: Listening for Jobs\n", line):
+                        self.listening += 1
+                    if "Running job:" in line:
+                        self.job_started = True
+                    if line == "Exiting...\n":
+                        self.exiting += 1
+                    if line == "Runner listener exit with 0 return code, stop the service, no retry needed.\n":
+                        self.success += 1
+                    if line == "Restarting runner...\n":
+                        self.error = True
+                print(line, end="", flush=True)
+        except (OSError, ValueError):
+            with self.mutex:
+                self.error = True
+
+    def ready(self):
+        with self.mutex:
+            return (self.version == IDLE_STOP_VERSION and self.versions == 1
+                    and self.listening == 1 and not self.job_started and not self.error)
+
+    def proof(self):
+        with self.mutex:
+            return (self.version == IDLE_STOP_VERSION and self.versions == 1
+                    and self.listening == 1 and not self.job_started and not self.error
+                    and self.complete and self.exiting == 1 and self.success == 1)
 
 
 class GitHubAPIError(RuntimeError):
@@ -189,12 +257,16 @@ class Supervisor:
         self.state = json.loads(self.journal.read_text()) if self.journal.exists() else None
         self.mutex = threading.RLock()
         self.github = github or GitHub(config)
+        self.stop_requested = threading.Event()
+        self.listener_output = ListenerOutput()
 
     def save(self):
         with self.mutex:
             atomic_json(self.journal, self.state)
 
     def handoff(self, message, uid):
+        if message == {"action": "stop-idle"}:
+            return self.stop_idle(uid)
         if uid != self.account.pw_uid:
             raise ValueError("Unexpected peer account")
         if set(message) != {"action", "run_id", "run_attempt", "artifact_id"}:
@@ -227,6 +299,36 @@ class Supervisor:
                 raise ValueError("Invalid handoff action")
             self.save()
 
+    def idle_runner(self, runner_id, status):
+        runner = self.github.runner(runner_id)
+        if (not isinstance(runner, dict) or not isinstance(runner.get("labels"), list)
+                or any(not isinstance(label, dict) for label in runner["labels"])):
+            raise ValueError("Invalid canary identity response during idle stop")
+        if (runner.get("id") != runner_id or runner.get("name") != self.config["runner_name"]
+                or runner.get("status") not in ("online", "offline")
+                or (status is not None and runner["status"] != status)
+                or runner.get("busy") is not False
+                or {label["name"] for label in runner["labels"]} != {LABEL}):
+            raise ValueError("Idle stop requires the exact canary runner to be unoccupied")
+        return runner
+
+    def stop_idle(self, uid):
+        if uid != 0:
+            raise ValueError("Idle stop requires root")
+        with self.mutex:
+            if (not self.state or self.state["phase"] != "listening"
+                    or "record" in self.state or not self.listener_output.ready()):
+                raise ValueError("Idle stop requires a verified idle listener")
+            session, runner_id = self.state["session"], self.state["runner_id"]
+        self.idle_runner(runner_id, "online")
+        with self.mutex:
+            if (self.state["session"] != session or self.state["phase"] != "listening"
+                    or "record" in self.state or not self.listener_output.ready()):
+                raise ValueError("Listener changed while requesting idle stop")
+            self.state["idle_stop_requested"] = True
+            self.save()
+            self.stop_requested.set()
+
     @contextmanager
     def server(self, path):
         stopped = threading.Event()
@@ -254,9 +356,12 @@ class Supervisor:
                                 line = stream.readline(LIMIT + 1)
                             if len(line) > LIMIT or not line.endswith(b"\n"):
                                 raise ValueError("Invalid handoff size")
-                            self.handoff(json.loads(line), uid)
-                            result = {"ok": True, "defer": self.config.get("defer_cleanup", False)}
-                        except (OSError, ValueError, KeyError, TypeError):
+                            message = json.loads(line)
+                            self.handoff(message, uid)
+                            result = {"ok": True, "defer": (
+                                message["action"] != "stop-idle"
+                                and self.config.get("defer_cleanup", False))}
+                        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
                             result = {"ok": False}
                         try:
                             connection.sendall(json.dumps(result).encode() + b"\n")
@@ -444,13 +549,77 @@ class Supervisor:
 
     def recover(self):
         if self.state and self.state["phase"] != "idle":
-            if self.state["phase"] == "not_started" and not self.state.get("record"):
+            if self.state["phase"] == "idle_stopped":
+                if ("record" in self.state or self.state.get("idle_stop_proof") != IDLE_STOP_PROOF
+                        or self.state.get("idle_stop_requested") is not True):
+                    raise ValueError("Unverified idle stop requires operator inspection")
+                self.check_idle()
+                atomic_json(self.state_dir / (self.state["session"] + ".json"), self.state)
+                self.state = {"phase": "idle"}
+                self.save()
+            elif self.state["phase"] == "not_started" and not self.state.get("record"):
                 self.check_idle()
                 atomic_json(self.state_dir / (self.state["session"] + ".json"), self.state)
                 self.state = {"phase": "idle"}
                 self.save()
             else:
                 self.finish()
+
+    def interrupt_listener(self, process):
+        def descendant(pid):
+            seen = set()
+            while pid > 1 and pid not in seen:
+                if pid == process.pid:
+                    return True
+                seen.add(pid)
+                fields = Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()
+                pid = int(fields[1])
+            return False
+
+        def owned(entry):
+            return ((entry / "comm").read_text().strip() == "Runner.Listener"
+                    and entry.stat().st_uid == self.account.pw_uid
+                    and descendant(int(entry.name)))
+
+        candidates = []
+        for entry in Path("/proc").iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if owned(entry):
+                    candidates.append(entry)
+            except (FileNotFoundError, ProcessLookupError, PermissionError, IndexError, ValueError):
+                continue
+        if len(candidates) != 1:
+            raise ValueError("Cannot uniquely identify the owned listener for idle stop")
+        entry = candidates[0]
+        descriptor = os.pidfd_open(int(entry.name))
+        try:
+            if not owned(entry):
+                raise ValueError("Owned listener identity changed before idle stop")
+            # runuser forwards termination and escalates after two seconds. Signal
+            # the actual listener instead, allowing its dispatcher to reap workers.
+            signal.pidfd_send_signal(descriptor, signal.SIGINT)
+        finally:
+            os.close(descriptor)
+
+    def finish_idle_stop(self, status):
+        if status or not self.listener_output.proof():
+            raise ValueError("Idle stop could not prove that no job started; retaining journal")
+        self.check_idle()
+        self.no_containers()
+        deadline = time.monotonic() + self.config.get("completion_timeout", 300)
+        while self.idle_runner(self.state["runner_id"], None)["status"] != "offline":
+            if time.monotonic() >= deadline:
+                raise ValueError("Stopped runner is not yet offline; retaining journal")
+            time.sleep(1)
+        with self.mutex:
+            self.state["phase"] = "idle_stopped"
+            self.state["idle_stop_proof"] = dict(IDLE_STOP_PROOF)
+            self.state["stop_finished"] = time.time()
+            self.save()
+        self.recover()
+        print("Canary stopped idle; session preserved and no job data removed", flush=True)
 
     def cycle(self):
         self.recover()
@@ -466,10 +635,12 @@ class Supervisor:
         print(f"Starting canary session {self.state['session']}", flush=True)
         environment = {"HOME": self.account.pw_dir, "LANG": "C.UTF-8",
                        "PATH": HOST_PATH}
+        self.listener_output = ListenerOutput()
         try:
             process = subprocess.Popen(
                 [executable, "-u", self.account.pw_name, "--", str(self.runner_dir / "run.sh")],
-                cwd=self.runner_dir, env=environment, start_new_session=True, umask=0o022)
+                cwd=self.runner_dir, env=environment, start_new_session=True, umask=0o022,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         except OSError as error:
             # Failed exec proves no listener started; interrupted listeners remain ambiguous.
             with self.mutex:
@@ -481,19 +652,42 @@ class Supervisor:
             with self.mutex:
                 self.state["phase"] = "listening"
                 self.save()
+            reader = threading.Thread(target=self.listener_output.read,
+                                      args=(listener.stdout,), daemon=True)
+            reader.start()
             try:
-                status = listener.wait()
+                interrupted = False
+                stop_deadline = None
+                while True:
+                    try:
+                        status = listener.wait(timeout=0.25)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if self.stop_requested.is_set() and not interrupted:
+                            self.interrupt_listener(listener)
+                            interrupted = True
+                            stop_deadline = time.monotonic() + 120
+                        if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                            raise ValueError("Idle stop timed out; retaining pending journal")
             finally:
                 if listener.poll() is None:
                     listener.terminate()
                     listener.wait()
-        if status:
+                reader.join(timeout=5)
+                listener.stdout.close()
+        if reader.is_alive():
+            raise ValueError("Listener output did not close; retaining pending journal")
+        if status and not self.stop_requested.is_set():
             raise ValueError("Listener exited unsuccessfully; cleanup requires recovery")
         with self.mutex:
-            self.state["phase"] = "awaiting_result"
+            idle_stop = self.stop_requested.is_set() and "record" not in self.state
+            self.state["phase"] = "verifying_idle_stop" if idle_stop else "awaiting_result"
             self.state["listener_exited"] = time.time()
             self.save()
-        self.finish()
+        if idle_stop:
+            self.finish_idle_stop(status)
+        else:
+            self.finish()
 
 
 def main():
@@ -501,7 +695,10 @@ def main():
     parser.add_argument("--config", type=Path, default=Path("/etc/sonic-vs-cleanup/config.json"))
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--recover-only", action="store_true")
+    parser.add_argument("--stop-idle", action="store_true")
     args = parser.parse_args()
+    if args.stop_idle and (args.once or args.recover_only):
+        parser.error("--stop-idle cannot be combined with --once or --recover-only")
     if os.geteuid() != 0:
         parser.exit(1, "The host supervisor must run as root\n")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
@@ -511,6 +708,10 @@ def main():
         config = json.loads(trusted(args.config).read_text())
         state_dir = trusted(Path("/var/lib/sonic-vs-cleanup"), directory=True)
         runtime = trusted(Path("/run/sonic-vs-cleanup"), directory=True)
+        if args.stop_idle:
+            request({"action": "stop-idle"}, runtime / "control.sock", timeout=120)
+            print("Idle stop requested; wait for the service to become inactive", flush=True)
+            return
         with (state_dir / "supervisor.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             supervisor = Supervisor(config, state_dir)
@@ -520,7 +721,7 @@ def main():
                 with supervisor.server(runtime / "control.sock"):
                     while True:
                         supervisor.cycle()
-                        if args.once:
+                        if args.once or supervisor.stop_requested.is_set():
                             break
     except (OSError, ValueError, KeyError, subprocess.SubprocessError, RuntimeError) as error:
         detail = str(error) if isinstance(error, (ValueError, RuntimeError)) else type(error).__name__

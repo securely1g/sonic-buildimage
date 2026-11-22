@@ -9,6 +9,8 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -437,7 +439,7 @@ class SupervisorTest(unittest.TestCase):
         process = Mock()
         process.__enter__ = Mock(return_value=process)
         process.__exit__ = Mock(return_value=False)
-        process.wait.side_effect = lambda: self.events.append("listener-exit") or 0
+        process.wait.side_effect = lambda **_: self.events.append("listener-exit") or 0
         process.poll.return_value = 0
         with patch.object(self.supervisor, "admission"), \
                 patch.object(self.supervisor, "configure", return_value=456), \
@@ -503,6 +505,330 @@ class SupervisorTest(unittest.TestCase):
         archive = json.loads((self.state_dir / (session + ".json")).read_text())
         self.assertEqual(archive["spawn_error"], "FileNotFoundError")
         self.assertNotIn("record", archive)
+
+    def listener_bytes(self, job=False, version="2.338.2"):
+        return (
+            f"Current runner version: '{version}'\n"
+            "2026-11-22 21:43:26Z: Listening for Jobs\n"
+            + ("2026-11-22 21:43:27Z: Running job: VS\n" if job else "")
+            + "Exiting...\n"
+            "Runner listener exit with 0 return code, stop the service, no retry needed.\n"
+            "Exiting runner...\n"
+        ).encode()
+
+    def idle_runner(self, status="online", **changes):
+        return dict({"id": 456, "name": "test-canary", "busy": False,
+                     "status": status, "labels": [{"name": module.LABEL}]}, **changes)
+
+    def ready_listener(self):
+        self.supervisor.listener_output.read(io.BytesIO(
+            self.listener_bytes().split(b"Exiting...")[0]))
+
+    def stopped_cycle(self, output=None, status=0, enroll=False):
+        self.supervisor.state = {"phase": "idle"}
+        process = Mock()
+        process.__enter__ = Mock(return_value=process)
+        process.__exit__ = Mock(return_value=False)
+        process.stdout = io.BytesIO(self.listener_bytes() if output is None else output)
+        process.poll.return_value = status
+
+        def wait(**_):
+            self.supervisor.state["idle_stop_requested"] = True
+            self.supervisor.save()
+            self.supervisor.stop_requested.set()
+            if enroll:
+                self.enroll(False)
+            return status
+
+        process.wait.side_effect = wait
+        self.github.runner.return_value = self.idle_runner("offline")
+        with patch.object(self.supervisor, "admission"), \
+                patch.object(self.supervisor, "configure", return_value=456), \
+                patch.object(module.subprocess, "Popen", return_value=process):
+            self.supervisor.cycle()
+
+    def test_idle_stop_is_root_only_and_refuses_busy_unready_or_changed_listeners(self):
+        self.ready_listener()
+        self.github.runner.return_value = self.idle_runner()
+        before = self.supervisor.journal.read_bytes()
+        with self.assertRaisesRegex(ValueError, "root"):
+            self.supervisor.handoff({"action": "stop-idle"}, 1)
+        for changes in ({"busy": True}, {"name": "other"}, {"id": 457},
+                        {"labels": [{"name": "vs"}]}, {"status": "offline"}):
+            with self.subTest(changes=changes):
+                self.github.runner.return_value = self.idle_runner(**changes)
+                with self.assertRaises(ValueError):
+                    self.supervisor.stop_idle(0)
+                self.assertEqual(self.supervisor.journal.read_bytes(), before)
+        self.github.runner.return_value = self.idle_runner()
+        self.enroll(False)
+        before = self.supervisor.journal.read_bytes()
+        with self.assertRaisesRegex(ValueError, "verified idle"):
+            self.supervisor.stop_idle(0)
+        self.assertEqual(self.supervisor.journal.read_bytes(), before)
+        self.assertFalse(self.supervisor.stop_requested.is_set())
+
+    def test_job_activity_before_enrollment_and_api_race_refuse_idle_stop(self):
+        for activity in ("job", "version", "enrollment"):
+            with self.subTest(activity=activity):
+                self.supervisor.state.pop("record", None)
+                self.supervisor.listener_output = module.ListenerOutput()
+                self.ready_listener()
+                self.supervisor.save()
+                before = self.supervisor.journal.read_bytes()
+                self.github.runner.side_effect = None
+                self.github.runner.return_value = self.idle_runner()
+                if activity == "job":
+                    self.supervisor.listener_output.job_started = True
+                elif activity == "version":
+                    self.supervisor.listener_output.version = "unknown"
+                else:
+                    def race(_):
+                        self.enroll(False)
+                        return self.idle_runner()
+                    self.github.runner.side_effect = race
+                with self.assertRaises(ValueError):
+                    self.supervisor.stop_idle(0)
+                self.assertFalse(self.supervisor.stop_requested.is_set())
+                if activity == "enrollment":
+                    self.assertEqual(self.supervisor.state["record"]["run_id"], "123")
+                else:
+                    self.assertEqual(self.supervisor.journal.read_bytes(), before)
+
+    def test_idle_stop_archives_without_cleanup_and_reuses_registration_on_restart(self):
+        self.stopped_cycle()
+        archives = [p for p in self.state_dir.glob("*.json") if p.name != "pending.json"]
+        self.assertEqual(len(archives), 1)
+        state = json.loads(archives[0].read_text())
+        self.assertEqual(state["phase"], "idle_stopped")
+        self.assertNotIn("record", state)
+        self.assertEqual(self.supervisor.state, {"phase": "idle"})
+        self.assertTrue(self.checkout.exists())
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
+        self.command.assert_not_called()
+        (self.runner / ".runner").write_text(json.dumps(
+            {"agentId": 456, "ephemeral": True, "workFolder": str(self.work)}))
+        self.assertEqual(self.supervisor.configure(), 456)
+        self.github.registration.assert_not_called()
+
+    def test_stop_assignment_race_with_enrollment_uses_normal_failed_job_cleanup(self):
+        self.github.conclusion.return_value = "failure"
+        self.stopped_cycle(self.listener_bytes(job=True), enroll=True)
+        self.github.conclusion.assert_called_once()
+        self.caches.assert_called_once()
+        self.assertTrue(self.checkout.exists())
+        archives = [p for p in self.state_dir.glob("*.json") if p.name != "pending.json"]
+        completed = json.loads(archives[0].read_text())
+        self.assertEqual(completed["phase"], "complete")
+        self.assertEqual(completed["record"]["run_id"], "123")
+        self.assertTrue(self.supervisor.stop_requested.is_set())
+
+    def test_ambiguous_stop_and_bad_output_preserve_pending_evidence(self):
+        output = self.listener_bytes()
+        cases = [
+            (self.listener_bytes(job=True), 0),
+            (self.listener_bytes(version="unknown"), 0),
+            (output.replace(b"0 return code", b"terminated error"), 0),
+            (output[:-1], 0),
+            (output + b"\xff\n", 0),
+            (output + b"Restarting runner...\n", 0),
+            (output, 1),
+        ]
+        for raw, status in cases:
+            with self.subTest(status=status, output=raw):
+                with self.assertRaisesRegex(ValueError, "could not prove"):
+                    self.stopped_cycle(raw, status)
+                self.assertEqual(self.supervisor.state["phase"], "verifying_idle_stop")
+                self.assertNotIn("record", self.supervisor.state)
+                self.assertFalse((self.state_dir / (self.supervisor.state["session"] + ".json")).exists())
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
+        self.command.assert_not_called()
+
+    def test_offline_verification_failure_preserves_stop_journal(self):
+        self.github.runner.side_effect = module.GitHubAPIError(500)
+        with self.assertRaises(module.GitHubAPIError):
+            self.stopped_cycle()
+        state = json.loads(self.supervisor.journal.read_text())
+        self.assertEqual(state["phase"], "verifying_idle_stop")
+        self.assertNotIn("idle_stop_proof", state)
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
+
+    def test_verified_idle_stop_recovers_after_archive_write_failure(self):
+        write = module.atomic_json
+
+        def fail_archive(path, state):
+            if state["phase"] == "idle_stopped" and path.name != "pending.json":
+                raise OSError("archive unavailable")
+            write(path, state)
+
+        with patch.object(module, "atomic_json", side_effect=fail_archive):
+            with self.assertRaisesRegex(OSError, "archive unavailable"):
+                self.stopped_cycle()
+        recovered = self.make_supervisor()
+        with patch.object(recovered, "check_idle"), patch.object(recovered, "finish") as finish:
+            recovered.recover()
+        finish.assert_not_called()
+        self.assertEqual(recovered.state, {"phase": "idle"})
+        self.assertTrue(self.checkout.exists())
+        for state in ({"phase": "idle_stopped"},
+                      {"phase": "idle_stopped", "idle_stop_requested": True,
+                       "idle_stop_proof": module.IDLE_STOP_PROOF, "record": {}}):
+            recovered.state = state
+            with self.assertRaisesRegex(ValueError, "Unverified"):
+                recovered.recover()
+
+    def test_real_idle_child_is_signalled_reaped_and_archived(self):
+        self.supervisor.state = {"phase": "idle"}
+        executable = self.root / "idle-listener"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import ctypes, os, pathlib, signal, subprocess, sys, time\n"
+            "if '--listener-fixture' not in sys.argv:\n"
+            "    sys.exit(subprocess.call([sys.executable, __file__, '--listener-fixture']))\n"
+            "os.setsid()\n"
+            f"pathlib.Path({str(self.root / 'listener-pid')!r}).write_text(str(os.getpid()))\n"
+            "ctypes.CDLL(None).prctl(15, b'Runner.Listener', 0, 0, 0)\n"
+            "def stop(*_):\n"
+            "    print('Exiting...', flush=True)\n"
+            "    print('Runner listener exit with 0 return code, stop the service, no retry needed.', flush=True)\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGINT, stop)\n"
+            "print(\"Current runner version: '2.338.2'\", flush=True)\n"
+            "print('2026-11-22 21:43:26Z: Listening for Jobs', flush=True)\n"
+            "while True: time.sleep(0.05)\n")
+        executable.chmod(0o755)
+        errors = []
+        descriptors = []
+
+        def request_stop():
+            try:
+                deadline = time.monotonic() + 5
+                while not self.supervisor.listener_output.ready():
+                    if time.monotonic() > deadline:
+                        raise AssertionError("listener did not become ready")
+                    time.sleep(0.01)
+                descriptors.append(os.pidfd_open(int((self.root / "listener-pid").read_text())))
+                self.supervisor.stop_idle(0)
+            except Exception as error:
+                errors.append(error)
+                self.supervisor.stop_requested.set()
+
+        self.github.runner.side_effect = [self.idle_runner(), self.idle_runner("offline")]
+        worker = threading.Thread(target=request_stop)
+        with patch.object(self.supervisor, "admission"), \
+                patch.object(self.supervisor, "configure", return_value=456), \
+                patch.object(self.supervisor, "launcher", return_value=str(executable)):
+            worker.start()
+            try:
+                self.supervisor.cycle()
+            finally:
+                worker.join(timeout=6)
+                for descriptor in descriptors:
+                    try:
+                        module.signal.pidfd_send_signal(descriptor, module.signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    finally:
+                        os.close(descriptor)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(self.supervisor.state, {"phase": "idle"})
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
+
+    def test_failed_idle_stop_api_read_does_not_kill_socket_server(self):
+        self.ready_listener()
+        before = self.supervisor.journal.read_bytes()
+        with patch.object(self.supervisor, "stop_idle", side_effect=module.GitHubAPIError(500)), \
+                self.supervisor.server(self.root / "control.sock"):
+            with self.assertRaisesRegex(ValueError, "refused"):
+                client.request({"action": "stop-idle"}, self.root / "control.sock")
+            self.assertEqual(self.supervisor.journal.read_bytes(), before)
+            self.assertTrue(client.request(self.message(), self.root / "control.sock"))
+        self.assertFalse(self.supervisor.stop_requested.is_set())
+
+    def test_idle_stop_waits_for_offline_and_refuses_remaining_containers(self):
+        self.config["completion_timeout"] = 5
+        self.github.runner.side_effect = [self.idle_runner(), self.idle_runner("offline")]
+        with patch.object(module.time, "sleep"):
+            self.stopped_cycle()
+        self.assertEqual(self.supervisor.state, {"phase": "idle"})
+        self.empty.side_effect = ValueError("container remains")
+        with self.assertRaisesRegex(ValueError, "container remains"):
+            self.stopped_cycle()
+        self.assertEqual(self.supervisor.state["phase"], "verifying_idle_stop")
+        self.assertNotIn("idle_stop_proof", self.supervisor.state)
+
+    def test_idle_stop_does_not_signal_an_unowned_process(self):
+        with patch.object(module.signal, "pidfd_send_signal") as send:
+            with self.assertRaisesRegex(ValueError, "uniquely identify"):
+                self.supervisor.interrupt_listener(SimpleNamespace(pid=-1))
+        send.assert_not_called()
+
+    def test_stop_idle_cli_contacts_running_daemon_without_taking_its_lock(self):
+        config = self.root / "config.json"
+        config.write_text(json.dumps(self.config))
+
+        def trust(path, **_):
+            return {Path("/var/lib/sonic-vs-cleanup"): self.state_dir,
+                    Path("/run/sonic-vs-cleanup"): self.root}.get(path, path)
+
+        with patch.object(module, "trusted", side_effect=trust), \
+                patch.object(module.os, "geteuid", return_value=0), \
+                patch.object(module.signal, "signal"), \
+                patch.object(module.fcntl, "flock") as lock, \
+                patch.object(module, "request") as request, \
+                patch.object(sys, "stdout", io.StringIO()), \
+                patch.object(sys, "argv", ["supervisor", "--config", str(config), "--stop-idle"]):
+            module.main()
+        lock.assert_not_called()
+        request.assert_called_once_with({"action": "stop-idle"}, self.root / "control.sock",
+                                        timeout=120)
+
+    def test_service_exits_after_requested_stop_without_starting_a_successor(self):
+        config = self.root / "config.json"
+        config.write_text(json.dumps(self.config))
+        supervisor = Mock()
+        supervisor.server.return_value.__enter__ = Mock()
+        supervisor.server.return_value.__exit__ = Mock(return_value=False)
+        supervisor.stop_requested.is_set.return_value = True
+
+        def trust(path, **_):
+            return {Path("/var/lib/sonic-vs-cleanup"): self.state_dir,
+                    Path("/run/sonic-vs-cleanup"): self.root}.get(path, path)
+
+        with patch.object(module, "trusted", side_effect=trust), \
+                patch.object(module.os, "geteuid", return_value=0), \
+                patch.object(module.signal, "signal"), \
+                patch.object(module.fcntl, "flock"), \
+                patch.object(module, "Supervisor", return_value=supervisor), \
+                patch.object(sys, "argv", ["supervisor", "--config", str(config)]):
+            module.main()
+        supervisor.cycle.assert_called_once()
+
+    def test_idle_stop_timeout_preserves_journal_and_does_not_run_cleanup(self):
+        self.supervisor.state = {"phase": "idle"}
+        self.supervisor.stop_requested.set()
+        process = Mock()
+        process.__enter__ = Mock(return_value=process)
+        process.__exit__ = Mock(return_value=False)
+        process.stdout = io.BytesIO(self.listener_bytes())
+        process.poll.return_value = None
+        process.wait.side_effect = [subprocess.TimeoutExpired("listener", 0.25), 0]
+        with patch.object(self.supervisor, "admission"), \
+                patch.object(self.supervisor, "configure", return_value=456), \
+                patch.object(self.supervisor, "interrupt_listener"), \
+                patch.object(module.subprocess, "Popen", return_value=process), \
+                patch.object(module.time, "monotonic", side_effect=[0, 121]):
+            with self.assertRaisesRegex(ValueError, "timed out"):
+                self.supervisor.cycle()
+        process.terminate.assert_called_once()
+        self.assertEqual(json.loads(self.supervisor.journal.read_text())["phase"], "listening")
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
 
 
 class GitHubResultTest(unittest.TestCase):
