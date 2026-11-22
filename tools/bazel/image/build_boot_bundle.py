@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,8 +22,10 @@ from tools.bazel.build_helpers import cache_options, export_archive, remote_cach
 from tools.bazel.ci import command_log
 from tools.bazel.ci.build import execution_root_from_bep, resolve_output
 from tools.bazel.ci.cache_reuse import json_records
+from tools.bazel.oci.boot_layout import direct_layout_for_archive, installer_input
 from tools.bazel.oci.oci_layout import validate_layout
 from tools.bazel.image.boot_image_bundle import DIGEST, blob_name, json_bytes
+from tools.bazel.image.file_copy import copy_file
 
 REPO = "sonic_boot_bundle_inputs"
 RULES = "@@//tools/bazel/image:boot_bundle.bzl"
@@ -60,12 +61,22 @@ def link_input(directory, name, source):
         fd, tmp = tempfile.mkstemp(dir=destination.parent)
         partial = Path(tmp)
         try:
-            with os.fdopen(fd, "wb") as staged, source.open("rb") as stream:
-                shutil.copyfileobj(stream, staged, length=1024 * 1024)
+            os.close(fd)
+            copy_file(source, partial)
             partial.replace(destination)
         finally:
             partial.unlink(missing_ok=True)
     return name
+
+
+def complete_layout(directory, platform):
+    # Detect missing metadata or pruned blobs before deciding to skip the archive.
+    # The Bazel layer actions check the blob digest and the uncompressed DiffID.
+    try:
+        validate_layout(directory, platform, verify_layer_digest=False)
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def sidecar_for_archive(source, platform):
@@ -79,16 +90,14 @@ def sidecar_for_archive(source, platform):
             index = record["index"]
             if DIGEST.fullmatch("sha256:" + index):
                 candidate = store / index
-                # A pruned sidecar must still build from the authoritative archive.
-                # Check its small metadata and presence of all the referenced blobs.
-                validate_layout(candidate, platform, verify_layer_digest=False)
-                return receipt, candidate
+                if complete_layout(candidate, platform):
+                    return receipt, candidate
         except (OSError, ValueError, KeyError, TypeError):
             pass
     return None, None
 
 
-def write_archive_package(package, images, platform):
+def write_archive_package(package, images, platform, handoff=None, layout_inputs=()):
     package.mkdir()
     rules = [f'load("{RULES}", "boot_archive")', 'package(default_visibility=["//visibility:public"])']
     sources = {}
@@ -102,6 +111,20 @@ def write_archive_package(package, images, platform):
         if logical_path in sources:
             image.archive, image.layout = sources[logical_path]
             continue
+        if image.source.name in layout_inputs:
+            selected = installer_input(image.source, handoff)
+            if selected.is_dir():
+                if not complete_layout(selected, platform):
+                    raise ValueError(f"Incomplete installer OCI layout for {image.source.name}")
+                image.layout = selected
+                sources[logical_path] = ("", selected)
+                continue
+        elif handoff:
+            layout = direct_layout_for_archive(image.source, handoff)
+            if layout is not None and complete_layout(layout, platform):
+                image.layout = layout
+                sources[logical_path] = ("", layout)
+                continue
         # Stable target and exec paths preserve each archive's action across tag
         # changes, optional images, checkout locations and different CI runners.
         key = hashlib.sha256(image.source.name.encode()).hexdigest()
@@ -124,7 +147,10 @@ def write_archive_package(package, images, platform):
 
 
 class BundlePackage:
-    def __init__(self, directory):
+    def __init__(self, directory, gzip_level=6):
+        if type(gzip_level) is not int or not 1 <= gzip_level <= 9:
+            raise ValueError("gzip level must be between 1 and 9")
+        self.gzip_level = gzip_level
         self.directory = directory
         directory.mkdir()
         self.rules = [f'load("{RULES}", "boot_archive_members", "boot_bundle", "boot_layer")']
@@ -190,8 +216,11 @@ class BundlePackage:
                 self.aliases[prefix] += 1
                 name = prefix + (f"_{number}" if number else "")
                 self.layer_targets[(key, src)] = name
+                compression = ({} if desc["mediaType"].endswith(("+gzip", ".gzip"))
+                               else {"gzip_level": self.gzip_level})
                 self.rules.append(starlark_call("boot_layer", name=name, src=src, source_digest=digest,
-                                       source_size=desc["size"], diff_id=diff, media_type=desc["mediaType"]))
+                                       source_size=desc["size"], diff_id=diff, media_type=desc["mediaType"],
+                                       **compression))
             self.verified.add(key)
         return {"config": cfg_digest, "tags": image.tags, "layers": layers,
                 "original_tags": original_tags, "check_label": image.check_label}
@@ -277,7 +306,10 @@ def lock_checkout():
         os.close(checkout)
 
 
-def build(images, platform, output, inventory, labels, evidence_dir=None):
+def build(images, platform, output, inventory, labels, evidence_dir=None, gzip_level=6):
+    if type(gzip_level) is not int or not 1 <= gzip_level <= 9:
+        raise ValueError("gzip level must be between 1 and 9")
+    started = time.monotonic()
     options = (cache_options(os.environ.get("BAZEL_CONTAINER_CACHE_DIR") or os.environ.get("BAZEL_SWSS_CACHE_DIR"))
                + shlex.split(os.environ.get("BAZEL_CONTAINER_ARGS", ""))
                + remote_cache_options())
@@ -290,7 +322,9 @@ def build(images, platform, output, inventory, labels, evidence_dir=None):
         repo = Path(tmp).resolve() / "inputs"
         repo.mkdir()
         (repo / "MODULE.bazel").write_text(f'module(name="{REPO}")\n')
-        archives = write_archive_package(repo / "archives", images, platform)
+        archives = write_archive_package(repo / "archives", images, platform,
+                                         os.environ.get("SONIC_VS_BOOT_HANDOFF"),
+                                         set(os.environ.get("SONIC_VS_LAYOUT_INPUTS", "").split()))
         if archives:
             expected = {im.archive + "/image.json" for im in images if im.archive}
             results = build_target(repo, "archives", "metadata", expected, evidence, options)
@@ -299,9 +333,18 @@ def build(images, platform, output, inventory, labels, evidence_dir=None):
                     im.info = json.loads(results[im.archive + "/image.json"].read_bytes())
                     if not im.info["use_sidecar"]:
                         im.layout = None
-        package = BundlePackage(repo / "bundle")
+        graph_start = time.monotonic()
+        package = BundlePackage(repo / "bundle", gzip_level)
         package.select(images, platform)
         package.finish(platform, archives)
+        if evidence is not None:
+            evidence["inputs"] = {
+                "native_images": sum(im.layout is not None for im in images),
+                "archive_images": sum(im.layout is None for im in images),
+                "layer_actions": len(package.layer_targets),
+                "gzip_level": gzip_level,
+                "graph_seconds": time.monotonic() - graph_start,
+            }
         expected = {"boot/bundle.tar.gz", "boot/inventory.json", "boot/labels.json"}
         result = build_target(repo, "bundle", "boot", expected, evidence, options)
         publish_start = time.monotonic()
@@ -310,7 +353,13 @@ def build(images, platform, output, inventory, labels, evidence_dir=None):
                 export_archive(result["boot/" + name], dest)
         if evidence is not None:
             evidence["bundle"]["publish_seconds"] = time.monotonic() - publish_start
+            evidence["bundle"]["inputs"] = {
+                "direct_oci": sum(not im.archive for im in images),
+                "verified_sidecar": sum(bool(im.archive) and im.layout is not None for im in images),
+                "archive_only": sum(im.layout is None for im in images),
+            }
     if evidence is not None:
+        evidence["total_seconds"] = time.monotonic() - started
         evidence_dir.mkdir(exist_ok=True, parents=True)
         with tempfile.NamedTemporaryFile(mode="w", dir=evidence_dir, prefix="boot-", suffix=".json", delete=False) as receipt:
             json.dump(evidence, receipt, sort_keys=True)
@@ -325,6 +374,8 @@ def main():
     parser.add_argument("--labels", type=Path)
     parser.add_argument("--image", nargs=2, action="append", default=[])
     parser.add_argument("--package-image", nargs=2, action="append", default=[])
+    parser.add_argument("--gzip-level", type=int, choices=range(1, 10),
+                        default=os.environ.get("SONIC_BOOT_LAYER_GZIP_LEVEL", "6") or "6")
     args = parser.parse_args()
     images = []
     for selections, check_label in ((args.image, True), (args.package_image, False)):
@@ -333,7 +384,8 @@ def main():
     if not images:
         parser.error("at least one image is required")
     evidence = os.environ.get("SONIC_BOOT_BUNDLE_EVIDENCE_DIR")
-    build(images, args.platform, args.output, args.inventory, args.labels, Path(evidence) if evidence else None)
+    build(images, args.platform, args.output, args.inventory, args.labels,
+          Path(evidence) if evidence else None, args.gzip_level)
 
 
 if __name__ == "__main__":

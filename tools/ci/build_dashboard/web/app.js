@@ -51,6 +51,13 @@ const TASK_LABELS = {
   "config-engine-load": "Load the config-engine base image",
   "swss-layer-load": "Load the SWSS base image",
   "kernel-prep": "Kernel package preparation",
+  "bookworm-make": "Bookworm Make invocation",
+  "prep-deb": "Build or reuse Debian packages",
+  "prep-deb-install": "Install Debian packages",
+  "prep-wheel": "Build or reuse Python wheels",
+  "prep-wheel-install": "Install Python wheels",
+  "trixie-cache-eval": "Evaluate Trixie package cache",
+  "container-manifest": "Generate container manifests",
   "p4rt-prep": "P4RT source and SDK preparation",
   "p4rt-audit": "P4RT dependency graph audit",
   "p4rt-sdk": "P4RT SDK inputs",
@@ -113,7 +120,7 @@ const RECIPE_METRICS = [
   ["compile_seconds", "Compiler subprocesses", "profiles", "profiles_expected"],
   ["foreign_seconds", "Nested build subprocesses", "profiles", "profiles_expected"],
   ["fetch_seconds", "Cache fetch", "profiles", "profiles_expected"],
-  ["export_seconds", "Export", "exports", "exports_expected"],
+  ["export_seconds", "Output handoff", "exports", "exports_expected"],
 ];
 const BUILD_EVIDENCE = {
   repository_seconds: "Repository preparation",
@@ -139,9 +146,13 @@ function duration(value, includeSeconds = false) {
   return rounded >= 3600 ? `${Math.floor(rounded / 3600)}h ${Math.floor(rounded % 3600 / 60)}m${includeSeconds ? ` ${rounded % 60}s` : ""}` : `${Math.floor(rounded / 60)}m ${rounded % 60}s`;
 }
 function timestamp(value) { const parsed = Date.parse(value || ""); return Number.isFinite(parsed) ? parsed : null; }
-function dateTime(value, short = false) {
+const pacificTime = {timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit", timeZoneName: "short"};
+const commitDateTime = new Intl.DateTimeFormat("en-US", {...pacificTime, year: "numeric", month: "short", day: "numeric"});
+const axisDate = new Intl.DateTimeFormat("en-US", {timeZone: pacificTime.timeZone, month: "short", day: "numeric"});
+const axisHour = new Intl.DateTimeFormat("en-US", pacificTime);
+function dateTime(value) {
   if (timestamp(value) === null) return "Not recorded";
-  return new Date(value).toLocaleString(undefined, short ? {month: "short", day: "numeric"} : {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short"});
+  return new Date(value).toLocaleString(undefined, {month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short"});
 }
 function result(item) { return item.conclusion || item.status || "unknown"; }
 function resultLabel(value) { return String(value || "unknown").replaceAll("_", " "); }
@@ -311,10 +322,15 @@ function imageSeries(job) {
 }
 function selectTrendPoints(points, {series = "all", days = "all", limit = "10", reference = Date.now()} = {}) {
   const cutoff = days === "all" ? null : reference - Number(days) * 86400000;
-  const matching = points.filter(item => (series === "all" || imageSeries(item.job).key === series) &&
-    (cutoff === null || (timestamp(item.execution?.startedAt) >= cutoff && timestamp(item.execution?.startedAt) <= reference)))
-    .sort((a, b) => timestamp(b.execution?.startedAt) - timestamp(a.execution?.startedAt) || b.run.attempt - a.run.attempt || b.run.run_id - a.run.run_id);
-  return {matching, points: (limit === "all" ? [...matching] : matching.slice(0, Number(limit))).reverse()};
+  const inSeries = series === "all" ? points : points.filter(item => imageSeries(item.job).key === series);
+  const dated = inSeries.filter(item => timestamp(item.run.source_committed_at) !== null);
+  const matching = dated.filter(item => {
+    const time = timestamp(item.run.source_committed_at);
+    return cutoff === null || (time >= cutoff && time <= reference);
+  }).sort((a, b) => timestamp(b.run.source_committed_at) - timestamp(a.run.source_committed_at) ||
+    timestamp(b.execution.startedAt) - timestamp(a.execution.startedAt) || b.run.attempt - a.run.attempt || b.run.run_id - a.run.run_id);
+  return {matching, missingDates: inSeries.length - dated.length,
+    points: (limit === "all" ? matching.slice() : matching.slice(0, Number(limit))).reverse()};
 }
 function chartScale(maximum) {
   const target = Math.max(1, maximum * 1.08) / 5;
@@ -541,16 +557,20 @@ function renderFilters() {
   for (const run of masterRuns) {
     const sha = run.source_sha;
     if (!revisions.has(sha)) {
-      revisions.set(sha, {latest: run, title: ""});
+      revisions.set(sha, {time: null, title: ""});
       const prefix = sha.slice(0, 12);
       prefixCounts.set(prefix, (prefixCounts.get(prefix) || 0) + 1);
     }
-    if (typeof run.source_commit_title === "string") revisions.get(sha).title ||= run.source_commit_title.trim();
+    const revision = revisions.get(sha);
+    revision.time ??= timestamp(run.source_committed_at);
+    if (typeof run.source_commit_title === "string") revision.title ||= run.source_commit_title.trim();
   }
-  for (const [sha, {latest, title}] of revisions) {
+  const newestFirst = [...revisions].sort(([shaA, a], [shaB, b]) =>
+    (b.time ?? -Infinity) - (a.time ?? -Infinity) || shaA.localeCompare(shaB));
+  for (const [sha, {time, title}] of newestFirst) {
     const prefix = sha.slice(0, 12);
     const label = prefixCounts.get(prefix) > 1 ? sha : prefix;
-    const date = dateTime(latest.started_at || latest.completed_at);
+    const date = time === null ? "Commit time unavailable" : commitDateTime.format(time);
     const option = el("option", "", [label, title, date].filter(Boolean).join(" · "));
     option.value = sha;
     option.title = title ? `${sha} · ${title}` : sha;
@@ -584,7 +604,7 @@ function renderTrend() {
     const option = el("option", "", value.label); option.value = value.key; select.append(option);
   }
   select.value = series.some(value => value.key === old) ? old : "all";
-  const {matching, points} = selectTrendPoints(all, {
+  const {matching, points, missingDates} = selectTrendPoints(all, {
     series: select.value, days: byId("date-filter").value, limit: byId("limit-filter").value,
     reference: timestamp(state.data.generated_at) ?? Date.now(),
   });
@@ -605,6 +625,7 @@ function renderTrend() {
   legend.hidden = !points.length;
   const preview = byId("trend-preview");
   const note = byId("trend-note");
+  const missingNote = missingDates ? `${missingDates} ${missingDates === 1 ? "measurement has" : "measurements have"} no recorded commit time and cannot be plotted.` : "";
   preview.hidden = !points.length;
   preview.replaceChildren();
   if (!points.length) {
@@ -614,27 +635,28 @@ function renderTrend() {
       const job = pending.job;
       message.append(link(job.name, job.url), document.createTextNode(` ${PENDING_JOB_TEXT[result(job)]}. No build duration yet.`));
     } else {
-      message.textContent = "No successful image measurements with verified execution times match these filters. Failed, skipped, pending, and unverified records remain visible in run history.";
+      message.textContent = "No successful image measurements with a known commit time and verified duration match these filters. See run history for individual results.";
     }
     container.append(message);
-    note.hidden = !unverified;
-    note.textContent = unverified ? `${unverified} unverified records are omitted.` : "";
+    note.textContent = [missingNote, unverified ? `${unverified} unverified records are omitted.` : ""].filter(Boolean).join(" ");
+    note.hidden = !note.textContent;
     return pending || all[0];
   }
   preview.append(el("p", "", "Hover or focus a point to inspect its measurement, source revision and breakdown availability. Select it to open the full run details."));
   note.hidden = false;
-  note.textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching verified image executions. Carried retries count once. ${unverified} unverified records are omitted. ${select.value === "all" ? "Select one measurement series to see its trend." : "Each line follows one build source, path, architecture and measured step."} Date ranges use execution start times and end at the published snapshot.`;
+  note.textContent = `${points.length < matching.length ? `Showing the newest ${points.length} of ${matching.length}` : `Showing all ${points.length}`} matching verified image executions. Carried retries count once. ${unverified} unverified records are omitted. ${select.value === "all" ? "Select one measurement series to see its trend." : "Each line follows one build source, path, architecture and measured step."} Date ranges use commit times and end at the published snapshot.`;
+  if (missingNote) note.append(document.createTextNode(` ${missingNote}`));
   const padding = getComputedStyle(container);
   const width = Math.max(240, Math.round(container.clientWidth - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight)));
   const height = width < 520 ? 250 : 265;
-  const left = 55, right = 40, top = 19, bottom = 41;
+  const left = 55, right = 44, top = 19, bottom = 55;
   const scale = chartScale(points.reduce((maximum, item) => Math.max(maximum, item.job.image_build_seconds), 0));
   const maxSeconds = scale.maximum;
-  const firstTime = Math.min(...points.map(item => timestamp(item.execution.startedAt)));
-  const lastTime = Math.max(...points.map(item => timestamp(item.execution.startedAt)));
-  const x = item => lastTime === firstTime ? (width + left - right) / 2 : left + (timestamp(item.execution.startedAt) - firstTime) / (lastTime - firstTime) * (width - left - right);
+  const firstTime = timestamp(points[0].run.source_committed_at);
+  const lastTime = timestamp(points.at(-1).run.source_committed_at);
+  const x = item => lastTime === firstTime ? (width + left - right) / 2 : left + (timestamp(item.run.source_committed_at) - firstTime) / (lastTime - firstTime) * (width - left - right);
   const y = item => top + (1 - item.job.image_build_seconds / maxSeconds) * (height - top - bottom);
-  const svg = svgEl("svg", {viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": "Successful image build durations, ordered by image execution start time. Each point opens run details."});
+  const svg = svgEl("svg", {viewBox: `0 0 ${width} ${height}`, role: "group", "aria-label": "Successful image build durations, ordered by source commit time in Pacific time. Each point opens run details."});
   for (const value of scale.ticks) {
     const position = top + (1 - value / maxSeconds) * (height - top - bottom);
     svg.append(svgEl("line", {x1: left, y1: position, x2: width - right, y2: position, stroke: "#e6edef", "stroke-dasharray": value ? "3 4" : "0"}), svgEl("text", {x: left - 11, y: position + 4, "text-anchor": "end"}, value ? duration(value).replace(/ 0[ms]$/, "") : "0"));
@@ -643,7 +665,11 @@ function renderTrend() {
   for (let index = 0; index < dateCount; index++) {
     const fraction = dateCount === 1 ? .5 : index / (dateCount - 1);
     const tick = firstTime + (lastTime - firstTime) * fraction;
-    svg.append(svgEl("text", {x: left + fraction * (width - left - right), y: height - 13, "text-anchor": "middle"}, dateTime(new Date(tick).toISOString(), true)));
+    const position = left + fraction * (width - left - right);
+    const label = svgEl("text", {x: position, y: height - 27, "text-anchor": "middle"});
+    label.append(svgEl("tspan", {x: position}, axisDate.format(tick)),
+      svgEl("tspan", {x: position, dy: "1.25em"}, axisHour.format(tick)));
+    svg.append(label);
   }
   for (const items of select.value === "all" ? [] : imageTrendGroups(points).filter(items => items.length > 1)) {
     const source = BUILD_SOURCES[buildSource(items[0].run)];
@@ -657,8 +683,9 @@ function renderTrend() {
     const sha = item.run.source_sha;
     const commit = `Commit ${String(sha || "unknown").slice(0, 12)}`;
     const subject = item.run.source_commit_title || "Commit message unavailable";
+    const committed = `Committed ${commitDateTime.format(timestamp(item.run.source_committed_at))}`;
     const breakdown = imageBreakdownLabel(item.job);
-    const label = `${commit} · ${subject}\n${context} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · ${breakdown} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
+    const label = `${commit} · ${subject}\n${committed} · ${context} · ${imageSeries(item.job).label} · ${duration(item.job.image_build_seconds)} · ${imageMeasurement(item.job).label} · ${breakdown} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`;
     const point = svgEl("g", {class: "chart-point", tabindex: "0", role: "button", "aria-label": label});
     point.append(svgEl("title", {}, label));
     point.append(svgEl("circle", {cx: x(item), cy: y(item), r: 17, fill: "transparent", "pointer-events": "all"}));
@@ -668,7 +695,7 @@ function renderTrend() {
       heading.append(el("strong", "", duration(item.job.image_build_seconds)), el("span", "", imageSeries(item.job).label));
       const revision = el("p");
       const commitId = FULL_COMMIT_SHA.test(sha) ? link(commit, `https://github.com/${state.data.repository}/commit/${sha}`) : el("span", "", commit);
-      revision.append(commitId, document.createTextNode(` · ${subject}`));
+      revision.append(commitId, document.createTextNode(` · ${subject} · ${committed}`));
       preview.replaceChildren(heading, revision,
         el("p", "", `${item.run.workflow_name || "Workflow"} · ${context} · ${executionTimeLabel(item.execution)} · ${executionOriginLabel(item.execution)}`),
         el("p", "", `${imageMeasurement(item.job).label}. ${breakdown}.`));
@@ -680,7 +707,7 @@ function renderTrend() {
     svg.append(point);
   }
   container.append(svg);
-  return all[0];
+  return points.at(-1);
 }
 
 function renderCoverage() {
@@ -767,6 +794,17 @@ function renderPhaseBreakdown(phases) {
   return body;
 }
 const P4RT_SUBTASKS = new Set(["p4rt-audit", "p4rt-sdk", "p4rt-owner", "p4rt-handoff"]);
+const GROUPED_PREPARATION_TASKS = new Set(["prep-deb", "prep-deb-install", "prep-wheel", "prep-wheel-install", "container-manifest"]);
+
+// The caller clips spans to the stage and orders them by start time.
+function coveredSeconds(spans) {
+  let covered = 0, previousEnd = 0;
+  for (const {from, to} of spans) {
+    covered += Math.max(0, to - Math.max(from, previousEnd));
+    previousEnd = Math.max(previousEnd, to);
+  }
+  return covered;
+}
 
 function intervalTaskRow({task, from, to}) {
   const row = el("div", "interval-task");
@@ -784,8 +822,14 @@ function intervalTaskList(spans, start, end, reportUncovered) {
   const list = el("ul", "interval-measurements");
   const parents = spans.filter(({task}) => task.kind === "p4rt-prep" || task.kind === "rootfs");
   const children = new Map();
+  const groups = new Map();
   for (const span of spans) {
     const kind = span.task.kind;
+    if (GROUPED_PREPARATION_TASKS.has(kind)) {
+      if (!groups.has(kind)) groups.set(kind, []);
+      groups.get(kind).push(span);
+      continue;
+    }
     const parentKind = P4RT_SUBTASKS.has(kind) ? "p4rt-prep" : kind.startsWith("rootfs-") ? "rootfs" : null;
     const parent = parents.find(p => p.task.kind === parentKind &&
       p.task.offset_seconds <= span.task.offset_seconds &&
@@ -795,6 +839,17 @@ function intervalTaskList(spans, start, end, reportUncovered) {
   for (const span of spans) {
     if (children.has(span)) continue;
     const item = el("li");
+    const group = groups.get(span.task.kind);
+    if (group) {
+      if (span !== group[0]) continue;
+      const row = el("div", "interval-task");
+      row.append(el("span", "", TASK_LABELS[span.task.kind]),
+        el("span", "timing-duration", readable(coveredSeconds(group))),
+        el("small", "timing-hint", `${group.length} measured ${group.length === 1 ? "invocation" : "invocations"}`));
+      item.append(row);
+      list.append(item);
+      continue;
+    }
     item.append(intervalTaskRow(span));
     const nested = [...children].filter(([, parent]) => parent === span);
     if (nested.length) {
@@ -811,13 +866,7 @@ function intervalTaskList(spans, start, end, reportUncovered) {
   else body.append(el("p", "unmeasured-note", "No task timings recorded for this interval."));
 
   if (!reportUncovered) return body;
-  // Spans are clipped to the interval and sorted by start. Count covered wall time once.
-  let cursor = start, uncovered = 0;
-  for (const {from, to} of spans) {
-    uncovered += Math.max(0, from - cursor);
-    cursor = Math.max(cursor, to);
-  }
-  uncovered += Math.max(0, end - cursor);
+  const uncovered = Math.max(0, end - start - coveredSeconds(spans));
   body.append(el("p", "breakdown-note", `Unattributed wall time: ${duration(uncovered)}. Overlapping task spans count once.`));
   return body;
 }
@@ -845,7 +894,7 @@ function renderInstallerIntervals(breakdown, job, step) {
     `${duration(section.duration_seconds, true)} from the start of the host Make build through its return. Select a step for its measured work.`));
   const intervals = [
     ["Prepare kernel, packages and P4RT", 0, batch.offset_seconds],
-    ["Build and export Bazel container images", batch.offset_seconds, batchEnd, batch],
+    ["Build and hand off Bazel container images", batch.offset_seconds, batchEnd, batch],
     ["Finish Make containers and stage the root filesystem", batchEnd, installer.offset_seconds],
     ["Assemble the final ONIE installer", installer.offset_seconds, installerEnd, installer],
     ["Finish the Make invocation", installerEnd, section.duration_seconds],
@@ -876,14 +925,14 @@ function renderInstallerIntervals(breakdown, job, step) {
         };
         if (batch.bazelSeconds !== null) add(list, "Shared Bazel command", batch.bazelSeconds);
         if (batch.exports.length) {
-          add(list, "Recorded export command time", batch.exports.reduce((total, entry) => total + entry[1], 0));
+          add(list, "Recorded output handoff time", batch.exports.reduce((total, entry) => total + entry[1], 0));
           const detail = el("details", "batch-exports"), rows = el("dl", "interval-receipts");
           for (const [label, elapsed] of batch.exports) add(rows, label, elapsed);
-          detail.append(el("summary", "", `Exports by container (${batch.exports.length})`), rows);
+          detail.append(el("summary", "", `Output handoffs by container (${batch.exports.length})`), rows);
           disclosure.append(list, detail);
         } else disclosure.append(list);
-        disclosure.append(el("p", "breakdown-note", "Export time adds the recorded archive command durations. The section heading shows elapsed time for the whole Make task."));
-      } else disclosure.append(el("p", "unmeasured-note", "Separate Bazel command and export timings were not recorded for this batch."));
+        disclosure.append(el("p", "breakdown-note", "Output handoff time adds the commands that publish OCI layouts or export archives. The section heading shows elapsed time for the whole Make task."));
+      } else disclosure.append(el("p", "unmeasured-note", "Separate Bazel command and output handoff timings were not recorded for this batch."));
     }
     const spans = section.tasks.filter(task => task !== batch && task !== installer).map(task => ({
       task, from: Math.max(start, task.offset_seconds), to: Math.min(end, task.offset_seconds + task.duration_seconds),
@@ -1144,7 +1193,7 @@ function renderBuildExplanations(rows, context = "") {
       Math.max(0, row.lock_seconds - build.lock_seconds) : null;
     for (const [label, value] of [
       [scope, cardTime(row)], ["Build elapsed", build?.seconds ?? null], ["Build lock", build?.lock_seconds ?? null],
-      ["Other-command lock", otherLock], ["All command elapsed", row.bazel_seconds], ["Exports", row.export_seconds],
+      ["Other-command lock", otherLock], ["All command elapsed", row.bazel_seconds], ["Output handoff", row.export_seconds],
     ]) {
       const metric = el("div"); metric.append(el("dt", "", label), el("dd", "", measuredDuration(value))); metrics.append(metric);
     }
@@ -1221,8 +1270,8 @@ function containerBatchMeasurements(job, step) {
     // Owners that also built independently can include exports from outside the batch.
     if (recipe.failed || recipe.bazel_expected || recipe.profiles_expected || !recipe.exports) continue;
     const count = recipe.exports < recipe.exports_expected ? `${recipe.exports} of ${recipe.exports_expected} recorded` : recipe.exports;
-    const label = recipe.exports_expected === 1 ? "" : ` (${count} archive commands)`;
-    exports.push([`Export ${recipe.owner}${label}`, recipe.export_seconds]);
+    const label = recipe.exports_expected === 1 ? "" : ` (${count} commands)`;
+    exports.push([`${recipe.owner}${label}`, recipe.export_seconds]);
   }
   return bazelSeconds !== null || exports.length ? {bazelSeconds, exports} : null;
 }
@@ -1235,8 +1284,8 @@ function renderContainerMembers({profile, members}, wallSeconds) {
     return box;
   }
   if (profile) {
-    box.append(el("p", "stage-note", "Total elapsed runs from the first observed action owned by an image through its last archive export, including time spent waiting. Images build in parallel, so their totals overlap."));
-    box.append(el("p", "stage-note", "Active time counts intervals with at least one observed action owned by the image. Compile time counts elapsed time with a C, C++, Rust or Go compiler running for that image. Simultaneous compiler processes count once per image. Compilation, cache fetch, OCI archive and gzip can overlap. Make exports the archives after Bazel returns."));
+    box.append(el("p", "stage-note", "Total elapsed runs from the first observed action owned by an image through its last output handoff, including time spent waiting. Images build in parallel, so their totals overlap."));
+    box.append(el("p", "stage-note", "Active time counts intervals with at least one observed action owned by the image. Compile time counts elapsed time with a C, C++, Rust or Go compiler running for that image. Simultaneous compiler processes count once per image. Compilation, cache fetch, OCI archive and gzip can overlap. After Bazel returns, Make publishes the OCI layout or exports the requested archive."));
     const totals = el("dl", "recipe-metrics");
     if (wallSeconds !== null && wallSeconds >= profile.other_action_seconds + profile.no_action_seconds) {
       const imageWall = wallSeconds - profile.other_action_seconds - profile.no_action_seconds;
@@ -1248,7 +1297,7 @@ function renderContainerMembers({profile, members}, wallSeconds) {
     }
     box.append(totals, el("p", "stage-note", `Two or more image owners were active together for ${recipeSeconds(profile.parallel_seconds)} of the measured image time.`));
   } else {
-    box.append(el("p", "stage-note", "This run retained per-container export times. Per-container Bazel action times are unavailable."));
+    box.append(el("p", "stage-note", "This run retained per-container output handoff times. Per-container Bazel action times are unavailable."));
   }
   const scroll = el("div", "table-scroll"), table = el("table"), head = el("thead"), header = el("tr"), body = el("tbody");
   scroll.setAttribute("tabindex", "0");
@@ -1257,7 +1306,7 @@ function renderContainerMembers({profile, members}, wallSeconds) {
   const metrics = [["actions", "Actions"], ["total_seconds", "Total elapsed"], ["action_seconds", "Active"],
     ["compile_seconds", "Compile time"], ["fetch_seconds", "Cache fetch"], ["archive_seconds", "OCI archive"],
     ["compress_seconds", "Gzip"]].filter(([key]) => profile || key === "total_seconds" || key === "compile_seconds");
-  for (const label of ["Image", ...metrics.map(([, label]) => label), "Export"]) {
+  for (const label of ["Image", ...metrics.map(([, label]) => label), "Output handoff"]) {
     const th = el("th", "", label); th.setAttribute("scope", "col"); header.append(th);
   }
   head.append(header);
@@ -1312,7 +1361,7 @@ function renderRecipeRows(rows, title, group, batch) {
     box.append(el("p", "stage-note", "No Bazel activity was recorded during this build."));
     return box;
   }
-  if (rows.length > 1) box.append(el("p", "stage-note", "Recipes are ordered by recorded Bazel and export command time. Expand a recipe for its breakdown."));
+  if (rows.length > 1) box.append(el("p", "stage-note", "Recipes are ordered by recorded Bazel and output handoff time. Expand a recipe for its breakdown."));
   const list = el("ol");
   for (const row of rows) {
     const item = el("li"), details = el("details");

@@ -4,18 +4,142 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import sys
 from pathlib import Path
 import tarfile
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci import vs_validation_bundles as bundles
+from tools.bazel.ci.vs_container_validation import PMON, static_i386_files, verify_amd64_files
+from tools.bazel.build_helpers import export_image
+from tools.bazel.tests.oci_base_fixture import image_fixture, oci_files, write_layout
 
 
 class BundleSelectionTest(unittest.TestCase):
+    def test_ci_validation_keeps_direct_handoff_and_checks_make_selected_bytes(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "bazel.gz"
+            archive.write_bytes(b"producer")
+            layout = root / "native"
+            write_layout(layout, oci_files(*image_fixture()))
+            selected = root / "target/docker-a.gz"
+            output = root / "validation.gz"
+            with patch.dict(os.environ, SONIC_VS_BOOT_HANDOFF="build"):
+                export_image(archive, selected, layout)
+            digest = bundles.stage_archive(selected, output, archive, "build")
+            self.assertEqual(digest, bundles.sha(selected))
+            self.assertTrue(output.samefile(archive))
+            self.assertTrue(bundles.direct_layout_for_archive(selected, "build"))
+
+            replacement = root / "replacement"
+            replacement.write_bytes(b"replacement")
+            original_sha = bundles.sha
+
+            def replace_during_hash(path):
+                if path == selected:
+                    replacement.replace(selected)
+                return original_sha(path)
+
+            output.unlink()
+            with patch.object(bundles, "sha", side_effect=replace_during_hash):
+                digest = bundles.stage_archive(selected, output, archive, "build")
+            self.assertEqual(digest, bundles.sha(selected))
+            self.assertTrue(output.samefile(selected))
+            self.assertIsNone(bundles.direct_layout_for_archive(selected, "build"))
+
+    def test_deferred_archive_checks_use_the_installed_layout_and_fallback(self):
+        from tools.bazel import build_container_batch as batch
+
+        native = "docker-syncd-vs.gz"
+        fallback = "docker-dhcp-relay.gz"
+        archives = {n: "//images:" + n for n in (native, fallback)}
+        members = {"runtime": (native, archives[native], "//images:syncd-layout")}
+        families = {"docker-syncd-vs": {"members": members},
+                    "docker-dhcp-relay": {"members": {"runtime": (fallback, archives[fallback], "//images:relay-layout")}}}
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = root / "layout"
+            layout.mkdir()
+            (layout / "index.json").write_text("installed index")
+            target = root / "target"
+            target.mkdir()
+            (target / fallback).write_bytes(b"installed fallback")
+            producer = root / "syncd.gz"
+            producer.write_bytes(b"requested archive")
+            paths = {archives[native]: producer, "//images:syncd-layout": layout}
+            destination = root / "validation"
+            args = SimpleNamespace(validation_directory=destination, target_path=target, architecture="amd64",
+                                   validation_debug="n", registered_debug=[], validation_only_debug=[])
+            with patch.object(bundles.subprocess, "check_output", return_value="abc123"), \
+                    patch.object(bundles.subprocess, "run") as build, \
+                    patch.object(bundles, "validation_targets", return_value=families), \
+                    patch.object(bundles, "extra_targets", side_effect=lambda families: list(archives.values())), \
+                    patch.object(bundles, "configured_outputs", return_value=paths), \
+                    patch.object(batch, "build_options", return_value=[]), \
+                    patch.object(bundles, "write_bundles") as publish:
+                bundles.defer_validation(args, archives, {}, {native: layout})
+                build.assert_not_called()
+                self.assertFalse((target / native).exists())
+
+                (layout / "index.json").write_text("different configuration")
+                with self.assertRaisesRegex(ValueError, "layout differs from VS installer"):
+                    bundles.complete_validation(destination)
+                (layout / "index.json").write_text("installed index")
+                (target / fallback).write_bytes(b"replacement")
+                with self.assertRaisesRegex(ValueError, "fallback archive changed"):
+                    bundles.complete_validation(destination)
+                publish.assert_not_called()
+                self.assertFalse((target / native).exists())
+
+                (target / fallback).write_bytes(b"installed fallback")
+                bundles.complete_validation(destination)
+                self.assertIn(archives[native], build.call_args.args[0])
+                self.assertEqual((target / native).read_bytes(), producer.read_bytes())
+                self.assertEqual(publish.call_args.kwargs["native_archives"], {native: bundles.sha(layout / "index.json")})
+
+    def test_feature_evidence_uses_the_selected_bazel_flags(self):
+        for image, flag, field in (
+            (PMON, "//dockers/docker-platform-monitor:pddf", "pddf_enabled"),
+            ("docker-sonic-gnmi", "@sonic_gnmi//tools/bazel:enable_dialout", "dialout_enabled"),
+        ):
+            for value, expected in (("true", True), ("false", False)):
+                self.assertEqual(bundles.make_features(image, {flag: value}), {field: expected})
+            for invalid in ({}, {flag: "unknown"}):
+                with self.assertRaisesRegex(ValueError, "missing Make-selected"):
+                    bundles.make_features(image, invalid)
+
+    def test_only_pmon_can_ship_the_original_static_smartcmd(self):
+        path = "usr/bin/SmartCmd"
+        source = Path(__file__).resolve().parents[3] / "dockers" / PMON / "ssd_tools/SmartCmd"
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layer = root / "layer.tar"
+            with tarfile.open(layer, "w") as archive:
+                archive.add(source, arcname=path)
+            descriptor = {"digest": "sha256:" + bundles.sha(layer), "size": layer.stat().st_size}
+            manifest = {"config": descriptor, "layers": [descriptor]}
+            with patch.object(bundles, "layout_metadata", return_value=(descriptor, manifest, {}, [layer])):
+                inventory, *_ = bundles.write_inventory(root, "runtime", root, {}, account_layers={},
+                                                        static_i386=static_i386_files(PMON))
+                files = json.loads(gzip.decompress(inventory.read_bytes()))["files"]
+                with self.assertRaisesRegex(ValueError, "expected little-endian ELF64"):
+                    bundles.write_inventory(root, "runtime", root, {}, account_layers={})
+        verify_amd64_files(PMON, files)
+        with self.assertRaisesRegex(ValueError, "non-AMD64"):
+            verify_amd64_files("docker-nat", files)
+        with self.assertRaisesRegex(ValueError, "non-AMD64"):
+            verify_amd64_files(PMON, {**files, "usr/bin/unrelated": files[path]})
+        for replacement in ({}, {path: {**files[path], "sha256": "0" * 64}},
+                            {path: {**files[path], "elf_machine": 62}}):
+            with self.subTest(replacement=replacement), self.assertRaisesRegex(ValueError, "Missing or changed PMON"):
+                verify_amd64_files(PMON, replacement)
+
     def test_private_owner_fixture_uses_its_exact_module_mapping(self):
         """A private target is selected directly and matched to its owner's canonical output."""
         label = "@sonic_sysmgr//tests:reboot_dbus_mock"
@@ -92,20 +216,8 @@ class BundleSelectionTest(unittest.TestCase):
                     else:
                         self.assertNotIn("parent.oci.json.gz", fixtures)
 
-    def test_only_the_selected_p4rt_debug_image_publishes_its_symbols_parent(self):
-        """The P4RT intermediate is reused from debug's graph without adding it to Make's archives."""
-        image = bundles.P4RT
-        target = "//dockers/" + image + ":" + image
-        archive, debug = image + ".gz", image + "-dbg.gz"
-        with patch("tools.bazel.ci.vs_probe_policy.preparation_targets", return_value={}):
-            runtime = bundles.validation_targets({archive: target + ".gz"}, {debug}, False)
-            paired = bundles.validation_targets({archive: target + ".gz", debug: target + "-dbg.gz"}, {debug}, True)
-            self.assertNotIn(bundles.P4RT_SYMBOLS, bundles.extra_targets(runtime))
-            self.assertIn(bundles.P4RT_SYMBOLS, bundles.extra_targets(paired))
-            self.assertEqual(set(paired[image]["members"]), {"runtime", "debug"})
-
     def test_apt_evidence_comes_from_each_selected_stage_and_the_original_owner(self):
-        """Runtime-only builds omit the debug APT graph, P4RT DWP contract and symbols-stage receipt."""
+        """Runtime-only builds omit the debug APT graph."""
         for image in sorted(bundles.APT_REPORT_FAMILIES):
             with self.subTest(image=image), patch("tools.bazel.ci.vs_probe_policy.preparation_targets", return_value={}):
                 package = "//dockers/" + image + ":"
@@ -114,18 +226,38 @@ class BundleSelectionTest(unittest.TestCase):
                 plain = bundles.validation_targets(images, {debug}, False)[image]
                 self.assertEqual(plain["sources"]["runtime-apt.json"], package + "runtime_apt_selection")
                 self.assertNotIn("debug-apt.json", plain["sources"])
-                self.assertNotIn("symbols-apt.json", plain["sources"])
-                self.assertNotIn("p4rt_runtime_debug_contract.json", plain["sources"])
                 paired = bundles.validation_targets({**images, debug: package + debug}, {debug}, True)[image]
                 self.assertEqual(paired["sources"]["debug-apt.json"], package + "debug_apt_selection")
-                if image == bundles.P4RT:
-                    self.assertEqual(paired["sources"]["symbols-apt.json"], package + "symbols_apt_selection")
-                    for name in ("p4rt_runtime_contract.json", "p4rt_runtime_debug_contract.json", "handoff.json"):
-                        self.assertEqual(paired["sources"][name], "@p4rt_owner_payload//:" + name)
                 if image == "docker-orchagent":
                     self.assertEqual(plain["sources"]["libteam-source-receipt.json"], package + "libteam_source_receipt")
                 if image == "docker-dash-engine":
                     self.assertEqual(plain["apt_lock"], bundles.DASH_LOCK)
+
+    def test_service_only_installer_stages_shared_parents_in_dependency_order(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = PMON + ".gz"
+            with tarfile.open(root / archive, "w:gz"):
+                pass
+            installer = {archive: f"//dockers/{PMON}:{archive}"}
+            args = SimpleNamespace(target_path=root, archive=installer, validation_directory=root / "bundles",
+                                   architecture="amd64", validation_debug="n", registered_debug=[], validation_only_debug=[])
+            with patch("tools.bazel.ci.vs_probe_policy.preparation_targets", return_value={}):
+                families = bundles.validation_targets(installer, set(), False)
+            targets = {label: root / archive for label in bundles.extra_targets(families)}
+            layer = {"digest": "sha256:" + bundles.sha(root / archive), "size": (root / archive).stat().st_size}
+            config = {"rootfs": {"type": "layers", "diff_ids": [layer["digest"]]}}
+            metadata = (layer, {"config": layer, "layers": [layer]}, config, [root / archive])
+            with patch.object(bundles, "layout_metadata", return_value=metadata):
+                bundles.write_bundles(args, families, targets, {"//tools/bazel/oci:image_version": "test",
+                                                               "//dockers/docker-platform-monitor:pddf": "false"})
+
+            selection = json.loads((args.validation_directory / "selection.json").read_bytes())
+            self.assertEqual(selection["installer_archives"], [archive])
+            self.assertEqual(selection["auxiliary_parents"], [bundles.BASE, bundles.CONFIG, bundles.SWSS])
+            for child, parent in ((bundles.CONFIG, bundles.BASE), (bundles.SWSS, bundles.CONFIG), (PMON, bundles.CONFIG)):
+                staged = json.loads((args.validation_directory / child / "parent.json").read_bytes())
+                self.assertEqual(staged["image"], parent)
 
     def test_registered_companion_only_requested_when_debug_is_enabled(self):
         runtime = {"docker-unit.gz": "//unit:docker-unit.gz"}

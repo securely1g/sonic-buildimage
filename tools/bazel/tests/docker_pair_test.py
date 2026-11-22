@@ -13,6 +13,8 @@ from tools.bazel.tests.docker_test import ArchiveRecipeFixture
 from tools.bazel.ci.private_server_diagnostics import snapshot
 from tools.bazel.ci.verify_vs_image_tags import batch_archives
 from tools.bazel.build_container_batch import go_proxy_timed_out
+from tools.bazel.oci.boot_layout import installer_input
+from tools.bazel.tests.oci_base_fixture import oci_files, image_fixture, write_layout
 
 
 OTEL_MODULE = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver"
@@ -83,8 +85,9 @@ inputs/%.ready: inputs/%.source
 # Exercise the actual installer's selected Docker prerequisite list.
 target/sonic-vs.img.gz: $$(addprefix target/,$$(sonic-vs.img.gz_DOCKERS) $$(SONIC_PACKAGES_LOCAL))
 	@printf '%s\\n' '$(sonic-vs.img.gz_DOCKERS)' > installed-containers
-target/sonic-vs.bin: $$(addprefix target/,$$(sonic-vs.bin_DOCKERS) $$(SONIC_PACKAGES_LOCAL))
+target/sonic-vs.bin: $$(call vs_installer_inputs,$$(sonic-vs.bin_DOCKERS) $$(SONIC_PACKAGES_LOCAL))
 	@printf '%s\\n' '$(sonic-vs.bin_DOCKERS)' > installed-containers
+	@printf '%s\\n' "$$SONIC_VS_BOOT_HANDOFF" > installer-handoff
 # This innocuous goal tests the target propagated by the outer Make invocation.
 installer-dispatch: $$(addprefix target/,$$(sonic-vs.bin_DOCKERS) $$(SONIC_PACKAGES_LOCAL))
 	@printf '%s\\n' '$(sonic-vs.bin_DOCKERS)' > installed-containers
@@ -131,6 +134,54 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
                                environment={"SONIC_ENABLE_DEBUG_LAYER": "y"})
         self.assert_success(result)
         self.assert_batch()
+
+    def test_vs_boot_hands_off_selected_private_and_batch_outputs_from_this_make(self):
+        private, batch = self.archives[::2]
+        self.makefile = self.makefile.replace("include tools/bazel/docker.mk", f"""
+{private}_BAZEL_ARGS = --define=private=1
+include tools/bazel/docker.mk""")
+        native = {}
+        for name in (private, batch):
+            layout = self.root / (name + ".oci")
+            config, layers = image_fixture()
+            image = json.loads(config)
+            image["config"]["Labels"]["owner"] = name
+            write_layout(layout, oci_files(json.dumps(image).encode(), layers))
+            native[self.labels[name] + ".boot-oci"] = str(layout)
+        for name in (private, batch):
+            (self.target / name).unlink()
+        env = {"DOCKER_LOAD_ON_BOOT": "y", "BUILD_WITH_BAZEL_WHEN_AVAILABLE": "y"}
+        for remove in (False, True):
+            if remove:
+                del native[self.labels[private] + ".boot-oci"]
+            env["FAKE_BAZEL_BOOT_LAYOUTS"] = json.dumps(native)
+            self.assert_success(self.run_make(goals=["target/sonic-vs.bin"], parallel=True, environment=env))
+            token = (self.root / "installer-handoff").read_text().strip()
+            self.assertTrue(token)
+            commands = [c["arguments"] for c in self.recorded_calls() if c["operation"] == "build"]
+            for name in (private, batch):
+                archive = self.target / name
+                selected = installer_input(archive, token)
+                needs_archive = remove and name == private
+                self.assertEqual(any(self.labels[name] in cmd for cmd in commands), needs_archive)
+                self.assertEqual(archive.exists(), needs_archive)
+                if needs_archive:
+                    self.assertEqual(selected, archive)
+                    self.assertEqual(archive.read_bytes(), ("new " + name).encode())
+                else:
+                    self.assertEqual((selected / "index.json").read_bytes(),
+                                     (self.root / (name + ".oci/index.json")).read_bytes())
+            self.calls.unlink()
+
+        # Request an explicit archive alongside an installer that uses another
+        # owner's native layout. Make must produce the real archive.
+        native[self.labels[private] + ".boot-oci"] = str(self.root / (private + ".oci"))
+        env["FAKE_BAZEL_BOOT_LAYOUTS"] = json.dumps(native)
+        (self.target / private).unlink()
+        self.assert_success(self.run_make(goals=["target/sonic-vs.bin", "target/" + batch],
+                                          parallel=True, environment=env))
+        self.assertEqual((self.target / batch).read_bytes(), ("new " + batch).encode())
+        self.assertFalse((self.target / private).exists())
 
     def test_default_onie_build_skips_debug_archives_and_prerequisites(self):
         for name in self.archives[1::2]:
@@ -202,6 +253,36 @@ $(addprefix target/,$(LEGACY_IMAGES)): target/%.gz:
         self.assertEqual(len(self.recorded_calls()), 2)
         self.assertEqual((self.target / self.archives[0]).read_bytes(), b"previous image")
         self.assertFalse((self.root / "installed-containers").exists())
+
+    def test_gazelle_exit_status_footer_retries_with_real_bazel_event_shape(self):
+        description = GAZELLE_TIMEOUT + "\nexit status 1"
+        events = failure_events(description)
+        events[0]["aborted"]["description"] = (
+            "com.google.devtools.build.lib.rules.repository.RepositoryFunction"
+            "$AlreadyReportedRepositoryAccessException: " + description)
+        events[2]["finished"]["failureDetail"]["message"] = (
+            "Analysis of target '//dockers/docker-sonic-otel:installed_packages' failed; "
+            "build aborted: no such package '@@otelcol-contrib++go_deps+"
+            "com_github_open_telemetry_opentelemetry_collector_contrib_receiver_"
+            "otlpjsonfilereceiver//': " + description)
+        self.assert_success(self.build_with_failures([(1, events)]))
+        self.assertEqual(len(self.recorded_calls()), 2)
+        log = (self.target / "vs-container-images.log").read_text()
+        self.assertEqual(log.count("Retrying the container batch once."), 1)
+        for name in self.archives:
+            self.assertEqual((self.target / name).read_bytes(), ("new " + name).encode())
+
+    def test_gazelle_footer_does_not_hide_additional_diagnostics(self):
+        path = self.root / "events.json"
+        events = failure_events(GAZELLE_TIMEOUT + "\nexit status 1\n")
+        path.write_text("".join(json.dumps(event) + "\n" for event in events))
+        self.assertTrue(go_proxy_timed_out(path))
+        for suffix in ("\nexit status 2", "\nexit status 1\nchecksum mismatch",
+                       "\ncertificate verification failed\nexit status 1"):
+            with self.subTest(suffix=suffix):
+                events = failure_events(GAZELLE_TIMEOUT + suffix)
+                path.write_text("".join(json.dumps(event) + "\n" for event in events))
+                self.assertFalse(go_proxy_timed_out(path))
 
     def test_nonretryable_failures_stop_immediately(self):
         timeout = failure_events(GAZELLE_TIMEOUT)

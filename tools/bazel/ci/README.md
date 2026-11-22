@@ -1,5 +1,32 @@
 # Shared Bazel CI helpers
 
+## Transient repository fetch retries
+
+The shared action-audit query, archive/filegroup collectors and container
+action query opt into `command_log.execute(..., retry_fetch=True)`.
+They retry explicit Go `fetch_repo` or Bazel `Error downloading` transport
+failures (including EOF, reset connections and timeouts), and temporary HTTP
+429/500/502/503/504 failures. There are at most three attempts, with 10s and
+30s backoff, using the same command, working directory and Bazel caches.
+This covers dependency fetching during `aquery`, not just the later build.
+
+Only exit code 1 with recognized fetch diagnostics is eligible. Unrelated
+error diagnostics, checksum/certificate failures, unknown versions, missing
+packages and cancellation are not retried. Ordinary commands remain
+single-attempt for repository fetch failures unless a Bazel caller explicitly
+opts in. Fetch and remote-cache retries share one three-attempt budget per
+command, including when the failure type changes between attempts. Successful queries
+return only the final attempt's stdout, and private action graphs are truncated
+before each attempt and never printed or logged.
+
+The normal command receipt still has one entry and the final `<name>.log`.
+Retried entries additionally record every attempt's exit status, elapsed time,
+log and backoff; failed attempts use `<name>.attempt-N.log`. Total command
+wall time includes all attempts and waits. Standalone action audits retain a
+neighboring `<audit-name>.query.json` command receipt even on fetch failure.
+The action-graph policy check still runs after a successful query; retries
+cannot bypass the no-DEB/package-wrapper gate.
+
 ## Remote cache uploads
 
 The [native event services](../../../.github/workflows/bazel-eventd.yml),
@@ -43,7 +70,7 @@ The shared command runner retries recognized transient Bazel remote-cache
 failures up to three total attempts, waiting 10 seconds and then 30 seconds.
 This covers commands used by source/archive collectors, owner container
 builds/tests/queries, pre-build action audits and native boot-bundle assembly.
-The kernel consumer applies the same classifier around its pinned launcher,
+The legacy isolated kernel consumer applies the same classifier around its pinned launcher,
 without rerunning outer preparation or creating another scratch workspace.
 
 Only exit 1 or 34 with an identified cache/capabilities error and a recognized
@@ -289,6 +316,47 @@ records that invocation and its profile. The container rows record their
 archive exports. The normal installer selects runtime containers, and
 a debug installer requires `INSTALL_DEBUG_TOOLS=y` and `SONIC_ENABLE_DEBUG_LAYER=y`.
 
+The `sonic-vs-bazel-timings-amd64` workflow artifact also includes sanitized
+`<owner>/recipe-*/build.bep.json` and `test.bep.json` files for instrumented
+Bazel build/test commands. These are JSON-lines BEP event subsets, not the
+profile-derived `summary.json`. They retain Bazel version/command, numeric build
+metrics, reviewed runner/mnemonic names, target/test results and the original
+terminal marker when present. Commands, environment values, progress text,
+metadata, local paths, output locations and event-graph links are omitted.
+The files are therefore not full BEP streams for graph-replay tools.
+Incomplete streams are not marked complete. Invalid or unsafe streams are not
+published and produce a fixed warning without changing the build exit status.
+Capture reuses an existing caller-owned BEP without modifying it; otherwise
+the raw stream is created in a private temporary directory and removed after
+sanitization. The nested kernel launcher uses its existing BEP. Capture runs
+on success and failure; disabled timing and query-only commands are unchanged.
+No execution logging, cache-policy changes or BEP-derived dashboard analysis
+is enabled by this artifact publication.
+
+After the native build, `summarize_bep.py` reads those sanitized files once and
+adds `bep-summary.json` and `bep-summary.md` to the same artifact. The reports
+include per-invocation wall/CPU/analysis/execution timing when available, action
+and mnemonic counts, separate local action-cache statistics and runner counts,
+and target/test results. They do not infer per-target duration. Phase timings
+can overlap and must not be added together. Bazel's `actionsExecuted` includes
+cache-handled and internal actions; local cache misses do not establish remote
+cache misses. Missing metrics remain unavailable, and missing terminal/result
+events produce an incomplete status rather than success.
+
+Analysis uses no new Bazel invocation, profile processing or action logging.
+Its parsing/aggregation duration is recorded as `analysis_seconds`; report
+serialization and the existing artifact upload add a small unmeasured overhead.
+Malformed files produce an unavailable entry without raw exception details.
+The independent, always-run analysis step is non-blocking even if the build or
+profile summary fails. Existing profile summaries and dashboard data are unchanged.
+
+The VS job keeps Bazel's prepared external repositories on the runner under
+`vs-cache/repo-contents`. Master pushes, same-repository PRs and manual runs
+each use a separate directory. The builder mounts the selected directory at
+`/bazel_repo_contents_cache`. Bazel 8.5.1 can reuse repositories that declare
+reproducible contents across fresh output bases, including the SymCrypt LLVM
+distribution. The job still clears its download and action caches before building.
+
 The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
 the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
 registry login, Make reuses a local computed-tag slave image, pulls the matching
@@ -318,6 +386,73 @@ It does not request those archives again or run the post-build validators.
 This target does not require KVM. BIOS/UEFI VM disk generation and guest boot
 checks belong to `target/sonic-vs.img.gz` and are not exercised by this `.bin`
 CI path. The separate VM target retains those checks.
+
+Native VS CI enables `SONIC_VS_RFS_HANDOFF=1` for a job-local handoff of a
+freshly built stage-one rootfs. The wrapper creates private staging for each
+invocation and cleans it after Make succeeds or fails. After stage-one
+compression and normal cache publication succeed, the native AMD64 VS ONIE
+recipe moves the unmounted tree into staging. Final assembly verifies the
+archive path, stat and SHA256 and the tree identity, then consumes it once
+instead of deleting it and running `unsquashfs`. Cached or already-existing
+archives, missing or invalid staging, other images and cross builds retain
+ordinary extraction. The intermediate SquashFS and its cache publication
+are deliberately retained; this optimization does not skip its compression.
+The offline image bundle, Docker first-start import and installed-image
+validators retain their formats and integrity checks.
+
+When the host-base cache is enabled, staging also requires its current
+`artifacts/vs/host-base-cache.json` receipt to report a native cache miss and
+match the SquashFS digest and size. Cache hits, missing or invalid receipts,
+and mismatched archives use ordinary extraction, even if an older rootfs tree
+remains in the checkout.
+
+Unset `SONIC_VS_RFS_HANDOFF` to disable the handoff. The wrapper reports
+`restored`, `miss`, `stored` or `unused`, plus available store/restore timings.
+Require `restored` before attributing an extraction saving to this feature.
+Archive hashing is real overhead: compare total build time and final assembly
+on comparable runners with identical inputs, rather than treating a skipped
+extraction as a measured end-to-end speedup.
+
+Native VS CI also enables `SONIC_VS_FAST_ASSEMBLY=1`. In `build_vs.sh` this
+selects `SONIC_BOOT_LAYER_GZIP_LEVEL=1` for layers that need gzip normalization
+and `SONIC_SQUASHFS_ZSTD_LEVEL=3` for the final rootfs. Existing gzip layers
+are verified and reused without recompression. Compression levels are
+declared Bazel action inputs; changing the profile also invalidates an
+existing VS installer through its Make stamp. Explicit level overrides take
+precedence. Ordinary builds retain gzip level 6 and the existing SquashFS
+default; unset the fast flag and both overrides to use those defaults.
+The faster profile trades installer size for compression time, not a new
+compression format. Compare size, installation, first boot and total build
+time on matched runners before claiming an end-to-end improvement.
+
+The fast profile also defaults `SONIC_VS_BATCH_PACKAGES=1`. Native AMD64 VS
+extensions combine only adjacent APT pairs (`efitools`/`mokutil` and
+`python3-dev`/`j2cli`) and two contiguous pip blocks. Existing version constraints,
+dependency resolution, proxy handling and cleanup hooks remain unchanged.
+Other platforms, architectures and cross builds retain serial installation.
+Set `SONIC_VS_BATCH_PACKAGES=0` to disable batching independently of compression,
+or set it to `1` without the fast profile to test batching alone. Changing this
+setting invalidates the VS installer Make stamp, not container-layer actions.
+Repeated fresh-root lab tests with frozen inputs saved about 13 seconds in
+these blocks and preserved package state and Python payloads; downloads were
+excluded and this is not a full-image speedup claim. Batching does not change
+the offline-bundle format, image tags, first-start Docker import or ONIE wrapper.
+
+Archive publication and fallback member projection attempt Linux reflinks,
+then copy normally when the filesystem does not support them. The destination
+has an independent inode, so later writes cannot corrupt a Bazel/cache source.
+Publication still uses a temporary file and atomic replacement.
+
+With `SONIC_VS_IMAGE_TIMINGS=1`, the wrapper also preserves fixed-label
+command durations under `artifacts/vs/image-timings/installer-steps`.
+Receipts cover restoration/extraction, the extension, initramfs, version
+collection, package cleanup, size scans/optimization and SquashFS. They do
+not capture command arguments or output, and recording failure does not
+change a completed command's status. Extension time includes offline-bundle
+work; these nested measurements must not be added to the existing phase
+totals. Boot-bundle receipts additionally report native/archive selection,
+layer action counts, compression level, graph setup and total wall time.
+
 The build publishes the installer, its Make image list and one Actions artifact
 per selected OCI family. Each family includes the OCI configuration, ordered
 layer and archive digests, and the inputs needed by its installed probe. It
@@ -482,7 +617,9 @@ Container CI uses `public_artifacts.py` from the public upload work in
 [Image12](https://github.com/securely1g/sonic-buildimage/pull/12). It uploads
 explicit build outputs, checked dependency records, and summaries of build and
 test results. Raw Bazel events, command lines, logs, and receipt diagnostics stay
-out of public artifacts. A failed job publishes only a validated partial summary.
+out of public artifacts. The VS timing artifact may additionally publish the
+sanitized BEP metric/result events described above; raw events stay private.
+A failed job's container-evidence selection publishes only a validated partial summary.
 The selector fails closed for unsafe dependency data or missing successful outputs.
 
 ## Debian download mirrors

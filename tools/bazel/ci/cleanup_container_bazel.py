@@ -21,8 +21,7 @@ LOCAL_CACHES = (*CACHE_NAMES, "bazelisk")
 UPLOAD_PREFIX = "bazel_upload_"
 AUTHORIZATION = "bazel-cleanup-authorization.json"
 IDENTITY = "job-identity.json"
-CONTAINER_JOBS = {"archive", "gearbox_archive", "dash_engine_archive", "radv_native", "native", "otel_archive",
-                  "p4rt_owner"}
+CONTAINER_JOBS = {"archive", "package_amd64", "gearbox_archive", "dash_engine_archive", "radv_native", "native", "otel_archive"}
 SUPPORTED_JOBS = CONTAINER_JOBS | {"package"}
 MIGRATED_JOBS = {
     "bazel-frr-python.yml": {"packages"},
@@ -30,7 +29,7 @@ MIGRATED_JOBS = {
     "bazel-libteam.yml": {"native"},
     "bazel-sysmgr.yml": {"native"},
     "bazel-make-cache.yml": {"checks"},
-    "bazel-oci.yml": {"checks"},
+    "bazel-oci.yml": {"checks", "dhcp_relay_runtime"},
     "build-dashboard.yml": {"checks", "publish"},
     "runner-manager.yml": {"tests"},
     "runtime-image-validation.yml": {"native-tests"},
@@ -169,8 +168,8 @@ def artifact_directories(migrated=False):
         if os.environ["GITHUB_JOB"] == "publish":
             return ("site", "history")
         return ("artifacts",)
-    if os.environ["GITHUB_JOB"] in {"dash_engine_archive", "p4rt_owner"}:
-        # DASH and P4RT evidence lives entirely inside the registered job directory.
+    if os.environ["GITHUB_JOB"] == "dash_engine_archive":
+        # DASH evidence lives entirely inside the registered job directory.
         return ()
     if os.environ["GITHUB_JOB"] == "otel_archive":
         return ("artifacts/otel",)
@@ -355,7 +354,7 @@ def cleanup(home, workspace, runner_temp, directory, bazel="bazel", host=False, 
             print("No container-local Bazel caches to remove")
     elif not migrated:
         cleanup_host_bases(home, workspace, bazel)
-    if os.environ["GITHUB_JOB"] == "archive":
+    if os.environ["GITHUB_JOB"] in {"archive", "package_amd64"}:
         # Source probes may be interrupted before an artifact upload is eligible.
         remove_selected(directory, ("archive-bazel",))
     cleanup_artifacts(workspace, runner_temp, directory, host=host, migrated=migrated)
@@ -392,9 +391,16 @@ def main():
             prefix = os.environ["GITHUB_REPOSITORY"] + "/.github/workflows/"
             reference = os.environ["GITHUB_WORKFLOW_REF"]
             workflow = reference.removeprefix(prefix).split("@", 1)[0]
+            job = os.environ["GITHUB_JOB"]
+            # In a local reusable workflow GitHub reports the caller's workflow
+            # ref and the callee's job ID. Authorize only this same-ref FRR call.
+            if (workflow, job) == ("bazel-oci.yml", "packages"):
+                callee = prefix + "bazel-frr-python.yml@" + reference.partition("@")[2]
+                if os.environ.get("BAZEL_CLEANUP_JOB_WORKFLOW_REF") == callee:
+                    workflow = "bazel-frr-python.yml"
             if (os.environ.get("RUNNER_ENVIRONMENT") != "self-hosted" or
                     not reference.startswith(prefix) or "@" not in reference or
-                    os.environ["GITHUB_JOB"] not in MIGRATED_JOBS.get(workflow, set())):
+                    job not in MIGRATED_JOBS.get(workflow, set())):
                 raise ValueError("Cleanup requires an explicitly supported migrated self-hosted job")
         elif os.environ["GITHUB_JOB"] not in SUPPORTED_JOBS:
             raise ValueError("Cleanup requires a supported Bazel job")

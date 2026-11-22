@@ -83,7 +83,8 @@ class KernelBundleTest(unittest.TestCase):
             'bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-' + self.gitlink + '", repo_name = "sonic_linux_kernel")'))
         ci = self.root / "tools/bazel/ci"
         ci.mkdir(parents=True)
-        for name in ("command_log.py", "resolution.py", "time_vs_image.py", "resources.py"):
+        for name in ("command_log.py", "resolution.py", "time_vs_image.py", "resources.py",
+                     "public_artifacts.py"):
             shutil.copyfile(ROOT / "tools/bazel/ci" / name, ci / name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", ".gitmodules", "Makefile.work", "rules", "tools"], check=True)
@@ -478,6 +479,8 @@ class KernelBundleTest(unittest.TestCase):
             outputs.mkdir(parents=True)
             (workdir / "build.log").write_text("kernel source build\n")
             (workdir / "profile.json.gz").write_bytes(b"build profile")
+            (workdir / "bep.json").write_text(
+                '{"id":{"buildMetrics":{}},"buildMetrics":{"actionSummary":{"actionsExecuted":3}}}\n')
             for name in [kernel.MANIFEST, *self.packages]:
                 shutil.copyfile(prebuilt / name, outputs / name)
             (workdir / "output-paths.txt").write_text("".join(
@@ -514,6 +517,9 @@ class KernelBundleTest(unittest.TestCase):
         for phase in ("launcher", "stage-debs"):
             self.assertEqual(json.loads((directory / f"{phase}.timing.json").read_text())["exit_code"], 0)
         self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"build profile")
+        self.assertEqual(json.loads((directory / "build.bep.json").read_text())["buildMetrics"],
+                         {"actionSummary": {"actionsExecuted": 3}})
+        self.assertTrue((self.root / "state/build/bep.json").is_file())
         self.assertEqual((directory / "build.log").read_text(), "kernel source build\n")
         rc = (self.root / "state/consumer/.bazelrc").read_text().splitlines()
         self.assertIn("common --noslim_profile", rc)
@@ -528,6 +534,8 @@ class KernelBundleTest(unittest.TestCase):
             workdir = Path(command[command.index("--work-dir") + 1])
             workdir.mkdir(parents=True)
             (workdir / "profile.json.gz").write_bytes(b"partial profile")
+            (workdir / "bep.json").write_text(
+                '{"id":{"buildMetrics":{}},"buildMetrics":{"actionSummary":{"actionsExecuted":1}}}\n')
             raise subprocess.CalledProcessError(37, command)
 
         with self.assertRaises(subprocess.CalledProcessError) as failure:
@@ -536,6 +544,8 @@ class KernelBundleTest(unittest.TestCase):
         directory, = (self.root / "artifacts/vs/image-timings/linux-kernel").iterdir()
         self.assertEqual(json.loads((directory / "launcher.timing.json").read_text())["exit_code"], 37)
         self.assertEqual((directory / "build.profile.json.gz").read_bytes(), b"partial profile")
+        self.assertEqual(json.loads((directory / "build.bep.json").read_text())["buildMetrics"],
+                         {"actionSummary": {"actionsExecuted": 1}})
         self.assertFalse((directory / "stage-debs.timing.json").exists())
 
     def test_cache_retries_reuse_launcher_state_and_publish_only_after_verified_success(self):
@@ -547,8 +557,8 @@ class KernelBundleTest(unittest.TestCase):
             calls = []
             metadata = {}
             state = self.root / f"retry-state-{failures}"
-            before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
-                      for path in self.bundle.iterdir()}
+            before = {path.relative_to(self.bundle): (path.read_bytes(), path.stat().st_mtime_ns)
+                      for path in self.bundle.rglob("*") if path.is_file()}
 
             def execute(command, workspace):
                 calls.append(command)
@@ -683,6 +693,61 @@ class KernelBundleTest(unittest.TestCase):
                     kernel.stage_outputs(workdir, self.root / "rejected-bundle", self.root,
                                          self.state, self.selected)
 
+    def test_direct_publication_reads_deb_directories_and_preserves_basenames(self):
+        from tools.bazel.kernel import packages
+        (self.root / "MODULE.bazel").write_text(
+            'bazel_dep(name="sonic-linux-kernel", version="0.0.1-' + self.gitlink + '")\n')
+        paths = [self.bundle / packages.MANIFEST]
+        for name, metadata in self.packages.items():
+            folder = self.root / "producer" / (metadata["kind"] + ".debs")
+            folder.mkdir(parents=True)
+            (self.bundle / name).rename(folder / name)
+            paths.append(folder)
+        destination = self.root / "published"
+        destination.mkdir()
+        result = packages.publish(paths, destination, self.root, self.architecture, {})
+        self.assertEqual({item["name"] for item in result["manifest"]["packages"]}, set(self.packages))
+        for item in result["manifest"]["packages"]:
+            self.assertEqual(packages.sha256(destination / item["name"]), item["sha256"])
+            self.assertFalse((self.bundle / item["name"]).exists())
+        self.assertEqual({path.name for path in destination.iterdir()},
+                         set(self.packages) | {packages.MANIFEST, packages.PROVENANCE})
+        before = {path.name: path.stat().st_mtime_ns for path in destination.iterdir()}
+        packages.publish(paths, destination, self.root, self.architecture, {})
+        self.assertEqual(before, {path.name: path.stat().st_mtime_ns for path in destination.iterdir()})
+
+    def test_direct_publication_rejects_invalid_deb_directories_before_export(self):
+        from tools.bazel.kernel import packages
+        for invalid in ("empty", "multiple", "symlink", "directory"):
+            with self.subTest(invalid=invalid):
+                folder = self.root / (invalid + ".debs")
+                folder.mkdir()
+                if invalid == "multiple":
+                    (folder / "one.deb").write_bytes(b"one")
+                    (folder / "two.deb").write_bytes(b"two")
+                elif invalid == "symlink":
+                    (folder / "kernel.deb").symlink_to(self.bundle / next(iter(self.packages)))
+                elif invalid == "directory":
+                    (folder / "kernel.deb").mkdir()
+                destination = self.root / (invalid + "-destination")
+                with self.assertRaisesRegex(ValueError, "exactly one regular DEB"):
+                    packages.publish([folder], destination, self.root, self.architecture, {})
+                self.assertFalse(destination.exists())
+
+    def test_direct_publication_checks_directory_payload_digests(self):
+        from tools.bazel.kernel import packages
+        paths = [self.bundle / packages.MANIFEST]
+        for name, metadata in self.packages.items():
+            folder = self.root / "producer" / (metadata["kind"] + ".debs")
+            folder.mkdir(parents=True)
+            (self.bundle / name).rename(folder / name)
+            paths.append(folder)
+        (folder / name).write_bytes(b"corrupted")
+        destination = self.root / "rejected-publication"
+        with self.assertRaisesRegex(ValueError, "digest differs"):
+            packages.publish(paths, destination, self.root, self.architecture, {})
+        self.assertFalse(destination.exists())
+
     def make_fixture(self):
         output = self.root / "target/debs/trixie"
         output.mkdir(parents=True, exist_ok=True)
@@ -704,9 +769,26 @@ class KernelBundleTest(unittest.TestCase):
             "\t@test -z '$(SONIC_MAKE_DEBS)'\n"
             "\t@test '$($(LINUX_HEADERS_COMMON)_CACHE_MODE)' = none\n"
             + copy_recipe + derived_recipe)
+        from tools.bazel.kernel import packages
+        (self.root / "MODULE.bazel").write_text(
+            'bazel_dep(name="sonic-linux-kernel", version="0.0.1-' + self.gitlink + '")\n')
+        shutil.copyfile(ROOT / "tools/bazel/build_helpers.py", self.root / "tools/bazel/build_helpers.py")
+        shutil.copytree(ROOT / "tools/bazel/cache", self.root / "tools/bazel/cache", dirs_exist_ok=True)
+        (self.root / "tools/bazel/image").mkdir(exist_ok=True)
+        shutil.copyfile(ROOT / "tools/bazel/image/file_copy.py", self.root / "tools/bazel/image/file_copy.py")
+        fake_bazel = self.root / "bazel"
+        paths = [self.bundle / name for name in self.packages] + [self.bundle / kernel.MANIFEST]
+        fake_bazel.write_text("#!" + sys.executable + "\nimport sys\n"
+                             "if sys.argv[1] == 'cquery': print(" + repr("\n".join(map(str, paths))) + ")\n")
+        fake_bazel.chmod(0o755)
+        environment = patch.dict(os.environ, {"BAZEL": str(fake_bazel)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        packages.publish(paths, self.bundle, self.root, self.architecture, {})
+        (self.bundle / '.bazel-kernel.lock').touch()
         return makefile
 
-    def test_real_make_rules_use_normal_debs_and_recheck_stale_source(self):
+    def test_real_make_rules_use_normal_debs_and_reject_corrupted_packages(self):
         makefile = self.make_fixture()
         unrelated = self.bundle / "unrelated.deb"
         unrelated.write_bytes(b"unrelated native output")
@@ -719,7 +801,7 @@ class KernelBundleTest(unittest.TestCase):
             self.assertFalse((self.source / "COMPILED").exists())
             self.assertEqual(before, {p.name: p.stat().st_mtime_ns for p in self.bundle.iterdir()})
         self.assertEqual(unrelated.read_bytes(), b"unrelated native output")
-        (self.source / "Makefile").write_text("changed source\n")
+        (self.bundle / next(iter(self.packages))).write_bytes(b"corrupted package")
         result = subprocess.run(command, cwd=self.root, text=True, capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.source / "COMPILED").exists())
@@ -734,6 +816,8 @@ class KernelBundleTest(unittest.TestCase):
         self.provenance.update(source_commit=current["source_commit"],
                                consumer_inputs_sha256=current["consumer_inputs_sha256"])
         self.write_manifest()
+        self.make_fixture()
+        (self.root / ".platform").unlink()
         result = subprocess.run([sys.executable, "-B", "tools/bazel/ci/kernel_make_smoke.py",
                                  "--architecture", self.architecture], cwd=self.root, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -813,7 +897,7 @@ class KernelBundleTest(unittest.TestCase):
             self.assertEqual(native[name], ["original-input"])
         for directory in (str(kernel.DEBS_DIRECTORY), "target/other-debs"):
             selected = values("y", directory)
-            expected = {"original-input", "tools/bazel/kernel/prepare.py"} | {
+            expected = {"original-input", "tools/bazel/kernel/packages.py", "MODULE.bazel"} | {
                 directory + "/" + name for name in (*self.packages, kernel.MANIFEST, kernel.PROVENANCE)}
             for name in consumers:
                 self.assertEqual(set(selected[name]), expected)
@@ -906,6 +990,118 @@ class KernelBundleTest(unittest.TestCase):
             self.assertTrue(kernel.ensure(self.root)["reused"])
             self.assertTrue(kernel.ensure(self.root)["reused"])
         self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.bundle.iterdir()})
+
+    def remote_cache_fixture(self):
+        """Publish a trusted index using the real bundle verifier and fixture CAS."""
+        from tools.bazel.tests.kernel_cache_identity_test import fixture_policy, resolution_fixture
+
+        # This fixture models the previously audited legacy launcher, whose
+        # exact sandbox identity is part of its direct-index protocol.
+        self.state["launcher"]["execution_strategy"] = "linux-sandbox"
+        launcher = patch.object(kernel, "launcher_contract", return_value=self.state["launcher"])
+        launcher.start()
+        self.addCleanup(launcher.stop)
+        bundle = kernel.remote_bundle
+        lock, registry_files = resolution_fixture(kernel.DEFAULT_REGISTRY, self.state)
+        self.provenance["resolution"]["lock_sha256"] = hashlib.sha256(lock).hexdigest()
+        self.write_manifest()
+        # The five DEBs are already CAS outputs of the real Bazel action.
+        blobs = {(item["sha256"], item["size"]): (self.bundle / item["name"]).read_bytes()
+                 for item in self.manifest["packages"]}
+        downloads = []
+
+        class FixtureCAS:
+            def __init__(self, endpoint):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def missing(self, descriptors):
+                return set(descriptors) - set(blobs)
+
+            def upload(self, digest, size, source):
+                blobs[digest, size] = source.read_bytes()
+
+            def download(self, digest, size, destination):
+                downloads.append(destination.name)
+                destination.write_bytes(blobs[digest, size])
+
+        fixture_authorization = fixture_policy(self.state, lock)
+        self.addCleanup(fixture_authorization.close)
+        overrides = [patch.object(bundle.cache_transport, "BlobCache", FixtureCAS),
+                     patch.object(bundle.cache_identity, "_fetch", side_effect=registry_files.__getitem__),
+                     patch.dict(os.environ, {"SONIC_VS_KERNEL_REMOTE_REUSE": "1", "PYTHONPATH": "",
+                                             "SONIC_HOSTBASE_BUILDER_ID": "sha256:" + "a" * 64})]
+        for override in overrides:
+            override.start()
+            self.addCleanup(override.stop)
+        producer = self.root / "producer-debs"
+        self.bundle.rename(producer)
+
+        def build_kernel(workspace, state, remote, upload, **options):
+            self.assertTrue(upload)
+            consumer = state / "consumer"
+            consumer.mkdir(parents=True)
+            (consumer / "MODULE.bazel.lock").write_bytes(lock)
+            producer.rename(options["debs_directory"])
+            return {"plan": {}}
+
+        master = kernel.ensure(self.root, remote_cache="grpc://fixture:9092", upload=True, builder=build_kernel)
+        self.assertFalse(master["reused"])
+        # A fresh job receives only the trusted master's tiny index.
+        trusted = self.root / bundle.INPUT_INDEX
+        trusted.parent.mkdir(parents=True)
+        (self.root / bundle.OUTPUT_INDEX).rename(trusted)
+        shutil.rmtree(self.bundle)
+        return registry_files, blobs, downloads
+
+    def test_empty_job_restores_kernel_without_bazel(self):
+        _, _, downloads = self.remote_cache_fixture()
+        result = kernel.ensure(self.root, remote_cache="grpc://fixture:9092",
+                               builder=Mock(side_effect=AssertionError("launcher should be skipped")))
+        self.assertEqual(result["reuse_source"], "remote")
+        self.assertEqual(set(self.packages), set(downloads) & self.packages.keys())
+        self.assertEqual(kernel.verify(self.bundle, self.root)["provenance"], self.provenance)
+        self.assertFalse((self.root / kernel.remote_bundle.OUTPUT_INDEX).exists())
+
+    def test_changed_transitive_dependency_calls_bazel_in_a_fresh_job(self):
+        registry, _, downloads = self.remote_cache_fixture()
+        # Both direct module pins, the kernel revision, and the trusted index are identical.
+        transitive = next(url for url in registry if "/patchelf/" in url and url.endswith("/source.json")
+                          and registry[url] is not None)
+        changed = json.loads(registry[transitive])
+        changed["integrity"] = "sha256-" + base64.b64encode(b"x" * 32).decode()
+        registry[transitive] = json.dumps(changed).encode()
+        builder = Mock(side_effect=RuntimeError("normal kernel build"))
+        with self.assertRaisesRegex(RuntimeError, "normal kernel build"):
+            kernel.ensure(self.root, remote_cache="grpc://fixture:9092", builder=builder)
+        builder.assert_called_once()
+        self.assertFalse(any(name.endswith(".deb") for name in downloads))
+        self.assertFalse((self.bundle / kernel.PROVENANCE).exists())
+
+    def test_evicted_kernel_blob_falls_back_without_publishing_partial_packages(self):
+        _, blobs, _ = self.remote_cache_fixture()
+        package = self.manifest["packages"][0]
+        del blobs[package["sha256"], package["size"]]
+        builder = Mock(side_effect=RuntimeError("normal kernel build"))
+        with self.assertRaisesRegex(RuntimeError, "normal kernel build"):
+            kernel.ensure(self.root, remote_cache="grpc://fixture:9092", builder=builder)
+        builder.assert_called_once()
+        self.assertEqual(list(self.bundle.iterdir()), [])
+
+    def test_malformed_trusted_index_falls_back_before_fetching_any_blobs(self):
+        _, _, downloads = self.remote_cache_fixture()
+        (self.root / kernel.remote_bundle.INPUT_INDEX).write_text('{"schema": 1}')
+        builder = Mock(side_effect=RuntimeError("normal kernel build"))
+        with self.assertRaisesRegex(RuntimeError, "normal kernel build"):
+            kernel.ensure(self.root, remote_cache="grpc://fixture:9092", builder=builder)
+        builder.assert_called_once()
+        self.assertEqual(downloads, [])
+        self.assertEqual(list(self.bundle.iterdir()), [])
 
     def test_ensure_builds_once_for_parallel_requests_and_preserves_shared_cache(self):
         saved = self.root / "saved-bundle"
@@ -1203,9 +1399,18 @@ class KernelWorkflowTest(unittest.TestCase):
             "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
         ])
 
+    def test_amd64_vs_handoff_and_standalone_kernel_lanes(self):
+        self.assertIn("""inputs.vs_artifact_id && '["amd64"]' || github.event_name == 'workflow_dispatch' && '["amd64","arm64"]' || '["arm64"]'""", self.workflow)
+        self.assertIn("inputs.vs_artifact_id && 'vs' || 'standalone'", self.workflow)
+        self.assertIn("inputs.vs_artifact_id && github.sha || github.event.pull_request.head.sha", self.workflow)
+        self.assertIn("artifact-ids: ${{ inputs.vs_artifact_id }}", self.steps["Download kernel DEBs consumed by the VS installer"])
+        self.assertIn("if: inputs.vs_artifact_id == ''", self.steps["Build registry kernel outputs in the root module graph"])
+        self.assertIn("--from-vs-handoff", self.steps["Verify the downloaded package set before exercising Make reuse"])
+        self.assertLess(self.workflow.index("name: Verify the downloaded package set"), self.workflow.index("name: Reject an unsupported kernel configuration"))
+
     def test_shared_cache_defaults_and_optional_cold_proof(self):
-        self.assertIn("runner: [self-hosted, linux, bazel-x64]", self.workflow)
-        self.assertIn("runner: [self-hosted, linux, bazel-arm64]", self.workflow)
+        self.assertIn("runs-on: [self-hosted, linux,", self.workflow)
+        self.assertIn("matrix.arch == 'amd64' && 'bazel-x64' || 'bazel-arm64'", self.workflow)
         cold = "github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache"
         self.assertIn("KERNEL_REMOTE_CACHE: ${{ " + cold
                       + " && 'http://127.0.0.1:8080' || 'grpc://172.16.0.4:9092' }}",
@@ -1214,12 +1419,10 @@ class KernelWorkflowTest(unittest.TestCase):
                       + ") || (github.event_name == 'push' && github.ref == 'refs/heads/master') }}",
                       self.workflow)
         for name in ("Start a disposable cache for optional cold-build verification",
-                     "Verify a fresh output directory reuses the kernel action"):
+                     "Verify a fresh output base reuses the registered kernel action"):
             self.assertIn("if: " + cold, self.steps[name])
         self.assertIn("if: always() && steps.kernel_state.outcome == 'success' && " + cold,
                       self.steps["Stop the disposable verification cache"])
-        self.assertIn("'kernel-cache-hit' || 'kernel-bundle-state'",
-                      self.steps["Select verified DEBs and a public validation summary"])
         self.assertNotIn("sudo rm", self.workflow)
 
     def test_fixed_state_is_cleaned_before_build_and_after_artifact_upload(self):
@@ -1658,41 +1861,33 @@ class KernelWorkflowTest(unittest.TestCase):
                     nested.chmod(0o755)
 
     def test_build_cache_flags_and_failure_propagation(self):
-        step = self.steps["Build and verify kernel DEBs in the normal package directory"]
+        step = self.steps["Build registry kernel outputs in the root module graph"]
         script = textwrap.dedent(step.split("        run: |\n", 1)[1])
         script = script.replace("${{ matrix.arch }}", "arm64")
-        for endpoint, upload in (("grpc://172.16.0.4:9092", "true"),
-                                 ("grpc://172.16.0.4:9092", "false"),
-                                 ("http://127.0.0.1:8080", "true")):
+        script = script.replace("${{ matrix.arch == 'amd64' && 'x86_64' || 'aarch64' }}", "aarch64")
+        for upload in ("true", "false"):
             for exit_code in (0, 9):
-                with self.subTest(endpoint=endpoint, upload=upload, exit_code=exit_code):
-                    with tempfile.TemporaryDirectory() as temporary:
-                        root = Path(temporary)
-                        executable = root / "python3"
-                        executable.write_text(
-                            "#!" + sys.executable + "\n"
-                            "import json, os, sys\n"
-                            "from pathlib import Path\n"
-                            "Path(os.environ['CALLS']).write_text(json.dumps(sys.argv[1:]))\n"
-                            "sys.exit(int(os.environ['BUILD_EXIT']))\n")
-                        executable.chmod(0o755)
-                        calls = root / "calls.json"
-                        result = subprocess.run(
-                            ["bash", "-e", "-o", "pipefail", "-c", script],
-                            cwd=root, capture_output=True, text=True,
-                            env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
-                                     KERNEL_RUN_TEMP=temporary, KERNEL_REMOTE_CACHE=endpoint,
-                                     UPLOAD_KERNEL_CACHE=upload, CALLS=str(calls),
-                                     BUILD_EXIT=str(exit_code)))
-                        self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
-                        argv = json.loads(calls.read_text())
-                        self.assertEqual(argv[argv.index("--remote-cache") + 1], endpoint)
-                        self.assertEqual("--upload-local-results" in argv, upload == "true")
-                        self.assertEqual(argv[argv.index("--architecture") + 1], "arm64")
-                        self.assertEqual(
-                            argv[argv.index("--state-dir") + 1],
-                            str(root / "kernel-bundle-state"),
-                        )
+                with self.subTest(upload=upload, exit_code=exit_code), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    executable = root / "bazel"
+                    executable.write_text("#!" + sys.executable + "\nimport json,os,sys\n"
+                        "open(os.environ['CALLS'],'w').write(json.dumps(sys.argv[1:]))\n"
+                        "sys.exit(int(os.environ['BUILD_EXIT']))\n")
+                    executable.chmod(0o755)
+                    python = root / "python3"
+                    python.write_text("#!/bin/sh\nexit 0\n")
+                    python.chmod(0o755)
+                    calls = root / "calls.json"
+                    result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
+                        cwd=root, capture_output=True, text=True,
+                        env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                                 KERNEL_REMOTE_CACHE="grpc://cache:9092", UPLOAD_KERNEL_CACHE=upload,
+                                 KERNEL_RUN_TEMP=str(root), CALLS=str(calls), BUILD_EXIT=str(exit_code)))
+                    self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
+                    argv = json.loads(calls.read_text())
+                    self.assertIn("--remote_cache=grpc://cache:9092", argv)
+                    self.assertIn("--remote_upload_local_results=" + upload, argv)
+                    self.assertIn("--platforms=@sonic_build_infra//platforms:aarch64_trixie", argv)
 
 
 if __name__ == "__main__":

@@ -99,6 +99,50 @@ class ActionAuditTest(unittest.TestCase):
             for log in directory.glob("*.log"):
                 self.assertNotIn("private partial graph", log.read_text())
 
+    def test_transient_fetch_retries_discard_partial_graph_and_still_enforce_audit(self):
+        """Retry the observed Go fetch EOF without bypassing the no-DEB gate or exposing actions."""
+        for output_name in ("runtime.tar", "package.deb"):
+            with self.subTest(output_name=output_name), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                bazel = directory / "bazel"
+                graph = {
+                    "actions": [{"outputIds": [1], "arguments": ["packager"],
+                                 "environmentVariables": [{"key": "PRIVATE", "value": "private-value"}]}],
+                    "artifacts": [{"id": 1, "pathFragmentId": 1}],
+                    "pathFragments": [{"id": 1, "label": output_name}],
+                }
+                bazel.write_text("#!" + sys.executable + "\n" + f'''
+from pathlib import Path
+import sys
+counter = Path("count")
+if not counter.exists():
+    counter.touch()
+    print("private-partial-graph" * 100)
+    print('Error in fail: repository: fetch_repo: module@v1: Get "https://proxy.example/module": EOF',
+          file=sys.stderr)
+    sys.exit(1)
+print({json.dumps(graph)!r})
+''')
+                bazel.chmod(0o755)
+                with mock.patch("tools.bazel.ci.command_log.time.sleep") as sleep:
+                    if output_name.endswith(".deb"):
+                        with self.assertRaisesRegex(ValueError, "DEB or packaging wrapper"):
+                            bazel_commands.audit_targets(
+                                str(bazel), [], ["//:checked"], workspace=directory,
+                                output=directory / "audit.json")
+                    else:
+                        report = bazel_commands.audit_targets(
+                            str(bazel), [], ["//:checked"], workspace=directory,
+                            output=directory / "audit.json")
+                        self.assertEqual(report["action_count"], 1)
+                sleep.assert_called_once_with(10)
+                receipt = json.loads((directory / "audit.query.json").read_text())
+                self.assertEqual([attempt["returncode"] for attempt in
+                                  receipt["commands"][0]["attempts"]], [1, 0])
+                for path in directory.glob("audit*"):
+                    self.assertNotIn("private-value", path.read_text())
+                    self.assertNotIn("private-partial-graph", path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

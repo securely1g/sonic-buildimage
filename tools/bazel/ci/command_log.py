@@ -42,7 +42,36 @@ def transient_cache_failure(returncode, diagnostics):
     return primary
 
 
-def retry_remote_cache(run, *, diagnostics=None, on_retry=None):
+def transient_fetch_failure(stderr):
+    """Retry explicit repository transport failures, never unrelated diagnostics."""
+    transient = re.compile(
+        r"(?:fetch_repo:|Error downloading).*https?://.*"
+        r"(?:\bEOF\b|connection reset by peer|connection refused|"
+        r"i/o timeout|connect(?:ion)? timed out|TLS handshake timeout|"
+        r"temporary failure in name resolution|"
+        r"\b(?:429 Too Many Requests|50[0234] (?:Internal Server Error|Bad Gateway|"
+        r"Service Unavailable|Gateway Timeout))\b)", re.I)
+    if not transient.search(stderr) or re.search(
+            r"checksum|SECURITY ERROR|certificate|invalid version|unknown revision", stderr, re.I):
+        return False
+    for line in stderr.splitlines():
+        if re.search(r"fetch_repo:|Error downloading", line, re.I) and not transient.search(line):
+            return False
+        if not re.search(r"\b(?:ERROR|Error in fail|error|fatal error|FAILED):", line):
+            continue
+        if transient.search(line):
+            continue
+        if "An error occurred during the fetch of repository" in line:
+            continue
+        if "Analysis of target" in line and "failed" in line:
+            continue
+        if line.strip() == "ERROR: Build did NOT complete successfully":
+            continue
+        return False
+    return True
+
+
+def retry_remote_cache(run, *, diagnostics=None, on_retry=None, retry_fetch=False):
     """Retry the same invocation twice; never change cache or execution policy."""
     for attempt, delay in enumerate((10, 30, None), 1):
         try:
@@ -50,22 +79,34 @@ def retry_remote_cache(run, *, diagnostics=None, on_retry=None):
         except subprocess.CalledProcessError as error:
             text = (diagnostics(error) if diagnostics is not None
                     else (error.stdout or "") + (error.stderr or ""))
-            if delay is None or not transient_cache_failure(error.returncode, text):
+            cache_failure = transient_cache_failure(error.returncode, text)
+            fetch_failure = (retry_fetch and error.returncode == 1
+                             and len(text) <= 2 * 1024 * 1024
+                             and transient_fetch_failure(text))
+            if delay is None or not (cache_failure or fetch_failure):
                 raise
             if on_retry is not None:
                 on_retry(attempt, delay)
-            print(f"Transient Bazel remote-cache failure; retrying in {delay}s "
-                  f"(attempt {attempt + 1}/3)", file=sys.stderr, flush=True)
-            sleep(delay)
+            if cache_failure:
+                print(f"Transient Bazel remote-cache failure; retrying in {delay}s "
+                      f"(attempt {attempt + 1}/3)", file=sys.stderr, flush=True)
+                sleep(delay)
+            else:
+                print(f"Transient Bazel repository fetch failure; retrying attempt "
+                      f"{attempt + 1}/3 in {delay}s.", flush=True)
+                time.sleep(delay)
 
 
-def execute(command, directory, receipt, name, *, cwd, output_path=None, stream=False):
+def execute(command, directory, receipt, name, *, cwd, output_path=None,
+            stream=False, retry_fetch=False):
     """Keep diagnostics separate from query results and optional private output.
 
     Large or sensitive query results can go directly to an already-created
     file. That stdout is neither logged nor printed; the caller owns its mode
     and lifetime. Ordinary queries still return only stdout for path lookup.
     Streaming builds retain live progress and return no queried paths.
+    Bazel callers can opt into three attempts for explicit transient repository
+    fetch failures; attempt logs and total wall time remain in the receipt.
     """
     if stream and output_path is not None:
         raise ValueError("private query output cannot be streamed")
@@ -118,7 +159,7 @@ def execute(command, directory, receipt, name, *, cwd, output_path=None, stream=
         attempts[-1].update(log=log, retry_delay_seconds=delay)
 
     try:
-        return retry_remote_cache(run, on_retry=retain_attempt)
+        return retry_remote_cache(run, on_retry=retain_attempt, retry_fetch=retry_fetch)
     finally:
         if attempts:
             entry["elapsed_seconds"] = time.monotonic() - started

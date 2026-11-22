@@ -1,9 +1,9 @@
 """Audit Bazel action graphs before package-producing execution."""
 import hashlib
 import json
+from pathlib import Path
 import re
 import sys
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci import command_log
@@ -65,7 +65,7 @@ def audit_targets(bazel, options, targets, *, workspace, output, startup_options
                 [bazel, *startup_options, "aquery", *options, "--output=jsonproto",
                  "deps(set(" + " ".join(targets) + "))"],
                 output.parent, receipt, output.stem + ".query", cwd=workspace,
-                output_path=Path(graph.name))
+                output_path=Path(graph.name), retry_fetch=True)
         finally:
             for entry in receipt["commands"]:
                 entry.pop("argv", None)
