@@ -24,18 +24,18 @@ RootResolutionUnverifiable = identity.CacheUnverifiable
 REGISTRY = identity.SONIC_REGISTRY + "main"
 REGISTRY_MEMBERSHIP = Path(__file__).with_name("root_resolution_registry.json")
 REGISTRY_WORKERS = 32
-# Fresh Bazel 8.5.1 AMD64 analysis of #291 cd63f0d3, with the maintained root
-# MODULE (not tools/bazel/kernel/MODULE). Membership uses m=MODULE.bazel and
+# Fresh Bazel 8.5.1 AMD64 analysis of the image root with kernel 0.0.3 and
+# sonic-build-infra 0.0.42. Membership uses m=MODULE.bazel and
 # s=source.json. Its canonical projected registry hash also binds every value.
-AUDITED_REGISTRY_SHA256 = "61f69736c343ee956c04a37d6eb06314946375f12f1f2d55fe95c25177bf97f9"
+AUDITED_REGISTRY_SHA256 = "2289b7fa5d6fae85fbb7c31f9f7b9c3e651528955a4160f16fff642b7792c3ce"
 AUDITED_EXTENSIONS = {
     "@@aspect_rules_py+//py:extensions.bzl%py_tools": "6f73de4c9958470ef2c2ba4a7c4f979026f10ac7333cb127d8cb7804351f1ab9",
     "@@aspect_tools_telemetry+//:extension.bzl%telemetry": "ef51cb53d67c2a9057ab718a8604bfee2c583ad0be7e6d862fba6ba4ce75fcc7",
     "@@rules_kotlin+//src/main/starlark/core/repositories:bzlmod_setup.bzl%rules_kotlin_extensions": "9a50add992dbd3f4a283a11e5175b5a4ea4da651f820c1842b55cdc30eb100d2",
     "@@rules_oci+//oci:extensions.bzl%oci": "628ab08b4720c7432fb12b058399d50a58f2d2d5a2750d14cfd14b167afc6595",
     "@@rules_python+//python/uv:uv.bzl%uv": "cc3d4bb5ccfcc4d4b468a41ae817e35321ff9ee9a856c3c06d8ee19e7c8b1f57",
-    "@@sonic-build-infra+//toolchains/gcc:extensions.bzl%gcc": "a59622d5e18219b3f032ac0f06507655054685490335877e9b3c99a433838bc1",
-    "@@sonic-build-infra+//toolchains/sysroot:extensions.bzl%sysroots": "5977e6af9e30024262a52c6bb938ec8d801bdd9d55c47034cd0bd65780bc1780",
+    "@@sonic-build-infra+//toolchains/gcc:extensions.bzl%gcc": "551059deec3d23419894eb1d075b83f4fd3505cb7c240fa9c542f63db304f450",
+    "@@sonic-build-infra+//toolchains/sysroot:extensions.bzl%sysroots": "1ac9c37ddcdbe6d319c0f0336b1c1c7d3489f0a56f584ffb51179e232bd19bca",
     "@@sonic-linux-kernel+//tools/bazel:sources.bzl%kernel_sources": "56ddebdbd8bdc6f59c751d39d2534489023bbe0e20dce831fa6b87165cfdd206",
     "@@yq.bzl+//yq:extensions.bzl%yq": "341ae1a897ee9ae38e0b766b7551eb8704e40bdcbc0273d3e942dd7a59baf547",
 }

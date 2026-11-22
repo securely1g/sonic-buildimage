@@ -18,7 +18,10 @@ from tools.bazel.kernel.cache_identity import require
 # literal file labels. A new declaration can introduce another external input.
 # Re-audit its file reads before enabling reuse for a different graph.
 MODULE_FILES = {
-    "MODULE.bazel": "c02884ae9604722fb0c7eb93d8fe289c8bd796536e7d0ae1a27e54870a40de11",
+    "MODULE.bazel": "69ebf4321d6cd15ee991f770d7db7f1529dea9bd1c5db5308a2db0e0bbde72f0",
+    # The device-data repo rule reads host data only when that repository is used.
+    # Its implementation was audited against the kernel target dependency graph.
+    "src/sonic-device-data/input_metadata.bzl": "42105a32d10b65657d1009b268499f8f2c2c895a3aaa577de86022f7593d9ace",
     "src/sonic-frr/deps.MODULE.bazel": "ac806146b62547f8c1324da9c577e915dff103432ed329e996e7d173fbf06dbf",
     "src/sonic-supervisord-utilities-rs/deps.MODULE.bazel": "0778d4747d59dc2d27147a38f536e22fdd4bc0a2a24c2e538f050bfae75b68ad",
     "tools/bazel/equivalence_checker/equivalence.MODULE.bazel": "e80a42304c8c9780ed6438fffb47af9fb60f8b94b27a2d6e34242a3e2ebe853a",
@@ -33,12 +36,12 @@ RC_FILES = {
 # Workspace Python modules imported by the kernel consumer outside its package.
 CONSUMER_HELPERS = {
     "tools/bazel/build_helpers.py", "tools/bazel/cache/credentials.py", "tools/bazel/image/file_copy.py",
-    "tools/bazel/ci/public_artifacts.py", "tools/bazel/ci/resolution.py", "tools/bazel/ci/resources.py",
-    "tools/bazel/ci/time_vs_image.py",
+    "tools/bazel/ci/kernel_artifacts.py", "tools/bazel/ci/public_artifacts.py", "tools/bazel/ci/resolution.py",
+    "tools/bazel/ci/resources.py", "tools/bazel/ci/time_vs_image.py",
 }
 LOCAL_MODULES = {"sonic-sysmgr", "sonic-yang-models", "sonic-yang-mgmt"}
 KERNEL = "0.0.3-96c621843a2bc9dbbe17eb890c8c6e1cea5e834b"
-INFRA = "0.0.41-edab3bd22b7a9a2ae631f06a1a5072b113045fe7"
+INFRA = "0.0.42-da5f4c8d370f501572f435ade330ec209c9c0203"
 BAZEL_SHA256 = "61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e"
 PLATFORM = "@sonic_build_infra//platforms:x86_64_trixie"
 VS_REMOTE_CACHE = "grpc://172.16.0.4:9092"
