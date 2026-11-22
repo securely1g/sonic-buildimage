@@ -56,15 +56,17 @@ tar(
     visibility = ["//visibility:public"],
 )
 
-# Host installation metadata for the native VS assembler.
-load("@bazel_skylib//rules:write_file.bzl", "write_file")
-load("@sonic_build_infra//oci:runtime_packages.bzl", "runtime_packages")
-write_file(name = "vs_platform_asic", out = "vs.platform_asic", content = ["vs", ""], newline = "unix", visibility = ["//visibility:public"])
-runtime_packages(
+# Keep the Make TAR producer usable from its dependency-limited workspace.
+exports_files(["src/debian/control", "src/debian/changelog"])
+
+alias(
+    name = "vs_platform_asic",
+    actual = "//src/sonic-device-data/bazel:vs_platform_asic",
+    visibility = ["//visibility:public"],
+)
+
+alias(
     name = "runtime_packages.json",
-    packages = {"sonic-device-data": ":vs_runtime_tar"},
-    control = "src/debian/control",
-    changelog = "src/debian/changelog",
-    required_paths = {"sonic-device-data": ["usr/share/sonic/device/x86_64-kvm_x86_64-r0/platform_asic", "usr/share/sonic/device/x86_64-kvm_x86_64-r0/Force10-S6000/port_config.ini"]},
+    actual = "//src/sonic-device-data/bazel:runtime_packages.json",
     visibility = ["//visibility:public"],
 )
