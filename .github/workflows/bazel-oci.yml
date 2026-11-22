@@ -77,9 +77,11 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /.github/configured-host-benchmark.py
+            /.github/configured-host-rescue.py
             /.github/configured-host-inside.py
             /.github/configured-host-capture.mk
             /.github/configured-host-base-receipt.json
+            /.github/configured_host_errors.py
 
       - name: Download verified source archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -291,8 +293,10 @@ jobs:
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" start-live
 
-      - name: Seed the cold configured host and build version A
+      - name: Build native version B and freeze its verified installer inputs
+        id: host_bootstrap_b_0
         if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -305,7 +309,209 @@ jobs:
           SONIC_VS_RFS_HANDOFF: "1"
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" seed-a
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run bootstrap-b 0
+
+      - name: Publish the sanitized bootstrap-b failure, slot 0
+        if: ${{ !cancelled() && steps.host_bootstrap_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-bootstrap-b-0-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/bootstrap-b-0.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned bootstrap-b recovery, slot 1
+        id: host_bootstrap_b_1_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait bootstrap-b 1
+
+      - name: Resume bootstrap-b on the pinned recovery, slot 1
+        id: host_bootstrap_b_1
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_1_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run bootstrap-b 1
+
+      - name: Publish the sanitized bootstrap-b failure, slot 1
+        if: ${{ !cancelled() && steps.host_bootstrap_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-bootstrap-b-1-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/bootstrap-b-1.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned bootstrap-b recovery, slot 2
+        id: host_bootstrap_b_2_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait bootstrap-b 2
+
+      - name: Resume bootstrap-b on the pinned recovery, slot 2
+        id: host_bootstrap_b_2
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_2_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run bootstrap-b 2
+
+      - name: Publish the sanitized bootstrap-b failure, slot 2
+        if: ${{ !cancelled() && steps.host_bootstrap_b_2.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-bootstrap-b-2-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/bootstrap-b-2.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Require a validated bootstrap-b result
+        id: host_bootstrap_b_final
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        run: test "${{ steps.host_bootstrap_b_0.outcome == 'success' || steps.host_bootstrap_b_1.outcome == 'success' || steps.host_bootstrap_b_2.outcome == 'success' }}" = true
+
+      - name: Publish the measured bootstrap-b receipts
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-metrics-bootstrap-b-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/bootstrap-b
+          if-no-files-found: warn
+          retention-days: 2
+
+      - name: Seed the configured-host action with the release-A environment
+        id: host_seed_a_0
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run seed-a 0
+
+      - name: Publish the sanitized seed-a failure, slot 0
+        if: ${{ !cancelled() && steps.host_seed_a_0.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-seed-a-0-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/seed-a-0.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned seed-a recovery, slot 1
+        id: host_seed_a_1_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_0.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait seed-a 1
+
+      - name: Resume seed-a on the pinned recovery, slot 1
+        id: host_seed_a_1
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_1_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run seed-a 1
+
+      - name: Publish the sanitized seed-a failure, slot 1
+        if: ${{ !cancelled() && steps.host_seed_a_1.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-seed-a-1-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/seed-a-1.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned seed-a recovery, slot 2
+        id: host_seed_a_2_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait seed-a 2
+
+      - name: Resume seed-a on the pinned recovery, slot 2
+        id: host_seed_a_2
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_2_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run seed-a 2
+
+      - name: Publish the sanitized seed-a failure, slot 2
+        if: ${{ !cancelled() && steps.host_seed_a_2.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-seed-a-2-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/seed-a-2.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Require a validated seed-a result
+        id: host_seed_a_final
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' }}
+        run: test "${{ steps.host_seed_a_0.outcome == 'success' || steps.host_seed_a_1.outcome == 'success' || steps.host_seed_a_2.outcome == 'success' }}" = true
 
       - name: Publish the measured seed-a receipts
         if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
@@ -317,8 +523,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 2
 
-      - name: Build version B with native host configuration
-        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+      - name: Restore version A host cache and build version B
+        id: host_restored_b_0
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' }}
+        continue-on-error: true
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -331,20 +539,30 @@ jobs:
           SONIC_VS_RFS_HANDOFF: "1"
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" version-b-control
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run restored-b 0
 
-      - name: Publish the measured version-b-control receipts
-        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+      - name: Publish the sanitized restored-b failure, slot 0
+        if: ${{ !cancelled() && steps.host_restored_b_0.outcome == 'failure' }}
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: vs-host-metrics-version-b-control-${{ github.run_attempt }}
-          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/version-b-control
+          name: vs-host-error-restored-b-0-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/restored-b-0.json
           if-no-files-found: warn
-          retention-days: 2
+          retention-days: 3
 
-      - name: Restore version A host cache and build version B
-        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+      - name: Wait for a pinned restored-b recovery, slot 1
+        id: host_restored_b_1_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_restored_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait restored-b 1
+
+      - name: Resume restored-b on the pinned recovery, slot 1
+        id: host_restored_b_1
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_restored_b_1_wait.outcome == 'success' }}
+        continue-on-error: true
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -357,7 +575,58 @@ jobs:
           SONIC_VS_RFS_HANDOFF: "1"
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" restored-b
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run restored-b 1
+
+      - name: Publish the sanitized restored-b failure, slot 1
+        if: ${{ !cancelled() && steps.host_restored_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-restored-b-1-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/restored-b-1.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned restored-b recovery, slot 2
+        id: host_restored_b_2_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_restored_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait restored-b 2
+
+      - name: Resume restored-b on the pinned recovery, slot 2
+        id: host_restored_b_2
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_restored_b_2_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run restored-b 2
+
+      - name: Publish the sanitized restored-b failure, slot 2
+        if: ${{ !cancelled() && steps.host_restored_b_2.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-restored-b-2-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/restored-b-2.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Require a validated restored-b result
+        id: host_restored_b_final
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' }}
+        run: test "${{ steps.host_restored_b_0.outcome == 'success' || steps.host_restored_b_1.outcome == 'success' || steps.host_restored_b_2.outcome == 'success' }}" = true
 
       - name: Publish the measured restored-b receipts
         if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
@@ -370,7 +639,9 @@ jobs:
           retention-days: 2
 
       - name: Repeat version B native control with prepared producers
-        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        id: host_paired_control_b_0
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' }}
+        continue-on-error: true
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -383,7 +654,94 @@ jobs:
           SONIC_VS_RFS_HANDOFF: "1"
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" paired-control-b
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run paired-control-b 0
+
+      - name: Publish the sanitized paired-control-b failure, slot 0
+        if: ${{ !cancelled() && steps.host_paired_control_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-paired-control-b-0-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/paired-control-b-0.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned paired-control-b recovery, slot 1
+        id: host_paired_control_b_1_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_paired_control_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait paired-control-b 1
+
+      - name: Resume paired-control-b on the pinned recovery, slot 1
+        id: host_paired_control_b_1
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_paired_control_b_1_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run paired-control-b 1
+
+      - name: Publish the sanitized paired-control-b failure, slot 1
+        if: ${{ !cancelled() && steps.host_paired_control_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-paired-control-b-1-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/paired-control-b-1.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned paired-control-b recovery, slot 2
+        id: host_paired_control_b_2_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_paired_control_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait paired-control-b 2
+
+      - name: Resume paired-control-b on the pinned recovery, slot 2
+        id: host_paired_control_b_2
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_paired_control_b_2_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run paired-control-b 2
+
+      - name: Publish the sanitized paired-control-b failure, slot 2
+        if: ${{ !cancelled() && steps.host_paired_control_b_2.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-paired-control-b-2-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/paired-control-b-2.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Require a validated paired-control-b result
+        id: host_paired_control_b_final
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' }}
+        run: test "${{ steps.host_paired_control_b_0.outcome == 'success' || steps.host_paired_control_b_1.outcome == 'success' || steps.host_paired_control_b_2.outcome == 'success' }}" = true
 
       - name: Publish the measured paired-control-b receipts
         if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
@@ -396,7 +754,9 @@ jobs:
           retention-days: 2
 
       - name: Replace one selected host package and build version B
-        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        id: host_changed_deb_b_0
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' }}
+        continue-on-error: true
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -409,7 +769,94 @@ jobs:
           SONIC_VS_RFS_HANDOFF: "1"
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" changed-deb-b
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run changed-deb-b 0
+
+      - name: Publish the sanitized changed-deb-b failure, slot 0
+        if: ${{ !cancelled() && steps.host_changed_deb_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-changed-deb-b-0-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/changed-deb-b-0.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned changed-deb-b recovery, slot 1
+        id: host_changed_deb_b_1_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_changed_deb_b_0.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait changed-deb-b 1
+
+      - name: Resume changed-deb-b on the pinned recovery, slot 1
+        id: host_changed_deb_b_1
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_changed_deb_b_1_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run changed-deb-b 1
+
+      - name: Publish the sanitized changed-deb-b failure, slot 1
+        if: ${{ !cancelled() && steps.host_changed_deb_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-changed-deb-b-1-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/changed-deb-b-1.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Wait for a pinned changed-deb-b recovery, slot 2
+        id: host_changed_deb_b_2_wait
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_changed_deb_b_1.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          SONIC_RESCUE_API_TOKEN: ${{ github.token }}
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" wait changed-deb-b 2
+
+      - name: Resume changed-deb-b on the pinned recovery, slot 2
+        id: host_changed_deb_b_2
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' && steps.host_changed_deb_b_2_wait.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-rescue.py" run changed-deb-b 2
+
+      - name: Publish the sanitized changed-deb-b failure, slot 2
+        if: ${{ !cancelled() && steps.host_changed_deb_b_2.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-error-changed-deb-b-2-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-errors/changed-deb-b-2.json
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Require a validated changed-deb-b result
+        id: host_changed_deb_b_final
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' && steps.host_bootstrap_b_final.outcome == 'success' && steps.host_seed_a_final.outcome == 'success' }}
+        run: test "${{ steps.host_changed_deb_b_0.outcome == 'success' || steps.host_changed_deb_b_1.outcome == 'success' || steps.host_changed_deb_b_2.outcome == 'success' }}" = true
 
       - name: Publish the measured changed-deb-b receipts
         if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}

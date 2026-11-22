@@ -117,30 +117,89 @@ def frozen(args, baseline, arm, changed):
         args.append('vs_boot_handoff='+baseline['handoff'])
     for n in names:args.extend(('-o',n))
 
+def program(arm):
+    # The real installer recipe rendered this extension and set the selected
+    # release. Only its release-independent prefix is input to the host action.
+    boundary="\n## Bind docker path\n"
+    data=Path('sonic_debian_extension.sh').read_text()
+    check(data.count(boundary)==1,'missing native host program boundary')
+    release=os.environ['SONIC_IMAGE_VERSION']
+    key=hashlib.sha256(data.split(boundary)[0].encode()).hexdigest()
+    obj={'host_program':key,'release':release}
+    write(PUBLIC/arm/'rendered-host-program.json',obj)
+    if arm=='seed-a':
+        ref=read(PUBLIC/'bootstrap-b/rendered-host-program.json')
+        check(ref['host_program']==key and ref['release']!=release,'host prefix changed across A/B renderer')
+    return obj
+
+
+def seed_done():
+    arm='seed-a'
+    obj=read(PUBLIC/arm/'rendered-host-program.json')
+    receipt=read(Path('artifacts/vs/configured-host-cache.json'))
+    check(os.environ['SONIC_IMAGE_VERSION']==obj['release'],'configured action release mismatch')
+    # This digest matches the driver's independent fingerprint of the renderer.
+    recorded=hashlib.sha256((json.dumps(obj['host_program'])+'\n').encode()).hexdigest()
+    check(receipt['input_sha256']['host_program_sha256']==recorded,'host program identity mismatch')
+    check(receipt['cache_hit'] is False and Path('target/sonic-vs.configured-host.squashfs').is_file(),'seed must produce a cold configured host')
+    write(PUBLIC/arm/'cache-receipt.json',receipt)
+    write(PUBLIC/arm/'seed-boundary.json',dict(release=obj['release'],configured_host_key=receipt['identity_sha256'],expected_shell_status=85))
+
+
+HOOK='''if [[ ${0:-} == */build_debian.sh && ${RFS_SPLIT_LAST_STAGE:-} == y && -n ${SONIC_BENCH_ARM:-} ]]; then
+    if [[ $SONIC_BENCH_ARM == seed-a || $SONIC_BENCH_ARM == bootstrap-b ]]; then
+        /usr/bin/python3 -B /sonic/.configured-host-bench/inside.py program "$SONIC_BENCH_ARM" || exit $?
+    fi
+    if [[ $SONIC_BENCH_ARM == seed-a ]]; then
+        python3() {
+            if [[ $# -eq 2 && $1 == -B && $2 == tools/bazel/ci/vs_configured_host.py ]]; then
+                command python3 "$@" || exit $?
+                /usr/bin/python3 -B /sonic/.configured-host-bench/inside.py seed-done || exit $?
+                exit 85
+            fi
+            command python3 "$@"
+        }
+    fi
+fi
+'''
+
+
 def run(arm,version):
     state=read(PRIVATE/'native.json')
-    os.chdir(state['cwd']); os.environ.clear();os.environ.update(state['env'])
+    os.chdir(state['cwd']); resume=os.environ.get('SONIC_HOSTBENCH_INNER_RESUME',''); os.environ.clear();os.environ.update(state['env']); os.environ['SONIC_HOSTBENCH_INNER_RESUME']=resume
     # The exact inputs are physically retained in the native container.
     # Each arm supplies its own public tag and whether host preparation is cached.
-    switch='n' if arm in ('version-b-control','paired-control-b') else 'y'
+    switch='n' if arm in ('bootstrap-b','paired-control-b') else 'y'
     os.environ.update(SONIC_IMAGE_VERSION=version,SONIC_VS_CONFIGURED_HOST_CACHE=switch,SONIC_DIAG_NATIVE_REPLAY='1')
     os.environ.pop('SONIC_VS_RFS_HANDOFF_SESSION',None)
+    (SHARED/'hook.bash').write_text(HOOK)
+    os.environ.update(BASH_ENV=str(SHARED/'hook.bash'),SONIC_BENCH_ARM=arm)
     resource.setrlimit(resource.RLIMIT_NOFILE,tuple(state['limits']))
     args=[a for a in state['argv'] if not a.startswith(('SONIC_IMAGE_VERSION=','SONIC_VS_CONFIGURED_HOST_CACHE='))]
     args[0]='/usr/bin/make'
     args+=['-f',str(OBS),'SONIC_IMAGE_VERSION='+version,'SONIC_VS_CONFIGURED_HOST_CACHE='+switch]
     args.extend(('-o',BASE))
     stamp=PUBLIC/arm;stamp.mkdir(parents=True,exist_ok=True)
-    if arm!='seed-a':
-        baseline=read(SHARED/('A.json' if arm=='version-b-control' else 'B.json'))
+    if arm!='bootstrap-b':
+        baseline=read(SHARED/'B.json')
         changed=read(stamp/'package-perturbation.json')['modified_sha256'] if arm=='changed-deb-b' else None
         frozen(args,baseline,arm,changed)
-    start=time.monotonic();result=subprocess.run(args).returncode
-    write(stamp/'inner-make-seconds.json',{'seconds':time.monotonic()-start,'exit':result})
-    if result: return result
-    if arm in ('seed-a','version-b-control'): snapshot(arm,read_inputs(),'A' if arm=='seed-a' else 'B')
+    old=stamp/'inner-make-seconds.json'
+    can_resume=os.environ.get('SONIC_HOSTBENCH_INNER_RESUME') == '1' and old.exists() and read(old).get('exit')==0 and Path(INSTALLER).is_file()
+    if not can_resume:
+        start=time.monotonic();result=subprocess.run(args).returncode
+        seconds=time.monotonic()-start
+        if arm=='seed-a':
+            if result==2 and (stamp/'seed-boundary.json').is_file() and not Path(INSTALLER).exists():
+                write(old,{'seconds':seconds,'exit':0,'expected_make_exit':2,'scope':'host action only'})
+                return 0
+        write(old,{'seconds':seconds,'exit':result,'scope':'native installer'})
+        if result: return result
+    if arm=='bootstrap-b': snapshot(arm,read_inputs(),'B')
     return 0
 
 if __name__=='__main__':
     if sys.argv[1]=='capture':capture()
+    elif sys.argv[1]=='program':program(sys.argv[2])
+    elif sys.argv[1]=='seed-done':seed_done()
     else:sys.exit(run(*sys.argv[2:]))

@@ -24,7 +24,8 @@ OUTPUT = ROOT / 'target/sonic-vs.bin'
 CONFIGURED = ROOT / 'target/sonic-vs.configured-host.squashfs'
 CACHE = Path(os.environ['SONIC_HOSTBASE_CACHE_SOURCE']) if os.environ.get('SONIC_HOSTBASE_CACHE_SOURCE') else None
 MARKER = 'usr/share/sonic/configured-host-benchmark-package'
-ARMS = ('seed-a', 'version-b-control', 'restored-b', 'paired-control-b', 'changed-deb-b')
+ARMS = ('bootstrap-b', 'seed-a', 'restored-b', 'paired-control-b', 'changed-deb-b')
+ARM_STARTED_NS = time.time_ns()
 
 
 def write(path, value):
@@ -217,7 +218,7 @@ def stop_live():
 
 def current_native(arm, version):
     session=read(ROOT/'.configured-host-bench/connection.json')
-    return ['docker','exec','--user',str(session['uid']),'--workdir','/sonic',session['id'],
+    return ['docker','exec','--env','SONIC_HOSTBENCH_INNER_RESUME='+os.environ.get('SONIC_HOSTBENCH_RESUME','0'),'--user',str(session['uid']),'--workdir','/sonic',session['id'],
             'python3','-B','/sonic/.configured-host-bench/inside.py','run',arm,version]
 
 
@@ -274,32 +275,50 @@ def run(arm):
     commit = shell('git', 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
     version = 'hostbench-' + ('a' if arm == 'seed-a' else 'b') + '-' + commit[:9]
     work = EVIDENCE / arm
-    work.mkdir(mode=0o700, parents=True)
+    resume=os.environ.get('SONIC_HOSTBENCH_RESUME')=='1'
+    slot=os.environ.get('SONIC_HOSTBENCH_RESUME_SLOT','0')
+    work.mkdir(mode=0o700, parents=True,exist_ok=resume)
     PRIVATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    transfer = private_transfer() if arm == 'restored-b' else {}
-    changed = replace_selected_package(commit) if arm == 'changed-deb-b' else None
-    if changed:
-        write(work/'package-perturbation.json', changed)
-    if transfer:
-        write(work/'transfer.json', transfer)
-    enabled = arm not in ('version-b-control', 'paired-control-b')
-    case = dict(os.environ, SONIC_IMAGE_VERSION=version, SONIC_VS_CONFIGURED_HOST_CACHE='y' if enabled else 'n')
-    if changed:
-        # The deliberately substituted DEB is an input for this arm. Preserve
-        # its bytes if Make would otherwise regenerate it in a nested build.
-        case['MAKEFLAGS'] = (case.get('MAKEFLAGS', '') + ' --old-file=' + changed['path']).strip()
-    # A retained target must not satisfy the published installer or configured-host request.
-    for file in (OUTPUT, CONFIGURED, CACHE_RECEIPT):
-        file.unlink(missing_ok=True)
-    operations = ROOT / 'artifacts/vs/image-timings/installer-steps'
-    if operations.is_dir():
-        for previous in operations.glob('*.json'):
-            previous.unlink()
-    log = PRIVATE / (arm + '.log')
-    elapsed, attempts = build_with_retry(arm, case, log, work)
-    require(OUTPUT.is_file(), 'Make produced no installer')
-    phase = phase_receipt(log)
-    write(work/'phases.json', phase)
+    if resume and (work/'metrics.json').exists():
+        print('Validated measurement retained for '+arm,flush=True);return
+    if resume and (work/'failure.json').exists(): shutil.copy(work/'failure.json',work/('before-rescue-'+slot+'.json'))
+    if resume and (work/'make-attempts.json').exists(): shutil.copy(work/'make-attempts.json',work/('before-rescue-attempts-'+slot+'.json'))
+    transfer={}
+    if arm=='restored-b':
+        if resume and (work/'transfer.json').exists():transfer=read(work/'transfer.json')
+        else:
+            transfer=private_transfer();write(work/'transfer.json',transfer)
+    changed=None
+    if arm=='changed-deb-b':
+        if resume and (work/'package-perturbation.json').exists():
+            changed=read(work/'package-perturbation.json')
+            require(digest(ROOT/changed['path'])==changed['modified_sha256'],'modified benchmark input was replaced')
+        else:
+            changed=replace_selected_package(commit);write(work/'package-perturbation.json',changed)
+    enabled=arm not in ('bootstrap-b','paired-control-b')
+    case=dict(os.environ, SONIC_IMAGE_VERSION=version, SONIC_VS_CONFIGURED_HOST_CACHE='y' if enabled else 'n')
+    old=work/'inner-make-seconds.json'
+    retained=resume and old.exists() and read(old).get('exit')==0 and (OUTPUT.is_file() or (arm=='seed-a' and (work/'seed-boundary.json').exists()))
+    # If the changed host action succeeded but the installer failed, retain its
+    # first receipt and move its job-private key aside to repeat a *cold* sample.
+    if not retained:
+        if resume and enabled and arm!='restored-b' and CACHE_RECEIPT.is_file():
+            earlier=read(CACHE_RECEIPT); k=earlier['identity_sha256']; require(re.fullmatch('[a-f0-9]{64}',k),'invalid retained key')
+            if (CACHE/k).exists() and not earlier['cache_hit']:
+                os.rename(CACHE/k, PRIVATE/('prior-'+arm+'-'+slot+'-'+k));write(work/('prior-cache-'+slot+'.json'),earlier)
+        for file in (OUTPUT,CONFIGURED,CACHE_RECEIPT,work/'seed-boundary.json'):
+            file.unlink(missing_ok=True)
+    operations=ROOT/'artifacts/vs/image-timings/installer-steps'
+    if not retained and operations.is_dir():
+        for previous in operations.glob('*.json'):previous.unlink()
+    log=PRIVATE/(arm+'.log')
+    if retained:
+        elapsed=read(old)['seconds'];attempts=read(work/'make-attempts.json')
+        if arm=='bootstrap-b' and not (ROOT/'.configured-host-bench/B.json').exists():
+            # Initial B can be a successful true native Make whose subsequent
+            # input-validation helper needs repair. Rebuild only its manifest.
+            shell(*current_native(arm,version),env=case)
+    else: elapsed,attempts=build_with_retry(arm,case,log,work)
     if enabled:
         require(CACHE_RECEIPT.is_file(), 'configured-host cache unsupported or unexpectedly fell back')
         receipt = read(CACHE_RECEIPT)
@@ -316,12 +335,21 @@ def run(arm):
             require(differences==({'packages'} if changed else set()), 'unexpected input sections: '+str(differences))
     else:
         require(not CACHE_RECEIPT.exists(), 'disabled control unexpectedly used cache')
+    if arm=='seed-a':
+        require((work/'seed-boundary.json').exists() and not OUTPUT.exists(),'seed must stop before producing a release-A installer')
+        require(read(work/'seed-boundary.json')['release']==version,'A seed release mismatch')
+        write(work/'metrics.json',dict(arm=arm,runner=os.environ['RUNNER_NAME'],commit=commit,release=version,
+              timing_scope='configured host action only',make_seconds=elapsed,successful_attempt=len(attempts)))
+        return
+    require(OUTPUT.is_file(),'Make produced no installer')
+    phase=phase_receipt(log)
+    write(work/'phases.json',phase)
     if operations.is_dir():
-        shutil.copytree(operations, work/'operations')
+        shutil.copytree(operations,work/'operations',dirs_exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='hostbench-inspect-', dir=PRIVATE) as inspection:
         package = inspect_installer(arm, version, commit, Path(inspection), changed)
-    if arm in ('restored-b', 'paired-control-b') and (EVIDENCE/'version-b-control/metrics.json').exists():
-        control = read(EVIDENCE/'version-b-control/metrics.json')['installed']
+    if arm in ('restored-b', 'paired-control-b','changed-deb-b'):
+        control = read(EVIDENCE/'bootstrap-b/metrics.json')['installed']
         for name in ('installed_packages_sha256', 'image_inventory_sha256'):
             require(package[name] == control[name], f'cached installer differs from native control: {name}')
     if changed:
@@ -367,38 +395,14 @@ def equal_size_transfer(mode):
     print(f'{mode}: {probe.name}', flush=True)
 
 
-def failure_details(arm, error):
-    # Keep private reports and rootfs local; publish only errors, never a complete
-    # recipe's xtrace, environment, repository credentials, or mirror configuration.
-    diagnostics = {'error': type(error).__name__, 'sources': {}}
-    checks = re.compile(r'^(?:ERROR:|E:|W: Failed|VS configured host|Unknown host extension phase|'
-                        r'ValueError:|RuntimeError:|FileNotFoundError:|PermissionError:|'
-                        r'pip: error:|unsquashfs:|mksquashfs:|dpkg: error|awk:|sed:|chmod:|mount:|'
-                        r'cannot (?:open|copy|access|stat)|cp:|mv:|install:|tar:|fatal:|'
-                        r'(?:ERROR|Error): (?:Could not|Missing|No matching|Unknown))', re.I)
-    def sanitized(raw):
-        if re.search(r'passw(?:or)?d|authoriz|credential|bearer|private.key|secret|token[=:]|BEGIN [A-Z ]*KEY', raw, re.I):
-            return None
-        return re.sub(r'(?:https?|grpc|file)://[^\s\'"<>]+', '[location]', raw)[:500]
-    diagnostics['reason'] = sanitized(str(error))
-    paths = [PRIVATE/'launch.log', ROOT/'target/vs-configured-host-native.log', ROOT/'target/sonic-vs.bin.log', PRIVATE/(arm+'.log')]
-    if CACHE_RECEIPT.is_file():
-        obj = read(CACHE_RECEIPT)
-        diagnostics['cache'] = {k: obj.get(k) for k in ('cache_hit','identity_sha256','input_sha256','elapsed_seconds','native_build_seconds')}
-    for path in paths:
-        if not path.is_file():
-            continue
-        messages = []
-        with path.open(errors='replace') as lines:
-            for line in lines:
-                clean = line.strip()
-                if checks.search(clean):
-                    safe = sanitized(clean)
-                    if safe and (not messages or messages[-1] != safe):
-                        messages.append(safe)
-        diagnostics['sources'][path.name] = messages[-32:]
-    write(EVIDENCE/arm/'failure.json', diagnostics)
-    print(json.dumps(diagnostics, indent=2), flush=True)
+def failure_details(arm,error):
+    driver=Path(os.environ['GITHUB_WORKSPACE'])/('configured-host-bench-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])/'.github'
+    sys.path.insert(0,str(driver))
+    import configured_host_errors
+    work=EVIDENCE/arm
+    report=configured_host_errors.collect(ROOT,arm,error,work,PRIVATE/(arm+'.log'),started_ns=ARM_STARTED_NS)
+    write(work/'failure.json',report)
+    print(json.dumps(report,indent=2),flush=True)
 
 
 if __name__ == '__main__':
