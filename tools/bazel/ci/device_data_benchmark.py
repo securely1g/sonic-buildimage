@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import time
 
 from tools.bazel.ci.cache_reuse import json_records
+from tools.bazel.image.vs.build_device_data import WORKSPACE
 
 
 TARGET = "//src/sonic-device-data:vs_runtime_tar"
@@ -49,7 +50,7 @@ if [[ "$command" == build ]]; then flags+=("--execution_log_json_file=$BENCH_DIR
 exec bazel "--output_base=$BENCH_DIR/base" "--host_jvm_args=-Djavax.net.ssl.trustStore=$SONIC_BAZEL_JAVA_TRUST_STORE" "$command" "${flags[@]}" "$@"
 """)
         wrapper.chmod(0o755)
-        flags = ["--remote_download_outputs=toplevel", "--remote_cache_async=false",
+        flags = ["--remote_cache_async=false",
                  "--remote_accept_cached" if restoring else "--noremote_accept_cached",
                  "--noremote_upload_local_results" if restoring else "--remote_upload_local_results"]
         env = dict(os.environ, BENCH_DIR=directory, BAZEL=str(wrapper), BAZEL_CONTAINER_ARGS=" ".join(flags))
@@ -62,7 +63,7 @@ exec bazel "--output_base=$BENCH_DIR/base" "--host_jvm_args=-Djavax.net.ssl.trus
             subprocess.run(["python3", "-B", "tools/bazel/image/vs/build_device_data.py", str(tar)], env=env, check=True)
             build_seconds = time.monotonic() - start
         finally:
-            subprocess.run([wrapper, "shutdown"], env=env, check=False)
+            subprocess.run([wrapper, "shutdown"], cwd=WORKSPACE, env=env, check=False)
         actions = owner_actions(log, restoring)
         root = work / "root"
         database = root / "var/lib/dpkg"
