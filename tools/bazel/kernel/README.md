@@ -43,13 +43,13 @@ the runtime TAR and boot files before Debian package compression.
 make target/sonic-vs.bin BUILD_WITH_BAZEL_WHEN_AVAILABLE=y
 ```
 
-The lazy kernel prerequisite invokes `packages.py build`. That command runs
+The lazy kernel prerequisite invokes `packages.py build`. In dedicated VS CI it
+first tries the verified remote restore described below. On a miss, it runs
 `bazel build` in the root workspace, obtains the declared package paths with
 `cquery`, validates all package digests, and publishes them into the existing
-`DEBS_PATH`. It uses the root module graph and Registry version. It preserves
-unchanged package timestamps and unrelated files, and serializes concurrent
-Make requests. The publication record binds the package manifest to the root
-kernel module version and original consuming buildimage revision.
+`DEBS_PATH`. Concurrent Make requests share the package publication lock. The
+publication record binds the package manifest to the root kernel module version
+and original consuming buildimage revision.
 
 ```sh
 python3 -B tools/bazel/kernel/packages.py build --architecture amd64
@@ -73,8 +73,32 @@ DEBs and the public validation summary.
 Registry CI covers the producer's AMD64 native and ARM64 cross targets. The
 buildimage workflow checks direct installation outputs and Debian package handoff.
 
-The existing direct-DEB remote index is restricted to its audited producer and
-Infra pair in `cache_identity.py` and `cache_facts.py`. Legacy callers retain
-that interface. The new producer pair uses the normal Bazel action cache through
-`packages.py`; enabling the separate direct-index shortcut for a new pair requires
-reviewing its source, extension and dependency identity first.
+### Restore kernel DEBs in a fresh installer job
+
+The dedicated native AMD64 Trixie VS installer enables
+`SONIC_VS_KERNEL_REMOTE_REUSE=1` and supplies the remote cache endpoint. An
+eligible master build publishes a small index in the existing workflow artifact
+and stores the five DEBs, manifest, original provenance and compressed root
+lockfile in the Bazel content-addressable store. The first master build for a
+new request runs Bazel to populate the index.
+
+A fresh job reads that trusted master index and validates the local request and
+resolved inputs before downloading any DEB. The request covers the unsigned VS
+configuration, native builder and Bazel executable, root module declarations,
+local overrides and consumer inputs. The resolution check covers the pinned
+transitive registry inputs, including previously missing lookups, extension
+records, yanked versions and release checksums. A root lock already populated
+by another target can be used when its kernel records agree.
+
+Before installing the five DEBs, the job verifies their sizes, SHA-256 digests,
+Debian control fields and the manifest and provenance against the Make request.
+A verified hit skips both `bazel build` and `bazel cquery`. Changed or
+unverifiable inputs, an incompatible index or an evicted blob trigger the
+ordinary root Bazel build. Other architectures and configurations also take
+that path. Legacy launcher indexes use a separate schema.
+
+When the root declarations or transitive resolution change, review the inputs
+in `root_request.py` and `root_resolution.py` against a fresh kernel-only
+analysis before enabling direct restore for that graph. The latter script takes
+the analysis lockfile as an argument and emits the registry membership and
+fingerprints for review.

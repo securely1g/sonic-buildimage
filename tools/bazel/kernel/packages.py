@@ -14,6 +14,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel import build_helpers
+from tools.bazel.kernel import remote_bundle
 
 TARGET = '@sonic_linux_kernel//:kernel_packages'
 MANIFEST = 'kernel-packages.json'
@@ -90,7 +91,7 @@ def verify(directory, workspace, architecture=None, kernel_config=None):
     return {'manifest': manifest, 'provenance': provenance}
 
 
-def publish(paths, directory, workspace, architecture, kernel_config):
+def publish(paths, directory, workspace, architecture, kernel_config, *, resolution=None):
     paths = output_files(paths)
     manifests = [path for path in paths if path.name == MANIFEST]
     if len(manifests) != 1:
@@ -112,6 +113,8 @@ def publish(paths, directory, workspace, architecture, kernel_config):
         'launcher': {'architecture': architecture},
         'manifest_sha256': sha256(source / MANIFEST),
     }
+    if resolution is not None:
+        provenance['resolution'] = resolution
     # Validate every input before publishing. The lock serializes Make callers.
     for path in paths:
         build_helpers.export_archive(path, directory / path.name)
@@ -131,6 +134,94 @@ def publish(paths, directory, workspace, architecture, kernel_config):
         finally:
             temporary.unlink(missing_ok=True)
     return verify(directory, workspace, architecture, manifest["kernel_config"])
+
+
+def verify_make_contract(directory, result, expected, packages):
+    if any(result['manifest'].get(field) != value for field, value in expected.items()):
+        raise ValueError('Kernel manifest differs from the requested Make configuration')
+    provenance = result['provenance']
+    if (provenance['kernel_gitlink'] != provenance['module_version'].rsplit('-', 1)[-1]
+            or provenance['launcher']['architecture'] != expected['architecture']):
+        raise ValueError('Kernel provenance differs from the requested producer')
+    for entry in result['manifest']['packages']:
+        name = entry['name']
+        metadata = packages[name]
+        if any(entry.get(k) != v for k, v in metadata.items()):
+            raise ValueError('Kernel DEB metadata differs from the Make contract: ' + name)
+        control = subprocess.check_output(
+            ['dpkg-deb', '--field', str(directory / name), 'Package', 'Version', 'Architecture'], text=True)
+        if dict(line.split(': ', 1) for line in control.splitlines()) != {
+            field.title(): metadata[field] for field in ('package', 'version', 'architecture')
+        }:
+            raise ValueError('Kernel DEB control fields differ from the Make contract: ' + name)
+
+
+def restore_root(workspace, directory, architecture, config, endpoint, key, current_key):
+    from tools.bazel.kernel import prepare, root_resolution
+
+    expected, packages = prepare.contract(workspace, architecture, config)
+    with tempfile.TemporaryDirectory(prefix='.kernel-restore-', dir=directory) as staging:
+        incoming = Path(staging)
+        index = remote_bundle.restore_bundle(
+            workspace, incoming, set(packages), endpoint, key=key, schema=remote_bundle.ROOT_SCHEMA,
+            validate_lock=lambda data: root_resolution.validate(data, workspace))
+        verified = verify(incoming, workspace, architecture)
+        verify_make_contract(incoming, verified, expected, packages)
+        if current_key() != key:
+            raise ValueError('Kernel root inputs changed during cache restore')
+        prepare.install_files(incoming, directory, set(packages) | {MANIFEST})
+    return index
+
+
+def build_packages(workspace, directory, architecture, config, bazel, options, endpoint, upload):
+    from tools.bazel.kernel import root_request, root_resolution
+
+    def current_key():
+        return root_request.request_key(workspace, architecture, config, options=options, bazel=bazel)
+
+    opted_in = endpoint and os.environ.get('SONIC_VS_KERNEL_REMOTE_REUSE') == '1'
+    candidate = workspace / remote_bundle.INPUT_INDEX
+    key = None
+    if opted_in and (upload or candidate.is_file()):
+        try:
+            key = current_key()
+            if candidate.is_file():
+                index = restore_root(workspace, directory, architecture, config, endpoint, key, current_key)
+                if upload:
+                    try:
+                        remote_bundle.save_index(workspace, index)
+                    except OSError as error:
+                        print(f'Could not retain the kernel cache index: {error}', file=sys.stderr)
+                print('Restored five verified kernel DEBs from the root Bazel cache.')
+                return
+        except remote_bundle.RESTORE_ERRORS as error:
+            print(f'Kernel root cache unavailable; using Bazel: {error}', file=sys.stderr)
+
+    subprocess.run([bazel, 'build', *options, TARGET], cwd=workspace, check=True)
+    lock = resolution = None
+    if key and upload:
+        try:
+            with (workspace / 'MODULE.bazel.lock').open('rb') as stream:
+                lock = stream.read(remote_bundle.cache_identity.MAX_LOCK_BYTES + 1)
+            root_resolution.validate(lock, workspace)
+            resolution = {'root_request_key': key, 'lock_sha256': hashlib.sha256(lock).hexdigest()}
+        except remote_bundle.RESTORE_ERRORS as error:
+            print(f'Kernel root index publication skipped: {error}', file=sys.stderr)
+    output = subprocess.check_output([bazel, 'cquery', *options, '--output=files', TARGET], cwd=workspace, text=True)
+    verified = publish([workspace / line for line in output.splitlines()], directory, workspace,
+                       architecture, config, resolution=resolution)
+    if resolution is not None:
+        try:
+            from tools.bazel.kernel import prepare
+            expected, packages = prepare.contract(workspace, architecture, config)
+            verify_make_contract(directory, verified, expected, packages)
+            if current_key() != key:
+                raise ValueError('Kernel root inputs changed during the Bazel build')
+            index = remote_bundle.upload_bundle(directory, lock, verified, endpoint, key=key, schema=remote_bundle.ROOT_SCHEMA)
+            remote_bundle.save_index(workspace, index)
+        except remote_bundle.RESTORE_ERRORS as error:
+            print(f'Kernel root index publication skipped: {error}', file=sys.stderr)
+    print('Kernel DEBs published from the root Bazel graph.')
 
 
 def main():
@@ -167,11 +258,8 @@ def main():
             options += ['--remote_cache=' + args.remote_cache,
                         '--remote_upload_local_results=' + str(args.upload_local_results).lower()]
         bazel = os.environ.get('BAZEL', 'bazel')
-        subprocess.run([bazel, 'build', *options, TARGET], cwd=workspace, check=True)
-        output = subprocess.check_output([bazel, 'cquery', *options, '--output=files', TARGET], cwd=workspace, text=True)
-        paths = [workspace / line for line in output.splitlines()]
-        publish(paths, directory, workspace, args.architecture, config)
-    print('Kernel DEBs published from the root Bazel graph.')
+        build_packages(workspace, directory, args.architecture, config, bazel, options,
+                       args.remote_cache, args.upload_local_results)
 
 
 if __name__ == '__main__':

@@ -579,6 +579,11 @@ def install_verified(incoming, destination, workspace, source, expected):
     """Install into Make's DEB directory under the package lock, with provenance last."""
     architecture = source["launcher"]["architecture"]
     require(source_state(workspace, architecture, source["kernel_config"]) == source, "kernel handoff source changed during publication")
+    install_files(incoming, destination, expected)
+
+
+def install_files(incoming, destination, expected):
+    """Move staged packages under the caller's package lock, installing provenance last."""
     changed = []
     for name in sorted(expected) + [PROVENANCE]:
         old = destination / name
