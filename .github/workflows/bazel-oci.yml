@@ -1,4 +1,4 @@
-name: Repeat native VS installer comparison with the layout arm first
+name: Measure layout-only versus archive VS installer builds
 'on':
   workflow_dispatch: {}
 permissions:
@@ -51,256 +51,6 @@ jobs:
       BUILD_TIMESTAMP: '20261122.000000'
       SOURCE_DATE_EPOCH: '1795305600'
     steps:
-    - name: candidate Checkout repository and pinned submodules
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        path: vs-${{ github.run_id }}-${{ github.run_attempt }}
-        persist-credentials: false
-        submodules: recursive
-        ref: 711ea9fb838892658f7e634183cb467b661bd06f
-    - name: candidate verified dependency archives
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        github-token: ${{ github.token }}
-        run-id: '44982121951'
-        artifact-ids: '14738067554'
-        merge-multiple: true
-        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
-    - name: candidate pinned P4 sources
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        github-token: ${{ github.token }}
-        run-id: '44982121951'
-        artifact-ids: '14738456100'
-        merge-multiple: true
-        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/p4-source-inputs
-    - name: candidate Initialize private Docker configuration
-      env:
-        DOCKER_CONFIG: ${{ runner.temp }}/docker-config-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-      run: |
-        set -euo pipefail
-        install -d -m 0700 "$DOCKER_CONFIG"
-        printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
-    - name: candidate Configure Bazel action memory budget
-      run: python3 -B tools/bazel/ci/resources.py --configure
-    - name: candidate Validate shared NFS package cache
-      run: bash tools/ci/runner/nfs_package_cache.sh
-    - name: candidate Check host-agent build prerequisites
-      run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
-    - name: candidate Verify P4 source bytes before native Make
-      run: |
-        python3 -B tools/ci/p4_source_inputs.py \
-          --manifest src/p4lang/source-inputs.json \
-          --directory artifacts/vs/p4-source-inputs/sources \
-          --receipt artifacts/vs/p4-source-inputs-verified.json
-    - name: Configure persistent caches
-      env:
-        SONIC_BAZEL_CACHE_SOURCE: ${{ runner.temp }}/vs-layout-bench-${{ github.run_id }}-${{ github.run_attempt }}-candidate
-      run: |
-        set -euo pipefail
-        install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE"
-        test -w "$SONIC_BAZEL_CACHE_SOURCE"
-        for cache in repository_cache disk_cache; do
-          directory="$SONIC_BAZEL_CACHE_SOURCE/$cache"
-          if test -d "$directory"; then
-            blocked=$(find "$directory" -type d ! -writable -print -quit)
-            if test -n "$blocked"; then
-              printf 'Unwritable cache directory: %s\n' "$blocked" >&2
-              exit 1
-            fi
-          fi
-        done
-        python3 -B tools/bazel/gzip/source_archive.py \
-          --archives-dir artifacts/vs/repository-inputs \
-          --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json
-        printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
-          "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
-    - name: candidate Authenticate to the slave image registry
-      env:
-        AZURE_CONFIG_DIR: ${{ runner.temp }}/vs-azure-cli
-      run: bash tools/ci/runner/azure_acr_login.sh "${ACR_REGISTRY_NAME:?}"
-    - name: candidate Prepare the host-driven SONiC slave
-      run: |
-        set -euo pipefail
-        make init 2>&1 | tee artifacts/vs/init.log
-        make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
-          SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-          2>&1 | tee artifacts/vs/configure.log
-        for build_env in bookworm trixie; do
-          make -f Makefile.work BLDENV="$build_env" docker-start \
-            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-            2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
-        done
-        make -f Makefile.work BLDENV=trixie sonic-slave-run \
-          SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
-          SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
-          2>&1 | tee artifacts/vs/kernel-sandbox.log
-    - name: candidate Set the VS builder action memory budget
-      run: |
-        memory_option=$(python3 -B tools/bazel/ci/resources.py) || exit
-        printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "${BAZEL_CONTAINER_ARGS:-}" "$memory_option" >> "$GITHUB_ENV"
-    - name: candidate identical host-base snapshot
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        github-token: ${{ github.token }}
-        run-id: '44940310147'
-        artifact-ids: '14725180061'
-        merge-multiple: true
-        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/host-base-transfer/download
-    - name: candidate restore host base
-      run: python3 -B tools/bazel/ci/vs_host_base_transfer.py restore "$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate" artifacts/vs/host-base-transfer/download
-    - name: candidate identical kernel index
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-      with:
-        github-token: ${{ github.token }}
-        run-id: '44970139162'
-        artifact-ids: '14735770797'
-        merge-multiple: true
-        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/kernel-cache-download
-    - name: candidate full make target/sonic-vs.bin
-      id: candidate_build
-      env:
-        SONIC_VS_DEFER_BUILDER_CLEANUP: n
-        DOCKER_LOAD_ON_BOOT: y
-        SONIC_VS_IMAGE_TIMINGS: '1'
-        SONIC_VS_RETRY_GO_FETCH: '1'
-        SONIC_VS_KERNEL_REMOTE_REUSE: '1'
-        KERNEL_INDEX_DOWNLOAD: success
-        HOST_BASE_DIR: success
-        SONIC_VS_RFS_HANDOFF: '1'
-        SONIC_VS_FAST_ASSEMBLY: '1'
-        TERM: dumb
-      run: |
-        set -euo pipefail
-        # Accept only the index downloaded for this attempt, even if the checkout contains one.
-        rm -rf -- artifacts/vs/kernel-cache-input artifacts/vs/kernel-cache-output
-        index=artifacts/vs/kernel-cache-download/index.json
-        if [[ "${KERNEL_INDEX_DOWNLOAD:-}" == success && -f "$index" && ! -L "$index" ]]; then
-          install -D -m 0644 -- "$index" artifacts/vs/kernel-cache-input/index.json
-        fi
-        if [[ ${HOST_BASE_DIR:-} == success ]]; then
-          export SONIC_HOSTBASE_CACHE_SOURCE="$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate"
-        fi
-        mkdir -p artifacts/vs/image-timings
-        mkdir -p artifacts/vs/paired-layout
-        export MAKEFLAGS=" -- BUILD_TIMESTAMP=$BUILD_TIMESTAMP SONIC_IMAGE_VERSION=$SONIC_IMAGE_VERSION"
-        before=$(date +%s%N)
-        bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
-        after=$(date +%s%N)
-        python3 -c 'import sys; print((int(sys.argv[2])-int(sys.argv[1]))/1e9)' "$before" "$after" > artifacts/vs/paired-layout/seconds
-        test -s target/sonic-vs.bin
-        test -s target/sonic-vs.bin.dockers
-        test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
-    - name: candidate summarize
-      continue-on-error: true
-      run: |
-        set -euo pipefail
-        timings=artifacts/vs/image-timings
-        if [[ -d "$timings" ]]; then
-          python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" --github-actions
-          cat "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
-        fi
-    - name: candidate verify packaged content and write timing record
-      run: |
-        export PYTHONPATH=$PWD
-        python3 - candidate <<'PY'
-        import hashlib,json,os,sys,subprocess,tarfile,zipfile
-        from pathlib import Path
-        from scripts.validate_sonic_version import read_installer_version
-        arm=sys.argv[1]
-        out=Path('artifacts/vs/paired-layout'); out.mkdir(parents=True,exist_ok=True)
-        binpath=Path('target/sonic-vs.bin')
-        def digest(f):
-            h=hashlib.sha256()
-            for chunk in iter(lambda:f.read(4*1024*1024),b''): h.update(chunk)
-            return h.hexdigest()
-        metadata=read_installer_version(binpath, expect_boot_bundle=True)
-        with binpath.open('rb') as stream:
-            marker=b'\nexit_marker\n'; header=stream.read(65536); assert marker in header; stream.seek(header.index(marker)+len(marker))
-            with tarfile.open(fileobj=stream,mode='r:') as archive:
-                with archive.extractfile('installer/fs.zip') as payload, zipfile.ZipFile(payload) as fs:
-                    name='sonic-images.tar.gz'
-                    def bundle(): return fs.open(name) if name in fs.namelist() else archive.extractfile('installer/'+name)
-                    with bundle() as source:
-                        bundle_sha=digest(source)
-                    with bundle() as source,tarfile.open(fileobj=source,mode='r|gz') as images:
-                        manifest=json.load(images.extractfile(images.next()))
-                        tags={tag:item['Config'].rsplit('/',1)[1] for item in manifest for tag in item['RepoTags']}
-        with binpath.open('rb') as stream: installer_sha=digest(stream)
-        (out/'images.json').write_text(json.dumps(tags,sort_keys=True,indent=2)+'\n')
-        with (out/'manifest.json').open('w') as fp: json.dump(manifest,fp,sort_keys=True)
-        summ=Path('artifacts/vs/image-timings/summary.json')
-        arc=sorted(x.name for x in Path('target').glob('docker*.gz') if x.is_file())
-        record={'arm':arm,'runner':os.environ['RUNNER_NAME'],'source':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'seconds':float((out/'seconds').read_text()),'sonic_image_version':os.environ['SONIC_IMAGE_VERSION'],'installer_version':metadata,'installer_size':binpath.stat().st_size,'installer_sha256':installer_sha,'bundle_sha256':bundle_sha,'image_count':len(manifest),'tags':len(tags),'archives':arc}
-        if summ.exists():
-            data=json.loads(summ.read_text())
-            rows=data.get('container_breakdown',{}).get('rows',[])
-            record['image_actions']={k: sum(r.get(k,0) for r in rows) for k in ('compress_seconds','archive_seconds','export_seconds')}
-            record['image_summary_rows']=len(rows)
-        for receipt in sorted(Path('artifacts/vs/image-timings/boot-bundle').glob('*.json')):
-            record.setdefault('boot_receipts',[]).append(json.loads(receipt.read_text()))
-        (out/'result.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')
-        print(json.dumps(record,sort_keys=True)[:2400])
-        assert len(manifest)==28 and len(tags)==56
-        PY
-        mkdir -p "$RUNNER_TEMP/layout-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-        cp artifacts/vs/paired-layout/result.json "$RUNNER_TEMP/layout-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/candidate.json"
-    - name: candidate upload timings and receipts
-      if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-      with:
-        name: candidate-vs-installer-measurement
-        path: |-
-          vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/paired-layout
-          vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings
-          vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/build.log
-        retention-days: 14
-        if-no-files-found: warn
-        compression-level: 1
-    - name: candidate Remove only this job's build containers
-      if: always()
-      working-directory: ${{ github.workspace }}
-      run: |
-        set -euo pipefail
-        containers=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
-        while IFS= read -r container; do
-          test -n "$container" || continue
-          if ! docker rm --force "$container"; then
-            remaining=$(docker ps --all --quiet \
-              --filter "label=$SONIC_CI_CONTAINER_LABEL" --filter "id=$container")
-            if test -n "$remaining"; then
-              printf 'Unable to remove job container: %s\n' "$container" >&2
-              exit 1
-            fi
-            printf 'Job container already removed: %s\n' "$container"
-          fi
-        done <<< "$containers"
-    - name: candidate Remove only this run's checkout
-      if: always()
-      working-directory: ${{ github.workspace }}
-      run: |
-        set -euo pipefail
-        checkout="$GITHUB_WORKSPACE/vs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-        if test -L "$checkout"; then
-          printf 'Refusing redirected VS checkout: %s\n' "$checkout" >&2
-          exit 1
-        fi
-        if test ! -e "$checkout"; then
-          printf 'No VS checkout to remove: %s\n' "$checkout"
-          exit 0
-        fi
-        python3 -B "$checkout/tools/bazel/ci/cleanup_vs_workspace.py" \
-          --workspace "$GITHUB_WORKSPACE" \
-          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
-    - name: candidate remove only private per-arm cache directories
-      if: always()
-      working-directory: ${{ github.workspace }}
-      run: |-
-        set -euo pipefail
-        for dir in "$RUNNER_TEMP/vs-layout-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate" "$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate"; do
-          test ! -L "$dir"
-          sudo -n rm -rf --one-file-system -- "$dir"
-        done
     - name: baseline Checkout repository and pinned submodules
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -507,16 +257,6 @@ jobs:
         retention-days: 14
         if-no-files-found: warn
         compression-level: 1
-    - name: Compare measured builds
-      run: |-
-        python3 - <<'PY'
-        import os,json,pathlib
-        root=pathlib.Path(os.environ['RUNNER_TEMP'])/('layout-results-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
-        base,cand=[json.loads((root/(x+'.json')).read_text()) for x in ('baseline','candidate')]
-        assert base['runner']==cand['runner'] and base['sonic_image_version']==cand['sonic_image_version']
-        delta=base['seconds']-cand['seconds']
-        print('Runner, baseline seconds, candidate seconds, delta seconds, percent, identical boot bundle',base['runner'],base['seconds'],cand['seconds'],delta,100*delta/base['seconds'],base['bundle_sha256']==cand['bundle_sha256'])
-        PY
     - name: baseline Remove only this job's build containers
       if: always()
       working-directory: ${{ github.workspace }}
@@ -558,6 +298,290 @@ jobs:
       run: |-
         set -euo pipefail
         for dir in "$RUNNER_TEMP/vs-layout-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-baseline" "$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-baseline"; do
+          test ! -L "$dir"
+          sudo -n rm -rf --one-file-system -- "$dir"
+        done
+    - name: Wait for the measured feature revision
+      id: candidate_revision
+      working-directory: ${{ github.workspace }}
+      run: |-
+        set -euo pipefail
+        deadline=$((SECONDS + 7200))
+        while (( SECONDS < deadline )); do
+          revision=$(git ls-remote https://github.com/securely1g/sonic-buildimage.git refs/heads/bench/vs-layout-only-measured-local-packages-20261122 | cut -f1)
+          if [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sha=$revision" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          sleep 30
+        done
+        echo 'No measured feature revision was published in time' >&2; exit 1
+    - name: candidate Checkout repository and pinned submodules
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        path: vs-${{ github.run_id }}-${{ github.run_attempt }}
+        persist-credentials: false
+        submodules: recursive
+        ref: ${{ steps.candidate_revision.outputs.sha }}
+    - name: candidate verified dependency archives
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        github-token: ${{ github.token }}
+        run-id: '44982121951'
+        artifact-ids: '14738067554'
+        merge-multiple: true
+        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/repository-inputs
+    - name: candidate pinned P4 sources
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        github-token: ${{ github.token }}
+        run-id: '44982121951'
+        artifact-ids: '14738456100'
+        merge-multiple: true
+        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/p4-source-inputs
+    - name: candidate Initialize private Docker configuration
+      env:
+        DOCKER_CONFIG: ${{ runner.temp }}/docker-config-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      run: |
+        set -euo pipefail
+        install -d -m 0700 "$DOCKER_CONFIG"
+        printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
+    - name: candidate Configure Bazel action memory budget
+      run: python3 -B tools/bazel/ci/resources.py --configure
+    - name: candidate Validate shared NFS package cache
+      run: bash tools/ci/runner/nfs_package_cache.sh
+    - name: candidate Check host-agent build prerequisites
+      run: python3 -B tools/ci/runner/preflight.py --host-agent --workspace "$PWD" --build-target sonic-vs.bin
+    - name: candidate Verify P4 source bytes before native Make
+      run: |
+        python3 -B tools/ci/p4_source_inputs.py \
+          --manifest src/p4lang/source-inputs.json \
+          --directory artifacts/vs/p4-source-inputs/sources \
+          --receipt artifacts/vs/p4-source-inputs-verified.json
+    - name: Configure persistent caches
+      env:
+        SONIC_BAZEL_CACHE_SOURCE: ${{ runner.temp }}/vs-layout-bench-${{ github.run_id }}-${{ github.run_attempt }}-candidate
+      run: |
+        set -euo pipefail
+        install -d -m 0700 "$SONIC_BAZEL_CACHE_SOURCE"
+        test -w "$SONIC_BAZEL_CACHE_SOURCE"
+        for cache in repository_cache disk_cache; do
+          directory="$SONIC_BAZEL_CACHE_SOURCE/$cache"
+          if test -d "$directory"; then
+            blocked=$(find "$directory" -type d ! -writable -print -quit)
+            if test -n "$blocked"; then
+              printf 'Unwritable cache directory: %s\n' "$blocked" >&2
+              exit 1
+            fi
+          fi
+        done
+        python3 -B tools/bazel/gzip/source_archive.py \
+          --archives-dir artifacts/vs/repository-inputs \
+          --output "$SONIC_BAZEL_CACHE_SOURCE/distdir" > artifacts/vs/source-download-receipt.json
+        printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_DPKG_CACHE_SOURCE=%s\n' \
+          "$SONIC_BAZEL_CACHE_SOURCE" "$SONIC_DPKG_CACHE_SOURCE" >> "$GITHUB_ENV"
+    - name: candidate Authenticate to the slave image registry
+      env:
+        AZURE_CONFIG_DIR: ${{ runner.temp }}/vs-azure-cli
+      run: bash tools/ci/runner/azure_acr_login.sh "${ACR_REGISTRY_NAME:?}"
+    - name: candidate Prepare the host-driven SONiC slave
+      run: |
+        set -euo pipefail
+        make init 2>&1 | tee artifacts/vs/init.log
+        make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+          SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+          2>&1 | tee artifacts/vs/configure.log
+        for build_env in bookworm trixie; do
+          make -f Makefile.work BLDENV="$build_env" docker-start \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
+        done
+        make -f Makefile.work BLDENV=trixie sonic-slave-run \
+          SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+          SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py' \
+          2>&1 | tee artifacts/vs/kernel-sandbox.log
+    - name: candidate Set the VS builder action memory budget
+      run: |
+        memory_option=$(python3 -B tools/bazel/ci/resources.py) || exit
+        printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "${BAZEL_CONTAINER_ARGS:-}" "$memory_option" >> "$GITHUB_ENV"
+    - name: candidate identical host-base snapshot
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        github-token: ${{ github.token }}
+        run-id: '44940310147'
+        artifact-ids: '14725180061'
+        merge-multiple: true
+        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/host-base-transfer/download
+    - name: candidate restore host base
+      run: python3 -B tools/bazel/ci/vs_host_base_transfer.py restore "$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate" artifacts/vs/host-base-transfer/download
+    - name: candidate identical kernel index
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      with:
+        github-token: ${{ github.token }}
+        run-id: '44970139162'
+        artifact-ids: '14735770797'
+        merge-multiple: true
+        path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/kernel-cache-download
+    - name: candidate full make target/sonic-vs.bin
+      id: candidate_build
+      env:
+        SONIC_VS_DEFER_BUILDER_CLEANUP: n
+        DOCKER_LOAD_ON_BOOT: y
+        SONIC_VS_IMAGE_TIMINGS: '1'
+        SONIC_VS_RETRY_GO_FETCH: '1'
+        SONIC_VS_KERNEL_REMOTE_REUSE: '1'
+        KERNEL_INDEX_DOWNLOAD: success
+        HOST_BASE_DIR: success
+        SONIC_VS_RFS_HANDOFF: '1'
+        SONIC_VS_FAST_ASSEMBLY: '1'
+        TERM: dumb
+      run: |
+        set -euo pipefail
+        # Accept only the index downloaded for this attempt, even if the checkout contains one.
+        rm -rf -- artifacts/vs/kernel-cache-input artifacts/vs/kernel-cache-output
+        index=artifacts/vs/kernel-cache-download/index.json
+        if [[ "${KERNEL_INDEX_DOWNLOAD:-}" == success && -f "$index" && ! -L "$index" ]]; then
+          install -D -m 0644 -- "$index" artifacts/vs/kernel-cache-input/index.json
+        fi
+        if [[ ${HOST_BASE_DIR:-} == success ]]; then
+          export SONIC_HOSTBASE_CACHE_SOURCE="$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate"
+        fi
+        mkdir -p artifacts/vs/image-timings
+        mkdir -p artifacts/vs/paired-layout
+        export MAKEFLAGS=" -- BUILD_TIMESTAMP=$BUILD_TIMESTAMP SONIC_IMAGE_VERSION=$SONIC_IMAGE_VERSION"
+        before=$(date +%s%N)
+        bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log
+        after=$(date +%s%N)
+        python3 -c 'import sys; print((int(sys.argv[2])-int(sys.argv[1]))/1e9)' "$before" "$after" > artifacts/vs/paired-layout/seconds
+        test -s target/sonic-vs.bin
+        test -s target/sonic-vs.bin.dockers
+        test "$(git rev-parse HEAD)" = "$(cat artifacts/vs/build-revision.txt)"
+    - name: candidate summarize
+      continue-on-error: true
+      run: |
+        set -euo pipefail
+        timings=artifacts/vs/image-timings
+        if [[ -d "$timings" ]]; then
+          python3 -B tools/bazel/ci/summarize_vs_image_timings.py "$timings" --github-actions
+          cat "$timings/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+    - name: candidate verify packaged content and write timing record
+      run: |
+        export PYTHONPATH=$PWD
+        python3 - candidate <<'PY'
+        import hashlib,json,os,sys,subprocess,tarfile,zipfile
+        from pathlib import Path
+        from scripts.validate_sonic_version import read_installer_version
+        arm=sys.argv[1]
+        out=Path('artifacts/vs/paired-layout'); out.mkdir(parents=True,exist_ok=True)
+        binpath=Path('target/sonic-vs.bin')
+        def digest(f):
+            h=hashlib.sha256()
+            for chunk in iter(lambda:f.read(4*1024*1024),b''): h.update(chunk)
+            return h.hexdigest()
+        metadata=read_installer_version(binpath, expect_boot_bundle=True)
+        with binpath.open('rb') as stream:
+            marker=b'\nexit_marker\n'; header=stream.read(65536); assert marker in header; stream.seek(header.index(marker)+len(marker))
+            with tarfile.open(fileobj=stream,mode='r:') as archive:
+                with archive.extractfile('installer/fs.zip') as payload, zipfile.ZipFile(payload) as fs:
+                    name='sonic-images.tar.gz'
+                    def bundle(): return fs.open(name) if name in fs.namelist() else archive.extractfile('installer/'+name)
+                    with bundle() as source:
+                        bundle_sha=digest(source)
+                    with bundle() as source,tarfile.open(fileobj=source,mode='r|gz') as images:
+                        manifest=json.load(images.extractfile(images.next()))
+                        tags={tag:item['Config'].rsplit('/',1)[1] for item in manifest for tag in item['RepoTags']}
+        with binpath.open('rb') as stream: installer_sha=digest(stream)
+        (out/'images.json').write_text(json.dumps(tags,sort_keys=True,indent=2)+'\n')
+        with (out/'manifest.json').open('w') as fp: json.dump(manifest,fp,sort_keys=True)
+        summ=Path('artifacts/vs/image-timings/summary.json')
+        arc=sorted(x.name for x in Path('target').glob('docker*.gz') if x.is_file())
+        record={'arm':arm,'runner':os.environ['RUNNER_NAME'],'source':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'seconds':float((out/'seconds').read_text()),'sonic_image_version':os.environ['SONIC_IMAGE_VERSION'],'installer_version':metadata,'installer_size':binpath.stat().st_size,'installer_sha256':installer_sha,'bundle_sha256':bundle_sha,'image_count':len(manifest),'tags':len(tags),'archives':arc}
+        if summ.exists():
+            data=json.loads(summ.read_text())
+            rows=data.get('container_breakdown',{}).get('rows',[])
+            record['image_actions']={k: sum(r.get(k,0) for r in rows) for k in ('compress_seconds','archive_seconds','export_seconds')}
+            record['image_summary_rows']=len(rows)
+        for receipt in sorted(Path('artifacts/vs/image-timings/boot-bundle').glob('*.json')):
+            record.setdefault('boot_receipts',[]).append(json.loads(receipt.read_text()))
+        (out/'result.json').write_text(json.dumps(record,sort_keys=True,indent=2)+'\n')
+        print(json.dumps(record,sort_keys=True)[:2400])
+        assert len(manifest)==28 and len(tags)==56
+        PY
+        mkdir -p "$RUNNER_TEMP/layout-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        cp artifacts/vs/paired-layout/result.json "$RUNNER_TEMP/layout-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/candidate.json"
+    - name: candidate upload timings and receipts
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: candidate-vs-installer-measurement
+        path: |-
+          vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/paired-layout
+          vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/image-timings
+          vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/build.log
+        retention-days: 14
+        if-no-files-found: warn
+        compression-level: 1
+    - name: Compare measured builds
+      run: |-
+        python3 - <<'PY'
+        import os,json,pathlib
+        root=pathlib.Path(os.environ['RUNNER_TEMP'])/('layout-results-'+os.environ['GITHUB_RUN_ID']+'-'+os.environ['GITHUB_RUN_ATTEMPT'])
+        base,cand=[json.loads((root/(x+'.json')).read_text()) for x in ('baseline','candidate')]
+        assert base['runner']==cand['runner'] and base['sonic_image_version']==cand['sonic_image_version']
+        delta=base['seconds']-cand['seconds']
+        print('Runner, baseline seconds, candidate seconds, delta seconds, percent, identical boot bundle',base['runner'],base['seconds'],cand['seconds'],delta,100*delta/base['seconds'],base['bundle_sha256']==cand['bundle_sha256'])
+        PY
+    - name: Publish the measured candidate installer
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: sonic-vs-layout-only-amd64
+        path: |-
+          vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
+          vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
+        retention-days: 7
+        if-no-files-found: error
+        compression-level: 0
+    - name: candidate Remove only this job's build containers
+      if: always()
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        containers=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
+        while IFS= read -r container; do
+          test -n "$container" || continue
+          if ! docker rm --force "$container"; then
+            remaining=$(docker ps --all --quiet \
+              --filter "label=$SONIC_CI_CONTAINER_LABEL" --filter "id=$container")
+            if test -n "$remaining"; then
+              printf 'Unable to remove job container: %s\n' "$container" >&2
+              exit 1
+            fi
+            printf 'Job container already removed: %s\n' "$container"
+          fi
+        done <<< "$containers"
+    - name: candidate Remove only this run's checkout
+      if: always()
+      working-directory: ${{ github.workspace }}
+      run: |
+        set -euo pipefail
+        checkout="$GITHUB_WORKSPACE/vs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        if test -L "$checkout"; then
+          printf 'Refusing redirected VS checkout: %s\n' "$checkout" >&2
+          exit 1
+        fi
+        if test ! -e "$checkout"; then
+          printf 'No VS checkout to remove: %s\n' "$checkout"
+          exit 0
+        fi
+        python3 -B "$checkout/tools/bazel/ci/cleanup_vs_workspace.py" \
+          --workspace "$GITHUB_WORKSPACE" \
+          --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+    - name: candidate remove only private per-arm cache directories
+      if: always()
+      working-directory: ${{ github.workspace }}
+      run: |-
+        set -euo pipefail
+        for dir in "$RUNNER_TEMP/vs-layout-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate" "$RUNNER_TEMP/vs-layout-host-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-candidate"; do
           test ! -L "$dir"
           sudo -n rm -rf --one-file-system -- "$dir"
         done
