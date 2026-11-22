@@ -30,6 +30,12 @@ RC_FILES = {
     "tools/bazel/common.bazelrc": "851e54956e6acb9276f5df438fa06022f7555515ac56897a9804a6165559531a",
     "tools/bazel/slave.bazelrc": "f9cd2a0ee500a23c0a6e9efbb09d1a19151a0d2f1a6b2cc274cbcdfde63fe9cf",
 }
+# Workspace Python modules imported by the kernel consumer outside its package.
+CONSUMER_HELPERS = {
+    "tools/bazel/build_helpers.py", "tools/bazel/cache/credentials.py", "tools/bazel/image/file_copy.py",
+    "tools/bazel/ci/public_artifacts.py", "tools/bazel/ci/resolution.py", "tools/bazel/ci/resources.py",
+    "tools/bazel/ci/time_vs_image.py",
+}
 LOCAL_MODULES = {"sonic-sysmgr", "sonic-yang-models", "sonic-yang-mgmt"}
 KERNEL = "0.0.3-96c621843a2bc9dbbe17eb890c8c6e1cea5e834b"
 INFRA = "0.0.41-edab3bd22b7a9a2ae631f06a1a5072b113045fe7"
@@ -92,11 +98,14 @@ def declared_kernel_modules(workspace):
 
 def _tracked_inputs(workspace):
     paths = {".bazelversion", ".bazelignore", ".gitmodules", "Makefile.work", "rules/linux-kernel.mk",
-             "tools/bazel/debian_mirrors.cfg", "tools/bazel/build_helpers.py",
+             "tools/bazel/debian_mirrors.cfg", *CONSUMER_HELPERS,
              "tools/bazel/kernel/root_resolution_registry.json", "tools/bazel/kernel/cache_wire.proto",
              *RC_FILES, *MODULE_FILES}
     paths.update(str(path.relative_to(workspace)) for path in local_modules(workspace).values())
     required = set(paths)
+    for helper in CONSUMER_HELPERS:
+        paths.update((parent / "__init__.py").as_posix() for parent in Path(helper).parents
+                     if parent != Path("."))
     for module in MODULE_FILES:
         for node in ast.walk(_module(workspace, module)):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("//"):

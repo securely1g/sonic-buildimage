@@ -679,6 +679,8 @@ class KernelBundleTest(unittest.TestCase):
             'bazel_dep(name="sonic-linux-kernel", version="0.0.1-' + self.gitlink + '")\n')
         shutil.copyfile(ROOT / "tools/bazel/build_helpers.py", self.root / "tools/bazel/build_helpers.py")
         shutil.copytree(ROOT / "tools/bazel/cache", self.root / "tools/bazel/cache", dirs_exist_ok=True)
+        (self.root / "tools/bazel/image").mkdir(exist_ok=True)
+        shutil.copyfile(ROOT / "tools/bazel/image/file_copy.py", self.root / "tools/bazel/image/file_copy.py")
         fake_bazel = self.root / "bazel"
         paths = [self.bundle / name for name in self.packages] + [self.bundle / kernel.MANIFEST]
         fake_bazel.write_text("#!" + sys.executable + "\nimport sys\n"

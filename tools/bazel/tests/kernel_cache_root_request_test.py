@@ -43,7 +43,7 @@ class RootKernelRequestTest(unittest.TestCase):
             "tools/bazel/common.bazelrc": "try-import %workspace%/.bazelrc.user\n",
             "tools/bazel/slave.bazelrc": "common --disk_cache=/bazel_cache/disk_cache\n",
             "rules/linux-kernel.mk": "fixture\n", "tools/bazel/debian_mirrors.cfg": "# fixture\n",
-            "tools/bazel/build_helpers.py": "# fixture\n",
+            **{name: "# fixture\n" for name in request.CONSUMER_HELPERS},
             "tools/bazel/kernel/packages.py": "# fixture\n", "tools/bazel/kernel/root_resolution_registry.json": "{}",
             "tools/bazel/kernel/cache_wire.proto": "// fixture\n", "src/other/lock.txt": "abc\n",
             "src/other/deps.MODULE.bazel": 'register_toolchains("@infra//:cc")\n',
@@ -107,7 +107,7 @@ class RootKernelRequestTest(unittest.TestCase):
 
     def test_local_override_and_root_label_changes_invalidate(self):
         original = self.key()
-        for name in ("src/sonic-sysmgr/MODULE.bazel", "src/other/lock.txt"):
+        for name in ("src/sonic-sysmgr/MODULE.bazel", "src/other/lock.txt", "tools/bazel/image/file_copy.py"):
             path = self.repo / name
             path.write_text(path.read_text() + "# changed\n")
             with self.assertRaises(ValueError):
