@@ -111,6 +111,37 @@ mksquashfs "$root" "$2" -noappend -processors 1 >/dev/null
         with self.assertRaisesRegex(ValueError, "host-base receipt"):
             self.key()
 
+    def test_bazel_device_tar_replaces_the_deb_in_the_host_identity(self):
+        env = dict(self.cfg, RFS_SPLIT_FIRST_STAGE="n", RFS_SPLIT_LAST_STAGE="y", DOCKER_LOAD_ON_BOOT="y",
+                   installer_device_data_tar=host.DEVICE_TAR)
+        with patch.object(host, "stage_options"):
+            cfg = host.options(self.repo, env)
+        self.assertEqual(cfg["installer_device_data_tar"], host.DEVICE_TAR)
+        self.put("sonic_debian_extension.sh",
+                 'scripts/install_device_data.py --tar "$installer_device_data_tar"' + host.BOUNDARY)
+        self.put(host.DEVICE_TAR, "selected device TAR")
+        for name in host.DEVICE_REGISTRATION:
+            self.put(name, name)
+
+        def identity():
+            return host.identity(self.repo, cfg, self.builder, [self.wheel])
+
+        before = identity()
+        self.assertIn(host.DEVICE_TAR, before["packages"])
+        self.assertNotIn(self.package, before["packages"])
+        (self.repo / self.package).unlink()
+        self.assertEqual(before, identity())
+        for name in (host.DEVICE_TAR, *host.DEVICE_REGISTRATION):
+            with self.subTest(name=name):
+                path = self.repo / name
+                original = path.read_bytes()
+                path.write_bytes(original + b"changed")
+                self.assertNotEqual(before, identity())
+                path.write_bytes(original)
+        (self.repo / host.DEVICE_TAR).unlink()
+        with self.assertRaises(FileNotFoundError):
+            identity()
+
     def test_cache_is_keyed_on_package_bytes(self):
         try:
             binary = host.bazel_binary()

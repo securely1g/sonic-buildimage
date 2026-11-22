@@ -31,7 +31,7 @@ BOUNDARY = "\n## Bind docker path\n"
 # it invokes. Do not pass the originating Make environment to a reusable action.
 FIELDS = """
 TARGET_MACHINE CONFIGURED_PLATFORM CONFIGURED_ARCH IMAGE_DISTRO IMAGE_TYPE kversion
-debs_path files_path OPENSSH_VERSION_FULL SONIC_VS_BATCH_PACKAGES MULTIARCH_QEMU_ENVIRON
+debs_path files_path installer_device_data_tar OPENSSH_VERSION_FULL SONIC_VS_BATCH_PACKAGES MULTIARCH_QEMU_ENVIRON
 CROSS_BUILD_ENVIRON INCLUDE_FIPS BUILD_REDUCE_IMAGE_SIZE build_reduce_image_size ZTP ZTP_DHCP_DISABLED
 ENABLE_FRR_SNMP_AGENT default_buffer_model enable_auto_tech_support enable_pfcwd_on_start
 include_dhcp_server include_iccpd include_kubernetes include_lldp include_macsec
@@ -49,6 +49,9 @@ SOURCES = (
     "target/versions/default/versions-mirror",
 )
 OPTIONAL = ("platform/vs/asic_table.j2", "platform/vs/peripheral_table.j2", "platform/vs/zero_profiles.j2")
+DEVICE_TAR = "target/files/trixie/sonic-device-data-vs.tar"
+DEVICE_REGISTRATION = ("scripts/install_device_data.py", "src/sonic-device-data/src/debian/control",
+                       "src/sonic-device-data/src/debian/changelog")
 SITE_FILES = ("files/build_templates/constants.yml.overlay.j2",
               "files/build_templates/init_cfg_organization.j2",
               "files/build_templates/sonic_debian_extension_organization_packages.j2",
@@ -121,6 +124,13 @@ def identity(repo, cfg, builder, prerequisites):
         if os.path.lexists(repo / name):
             record(repo / name)
     packages = {name: fingerprint(repo / name) for name in local_packages(repo, cfg, prerequisites, setup)}
+    # The VS TAR replaces the device DEB. Its installer also reads package
+    # metadata from the checkout to register ownership in the rootfs dpkg database.
+    if device_tar := cfg.get("installer_device_data_tar"):
+        check(device_tar == DEVICE_TAR, f"unexpected device-data archive: {device_tar}")
+        packages[device_tar] = fingerprint(repo / device_tar)
+        for name in DEVICE_REGISTRATION:
+            record(repo / name)
     base = fingerprint(repo / BASE)
     receipt = json.loads((repo / BASE_RECEIPT).read_bytes())
     check(receipt["builder"] == builder and receipt["outputs"]["image"] == base,

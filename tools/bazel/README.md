@@ -622,7 +622,10 @@ use the same variables. A build with unsupported site or installer settings
 uses the original host extension.
 
 The key covers the base bytes, build-slave identity, host package bytes,
-host scripts, configuration and selected options. On a miss the producer uses
+host scripts, configuration and selected options. When the installer selects
+the VS device-data TAR, the key includes that TAR, its installation script and
+the Debian metadata used to register its files. The legacy path keys on the
+device-data DEB. On a miss the producer uses
 the dated Debian snapshots and a private wheelhouse. The VS-specific
 `tools/bazel/ci/vs_host_pypi.lock` records the SHA-256 and download URL for the
 public Python archives consumed by the host. When updating a host Python
