@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import unittest
 from unittest.mock import Mock, patch
@@ -22,6 +23,7 @@ class RootPackagesTest(unittest.TestCase):
         fixture = kernel_test.KernelBundleTest()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
+        self.fixture = fixture
         self.workspace, self.directory = fixture.root, fixture.bundle
         self.architecture = fixture.architecture
         self.lock, self.responses = proof.resolution_fixture(self.workspace)
@@ -124,6 +126,58 @@ class RootPackagesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'kernel handoff differs'):
             kernel_artifacts.collect(self.workspace, None, self.workspace / 'wrong-revision', debs_directory=handoff,
                                      from_vs_handoff=True)
+
+    def test_make_preserves_verified_same_run_handoff_without_bazel(self):
+        self.build()
+        for name in ('slave.mk', 'rules/functions'):
+            shutil.copyfile(ROOT / name, self.workspace / name)
+        subprocess.run(['git', 'add', 'MODULE.bazel', 'slave.mk', 'rules/functions'],
+                       cwd=self.workspace, check=True)
+        self.fixture.commit(self.workspace, 'Track the VS inputs')
+        handoff = self.collect_handoff()
+        receipt = handoff / kernel_artifacts.VS_RECEIPT
+        original = receipt.read_bytes()
+        digest = hashlib.sha256(original).hexdigest()
+        environment = dict(os.environ, SONIC_BAZEL_KERNEL_VS_HANDOFF_SHA256=digest, PYTHONPATH=str(ROOT))
+        smoke = subprocess.run([sys.executable, '-B', str(ROOT / 'tools/bazel/ci/kernel_make_smoke.py'),
+                                '--architecture', self.architecture, '--debs-directory', str(handoff)],
+                               cwd=self.workspace, env=environment, text=True, capture_output=True)
+        self.assertEqual(smoke.returncode, 0, smoke.stdout + smoke.stderr)
+        self.assertEqual(smoke.stdout.count('Make consumed the verified same-run VS kernel DEBs.'), 4)
+        self.assertFalse(self.log.exists())
+
+        argv = ['packages.py', 'build', '--workspace', str(self.workspace), '--debs-directory',
+                str(handoff), '--architecture', self.architecture, '--vs-handoff-sha256', digest]
+        with patch.object(sys, 'argv', argv + ['--kernel-config', 'SECURE_UPGRADE_MODE=unsupported']):
+            with self.assertRaisesRegex(ValueError, 'configuration differs'):
+                packages.main()
+        # A changed transitive registry pin in the checkout cannot authorize a
+        # handoff built at the recorded VS revision, even if the git HEAD agrees.
+        module = self.workspace / 'MODULE.bazel'
+        tracked = module.read_bytes()
+        module.write_bytes(tracked + b'\nbazel_dep(name="patchelf", version="0.18.1")\n')
+        with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError, 'original checkout'):
+            packages.main()
+        module.write_bytes(tracked)
+        provenance = handoff / packages.PROVENANCE
+        record = json.loads(provenance.read_bytes())
+        changed_lock = json.loads(self.lock)
+        url = next(url for url in changed_lock['registryFileHashes']
+                   if '/patchelf/' in url and url.endswith('/source.json'))
+        changed_lock['registryFileHashes'][url] = '0' * 64
+        changed_digest = hashlib.sha256(json.dumps(changed_lock).encode()).hexdigest()
+        record['resolution']['lock_sha256'] = changed_digest
+        provenance.write_text(json.dumps(record))
+        with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError, 'handoff differs'):
+            packages.main()
+        # Rewriting the receipt to match tampered provenance must also fail.
+        forged = json.loads(original)
+        forged['summary']['provenance_sha256'] = prepare.sha256(provenance)
+        forged['summary']['resolution_sha256']['MODULE.bazel.lock'] = changed_digest
+        receipt.write_text(json.dumps(forged))
+        with patch.object(sys, 'argv', argv), self.assertRaisesRegex(ValueError, 'receipt digest differs'):
+            packages.main()
+        self.assertFalse(self.log.exists())
 
     def test_plain_root_build_handoff_binds_lock_even_without_cache_publication(self):
         self.index.unlink()

@@ -241,18 +241,27 @@ def main():
     parser.add_argument('--cache-directory', type=Path)
     parser.add_argument('--remote-cache')
     parser.add_argument('--upload-local-results', action='store_true')
+    parser.add_argument('--vs-handoff-sha256', help='consume the verified same-run VS artifact without rebuilding it')
     args = parser.parse_args()
     workspace = args.workspace.resolve()
     directory = args.debs_directory.resolve()
     config = dict(item.split('=', 1) for item in args.kernel_config)
     host_architecture = {'x86_64': 'amd64', 'aarch64': 'arm64'}[os.uname().machine]
     args.architecture = args.architecture or config.get('CONFIGURED_ARCH') or host_architecture
-    if args.command == 'verify':
+    if args.command == 'verify' and args.vs_handoff_sha256 is None:
         verify(directory, workspace, args.architecture, config)
         print('Kernel DEBs and root module provenance verified.')
         return
-    directory.mkdir(parents=True, exist_ok=True)
+    if args.vs_handoff_sha256 is None:
+        directory.mkdir(parents=True, exist_ok=True)
     with (directory / '.bazel-kernel.lock').open('a') as lock:
+        if args.vs_handoff_sha256 is not None:
+            from tools.bazel.ci import kernel_artifacts
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            kernel_artifacts.verify_make_handoff(workspace, directory, args.architecture, config,
+                                                args.vs_handoff_sha256)
+            print('Make consumed the verified same-run VS kernel DEBs.')
+            return
         fcntl.flock(lock, fcntl.LOCK_EX)
         platform = '@sonic_build_infra//platforms:' + {'amd64': 'x86_64', 'arm64': 'aarch64'}[args.architecture] + '_trixie'
         host_platform = '@sonic_build_infra//platforms:' + {'amd64': 'x86_64', 'arm64': 'aarch64'}[host_architecture] + '_trixie'

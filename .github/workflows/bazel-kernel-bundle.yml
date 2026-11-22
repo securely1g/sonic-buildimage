@@ -170,10 +170,13 @@ jobs:
           merge-multiple: true
           path: target/debs/trixie
       - name: Verify the downloaded package set before exercising Make reuse
+        id: vs_handoff
         if: inputs.vs_artifact_id != ''
         run: |
+          receipt=$(sha256sum target/debs/trixie/vs-kernel-handoff.json)
           python3 -B tools/bazel/ci/kernel_artifacts.py --from-vs-handoff --architecture "${{ matrix.arch }}" \
             --output "$KERNEL_RUN_TEMP/kernel-bundle-artifacts"
+          echo "receipt_sha256=${receipt%% *}" >> "$GITHUB_OUTPUT"
       - name: Build registry kernel outputs in the root module graph
         if: inputs.vs_artifact_id == ''
         shell: bash
@@ -215,6 +218,8 @@ jobs:
           grep -F 'Unsupported kernel configuration' "$KERNEL_RUN_TEMP/kernel-unsupported.log"
           sha256sum --check "$KERNEL_RUN_TEMP/kernel-before-rejection.sha256"
       - name: Verify registry package publication and repeated Make consumption
+        env:
+          SONIC_BAZEL_KERNEL_VS_HANDOFF_SHA256: ${{ steps.vs_handoff.outputs.receipt_sha256 }}
         run: |
           python3 -B tools/bazel/kernel/packages.py verify --architecture "${{ matrix.arch }}"
           python3 -B tools/bazel/ci/kernel_make_smoke.py --architecture "${{ matrix.arch }}"
