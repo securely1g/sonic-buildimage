@@ -66,7 +66,7 @@ jobs:
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
           submodules: recursive
-          ref: 85cd9b14c05ec174c82f0b93dbcf88b5cd97c768
+          ref: 76458e145724d8eaffe115b5ba9ccbba0ae012a2
 
       - name: Fetch the benchmark driver at the diagnostic workflow revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -281,6 +281,8 @@ jobs:
           echo "Same physical runner for all arms: $RUNNER_NAME" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Seed the cold configured host and build version A
+        id: cold_seed
+        continue-on-error: true
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -294,6 +296,57 @@ jobs:
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" seed-a
+
+      - name: Publish the first cold-build error for a pinned retry
+        if: steps.cold_seed.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-cold-error-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/seed-a/failure.json
+          if-no-files-found: warn
+          retention-days: 1
+
+      - name: Resume cold build on an explicitly selected PR fix
+        if: steps.cold_seed.outcome == 'failure'
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: |
+          set -euo pipefail
+          previous=$(git rev-parse HEAD)
+          retry_ref=refs/heads/bench/vs-configured-host-retry-$GITHUB_RUN_ID
+          implementation_ref=refs/heads/ci/vs-configured-host-cache
+          echo "Waiting up to 25 minutes for an explicitly selected fix at $retry_ref" >> "$GITHUB_STEP_SUMMARY"
+          for i in {1..50}; do
+            revision=$(git ls-remote --refs origin "$retry_ref" | awk '{print $1}')
+            if [[ $revision =~ ^[0-9a-f]{40}$ && $revision != "$previous" ]]; then break; fi
+            sleep 30
+          done
+          [[ $revision =~ ^[0-9a-f]{40}$ && $revision != "$previous" ]]
+          git fetch --no-tags --quiet --depth=50 origin "$retry_ref" "$implementation_ref"
+          tip=$(git ls-remote --refs origin "$implementation_ref" | awk '{print $1}')
+          [[ $tip =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$previous" "$revision"
+          git merge-base --is-ancestor "$revision" "$tip"
+          git diff --exit-code "$previous" "$revision" -- .gitmodules
+          if git diff --raw "$previous" "$revision" | awk '$1 ~ /160000/ || $2=="160000" { found=1 } END {exit !found}'; then
+            echo "Cold retry requires identical submodules" >&2; exit 1
+          fi
+          git checkout --detach "$revision"
+          test "$(git rev-parse HEAD)" = "$revision"
+          evidence=artifacts/vs/configured-host-benchmark
+          mv -- "$evidence/seed-a" "$evidence/first-cold-attempt"
+          echo "All reported benchmark arms use $revision." >> "$GITHUB_STEP_SUMMARY"
+          python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" seed-a
 
       - name: Generate a non-sensitive same-size transfer probe
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" generate-probe
