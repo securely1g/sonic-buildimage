@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -142,6 +143,11 @@ args = sys.argv[1:]
 record = {'args': args}
 mounts = {args[index + 1].rsplit(':', 2)[1]: args[index + 1].rsplit(':', 2)[::2]
           for index, arg in enumerate(args) if arg == '-v'}
+for index, arg in enumerate(args):
+    if arg == '--mount':
+        fields = dict(field.split('=', 1) for field in args[index + 1].split(','))
+        assert fields['type'] == 'bind'
+        mounts[fields['target']] = [fields['source'], 'rw']
 record['mounts'] = mounts
 if '/bazel_cache' in mounts:
     source = pathlib.Path(mounts['/bazel_cache'][0])
@@ -152,7 +158,8 @@ if '/etc/bazel.bazelrc' in mounts:
     record['system_rc'] = pathlib.Path(mounts['/etc/bazel.bazelrc'][0]).read_text()
 print(json.dumps(record))
 """)
-        makefile = f"""DOCKER_RUN = python3 {docker}
+        makefile = f"""comma := ,
+DOCKER_RUN = python3 {docker}
 {work[start:end]}
 .PHONY: check
 check:
@@ -284,6 +291,93 @@ check:
                 self.assertFalse((source / "container-cache-write").exists())
             finally:
                 source.chmod(0o755)
+
+
+    def test_separate_repository_mounts_leave_action_and_bazelisk_caches_local(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            local = directory / "local"
+            downloads = directory / "NFS downloads"
+            contents = directory / "NFS 'prepared' `not-a-command`"
+            for path in (downloads, contents):
+                path.mkdir()
+                (path / "sentinel").write_text("retained")
+            for mode in ("downloads", "both"):
+                with self.subTest(mode=mode), patch.dict(os.environ, {
+                        "SONIC_BAZEL_REPOSITORY_CACHE_SOURCE": str(downloads),
+                        "SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE": (
+                            str(contents) if mode == "both" else "")}):
+                    result = self.cache_mount(directory, source=local)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    record = json.loads(result.stdout)
+                    self.assertEqual(record["mounts"]["/bazel_cache"], [str(local), "rw"])
+                    self.assertEqual(record["mounts"]["/bazel_cache/repository_cache"],
+                                     [str(downloads), "rw"])
+                    if mode == "both":
+                        self.assertEqual(record["mounts"]["/bazel_cache/repo_contents_cache"],
+                                         [str(contents), "rw"])
+                        self.assertIn("SONIC_BAZEL_REPO_CONTENTS_CACHE=/bazel_cache/repo_contents_cache",
+                                      record["args"])
+                    else:
+                        self.assertNotIn("/bazel_cache/repo_contents_cache", record["mounts"])
+                    self.assertEqual((downloads / "sentinel").read_text(), "retained")
+                    self.assertEqual((contents / "sentinel").read_text(), "retained")
+
+    def test_separate_mounts_require_local_parent_and_delegate_sources_to_docker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "shared"
+            for variable in ("SONIC_BAZEL_REPOSITORY_CACHE_SOURCE",
+                             "SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE"):
+                with self.subTest(variable=variable), patch.dict(
+                        os.environ, {variable: str(source)}):
+                    result = self.cache_mount(directory, source="")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((directory / "docker-started").exists())
+                    # Docker validates source access; the host need not traverse NFS parents.
+                    result = self.cache_mount(directory, source=directory / "local")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("--mount", json.loads(result.stdout)["args"])
+                    self.assertFalse(source.exists())
+                    (directory / "docker-started").unlink()
+
+    def test_protected_host_parents_do_not_block_daemon_repository_mounts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            run_as = pwd.getpwnam("nobody") if os.geteuid() == 0 else None
+            if run_as:
+                os.chown(directory, run_as.pw_uid, run_as.pw_gid)
+            protected = directory / "protected NFS parent"
+            downloads = protected / "cache/downloads"
+            contents = protected / "cache/contents"
+            downloads.mkdir(parents=True)
+            contents.mkdir()
+            protected.chmod(0)
+            try:
+                with patch.dict(os.environ, {
+                        "SONIC_BAZEL_REPOSITORY_CACHE_SOURCE": str(downloads),
+                        "SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE": str(contents)}):
+                    result = self.cache_mount(directory, source=directory / "local", run_as=run_as)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                record = json.loads(result.stdout)
+                self.assertEqual(record["mounts"]["/bazel_cache/repository_cache"],
+                                 [str(downloads), "rw"])
+                self.assertEqual(record["mounts"]["/bazel_cache/repo_contents_cache"],
+                                 [str(contents), "rw"])
+            finally:
+                protected.chmod(0o700)
+
+    def test_comma_in_repository_source_is_rejected_before_docker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for name in ("SONIC_BAZEL_REPOSITORY_CACHE_SOURCE",
+                         "SONIC_BAZEL_REPO_CONTENTS_CACHE_SOURCE"):
+                with self.subTest(name=name), patch.dict(
+                        os.environ, {name: str(directory / "comma,source")}):
+                    result = self.cache_mount(directory, source=directory / "local")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("cannot contain commas", result.stderr)
+                    self.assertFalse((directory / "docker-started").exists())
 
 
 if __name__ == "__main__":
