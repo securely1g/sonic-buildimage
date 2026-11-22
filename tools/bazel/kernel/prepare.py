@@ -29,6 +29,15 @@ MANIFEST = "kernel-packages.json"
 PROVENANCE = "kernel-provenance.json"
 TARGET = "@sonic_linux_kernel//:kernel_packages"
 DEBS_DIRECTORY = Path("target/debs/trixie")
+# Keep the exact dependency evidence with Make's DEBs across retained-package hits.
+RESOLUTION_DIRECTORY = ".kernel-resolution"
+ROOT_RESOLUTION_RECORDS = {"MODULE.bazel.lock": "lock_sha256"}
+RESOLUTION_RECORDS = {
+    "consumer/MODULE.bazel.lock": "lock_sha256",
+    "build/module-graph.json": "graph_sha256",
+    "build/kernel-source.json": "kernel_source_json_sha256",
+    "build/infra-source.json": "infra_source_json_sha256",
+}
 KERNEL_PATH = Path("src/sonic-linux-kernel")
 DOWNLOADER_CONFIG = Path("tools/bazel/debian_mirrors.cfg")
 REGISTRY_PREFIX = "https://raw.githubusercontent.com/securely1g/sonic-bazel-registry/"
@@ -36,7 +45,7 @@ DEFAULT_REGISTRY = REGISTRY_PREFIX + "main"
 WATCHED = [
     ".gitmodules", "Makefile", "Makefile.work", "rules/linux-kernel.mk", "rules/linux-kernel.dep",
     "tools/bazel/ci/resolution.py", "tools/bazel/ci/time_vs_image.py",
-    "tools/bazel/ci/resources.py",
+    "tools/bazel/ci/resources.py", "tools/bazel/ci/public_artifacts.py",
     "tools/bazel/ci/kernel_make_smoke.py", "rules/config",
     "tools/bazel/kernel", "build_debian.sh", "slave.mk", "Makefile.cache",
     "tools/bazel/ci/kernel_install_smoke.sh", "scripts/build_sbom.py",
@@ -152,7 +161,7 @@ def launcher_contract(workspace, source, architecture="amd64"):
             and selected.get("bazel_url") == "https://releases.bazel.build/" + version + "/release/bazel-" + version + "-linux-" + suffix
             and re.fullmatch(r"[0-9a-f]{64}", selected.get("bazel_sha256", "")),
             "kernel launcher must pin its native Bazel executable")
-    return {"execution_strategy": "linux-sandbox", "architecture": architecture,
+    return {"execution_strategy": "sandboxed", "architecture": architecture,
             "bazel_version": version, "bazel_sha256": selected["bazel_sha256"]}
 
 
@@ -321,6 +330,12 @@ def verify_tools(tools, architecture):
 
 def verify(bundle, workspace, *, source=None, architecture=None, kernel_config=None, with_provenance=True):
     bundle = bundle.resolve(strict=True)
+    provenance_path = bundle / PROVENANCE
+    if with_provenance and provenance_path.is_file():
+        provenance = json.loads(provenance_path.read_text())
+        if provenance.get("schema") == 3:
+            from tools.bazel.kernel.packages import verify as verify_direct
+            return verify_direct(bundle, workspace, architecture, kernel_config)
     source = source or source_state(workspace, architecture, kernel_config)
     require(architecture is None or architecture == source["launcher"]["architecture"],
             "kernel verification execution architecture differs from its source")
@@ -530,6 +545,26 @@ def package_lock(workspace):
         yield
 
 
+def retain_resolution(state, destination, selected, records=RESOLUTION_RECORDS):
+    """Keep the private records by digest even if Make reuses the DEBs later."""
+    destination.mkdir(parents=True, exist_ok=True)
+    directory = destination / RESOLUTION_DIRECTORY
+    require(not directory.is_symlink(), "kernel resolution directory must not be a symlink")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    for relative, field in records.items():
+        digest = selected[field]
+        require(re.fullmatch(r"[0-9a-f]{64}", digest), "invalid kernel resolution hash")
+        retained = directory / digest
+        if retained.exists() or retained.is_symlink():
+            require(sha256(regular(retained)) == digest, "corrupt retained kernel resolution record")
+            continue
+        with tempfile.TemporaryDirectory(dir=directory) as temporary:
+            incoming = Path(temporary) / digest
+            shutil.copyfile(regular(state / relative), incoming)
+            require(sha256(incoming) == digest, "kernel resolution record changed during publication")
+            incoming.replace(retained)
+
+
 def stage_outputs(workdir, destination, workspace, source, selected):
     """Publish verified Bazel outputs once into Make's shared DEB directory."""
     architecture = source["launcher"]["architecture"]
@@ -573,6 +608,11 @@ def install_verified(incoming, destination, workspace, source, expected):
     """Install into Make's DEB directory under the package lock, with provenance last."""
     architecture = source["launcher"]["architecture"]
     require(source_state(workspace, architecture, source["kernel_config"]) == source, "kernel handoff source changed during publication")
+    install_files(incoming, destination, expected)
+
+
+def install_files(incoming, destination, expected):
+    """Move staged packages under the caller's package lock, installing provenance last."""
     changed = []
     for name in sorted(expected) + [PROVENANCE]:
         old = destination / name
@@ -730,9 +770,10 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
                 source = state / "build" / name
                 if source.is_file() and not source.is_symlink():
                     shutil.copyfile(source, timings / destination)
+            time_vs_image.preserve_bep(state / "build/bep.json", timings / "build.bep.json")
     invocation = json.loads(regular(state / "build/invocation.json").read_text())
     require(invocation.get("schema") == 3 and invocation.get("target") == TARGET
-            and invocation.get("execution_strategy") == "linux-sandbox"
+            and invocation.get("execution_strategy") in ("linux-sandbox", "sandboxed")
             and type(invocation.get("uid")) is int and invocation["uid"] > 0
             and invocation.get("bazel_version") == prepared["source"]["launcher"]["bazel_version"]
             and invocation.get("bazel_sha256") == prepared["source"]["launcher"]["bazel_sha256"]
@@ -746,7 +787,9 @@ def _build(workspace, state, remote_cache, upload, *, architecture=None, kernel_
             "kernel launcher invocation differs from the prepared source build")
     selected = inspect_resolution(state / "build", consumer, prepared["source"], prepared["registry"], fetch=fetch)
     with time_vs_image.time_phase(timings, "stage-debs"):
-        result = stage_outputs(state / "build", Path(prepared["debs_directory"]), workspace, prepared["source"], selected)
+        destination = Path(prepared["debs_directory"])
+        retain_resolution(state, destination, selected)
+        result = stage_outputs(state / "build", destination, workspace, prepared["source"], selected)
     receipt = {"schema": 1, "plan": prepared, "result": result}
     (state / "kernel-receipt.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     return receipt
@@ -825,6 +868,10 @@ def ensure(workspace, *, architecture=None, kernel_config=None, state=None, cach
                 try:
                     index = remote_bundle.restore(workspace, incoming, expected - {MANIFEST}, source, registry, remote_cache)
                     result = verify(incoming, workspace, source=source, architecture=architecture)
+                    # A restore verifies the original provenance and dependency lock without
+                    # creating Bazel's module graph or local source records. Keep the index
+                    # that passed those checks for the VS artifact collector in this run.
+                    remote_bundle.save_index(workspace, index, remote_bundle.RESTORED_INDEX)
                 except remote_bundle.RESTORE_ERRORS as error:
                     print(f"Kernel remote bundle unavailable; using Bazel: {error}", file=sys.stderr)
                 else:

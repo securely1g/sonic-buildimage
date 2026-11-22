@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from tempfile import TemporaryDirectory
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -117,9 +117,8 @@ def extra_targets(families):
         for _, archive, layout in entry["members"].values():
             labels.update((archive, layout))
         labels.update(entry["sources"].values())
-        for field in ("symbols_layout", "apt_lock"):
-            if field in entry:
-                labels.add(entry[field])
+        if "apt_lock" in entry:
+            labels.add(entry["apt_lock"])
     return sorted(labels)
 
 
@@ -258,7 +257,7 @@ def stage_probe_fixtures(image, artifacts, bundle):
     from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES, SUPERVISED
 
     # Standalone checks use the owner records projected in *.owners.json.
-    # P4RT also needs the original parent TAR for its separate SDK test.
+    # P4RT reads the Redis configuration from its config-engine parent TAR.
     if image in STANDALONE_IMAGES:
         for name in ("base.source.tar", "config-engine.source.tar", "syncd.source.tar", "source-runtime.tar"):
             artifacts.pop(name, None)
@@ -331,7 +330,71 @@ def make_features(image, build_settings):
     return {name: value == "true"}
 
 
-def write_bundles(args, families, paths, build_settings):
+def defer_validation(args, archives, shared, native_layouts):
+    """Bind later CI checks to the inputs selected by this installer invocation."""
+    directory = args.validation_directory
+    directory.mkdir(parents=True, exist_ok=True)
+    plan = {
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "target_path": str(args.target_path), "architecture": args.architecture,
+        "debug": args.validation_debug, "registered_debug": args.registered_debug,
+        "validation_only_debug": args.validation_only_debug,
+        "archives": archives, "build_settings": shared,
+        "layouts": {name: sha(layout / "index.json") for name, layout in native_layouts.items()},
+        "fallbacks": {name: sha(args.target_path / name) for name in archives if name not in native_layouts},
+    }
+    with NamedTemporaryFile("w", dir=directory, delete=False) as output:
+        try:
+            json.dump(plan, output)
+            output.flush()
+            Path(output.name).replace(directory / "pending.json")
+        finally:
+            Path(output.name).unlink(missing_ok=True)
+
+
+def complete_validation(directory):
+    """Materialize explicitly requested archive tests after sonic-vs.bin exists."""
+    from tools.bazel import build_container_batch as batch, build_helpers
+
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    pending = directory / "pending.json"
+    if not pending.exists():
+        # Archive-only batches already produced their validation bundles.
+        selection = json.loads((directory / "selection.json").read_bytes())
+        require(selection["revision"] == revision, "stale VS validation bundles")
+        return
+    plan = json.loads(pending.read_bytes())
+    require(plan["revision"] == revision, "checkout changed after building the VS installer")
+    args = argparse.Namespace(archive=plan["archives"], architecture=plan["architecture"],
+                              target_path=Path(plan["target_path"]), validation_directory=directory,
+                              validation_debug=plan["debug"], registered_debug=plan["registered_debug"],
+                              validation_only_debug=plan["validation_only_debug"])
+    families = validation_targets(args.archive, args.registered_debug, args.validation_debug == "y",
+                                  args.validation_only_debug)
+    labels = extra_targets(families)
+    bazel = os.environ.get("BAZEL", "bazel")
+    options = batch.build_options(plan["build_settings"], args.architecture)
+    with TemporaryDirectory(prefix="vs-archive-checks-") as work:
+        events = Path(work) / "build-events.json"
+        subprocess.run([bazel, batch.EXPORT_POLICY, "build", *options,
+                        "--build_event_json_file=" + str(events), *labels], check=True)
+        paths = configured_outputs(bazel, options, labels, events)
+    for entry in families.values():
+        for name, _, layout_label in entry["members"].values():
+            if name in plan["layouts"]:
+                require(sha(paths[layout_label] / "index.json") == plan["layouts"][name],
+                        f"{name}: validation layout differs from VS installer input")
+            elif name in plan["fallbacks"]:
+                require(sha(args.target_path / name) == plan["fallbacks"][name],
+                        f"{name}: fallback archive changed after building the VS installer")
+    # Preserve the explicit Syncd and Orchagent archive downloads that accompany the installer.
+    for name in plan["layouts"]:
+        if family(name) in ("docker-orchagent", "docker-syncd-vs"):
+            build_helpers.export_archive(paths[args.archive[name]], args.target_path / name)
+    write_bundles(args, families, paths, plan["build_settings"], native_archives=plan["layouts"])
+
+
+def write_bundles(args, families, paths, build_settings, *, native_archives=()):
     from tools.bazel.ci import vs_probe_policy
 
     version = build_settings["//tools/bazel/oci:image_version"]
@@ -353,21 +416,14 @@ def write_bundles(args, families, paths, build_settings):
                 settings["apt_lock_sha256"] = sha(paths[entry["apt_lock"]])
                 settings["apt_layers"] = {}
             fixtures = stage_parent(bundle, image, references, account_layers)
-            # Only P4RT has a separate symbols layout between runtime and
-            # final debug. Reuse its own runtime inventory while indexing both.
-            image_prefixes = prefixes.copy() if "symbols_layout" in entry else prefixes
             static_i386 = static_i386_files(image)
             for variant in sorted(entry["members"], key=lambda name: name == "debug"):
                 archive, label, layout_label = entry["members"][variant]
                 layout_path = paths[layout_label]
                 parent = image in PARENTS and variant == "runtime"
-                if variant == "debug" and "symbols_layout" in entry:
-                    symbols, *_ = write_inventory(paths[entry["symbols_layout"]], "symbols", bundle, image_prefixes,
-                                                  account_layers=account_layers, retain=True)
-                    fixtures[symbols.name] = sha(symbols)
                 inventory, manifest, config, common_files = write_inventory(
-                    layout_path, variant, bundle, image_prefixes, account_layers=account_layers,
-                    retain=parent or (variant == "runtime" and "symbols_layout" in entry), static_i386=static_i386)
+                    layout_path, variant, bundle, prefixes, account_layers=account_layers,
+                    retain=parent, static_i386=static_i386)
                 fixtures.update(stage_accounts(bundle, image, variant, common_files, account_layers))
                 if "apt_lock" in entry:
                     payload = source_paths["engine.runtime-apt.tar" if variant == "runtime" else "engine.debug-tools.tar"]
@@ -375,11 +431,11 @@ def write_bundles(args, families, paths, build_settings):
                 if parent:
                     references[image] = {"image": image, "diff_ids": config["rootfs"]["diff_ids"],
                                          "files": common_files}
-                # Use the actual target/ file when Make selected this member.
-                # Auxiliary parents come from the same completed batch build.
-                source = args.target_path / archive if archive in args.archive else paths[label]
+                # Use the installed fallback archive or the explicit CI export of the installed OCI layout.
+                selected_archive = archive in args.archive and archive not in native_archives
+                source = args.target_path / archive if selected_archive else paths[label]
                 digest = stage_archive(source, bundle / archive, paths[label],
-                                       os.environ.get("SONIC_VS_BOOT_HANDOFF") if archive in args.archive else None)
+                                       os.environ.get("SONIC_VS_BOOT_HANDOFF") if selected_archive else None)
                 archive_specs[variant] = {
                     "file": archive, "sha256": digest,
                     "config_digest": manifest["config"]["digest"],
@@ -438,8 +494,14 @@ def matrix(directory, debug_layer):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("matrix",))
-    parser.add_argument("--directory", type=Path, required=True)
-    parser.add_argument("--debug-layer", required=True, choices=("y", "n"))
+    commands = parser.add_subparsers(dest="command", required=True)
+    complete = commands.add_parser("complete")
+    complete.add_argument("--directory", type=Path, required=True)
+    matrix_parser = commands.add_parser("matrix")
+    matrix_parser.add_argument("--directory", type=Path, required=True)
+    matrix_parser.add_argument("--debug-layer", required=True, choices=("y", "n"))
     args = parser.parse_args()
-    print(json.dumps(matrix(args.directory, args.debug_layer), separators=(",", ":")))
+    if args.command == "complete":
+        complete_validation(args.directory)
+    else:
+        print(json.dumps(matrix(args.directory, args.debug_layer), separators=(",", ":")))

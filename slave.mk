@@ -614,7 +614,7 @@ $(call vs_trixie_cache_marker,end)
 # Track Bazel kernel inputs for downstream Make consumers.
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 $(foreach pkg,$(SONIC_RFS_TARGETS) $(IXGBE_DRIVER) $(GENL_PACKET_MODULE), \
-        $(eval $(pkg)_DEP_FILES += $(SONIC_BAZEL_KERNEL_INPUTS) tools/bazel/kernel/prepare.py))
+        $(eval $(pkg)_DEP_FILES += $(SONIC_BAZEL_KERNEL_INPUTS) tools/bazel/kernel/packages.py MODULE.bazel))
 endif
 
 
@@ -1626,11 +1626,14 @@ endif
 vs_rfs_timing = $(filter 1:sonic-vs.bin__vs__rfs.squashfs,$(SONIC_VS_IMAGE_TIMINGS):$*)
 vs_rfs_cache_marker = $(if $(and $(if $(vs_host_base_cache),,y),$(vs_rfs_timing),$(call CHECK_WCACHE_ENABLED,$*)),echo '[ vs timing ] [ rootfs-cache-save ] [ $(1) ]' || :)
 
+export SONIC_VS_RFS_HANDOFF_SESSION
+
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export PASSWORD := $(PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : private export BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD := $(BMC_ROOT_ACCOUNT_DEFAULT_PASSWORD)
 $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
         .platform \
         build_debian.sh \
+        scripts/installer_rootfs_handoff.py \
         $(SONIC_DEBIAN_EXTENSION_DEPENDS) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) $(LINUX_KERNEL) $(if $(filter y,$(INSTALL_DEBUG_TOOLS)),$(LINUX_KERNEL_DBG))) \
         $(SONIC_BAZEL_KERNEL_INPUTS) \
@@ -1690,11 +1693,23 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_RFS_TARGETS)) : $(TARGET_PATH)/% : \
 		$(if $(vs_host_base_cache),,$(call SAVE_CACHE,$*,$@))
 		$(call vs_rfs_cache_marker,end)
 
+		if [[ -n "$${SONIC_VS_RFS_HANDOFF_SESSION:-}" && "$*" == sonic-vs.bin__vs__rfs.squashfs &&
+		      "$(CONFIGURED_ARCH)" == amd64 && "$(CROSS_BUILD_ENVIRON)" != y &&
+		      "$(MULTIARCH_QEMU_ENVIRON)" != y ]]; then
+			(
+				TARGET_MACHINE=vs
+				. ./onie-image.conf
+				sudo python3 scripts/installer_rootfs_handoff.py store \
+					--session "$$SONIC_VS_RFS_HANDOFF_SESSION" --root "$$FILESYSTEM_ROOT" \
+					--archive "$@" $(if $(vs_host_base_cache),--host-base-receipt artifacts/vs/host-base-cache.json)
+			)
+		fi
+
 	fi
 
 	$(FOOTER)
 
-# An existing installer must be rebuilt when switching its image-store format.
+# Rebuild when the VS image store, compression, package batching, or device-data input changes.
 ifeq ($(CONFIGURED_PLATFORM),vs)
 vs_boot_mode_stamp := $(TARGET_PATH)/.installer-docker-load-on-boot
 ifeq ($(DOCKER_LOAD_ON_BOOT),y)
@@ -1705,13 +1720,15 @@ vs_boot_bundle_inputs := files/docker/docker files/docker/load-images.conf files
 ifeq ($(BUILD_WITH_BAZEL_WHEN_AVAILABLE),y)
 vs_boot_bundle_inputs += tools/bazel/image/build_boot_bundle.py tools/bazel/image/boot_bundle.bzl \
                          tools/bazel/image/boot_bundle_action.py tools/bazel/image/BUILD.bazel \
+                         tools/bazel/image/file_copy.py \
                          tools/bazel/build_helpers.py tools/bazel/ci/build.py tools/bazel/ci/cache_reuse.py
 endif
 endif
 .PHONY: check-vs-boot-mode
 $(vs_boot_mode_stamp): check-vs-boot-mode
 	@mkdir -p "$(@D)"
-	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' | cmp -s - "$@" || printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' > "$@"
+	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' '$(vs_device_data_tar)' | cmp -s - "$@" || \
+	    printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' '$(vs_device_data_tar)' > "$@"
 endif
 
 # targets for building installers with base image
@@ -1722,6 +1739,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         onie-image.conf \
         build_debian.sh \
         scripts/validate_sonic_version.py \
+        scripts/installer_step_timing.py \
         $(vs_boot_mode_stamp) \
         $(vs_boot_bundle_inputs) \
         files/build_templates/sonic_version.yml.j2 \
@@ -1739,6 +1757,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         scripts/sbom_parse_lockfiles.py \
         scripts/sbom_extract_vex_from_patches.py \
         build_image.sh \
+        scripts/installer_rootfs_handoff.py \
         $$(if $$(filter sonic-vs.bin sonic-vs.img.gz,$$*),scripts/image_timing.py) \
         $$(if $$(filter sonic-vs.img.gz,$$*),scripts/build_kvm_image.sh) \
         $$(addsuffix -install,$$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_DEPENDS))) \
@@ -1746,10 +1765,10 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_INSTALLS)) \
         $$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$$($$*_LAZY_BUILD_INSTALLS)) \
 		$$(addprefix $(PYTHON_WHEELS_PATH)/,$$($$*_PYTHON_WHEELS)) \
+        $$(installer_device_data_inputs) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(INITRAMFS_TOOLS) \
                 $(LINUX_KERNEL) \
                 $(LINUX_KBUILD) \
-                $(SONIC_DEVICE_DATA) \
                 $(IFUPDOWN2) \
                 $(MAKEDUMPFILE) \
                 $(KDUMP_TOOLS) \
@@ -1773,8 +1792,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
                 $(AUDISP_TACPLUS) \
                 $(SYSLOG_COUNTER) \
                 $(SEDUTIL)) \
-        $$(addprefix $(TARGET_PATH)/,$$($$*_DOCKERS)) \
-        $$(addprefix $(TARGET_PATH)/,$$(SONIC_PACKAGES_LOCAL)) \
+        $$(call vs_installer_inputs,$$($$*_DOCKERS) $$(SONIC_PACKAGES_LOCAL)) \
         $$(addprefix $(FILES_PATH)/,$$($$*_FILES)) \
         $(if $(findstring y,$(ENABLE_ZTP)),$(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(SONIC_ZTP))) \
         $(addprefix $(IMAGE_DISTRO_DEBS_PATH)/,$(SONIC_INSTALLER_EXTRA_DEBS)) \
@@ -1808,6 +1826,9 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	esac
 	export DOCKER_LOAD_ON_BOOT="$(DOCKER_LOAD_ON_BOOT)"
 	export BUILD_WITH_BAZEL_WHEN_AVAILABLE="$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)"
+	export SONIC_BOOT_LAYER_GZIP_LEVEL="$(or $(SONIC_BOOT_LAYER_GZIP_LEVEL),6)"
+	export SONIC_SQUASHFS_ZSTD_LEVEL="$(SONIC_SQUASHFS_ZSTD_LEVEL)"
+	export SONIC_VS_BATCH_PACKAGES="$(or $(SONIC_VS_BATCH_PACKAGES),0)"
 	# The receipt is private; only the completed summary bypasses the target log.
 	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
 	if [[ "$@" = "target/sonic-vs.img.gz" || ( "$@" = "target/sonic-vs.bin" && "$${SONIC_VS_IMAGE_TIMINGS:-}" = 1 ) ]]; then
@@ -1817,6 +1838,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	fi
 	# Pass initramfs and linux kernel explicitly. They are used for all platforms
 	export debs_path="$(IMAGE_DISTRO_DEBS_PATH)"
+	export installer_device_data_tar="$(installer_device_data_tar)"
 	export files_path="$(FILES_PATH)"
 	export python_debs_path="$(PYTHON_DEBS_PATH)"
 	export initramfs_tools="$(IMAGE_DISTRO_DEBS_PATH)/$(INITRAMFS_TOOLS)"

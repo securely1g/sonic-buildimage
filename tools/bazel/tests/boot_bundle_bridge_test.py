@@ -14,12 +14,13 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
-from tools.bazel.build_helpers import export_image
+from tools.bazel.build_helpers import export_image, export_installer_layout
 from tools.bazel.image import build_boot_bundle as bridge
 from tools.bazel.image.build_boot_bundle import BundlePackage, Image, write_archive_package
 from tools.bazel.oci.boot_layout import publish_layout
 from tools.bazel.oci.oci_layout import validate_layout
 from tools.bazel.tests.oci_base_fixture import digest, docker_save, image_fixture, oci_files, write_layout
+from tools.bazel.tests.integration.boot_bundle_cache import action_counts
 
 PLATFORM = "linux/amd64"
 
@@ -32,6 +33,29 @@ class BootBundleBridgeTest(unittest.TestCase):
         self.config, self.layers = image_fixture()
         self.layout = self.work / "native"
         write_layout(self.layout, oci_files(self.config, self.layers))
+
+    def test_cache_counts_ignore_receipt_metadata_and_accept_native_only_bundles(self):
+        evidence = self.work / "evidence.json"
+        receipt = {
+            "archives": {"actions": {"SonicBootArchive": {"executed": 1}}},
+            "bundle": {"actions": {"SonicBootLayer": {"executed": 1, "hits": 2},
+                                   "SonicBootBundle": {"executed": 1}}},
+            "inputs": {"native_images": 1, "gzip_level": 1, "graph_seconds": 0.01},
+            "total_seconds": 2.0,
+        }
+        evidence.write_text(json.dumps(receipt))
+        self.assertEqual(action_counts(evidence), {
+            "SonicBootArchive": {"executed": 1},
+            "SonicBootLayer": {"executed": 1, "hits": 2},
+            "SonicBootBundle": {"executed": 1},
+        })
+        del receipt["archives"]
+        evidence.write_text(json.dumps(receipt))
+        self.assertEqual(action_counts(evidence), receipt["bundle"]["actions"])
+        receipt["bundle"] = {"seconds": 1.0}
+        evidence.write_text(json.dumps(receipt))
+        with self.assertRaises(KeyError):
+            action_counts(evidence)
 
     def test_make_symlink_receipt_and_pruned_sidecar_fallback(self):
         archive = self.work / "cached-export.gz"
@@ -57,6 +81,41 @@ class BootBundleBridgeTest(unittest.TestCase):
         self.assertIsNone(selected.layout)
         self.assertTrue((stage / "inputs" / selected.archive / "archive").samefile(archive))
         self.assertNotIn("receipt =", (stage / "BUILD.bazel").read_text())
+
+    def test_installer_selects_layout_and_fallback_from_same_build(self):
+        archive = self.work / "target/docker-a.gz"
+        fallback = archive.with_name("docker-b.gz")
+        original = self.work / "fallback.tar"
+        docker_save(original, self.config, self.layers)
+        with mock.patch.dict(os.environ, {"SONIC_VS_BOOT_HANDOFF": "build-a"}):
+            export_installer_layout(self.layout, archive)
+            export_image(original, fallback, installer_input=True)
+
+        selected = [Image(archive, ["a:latest"], False), Image(fallback, ["b:latest"], False)]
+        names = {archive.name, fallback.name}
+        stage = self.work / "selected"
+        self.assertTrue(write_archive_package(stage, selected, PLATFORM, "build-a", names))
+        self.assertFalse(archive.exists())
+        self.assertEqual((selected[0].layout / "index.json").read_bytes(), (self.layout / "index.json").read_bytes())
+        self.assertEqual((stage / "BUILD.bazel").read_text().count("boot_archive("), 1)
+        # Adding and removing the staged hardlink changes ctime. The installer
+        # reuses the same fallback when it rebuilds the bundle with extra images.
+        linked = stage / "inputs" / selected[1].archive / "archive"
+        self.assertTrue(linked.samefile(fallback))
+        linked.unlink()
+        self.assertTrue(write_archive_package(self.work / "expanded", selected, PLATFORM, "build-a", names))
+        fallback.write_bytes(b"changed fallback")
+        with self.assertRaisesRegex(ValueError, "fallback archive changed"):
+            write_archive_package(self.work / "tampered", selected, PLATFORM, "build-a", names)
+
+        # A stale archive or previous build's receipt cannot replace the native
+        # image selected for this invocation.
+        archive.write_bytes(b"old archive")
+        with self.assertRaises(FileNotFoundError):
+            write_archive_package(self.work / "stale", [selected[0]], PLATFORM, "build-b", names)
+        (selected[0].layout / "blobs/sha256" / digest(self.layers[0])[7:]).unlink()
+        with self.assertRaisesRegex(ValueError, "Incomplete installer OCI layout"):
+            write_archive_package(self.work / "pruned", [selected[0]], PLATFORM, "build-a", names)
 
     def test_current_producer_layout_skips_staging_only_its_selected_archive(self):
         original = self.work / "producer.gz"
@@ -135,7 +194,7 @@ class BootBundleBridgeTest(unittest.TestCase):
         repo = self.work / "stage"
         with mock.patch.object(os, "link", side_effect=OSError(errno.EXDEV, "cross-device")):
             bridge.link_input(repo, "inputs/archive", alias)
-            with mock.patch.object(shutil, "copyfileobj", side_effect=OSError(errno.ENOSPC, "disk full")):
+            with mock.patch.object(bridge, "copy_file", side_effect=OSError(errno.ENOSPC, "disk full")):
                 with self.assertRaises(OSError) as failure:
                     bridge.link_input(repo, "inputs/receipt", alias)
                 self.assertEqual(failure.exception.errno, errno.ENOSPC)
@@ -144,6 +203,24 @@ class BootBundleBridgeTest(unittest.TestCase):
         self.assertFalse(staged.samefile(source))
         self.assertEqual(staged.read_bytes(), source.read_bytes())
         self.assertEqual(list(staged.parent.iterdir()), [staged])
+
+    def test_fast_profile_only_changes_actions_that_compress_layers(self):
+        info = validate_layout(self.layout, PLATFORM)
+        compressed = [{**desc, "mediaType": desc["mediaType"] + "+gzip",
+                       "digest": digest(b"encoded" + bytes([index]))}
+                      for index, desc in enumerate(info.manifest["layers"])]
+        generated = []
+        for level in (1, 6):
+            package = BundlePackage(self.work / ("bundle-" + str(level)), gzip_level=level)
+            package.select([Image(self.layout, ["raw:v1"], False, layout=self.layout),
+                            Image(self.work / "gzip.tar", ["gzip:v1"], False, archive="gzip", info={
+                                "config": digest(self.config), "layers": compressed,
+                                "diff_ids": info.config["rootfs"]["diff_ids"], "original_tags": []})], PLATFORM)
+            package.finish(PLATFORM, False)
+            generated.append((package.directory / "BUILD.bazel").read_text())
+        self.assertIn("gzip_level = 1,", generated[0])
+        self.assertEqual(generated[0].count("gzip_level = 1,"), len(self.layers))
+        self.assertEqual(generated[0].replace("gzip_level = 1,", "gzip_level = 6,"), generated[1])
 
     def test_archive_target_survives_new_tags_extra_images_and_new_checkout(self):
         def graph(directory, names):
