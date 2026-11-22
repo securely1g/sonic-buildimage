@@ -78,9 +78,13 @@ mksquashfs "$root" "$2" -noappend -processors 1 >/dev/null
             self.assertEqual(cfg, host.options(self.repo, dict(env, SONIC_IMAGE_VERSION="B")))
             with self.assertRaisesRegex(ValueError, "custom local image"):
                 host.options(self.repo, dict(env, sonic_local_packages="custom.gz|target/custom.gz||y"))
-            self.put("files/build_templates/constants.yml.overlay.j2", "site data")
-            with self.assertRaisesRegex(ValueError, "site-specific"):
-                host.options(self.repo, env)
+            for template in ("constants.yml.overlay.j2", "init_cfg_organization.j2"):
+                with self.subTest(template=template):
+                    path = Path("files/build_templates") / template
+                    self.put(path, "site data")
+                    with self.assertRaisesRegex(ValueError, "site-specific"):
+                        host.options(self.repo, env)
+                    (self.repo / path).unlink()
 
     def test_input_closure_and_release_boundary(self):
         before = self.key()
