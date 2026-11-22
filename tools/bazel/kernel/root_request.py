@@ -41,6 +41,10 @@ KERNEL = "0.0.3-96c621843a2bc9dbbe17eb890c8c6e1cea5e834b"
 INFRA = "0.0.41-edab3bd22b7a9a2ae631f06a1a5072b113045fe7"
 BAZEL_SHA256 = "61d89402f0368e64b6c827be5de79d8e65382e8124c3cbb97325611a1851392e"
 PLATFORM = "@sonic_build_infra//platforms:x86_64_trixie"
+VS_REMOTE_CACHE = "grpc://172.16.0.4:9092"
+# resources.py --configure emits these two lines into the VS workspace before
+# the slave starts. They only budget the JVM heap and local action scheduler.
+VS_RESOURCE_RC = re.compile(rb"startup --host_jvm_args=-Xmx2048m\nbuild --local_ram_resources=[1-9][0-9]*\n")
 SLAVE_RC = Path("/etc/bazel.bazelrc")
 BAZELISK = Path("/usr/local/bin/bazel")
 BAZELISK_HOME = Path("/bazel_cache/bazelisk")
@@ -188,13 +192,15 @@ def _execution(workspace, environment, bazel):
         require(_hash(workspace / rc) == digest, "root Bazel configuration needs review: " + rc)
     home = Path(environment.get("HOME", ""))
     require(home.is_absolute(), "root kernel worker home is unknown")
-    # Empty/comment-only optional rc files are harmless. All active options
-    # must be represented in the audited, checked-in Bazel configuration.
-    for file in (home / ".bazelrc", home / ".bazeliskrc", workspace / ".bazelrc.user",
-                 workspace / ".bazeliskrc", workspace / "WORKSPACE", workspace / "WORKSPACE.bazel"):
+    resource_files = {home / ".bazelrc", workspace / ".bazelrc.user"}
+    for file in (*resource_files, home / ".bazeliskrc", workspace / ".bazeliskrc",
+                 workspace / "WORKSPACE", workspace / "WORKSPACE.bazel"):
         if file.is_symlink() or file.exists():
-            require(file.is_file() and not file.is_symlink()
-                    and not any(line.split("#", 1)[0].strip() for line in file.read_text().splitlines()),
+            require(file.is_file() and not file.is_symlink(), "redirected root kernel configuration: " + str(file))
+            data = file.read_bytes()
+            if file in resource_files and VS_RESOURCE_RC.fullmatch(data):
+                continue
+            require(all(not line.strip() or line.lstrip().startswith(b"#") for line in data.splitlines()),
                     "unexpected root kernel configuration: " + str(file))
     require(not SLAVE_RC.is_symlink() and _hash(SLAVE_RC) == RC_FILES["tools/bazel/slave.bazelrc"],
             "system Bazel configuration differs from the checked-in slave RC")
@@ -227,7 +233,7 @@ def request_key(workspace, architecture, kernel_config, *, environment=None, opt
     for option in options[3:]:
         flag, _, value = option.partition("=")
         if flag == "--remote_cache":
-            require(re.fullmatch(r"grpc://[a-z0-9.-]+:[0-9]+", value), "unsupported root kernel cache endpoint")
+            require(value == VS_REMOTE_CACHE, "unsupported root kernel cache endpoint")
             endpoints.add(value)
         elif flag == "--remote_upload_local_results":
             require(value in ("true", "false"), "unsupported Bazel upload policy")

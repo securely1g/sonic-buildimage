@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+from tools.bazel.ci import resources
 from tools.bazel.kernel import root_request as request
 
 
@@ -126,6 +127,30 @@ class RootKernelRequestTest(unittest.TestCase):
         (nested / "extraneous").touch()
         with self.assertRaises(ValueError):
             self.key()
+
+    def test_dedicated_ci_resource_budgets_share_a_key_across_cache_roles(self):
+        original = self.key()
+        home = Path(self.environment["HOME"])
+        rc = self.repo / ".bazelrc.user"
+        for budget, role in ((23989, "false"), (23990, "true")):
+            for path in (rc, home / ".bazelrc"):
+                path.unlink(missing_ok=True)
+            with patch.object(resources, "action_memory_mb", return_value=budget):
+                resources.configure(self.repo, home)
+            self.assertEqual(self.key(options=[*self.options[:-1], "--remote_upload_local_results=" + role]), original)
+        for extra in (b"import %workspace%/extra.rc\n", b"build --action_env=CFLAGS=-g\n",
+                      b"common --remote_cache=grpc://elsewhere:9092\n", b"startup --host_jvm_args=-Xmx4g\n"):
+            with self.subTest(extra=extra):
+                rc.write_bytes((home / ".bazelrc").read_bytes() + extra)
+                with self.assertRaisesRegex(ValueError, "unexpected root kernel configuration"):
+                    self.key()
+        rc.unlink()
+        rc.symlink_to(home / ".bazelrc")
+        with self.assertRaisesRegex(ValueError, "redirected root kernel configuration"):
+            self.key()
+        rc.unlink()
+        with self.assertRaisesRegex(ValueError, "unsupported root kernel cache endpoint"):
+            self.key(options=[*self.options[:-2], "--remote_cache=grpc://elsewhere:9092", self.options[-1]])
 
     def test_unknown_startup_settings_and_action_flags_miss(self):
         for key, value in (("USE_BAZEL_VERSION", "9.0.0"), ("BAZELISK_BASE_URL", "https://other.invalid"),
