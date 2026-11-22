@@ -1,16 +1,18 @@
 """Exercise durable canary handoff and recovery without Docker or root deletion."""
 
+import io
 import json
 import os
 from pathlib import Path
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import yaml
 
@@ -203,6 +205,35 @@ class SupervisorTest(unittest.TestCase):
         self.assertEqual(self.supervisor.state, {"phase": "idle"})
         self.assertTrue((self.state_dir / "test-session.json").exists())
 
+    def test_exhausted_api_retries_retain_enrollment_and_block_cleanup_until_recovery(self):
+        self.enroll(False)
+        github = object.__new__(module.GitHub)
+        github.repository = self.config["repository"]
+        github.token_file = self.root / "token"
+        github.token_file.write_text("private-test-credential")
+        self.supervisor.github = github
+        error = HTTPError("https://api.github.com/test", 500, "private-response-body", {}, None)
+        with patch.object(module.urllib.request, "urlopen", side_effect=error) as open_url, \
+                patch.object(module, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, r"\(HTTP 500\)"):
+                self.supervisor.finish()
+            self.assertEqual(open_url.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+        journal = json.loads(self.supervisor.journal.read_text())
+        self.assertEqual(journal["phase"], "awaiting_result")
+        self.assertEqual(journal["record"]["run_id"], "123")
+        self.command.assert_not_called()
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
+        self.assertTrue(self.checkout.exists())
+        result = {"jobs": [{"runner_id": 456, "name": self.config["job_name"],
+                            "status": "completed", "conclusion": "failure"}]}
+        with patch.object(module.urllib.request, "urlopen",
+                          return_value=io.BytesIO(json.dumps(result).encode())):
+            self.supervisor.recover()
+        self.assertEqual(self.supervisor.state, {"phase": "idle"})
+        self.assertTrue(self.checkout.exists())
+
     def test_failed_cancelled_and_post_step_failure_preserve_checkout(self):
         for conclusion in ("failure", "cancelled", "timed_out"):
             with self.subTest(conclusion=conclusion):
@@ -384,6 +415,65 @@ class GitHubResultTest(unittest.TestCase):
         self.github = object.__new__(module.GitHub)
         self.github.repository = "owner/repository"
         self.record = {"run_id": "123", "run_attempt": "2", "artifact_ids": ["10"]}
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.github.token_file = Path(directory.name) / "token"
+        self.github.token_file.write_text("private-test-credential")
+
+    def test_transient_api_reads_retry_with_bounded_backoff_and_redacted_logs(self):
+        failures = [HTTPError("https://api.github.com/test", code, "private-response-body", {}, None)
+                    for code in (500, 502, 503, 504)]
+        failures.extend((TimeoutError("private-timeout"), URLError(TimeoutError("private-timeout")),
+                         URLError(ConnectionResetError("private-reset")),
+                         URLError(module.socket.gaierror(module.socket.EAI_AGAIN, "private-dns"))))
+        for error in failures:
+            with self.subTest(error=type(error), code=getattr(error, "code", None)):
+                output = io.StringIO()
+                with patch.object(module.urllib.request, "urlopen",
+                                  side_effect=[error, io.BytesIO(b'{"ok": true}')]) as open_url, \
+                        patch.object(module, "sleep") as sleep, \
+                        patch.object(sys, "stdout", output):
+                    self.assertEqual(self.github.api("test"), {"ok": True})
+                self.assertEqual(open_url.call_count, 2)
+                self.assertEqual(sleep.call_args_list, [unittest.mock.call(5)])
+                first, second = open_url.call_args_list
+                self.assertIs(first.args[0], second.args[0])
+                self.assertEqual(first.args[0].get_method(), "GET")
+                self.assertEqual(first.kwargs, {"timeout": 30})
+                self.assertIn("attempt 2/3", output.getvalue())
+                self.assertNotIn("private", output.getvalue())
+
+    def test_api_failures_exhaust_retries_and_do_not_repeat_posts_or_invalid_responses(self):
+        cases = [
+            (HTTPError("https://api.github.com/test", 500, "private-body", {}, None), False, 3),
+            (TimeoutError("private-timeout"), False, 3),
+            (HTTPError("https://api.github.com/test", 500, "private-body", {}, None), True, 1),
+            (TimeoutError("private-timeout"), True, 1),
+            (HTTPError("https://api.github.com/test", 401, "private-body", {}, None), False, 1),
+            (HTTPError("https://api.github.com/test", 403, "private-body", {}, None), False, 1),
+            (HTTPError("https://api.github.com/test", 404, "private-body", {}, None), False, 1),
+            (URLError(ssl.SSLCertVerificationError("private-certificate")), False, 1),
+        ]
+        for error, post, attempts in cases:
+            with self.subTest(error=type(error), post=post, attempts=attempts):
+                with patch.object(module.urllib.request, "urlopen", side_effect=error) as open_url, \
+                        patch.object(module, "sleep") as sleep, \
+                        patch.object(sys, "stdout", io.StringIO()) as output:
+                    with self.assertRaises(RuntimeError) as caught:
+                        self.github.api("test", post=post)
+                self.assertEqual(open_url.call_count, attempts)
+                self.assertEqual(sleep.call_args_list,
+                                 [unittest.mock.call(5), unittest.mock.call(15)][:attempts - 1])
+                self.assertNotIn("private", str(caught.exception))
+                self.assertNotIn("private", output.getvalue())
+        with patch.object(module.urllib.request, "urlopen",
+                          return_value=io.BytesIO(b"private-invalid-json")) as open_url, \
+                patch.object(module, "sleep") as sleep:
+            with self.assertRaises(RuntimeError) as caught:
+                self.github.api("test")
+        open_url.assert_called_once()
+        sleep.assert_not_called()
+        self.assertNotIn("private", str(caught.exception))
 
     def test_job_lookup_binds_attempt_runner_and_exact_job(self):
         self.github.api = Mock(return_value={"jobs": [

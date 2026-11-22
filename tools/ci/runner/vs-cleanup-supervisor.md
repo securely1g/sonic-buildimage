@@ -175,6 +175,13 @@ atomically replaced and fsynced; records include listener exit when observed,
 cleanup start and completion time. Preserve these records and runner `_diag` logs for the pilot.
 Forward logs using the provisioning owner's trusted mechanism.
 
+Read-only GitHub API requests retry HTTP 500/502/503/504, connection failures,
+timeouts and temporary DNS failures up to three attempts, waiting 5 and 15 seconds
+between attempts. Each request retains its 30-second timeout. Registration POSTs,
+authentication errors, certificate errors and invalid JSON are not retried.
+Exhausted retries retain the private journal and do not bypass cleanup/admission
+guards. This does not retry Docker cleanup commands.
+
 Any failure leaves the host out of service. Check `journalctl`, the private
 record and the host state, fix the underlying problem, then restart the service.
 It recovers pending cleanup **before** registration/admission. To recover without

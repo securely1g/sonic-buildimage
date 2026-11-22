@@ -17,7 +17,8 @@ import subprocess
 import sys
 import threading
 import time
-from urllib.error import HTTPError
+from time import sleep
+from urllib.error import HTTPError, URLError
 import urllib.request
 import uuid
 
@@ -90,14 +91,28 @@ class GitHub:
                      "Accept": "application/vnd.github+json",
                      "X-GitHub-Api-Version": "2022-11-28"},
             method="POST" if post else "GET")
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.load(response)
-        except HTTPError as error:
-            raise RuntimeError(f"Host GitHub API request failed (HTTP {error.code})") from None
-        except Exception:
-            # Do not include headers, credentials or HTTP response bodies in logs.
-            raise RuntimeError("Host GitHub API request failed") from None
+        delays = (5, 15)
+        for attempt in range(len(delays) + 1):
+            message = "Host GitHub API request failed"
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return json.load(response)
+            except HTTPError as error:
+                message += f" (HTTP {error.code})"
+                retry = error.code in (500, 502, 503, 504)
+                error.close()
+            except (URLError, TimeoutError, ConnectionError) as error:
+                reason = error.reason if isinstance(error, URLError) else error
+                retry = (isinstance(reason, (TimeoutError, ConnectionError))
+                         or (isinstance(reason, socket.gaierror) and reason.errno == socket.EAI_AGAIN))
+            except Exception:
+                # Do not include headers, credentials or HTTP response bodies in logs.
+                raise RuntimeError(message) from None
+            if post or not retry or attempt == len(delays):
+                raise RuntimeError(message) from None
+            print(f"Transient host GitHub API read failure; retrying attempt "
+                  f"{attempt + 2}/3 in {delays[attempt]}s", flush=True)
+            sleep(delays[attempt])
 
     def registration(self):
         if self.registration_scope == "org":
