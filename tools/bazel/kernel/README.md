@@ -102,3 +102,22 @@ in `root_request.py` and `root_resolution.py` against a fresh kernel-only
 analysis before enabling direct restore for that graph. The latter script takes
 the analysis lockfile as an argument and emits the registry membership and
 fingerprints for review.
+
+### Legacy launcher retries
+
+Recognized transient remote-cache failures in `prepare.py`'s isolated launcher
+are retried with the same pinned launcher, arguments, private consumer and Bazel
+work directory: at most three attempts, with 10-second and 30-second waits.
+The launcher uses the shared
+[cache retry policy](../ci/README.md#transient-remote-cache-retries).
+It does not retry compiler, unsupported-configuration or verification failures,
+disable the cache, fall back to Make, or weaken `linux-sandbox`.
+An exhausted outage remains a build failure.
+
+Failed retryable attempts retain private `cache-attempt-1`/`cache-attempt-2`
+directories in the state directory, with available build logs, profiles and
+launcher invocation plus backoff metadata. The plan and final invocation keep
+the requested cache/upload policy. Package publication still happens only after
+the successful launcher's sandbox, source resolution and DEB checks pass.
+These launcher retries do not change the root-workspace package path or its
+verified remote restore described above.

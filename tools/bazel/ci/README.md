@@ -13,7 +13,9 @@ This covers dependency fetching during `aquery`, not just the later build.
 Only exit code 1 with recognized fetch diagnostics is eligible. Unrelated
 error diagnostics, checksum/certificate failures, unknown versions, missing
 packages and cancellation are not retried. Ordinary commands remain
-single-attempt unless a Bazel caller explicitly opts in. Successful queries
+single-attempt for repository fetch failures unless a Bazel caller explicitly
+opts in. Fetch and remote-cache retries share one three-attempt budget per
+command, including when the failure type changes between attempts. Successful queries
 return only the final attempt's stdout, and private action graphs are truncated
 before each attempt and never printed or logged.
 
@@ -61,6 +63,34 @@ it does not make an unreachable gRPC action cache safe for ordinary build
 actions. Keep both services out of default rc files. On opted-in jobs, a caller
 that intentionally disables or replaces the gRPC cache must also disable or
 replace its remote downloader.
+
+### Transient remote-cache retries
+
+The shared command runner retries recognized transient Bazel remote-cache
+failures up to three total attempts, waiting 10 seconds and then 30 seconds.
+This covers commands used by source/archive collectors, owner container
+builds/tests/queries, pre-build action audits and native boot-bundle assembly.
+The legacy isolated kernel consumer applies the same classifier around its pinned launcher,
+without rerunning outer preparation or creating another scratch workspace.
+
+Only exit 1 or 34 with an identified cache/capabilities error and a recognized
+transport failure is eligible. Connection refusal/reset/closure, EOF, timeouts,
+gRPC UNAVAILABLE and transient HTTP responses qualify. Authentication,
+certificate/checksum failures, unknown or mixed action/compiler errors,
+cancellation and upload-only BEP warnings do not. Diagnostics larger than
+2 MiB are rejected rather than classified from a possibly incomplete tail.
+
+Every retry keeps the exact argv, working directory and Bazel state. There is
+no Bazel/cache cleanup, cache bypass, new local fallback or execution-strategy change;
+existing cache, sandbox, download and upload policy remains in force.
+Exhaustion still fails the job with the final command status. Callers invoking
+Bazel directly outside these helpers do not automatically gain retries.
+
+Retried shared commands retain failed `*.attempt-N.log` files and an `attempts`
+array in their ordinary command receipt. The final log and return value belong
+only to the last attempt, and elapsed time includes backoff. Private action
+graphs remain private and are truncated before each query attempt. Action
+audits still inspect the successful graph and enforce the same packaging gate.
 
 The [Bazel OCI workflow](../../../.github/workflows/bazel-oci.yml) publishes
 the AMD64 VS build once. The container validation jobs consume its artifacts on

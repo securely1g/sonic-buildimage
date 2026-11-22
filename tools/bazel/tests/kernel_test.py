@@ -83,7 +83,8 @@ class KernelBundleTest(unittest.TestCase):
             'bazel_dep(name = "sonic-linux-kernel", version = "0.0.1-' + self.gitlink + '", repo_name = "sonic_linux_kernel")'))
         ci = self.root / "tools/bazel/ci"
         ci.mkdir(parents=True)
-        for name in ("resolution.py", "time_vs_image.py", "resources.py", "public_artifacts.py"):
+        for name in ("command_log.py", "resolution.py", "time_vs_image.py", "resources.py",
+                     "public_artifacts.py"):
             shutil.copyfile(ROOT / "tools/bazel/ci" / name, ci / name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", ".gitmodules", "Makefile.work", "rules", "tools"], check=True)
@@ -546,6 +547,91 @@ class KernelBundleTest(unittest.TestCase):
         self.assertEqual(json.loads((directory / "build.bep.json").read_text())["buildMetrics"],
                          {"actionSummary": {"actionsExecuted": 1}})
         self.assertFalse((directory / "stage-debs.timing.json").exists())
+
+    def test_cache_retries_reuse_launcher_state_and_publish_only_after_verified_success(self):
+        remote = "grpc://cache.example:9092"
+        outage = ("ERROR: Executing genrule failed: Failed to query remote execution capabilities: "
+                  "Connection refused: /172.16.0.4:9092\n"
+                  "ERROR: Build did NOT complete successfully\n")
+        for failures in (1, 3):
+            calls = []
+            metadata = {}
+            state = self.root / f"retry-state-{failures}"
+            before = {path.relative_to(self.bundle): (path.read_bytes(), path.stat().st_mtime_ns)
+                      for path in self.bundle.rglob("*") if path.is_file()}
+
+            def execute(command, workspace):
+                calls.append(command)
+                self.assertEqual(workspace, self.root)
+                self.assertEqual(command[command.index("--remote-cache") + 1], remote)
+                self.assertNotIn("--remote-cache-read-only", command)
+                for name, identity in before.items():
+                    path = self.bundle / name
+                    self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), identity)
+                workdir = Path(command[command.index("--work-dir") + 1])
+                workdir.mkdir(parents=True, exist_ok=True)
+                if len(calls) <= failures:
+                    (workdir / "build.log").write_text(outage)
+                    (workdir / "profile.json.gz").write_bytes(b"failed profile")
+                    raise subprocess.CalledProcessError(34, command)
+                self.declared_outputs(workdir)
+                consumer = Path(command[command.index("--workspace") + 1])
+                metadata.update(self.resolution_files(workdir, consumer))
+                (workdir / "build.log").write_text("verified kernel build\n")
+                (workdir / "invocation.json").write_text(json.dumps({
+                    "schema": 3, "target": kernel.TARGET, "uid": 1000,
+                    "host_machine": {"amd64": "x86_64", "arm64": "aarch64"}[self.architecture],
+                    "host_architecture": self.architecture,
+                    "kernel_config": self.state["kernel_config"], **self.state["launcher"],
+                    "remote_cache": remote, "remote_cache_read_only": False, "disk_cache": None}))
+
+            with self.subTest(failures=failures), \
+                    patch.object(kernel.command_log, "sleep") as sleep, redirect_stderr(io.StringIO()):
+                if failures == 3:
+                    with self.assertRaises(subprocess.CalledProcessError) as failure:
+                        kernel.build(self.root, state, remote, True, execute=execute)
+                    self.assertEqual(failure.exception.returncode, 34)
+                    self.assertFalse((state / "kernel-receipt.json").exists())
+                else:
+                    receipt = kernel.build(self.root, state, remote, True,
+                                           execute=execute, fetch=lambda url: metadata[url])
+                    self.assertEqual(receipt["result"]["manifest"], self.manifest)
+                    self.assertEqual(receipt["plan"]["remote_cache"], remote)
+                    self.assertEqual(kernel.verify(self.bundle, self.root)["manifest"], self.manifest)
+            self.assertEqual(len(calls), min(failures + 1, 3))
+            self.assertTrue(all(command == calls[0] for command in calls))
+            self.assertEqual(sleep.call_args_list,
+                             [unittest.mock.call(10)] + ([unittest.mock.call(30)] if failures == 3 else []))
+            for attempt in range(1, min(failures, 2) + 1):
+                retained = state / f"cache-attempt-{attempt}"
+                self.assertEqual(retained.stat().st_mode & 0o777, 0o700)
+                self.assertEqual((retained / "build.log").read_text(), outage)
+                self.assertEqual((retained / "profile.json.gz").read_bytes(), b"failed profile")
+
+    def test_kernel_retry_does_not_reclassify_stale_log_after_bootstrap_failure(self):
+        calls = []
+        state = self.root / "stale-retry-state"
+
+        def execute(command, workspace):
+            calls.append(command)
+            subprocess.run([sys.executable, "-c", "import time; time.sleep(0.05)"],
+                           timeout=5, check=True)
+            workdir = Path(command[command.index("--work-dir") + 1])
+            workdir.mkdir(parents=True, exist_ok=True)
+            if len(calls) == 1:
+                (workdir / "build.log").write_text(
+                    "ERROR: Failed to query remote execution capabilities: Connection refused\n")
+                raise subprocess.CalledProcessError(34, command)
+            raise subprocess.CalledProcessError(1, command)
+
+        with patch.object(kernel.command_log, "sleep") as sleep, \
+                redirect_stderr(io.StringIO()), self.assertRaises(subprocess.CalledProcessError) as failure:
+            kernel.build(self.root, state, "grpc://cache:9092", False, execute=execute)
+        self.assertEqual(failure.exception.returncode, 1)
+        self.assertEqual(len(calls), 2)
+        sleep.assert_called_once_with(10)
+        self.assertFalse((state / "kernel-receipt.json").exists())
+        self.assertEqual(kernel.verify(self.bundle, self.root)["manifest"], self.manifest)
 
     def test_managed_kernel_cache_reaches_only_the_isolated_consumer(self):
         cache_rc = self.root / "worker-cache.bazelrc"
@@ -1322,6 +1408,15 @@ class KernelWorkflowTest(unittest.TestCase):
         self.assertIn("--from-vs-handoff", self.steps["Verify the downloaded package set before exercising Make reuse"])
         self.assertLess(self.workflow.index("name: Verify the downloaded package set"), self.workflow.index("name: Reject an unsupported kernel configuration"))
 
+    def test_standalone_make_reuses_the_package_build_cache_but_vs_checks_only_the_handoff(self):
+        """A Make consumer must retain the standalone producer's remote CAS to reuse lazy kernel outputs."""
+        step = self.steps["Verify registry package publication and repeated Make consumption"]
+        standalone = "inputs.vs_artifact_id == ''"
+        self.assertIn("SONIC_BAZEL_KERNEL_REMOTE_CACHE: ${{ " + standalone + " && env.KERNEL_REMOTE_CACHE || '' }}", step)
+        self.assertIn("SONIC_BAZEL_KERNEL_REMOTE_UPLOAD: ${{ " + standalone
+                      + " && env.UPLOAD_KERNEL_CACHE == 'true' && 'y' || 'n' }}", step)
+        self.assertIn("SONIC_BAZEL_KERNEL_VS_HANDOFF_SHA256: ${{ steps.vs_handoff.outputs.receipt_sha256 }}", step)
+
     def test_shared_cache_defaults_and_optional_cold_proof(self):
         self.assertIn("runs-on: [self-hosted, linux,", self.workflow)
         self.assertIn("matrix.arch == 'amd64' && 'bazel-x64' || 'bazel-arm64'", self.workflow)
@@ -1338,6 +1433,24 @@ class KernelWorkflowTest(unittest.TestCase):
         self.assertIn("if: always() && steps.kernel_state.outcome == 'success' && " + cold,
                       self.steps["Stop the disposable verification cache"])
         self.assertNotIn("sudo rm", self.workflow)
+
+    def test_shared_cache_fallback_applies_to_make_and_bazel_outside_the_cold_cache_proof(self):
+        """A cache outage can run the ordinary kernel actions locally while the cold proof requires a hit."""
+        step = self.steps["Allow local kernel actions when the shared cache is unavailable"]
+        self.assertIn("if: inputs.vs_artifact_id == '' && !(github.event_name == 'workflow_dispatch' && inputs.verify_cold_cache)", step)
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = Path(tmp) / ".bazelrc.user"
+            rc.write_text("build --jobs=2")
+            subprocess.run(["bash", "-eu", "-c", script], cwd=tmp, check=True)
+            self.assertEqual(rc.read_text().splitlines(), [
+                "build --jobs=2", "build --remote_local_fallback",
+                "build --incompatible_remote_local_fallback_for_remote_cache",
+            ])
+        self.assertIn("try-import %workspace%/.bazelrc.user", (ROOT / "tools/bazel/common.bazelrc").read_text())
+        proof = self.steps["Verify a fresh output base reuses the registered kernel action"]
+        self.assertIn("actions[0].get('cacheHit') is True", proof)
+        self.assertIn("actions[0].get('runner') == 'remote cache hit'", proof)
 
     def test_fixed_state_is_cleaned_before_build_and_after_artifact_upload(self):
         before = self.steps["Remove stale fixed kernel state"]
@@ -1789,16 +1902,19 @@ class KernelWorkflowTest(unittest.TestCase):
                         "sys.exit(int(os.environ['BUILD_EXIT']))\n")
                     executable.chmod(0o755)
                     python = root / "python3"
-                    python.write_text("#!/bin/sh\nexit 0\n")
+                    python.write_text('#!/bin/sh\nif [ "$3" = bazel-config ]; then echo "{}"; fi\n')
                     python.chmod(0o755)
                     calls = root / "calls.json"
                     result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script],
                         cwd=root, capture_output=True, text=True,
                         env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
                                  KERNEL_REMOTE_CACHE="grpc://cache:9092", UPLOAD_KERNEL_CACHE=upload,
-                                 KERNEL_RUN_TEMP=str(root), CALLS=str(calls), BUILD_EXIT=str(exit_code)))
+                                 KERNEL_RUN_TEMP=str(root), GITHUB_OUTPUT=str(root / "step-output"),
+                                 CALLS=str(calls), BUILD_EXIT=str(exit_code)))
                     self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
                     argv = json.loads(calls.read_text())
+                    self.assertIn("--@sonic_linux_kernel//tools/bazel:kernel_config={}", argv)
+                    self.assertEqual((root / "step-output").read_text(), "kernel_config={}\n")
                     self.assertIn("--remote_cache=grpc://cache:9092", argv)
                     self.assertIn("--remote_upload_local_results=" + upload, argv)
                     self.assertIn("--platforms=@sonic_build_infra//platforms:aarch64_trixie", argv)

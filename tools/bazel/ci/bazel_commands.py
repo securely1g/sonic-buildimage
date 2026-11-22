@@ -54,11 +54,12 @@ def inspect_actions(path):
 def audit_targets(bazel, options, targets, *, workspace, output, startup_options=()):
     """Reject package-producing actions before executing the selected targets."""
     import tempfile
+
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     # Action graphs may contain command environments; retain only this summary.
+    receipt = {"commands": []}
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as graph:
-        receipt = {"commands": []}
         try:
             command_log.execute(
                 [bazel, *startup_options, "aquery", *options, "--output=jsonproto",
@@ -66,7 +67,10 @@ def audit_targets(bazel, options, targets, *, workspace, output, startup_options
                 output.parent, receipt, output.stem + ".query", cwd=workspace,
                 output_path=Path(graph.name), retry_fetch=True)
         finally:
-            output.with_suffix(".query.json").write_text(json.dumps(receipt, indent=2) + "\n")
+            for entry in receipt["commands"]:
+                entry.pop("argv", None)
+            output.with_suffix(".query.json").write_text(
+                json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         report = inspect_actions(Path(graph.name))
     report["targets"] = list(targets)
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
