@@ -2,6 +2,7 @@
 
 import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -88,6 +89,47 @@ class RootPackagesTest(unittest.TestCase):
             args.append('--upload-local-results')
         with patch.object(sys, 'argv', args):
             packages.main()
+
+    def test_registry_audit_standalone_and_make_share_the_same_configured_target(self):
+        """Both native graphs must address the same five DEBs on the first Make call."""
+        for architecture in ('amd64', 'arm64'):
+            args = ['packages.py', 'build', '--workspace', str(self.workspace), '--debs-directory',
+                    str(self.directory), '--architecture', architecture]
+            explicit = prepare.effective_config(self.workspace, architecture)
+            explicit.update(CROSS_BUILD_ENVIRON='', MULTIARCH_QEMU_ENVIRON='', SECURE_UPGRADE_MODE='"no_sign"')
+            make_flags = [arg for key, value in explicit.items() for arg in ('--kernel-config', f'{key}={value}')]
+            machine = {'amd64': 'x86_64', 'arm64': 'aarch64'}[architecture]
+            with self.subTest(architecture=architecture), patch.object(packages.os, 'uname', return_value=Mock(machine=machine)), \
+                    patch.object(packages, 'build_packages') as build:
+                for extra in ([], make_flags):
+                    with patch.object(sys, 'argv', [*args, *extra]):
+                        packages.main()
+                initial, repeated = [call.args for call in build.call_args_list]
+                self.assertEqual(initial[3], repeated[3])
+                self.assertEqual(initial[5], repeated[5])
+                output = io.StringIO()
+                with patch.object(sys, 'argv', [args[0], 'bazel-config', *args[2:]]), contextlib.redirect_stdout(output):
+                    packages.main()
+                self.assertIn('--@sonic_linux_kernel//tools/bazel:kernel_config=' + output.getvalue().strip(),
+                              initial[5])
+                for key, value in (('KERNEL_FEATURESET', 'another'), ('SECURE_UPGRADE_MODE', 'unsupported'),
+                                   ('SECURE_UPGRADE_KERNEL_CAFILE', '/key.pem'), ('EXTERNAL_KERNEL_PATCH_URL', 'alternate'),
+                                   ('EXTERNAL_KERNEL_PATCH_LOC', '/patches')):
+                    with patch.object(sys, 'argv', [*args, '--kernel-config', key + '=' + value]):
+                        packages.main()
+                    # The producer sees the requested non-default value and can reject unsupported settings.
+                    self.assertEqual(build.call_args.args[3][key], value)
+                    self.assertNotEqual(initial[5], build.call_args.args[5])
+
+    def test_cross_build_keeps_the_owner_default_and_explicit_request(self):
+        """AMD64 targeting ARM64 selects cross build unless Make explicitly requests otherwise."""
+        args = ['packages.py', 'bazel-config', '--workspace', str(self.workspace), '--architecture', 'arm64']
+        with patch.object(packages.os, 'uname', return_value=Mock(machine='x86_64')):
+            for extra, expected in (([], 'y'), (['--kernel-config', 'CROSS_BUILD_ENVIRON='], 'n')):
+                output = io.StringIO()
+                with patch.object(sys, 'argv', [*args, *extra]), contextlib.redirect_stdout(output):
+                    packages.main()
+                self.assertEqual(json.loads(output.getvalue())['CROSS_BUILD_ENVIRON'], expected)
 
     def test_fresh_job_restores_original_five_debs_and_receipt_without_invoking_bazel(self):
         self.build()
