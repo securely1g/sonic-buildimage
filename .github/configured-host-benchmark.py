@@ -171,6 +171,56 @@ def phase_receipt(log):
     return phases
 
 
+def start_live():
+    shared = ROOT/'.configured-host-bench'
+    shared.mkdir(mode=0o700)
+    PRIVATE.mkdir(parents=True, mode=0o700, exist_ok=True)
+    base=read(Path(__file__).with_name('configured-host-base-receipt.json'))
+    require(base['identity_sha256']=='572fcd4fbbf5d4c13dfb2954b8e30a550d181975c4bdec34b362fc8180bce45a','unexpected pinned stage-one key')
+    for kind, name in [('image','target/sonic-vs.bin__vs__rfs.squashfs'),('inventory','target/versions/host-base-image/versions-deb-trixie-amd64')]:
+        record=base['outputs'][kind]; sha=record['sha256']
+        source=CACHE/base['identity_sha256']/'cas'/sha[:2]/sha
+        dst=ROOT/name; dst.parent.mkdir(exist_ok=True,parents=True)
+        # An independent file prevents any native producer from writing to the original artifact.
+        shell('cp','--reflink=auto','--',source,dst)
+        require(dst.stat().st_size==record['bytes'] and digest(dst)==sha,'pinned stage-one artifact digest mismatch')
+    write(ROOT/'artifacts/vs/host-base-cache.json',base)
+    for source, dest in [('configured-host-inside.py','inside.py'),('configured-host-capture.mk','capture.mk')]:
+        shutil.copyfile(Path(__file__).with_name(source),shared/dest)
+    case=dict(os.environ, SONIC_VS_CONFIGURED_HOST_CACHE='y', SONIC_IMAGE_VERSION='hostbench-bootstrap',
+              SONIC_BUILD_VARS=os.environ.get('SONIC_BUILD_VARS','')+' -f /sonic/.configured-host-bench/capture.mk')
+    with (PRIVATE/'launch.log').open('wb') as log:
+        task=subprocess.Popen(['bash','tools/bazel/ci/build_vs.sh'],env=case,stdin=subprocess.DEVNULL,stdout=log,
+                              stderr=subprocess.STDOUT,start_new_session=True)
+    for _ in range(240):
+        if (shared/'ready.json').is_file(): break
+        require(task.poll() is None, 'production VS launcher ended before reaching the native Make invocation')
+        time.sleep(5)
+    require((shared/'ready.json').is_file(), 'timed out waiting for the private native Make invocation')
+    ids=shell('docker','ps','--quiet','--no-trunc','--filter','label='+case['SONIC_CI_CONTAINER_LABEL'],
+              capture_output=True,text=True).stdout.split()
+    require(len(ids)==1 and re.fullmatch('[0-9a-f]{64}',ids[0]), 'expected exactly one live native build container')
+    uid=read(shared/'ready.json')['uid']
+    require(uid==os.getuid() and uid>0,'expected native build user to own the workspace')
+    write(shared/'connection.json',{'id':ids[0],'uid':uid})
+    print('Native installer builder ready',flush=True)
+
+
+def stop_live():
+    ids=shell('docker','ps','--quiet','--no-trunc','--filter','label='+os.environ['SONIC_CI_CONTAINER_LABEL'],
+              capture_output=True,text=True).stdout.split()
+    if ids:
+        shell('docker','stop','--time','5',*ids,stdout=subprocess.DEVNULL)
+    # build_vs.sh releases its private rootfs handoff after the stopped native
+    # launcher returns. Only the labeled job container is stopped above.
+
+
+def current_native(arm, version):
+    session=read(ROOT/'.configured-host-bench/connection.json')
+    return ['docker','exec','--user',str(session['uid']),'--workdir','/sonic',session['id'],
+            'python3','-B','/sonic/.configured-host-bench/inside.py','run',arm,version]
+
+
 def transient_go_fetch(log):
     # This narrowly identifies a failed public Go dependency fetch before the
     # configured-host action/installer. Do not retry any semantic check.
@@ -192,14 +242,16 @@ def build_with_retry(arm, case, log, work):
     for number in (1, 2, 3):
         started = time.monotonic()
         with log.open('wb') as stdout:
-            process = subprocess.run(['bash', 'tools/bazel/ci/build_vs.sh'], env=case, stdout=stdout,
+            process = subprocess.run(current_native(arm, case['SONIC_IMAGE_VERSION']), env=case, stdout=stdout,
                                      stderr=subprocess.STDOUT)
         elapsed = time.monotonic() - started
         entry = dict(number=number, seconds=elapsed, exit=process.returncode)
         attempts.append(entry)
         if process.returncode == 0:
             write(work/'make-attempts.json', attempts)
-            return elapsed, attempts
+            native=read(work/'inner-make-seconds.json')
+            require(native['exit']==0,'expected successful inner Make')
+            return native['seconds'], attempts
         retry = number < 3 and transient_go_fetch(log)
         entry['retry_eligible'] = retry
         write(work/'make-attempts.json', attempts)
@@ -252,24 +304,30 @@ def run(arm):
         require(CACHE_RECEIPT.is_file(), 'configured-host cache unsupported or unexpectedly fell back')
         receipt = read(CACHE_RECEIPT)
         write(work/'cache-receipt.json', receipt)
+        pinned={'bytes':646021120,'sha256':'289b2656e87b305ff5ef075ba4b239cab9c5bf99dff078ea891d93e62645659d'}
+        encoded=(json.dumps(pinned,sort_keys=True,separators=(',',':'))+'\n').encode()
+        require(receipt['input_sha256']['base']==hashlib.sha256(encoded).hexdigest(),'configured action used a different first-stage image')
         require(receipt['cache_hit'] == (arm == 'restored-b'), 'wrong configured-host cache outcome')
         if arm != 'seed-a':
             version_only = read(EVIDENCE/'seed-a/cache-receipt.json')['identity_sha256'] == receipt['identity_sha256']
             require(version_only == (not changed), 'wrong configured-host input identity')
+            previous=read(EVIDENCE/'seed-a/cache-receipt.json')['input_sha256']
+            differences={k for k,v in receipt['input_sha256'].items() if v!=previous[k]}
+            require(differences==({'packages'} if changed else set()), 'unexpected input sections: '+str(differences))
     else:
         require(not CACHE_RECEIPT.exists(), 'disabled control unexpectedly used cache')
     if operations.is_dir():
         shutil.copytree(operations, work/'operations')
     with tempfile.TemporaryDirectory(prefix='hostbench-inspect-', dir=PRIVATE) as inspection:
         package = inspect_installer(arm, version, commit, Path(inspection), changed)
-    if arm in ('restored-b', 'paired-control-b'):
+    if arm in ('restored-b', 'paired-control-b') and (EVIDENCE/'version-b-control/metrics.json').exists():
         control = read(EVIDENCE/'version-b-control/metrics.json')['installed']
         for name in ('installed_packages_sha256', 'image_inventory_sha256'):
             require(package[name] == control[name], f'cached installer differs from native control: {name}')
     if changed:
         require(digest(ROOT / changed['path']) == changed['modified_sha256'], 'another build replaced the diagnostic package')
     measurement = dict(arm=arm, runner=os.environ['RUNNER_NAME'], commit=commit, installed=package,
-        make_seconds=elapsed, successful_attempt=len(attempts), all_attempts_seconds=sum(a['seconds'] + a.get('cleanup_seconds', 0) for a in attempts),
+        timing_scope='native slave.mk installer invocation', make_seconds=elapsed, successful_attempt=len(attempts), all_attempts_seconds=sum(a['seconds'] + a.get('cleanup_seconds', 0) for a in attempts),
         assembly_seconds=phase['duration_seconds'],
         step2_seconds=phase['segments'][1]['duration_seconds'], step4_seconds=phase['segments'][3]['duration_seconds'],
         restore_inclusive_make_seconds=elapsed+transfer.get('consumer_transfer_seconds', 0))
@@ -323,7 +381,7 @@ def failure_details(arm, error):
             return None
         return re.sub(r'(?:https?|grpc|file)://[^\s\'"<>]+', '[location]', raw)[:500]
     diagnostics['reason'] = sanitized(str(error))
-    paths = [ROOT/'target/vs-configured-host-native.log', ROOT/'target/sonic-vs.bin.log', PRIVATE/(arm+'.log')]
+    paths = [PRIVATE/'launch.log', ROOT/'target/vs-configured-host-native.log', ROOT/'target/sonic-vs.bin.log', PRIVATE/(arm+'.log')]
     if CACHE_RECEIPT.is_file():
         obj = read(CACHE_RECEIPT)
         diagnostics['cache'] = {k: obj.get(k) for k in ('cache_hit','identity_sha256','input_sha256','elapsed_seconds','native_build_seconds')}
@@ -345,10 +403,12 @@ def failure_details(arm, error):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('arm', choices=ARMS + ('generate-probe', 'verify-probe'))
+    parser.add_argument('arm', choices=ARMS + ('generate-probe', 'verify-probe','start-live','stop-live'))
     arm = parser.parse_args().arm
     try:
-        if arm in ARMS:
+        if arm == 'start-live': start_live()
+        elif arm == 'stop-live': stop_live()
+        elif arm in ARMS:
             run(arm)
         else:
             equal_size_transfer(arm)

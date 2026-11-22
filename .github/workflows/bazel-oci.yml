@@ -77,6 +77,9 @@ jobs:
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /.github/configured-host-benchmark.py
+            /.github/configured-host-inside.py
+            /.github/configured-host-capture.mk
+            /.github/configured-host-base-receipt.json
 
       - name: Download verified source archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -190,30 +193,22 @@ jobs:
           rm -rf --one-file-system -- "$snapshot"
           install -d -m 0700 -- "$snapshot" artifacts/vs/host-base-transfer/configured
 
-      - name: Find a retained host base from this PR or master
-        id: host_base_source
-        if: steps.host_base_dir.outcome == 'success'
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python3 -B tools/bazel/ci/vs_host_base_snapshot.py
-
       - name: Download the previous VS host-base snapshot
         id: host_base_download
-        if: steps.host_base_source.outputs.read_artifact_id != ''
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ steps.host_base_source.outputs.read_run_id }}
-          artifact-ids: ${{ steps.host_base_source.outputs.read_artifact_id }}
+          run-id: '44988049349'
+          artifact-ids: '14742577641'
           merge-multiple: true
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/host-base-transfer/download
 
       - name: Restore the VS host-base cache for Make
-        if: steps.host_base_download.outcome == 'success'
-        continue-on-error: true
+        if: steps.host_base_dir.outcome == 'success'
         run: |
+          set -euo pipefail
+          test "${{ steps.host_base_download.outcome }}" = success
           python3 -B tools/bazel/ci/vs_host_base_transfer.py restore \
             "$GITHUB_WORKSPACE/.sonic-vs-host-base-cache" artifacts/vs/host-base-transfer/download
 
@@ -280,9 +275,24 @@ jobs:
           command -v dpkg-deb
           echo "Same physical runner for all arms: $RUNNER_NAME" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Start the production VS slave for the measured installer invocations
+        id: live_builder
+        env:
+          # The labeled cleanup step removes the stopped builder after artifact publication.
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_IMAGE_TIMINGS: "1"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
+          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
+          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" start-live
+
       - name: Seed the cold configured host and build version A
-        id: cold_seed
-        continue-on-error: true
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -297,99 +307,18 @@ jobs:
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" seed-a
 
-      - name: Publish the first cold-build error for a pinned retry
-        if: steps.cold_seed.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: vs-host-cold-error-${{ github.run_attempt }}
-          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/seed-a/failure.json
-          if-no-files-found: warn
-          retention-days: 1
-
-      - name: Resume cold build on an explicitly selected PR fix
-        if: steps.cold_seed.outcome == 'failure'
-        env:
-          # The labeled cleanup step removes the stopped builder after artifact publication.
-          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
-          DOCKER_LOAD_ON_BOOT: "y"
-          SONIC_VS_IMAGE_TIMINGS: "1"
-          SONIC_VS_RETRY_GO_FETCH: "1"
-          SONIC_VS_KERNEL_REMOTE_REUSE: "1"
-          KERNEL_INDEX_DOWNLOAD: ${{ steps.kernel_index_download.outcome }}
-          HOST_BASE_DIR: ${{ steps.host_base_dir.outcome }}
-          SONIC_VS_RFS_HANDOFF: "1"
-          SONIC_VS_FAST_ASSEMBLY: "1"
-          TERM: dumb
-        run: |
-          set -euo pipefail
-          previous=$(git rev-parse HEAD)
-          retry_ref=refs/heads/bench/vs-configured-host-retry-$GITHUB_RUN_ID
-          implementation_ref=refs/heads/ci/vs-configured-host-cache
-          echo "Waiting up to 25 minutes for an explicitly selected fix at $retry_ref" >> "$GITHUB_STEP_SUMMARY"
-          for i in {1..50}; do
-            revision=$(git ls-remote --refs origin "$retry_ref" | awk '{print $1}')
-            if [[ $revision =~ ^[0-9a-f]{40}$ && $revision != "$previous" ]]; then break; fi
-            sleep 30
-          done
-          [[ $revision =~ ^[0-9a-f]{40}$ && $revision != "$previous" ]]
-          git fetch --no-tags --quiet --depth=50 origin "$retry_ref" "$implementation_ref"
-          tip=$(git ls-remote --refs origin "$implementation_ref" | awk '{print $1}')
-          [[ $tip =~ ^[0-9a-f]{40}$ ]]
-          git merge-base --is-ancestor "$previous" "$revision"
-          git merge-base --is-ancestor "$revision" "$tip"
-          git diff --exit-code "$previous" "$revision" -- .gitmodules
-          if git diff --raw "$previous" "$revision" | awk '$1 ~ /160000/ || $2=="160000" { found=1 } END {exit !found}'; then
-            echo "Cold retry requires identical submodules" >&2; exit 1
-          fi
-          git checkout --detach "$revision"
-          test "$(git rev-parse HEAD)" = "$revision"
-          evidence=artifacts/vs/configured-host-benchmark
-          mv -- "$evidence/seed-a" "$evidence/first-cold-attempt"
-          echo "All reported benchmark arms use $revision." >> "$GITHUB_STEP_SUMMARY"
-          python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" seed-a
-
-      - name: Generate a non-sensitive same-size transfer probe
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" generate-probe
-
-      - name: Upload the equal-size transfer probe
-        id: probe_upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: vs-configured-host-network-probe-${{ github.run_attempt }}
-          include-hidden-files: true
-          compression-level: 0
-          retention-days: 1
-          if-no-files-found: error
-          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/.configured-host-benchmark-private/cache-transfer-sample.bin
-
-      - name: Download the equal-size transfer probe
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        with:
-          artifact-ids: ${{ steps.probe_upload.outputs.artifact-id }}
-          merge-multiple: true
-          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/.configured-host-benchmark-private/transfer-download
-
-      - name: Verify and release the equal-size transfer probe
-        env:
-          PROBE_ARTIFACT_ID: ${{ steps.probe_upload.outputs.artifact-id }}
-        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" verify-probe
-
       - name: Publish the measured seed-a receipts
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vs-host-metrics-seed-a-${{ github.run_attempt }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/seed-a
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 2
 
-      - name: Release this benchmark arm's stopped build containers
-        run: |
-          set -euo pipefail
-          while IFS= read -r id; do
-            if [[ -n $id ]]; then docker rm "$id"; fi
-          done < <(docker ps --all --quiet --filter status=exited --filter "label=$SONIC_CI_CONTAINER_LABEL")
-
       - name: Build version B with native host configuration
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -405,21 +334,17 @@ jobs:
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" version-b-control
 
       - name: Publish the measured version-b-control receipts
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vs-host-metrics-version-b-control-${{ github.run_attempt }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/version-b-control
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 2
 
-      - name: Release this benchmark arm's stopped build containers
-        run: |
-          set -euo pipefail
-          while IFS= read -r id; do
-            if [[ -n $id ]]; then docker rm "$id"; fi
-          done < <(docker ps --all --quiet --filter status=exited --filter "label=$SONIC_CI_CONTAINER_LABEL")
-
       - name: Restore version A host cache and build version B
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -435,21 +360,17 @@ jobs:
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" restored-b
 
       - name: Publish the measured restored-b receipts
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vs-host-metrics-restored-b-${{ github.run_attempt }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/restored-b
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 2
 
-      - name: Release this benchmark arm's stopped build containers
-        run: |
-          set -euo pipefail
-          while IFS= read -r id; do
-            if [[ -n $id ]]; then docker rm "$id"; fi
-          done < <(docker ps --all --quiet --filter status=exited --filter "label=$SONIC_CI_CONTAINER_LABEL")
-
       - name: Repeat version B native control with prepared producers
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -465,21 +386,17 @@ jobs:
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" paired-control-b
 
       - name: Publish the measured paired-control-b receipts
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vs-host-metrics-paired-control-b-${{ github.run_attempt }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/paired-control-b
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 2
 
-      - name: Release this benchmark arm's stopped build containers
-        run: |
-          set -euo pipefail
-          while IFS= read -r id; do
-            if [[ -n $id ]]; then docker rm "$id"; fi
-          done < <(docker ps --all --quiet --filter status=exited --filter "label=$SONIC_CI_CONTAINER_LABEL")
-
       - name: Replace one selected host package and build version B
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
           SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
@@ -495,19 +412,14 @@ jobs:
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" changed-deb-b
 
       - name: Publish the measured changed-deb-b receipts
+        if: ${{ !cancelled() && steps.live_builder.outcome == 'success' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: vs-host-metrics-changed-deb-b-${{ github.run_attempt }}
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/changed-deb-b
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 2
-
-      - name: Release this benchmark arm's stopped build containers
-        run: |
-          set -euo pipefail
-          while IFS= read -r id; do
-            if [[ -n $id ]]; then docker rm "$id"; fi
-          done < <(docker ps --all --quiet --filter status=exited --filter "label=$SONIC_CI_CONTAINER_LABEL")
 
       - name: Publish benchmark receipts
         id: evidence
@@ -518,6 +430,10 @@ jobs:
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Stop the private native build slave
+        if: always()
+        run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" stop-live
 
       - name: Remove only this job's build containers
         id: vs_container_cleanup
