@@ -169,12 +169,13 @@ def restore_root(workspace, directory, architecture, config, endpoint, key, curr
         verify_make_contract(incoming, verified, expected, packages)
         if current_key() != key:
             raise ValueError('Kernel root inputs changed during cache restore')
+        remote_bundle.save_index(workspace, index, remote_bundle.RESTORED_INDEX)
         prepare.install_files(incoming, directory, set(packages) | {MANIFEST})
     return index
 
 
 def build_packages(workspace, directory, architecture, config, bazel, options, endpoint, upload):
-    from tools.bazel.kernel import root_request, root_resolution
+    from tools.bazel.kernel import prepare, root_request, root_resolution
 
     def current_key():
         return root_request.request_key(workspace, architecture, config, options=options, bazel=bazel)
@@ -197,22 +198,28 @@ def build_packages(workspace, directory, architecture, config, bazel, options, e
         except remote_bundle.RESTORE_ERRORS as error:
             print(f'Kernel root cache unavailable; using Bazel: {error}', file=sys.stderr)
 
+    (workspace / remote_bundle.RESTORED_INDEX).unlink(missing_ok=True)
     subprocess.run([bazel, 'build', *options, TARGET], cwd=workspace, check=True)
-    lock = resolution = None
-    if key and upload:
+    resolution = None
+    lock_path = workspace / 'MODULE.bazel.lock'
+    if lock_path.exists():
+        # Another target or the following cquery may update the shared root lock.
+        # Retain what the build actually resolved, including for read-only PR jobs.
+        resolution = {'lock_sha256': sha256(prepare.regular(lock_path))}
+        prepare.retain_resolution(workspace, directory, resolution, prepare.ROOT_RESOLUTION_RECORDS)
+    if resolution and key and upload:
         try:
-            with (workspace / 'MODULE.bazel.lock').open('rb') as stream:
+            with (directory / prepare.RESOLUTION_DIRECTORY / resolution['lock_sha256']).open('rb') as stream:
                 lock = stream.read(remote_bundle.cache_identity.MAX_LOCK_BYTES + 1)
             root_resolution.validate(lock, workspace)
-            resolution = {'root_request_key': key, 'lock_sha256': hashlib.sha256(lock).hexdigest()}
+            resolution['root_request_key'] = key
         except remote_bundle.RESTORE_ERRORS as error:
             print(f'Kernel root index publication skipped: {error}', file=sys.stderr)
     output = subprocess.check_output([bazel, 'cquery', *options, '--output=files', TARGET], cwd=workspace, text=True)
     verified = publish([workspace / line for line in output.splitlines()], directory, workspace,
                        architecture, config, resolution=resolution)
-    if resolution is not None:
+    if resolution and 'root_request_key' in resolution:
         try:
-            from tools.bazel.kernel import prepare
             expected, packages = prepare.contract(workspace, architecture, config)
             verify_make_contract(directory, verified, expected, packages)
             if current_key() != key:

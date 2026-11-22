@@ -13,6 +13,8 @@ from tools.bazel.kernel import cache_identity, cache_transport
 
 INPUT_INDEX = Path("artifacts/vs/kernel-cache-input/index.json")
 OUTPUT_INDEX = Path("artifacts/vs/kernel-cache-output/index.json")
+# Private evidence for this VS run. The master cache upload selects only OUTPUT_INDEX.
+RESTORED_INDEX = OUTPUT_INDEX.with_name("verified-restore.json")
 # The shortcut is optional. Failures here happen before any file is installed.
 RESTORE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError, ImportError, subprocess.SubprocessError)
 ROOT_SCHEMA = 2
@@ -126,8 +128,8 @@ def upload_bundle(destination, lock_bytes, verified, endpoint, *, key, schema):
     return {"schema": schema, "request_key": key, "metadata": metadata}
 
 
-def save_index(workspace, index):
-    path = workspace / OUTPUT_INDEX
+def save_index(workspace, index, relative=OUTPUT_INDEX):
+    path = workspace / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     # The host runner uploads this file after the unprivileged slave exits.
     with tempfile.TemporaryDirectory(dir=path.parent) as staging:

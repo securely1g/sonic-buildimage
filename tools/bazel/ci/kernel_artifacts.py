@@ -2,36 +2,85 @@
 """Select verified kernel artifacts and a fixed public validation summary."""
 
 import argparse
-import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci import public_artifacts
-from tools.bazel.kernel import prepare as kernel
+from tools.bazel.kernel import packages as root_packages, prepare as kernel
 
 
-def collect(workspace, state, output, architecture="amd64", debs_directory=None):
+VS_RECEIPT = "vs-kernel-handoff.json"
+
+
+def checked_metadata(packages, output, name, digest, fields):
+    path = output / name
+    shutil.copyfile(kernel.regular(packages / name), path)
+    kernel.require(kernel.sha256(path) == digest, "kernel metadata changed during collection")
+    metadata = public_artifacts.load_json(path.read_text())
+    kernel.require(set(metadata) == fields, "unexpected kernel metadata fields in " + name)
+    public_artifacts.safe_json(metadata)
+
+
+def verify_retained_resolution(workspace, packages, records):
+    directory = packages / kernel.RESOLUTION_DIRECTORY
+    kernel.require(not directory.is_symlink(), "redirected kernel resolution directory")
+    restored = workspace / kernel.remote_bundle.RESTORED_INDEX
+    if not restored.exists() and not restored.is_symlink():
+        for digest in records.values():
+            kernel.require(kernel.sha256(kernel.regular(directory / digest)) == digest,
+                           "kernel dependency record differs from verified provenance")
+        return
+
+    # On a fresh remote hit, the master's original provenance binds the exact
+    # dependency evidence. The restore already checked the lock against today's
+    # registry and verified every DEB before Make installed them.
+    index = public_artifacts.load_json(kernel.regular(restored).read_text())
+    trusted = workspace / kernel.remote_bundle.INPUT_INDEX
+    kernel.require(index == public_artifacts.load_json(kernel.regular(trusted).read_text()),
+                   "kernel restore differs from the trusted master index")
+    for name in (kernel.MANIFEST, kernel.PROVENANCE):
+        path = kernel.regular(packages / name)
+        kernel.require(index["metadata"][name] == {"size": path.stat().st_size, "sha256": kernel.sha256(path)},
+                       "kernel handoff differs from the verified master index")
+
+
+def collect(workspace, state, output, architecture=None, debs_directory=None,
+            *, vs_handoff=False, from_vs_handoff=False):
     kernel.require(not output.exists(), "kernel artifact destination already exists")
     packages = Path(debs_directory or kernel.DEBS_DIRECTORY)
     if not packages.is_absolute():
         packages = workspace / packages
     verified = kernel.verify(packages, workspace, architecture=architecture)
-    records = {}
-    if verified["provenance"].get("schema") != 3:
-        selected = verified["provenance"]["resolution"]
-        for name, path, hash_field in (
-            ("MODULE.bazel.lock", state / "consumer/MODULE.bazel.lock", "lock_sha256"),
-            ("module-graph.json", state / "build/module-graph.json", "graph_sha256"),
-            ("kernel-source.json", state / "build/kernel-source.json", "kernel_source_json_sha256"),
-            ("infra-source.json", state / "build/infra-source.json", "infra_source_json_sha256"),
-        ):
-            data = kernel.regular(path).read_bytes()
-            kernel.require(hashlib.sha256(data).hexdigest() == selected[hash_field],
+    architecture = verified["manifest"]["architecture"]
+    provenance = verified["provenance"]
+    root = provenance["schema"] == 3
+    selected = provenance.get("resolution", {})
+    if root:
+        mapping = kernel.ROOT_RESOLUTION_RECORDS if selected else {}
+        kernel.require(not (vs_handoff or from_vs_handoff) or selected, "VS kernel is missing root resolution evidence")
+        kernel.require(set(selected) in (set(), {"lock_sha256"}, {"lock_sha256", "root_request_key"})
+                       and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                               for value in selected.values()), "invalid root kernel resolution evidence")
+        kernel.require(provenance["launcher"] == {"architecture": architecture}
+                       and re.fullmatch(r"[0-9a-f]{40}", provenance["source_commit"]),
+                       "invalid root kernel publication identity")
+        if vs_handoff or from_vs_handoff:
+            expected, debs = kernel.contract(workspace, architecture)
+            root_packages.verify_make_contract(packages, verified, expected, debs)
+    else:
+        mapping = kernel.RESOLUTION_RECORDS
+    records = {Path(relative).name: selected[field] for relative, field in mapping.items()}
+    if vs_handoff or (root and records and not from_vs_handoff):
+        verify_retained_resolution(workspace, packages, records)
+    elif not root and not from_vs_handoff:
+        kernel.require(state is not None, "legacy kernel collection requires its producer state")
+        for relative, field in mapping.items():
+            kernel.require(kernel.sha256(kernel.regular(state / relative)) == selected[field],
                            "kernel dependency record differs from verified provenance")
-            records[name] = hashlib.sha256(data).hexdigest()
     artifacts = []
     for item in verified["manifest"]["packages"]:
         artifacts.append({key: item[key] for key in ("name", "sha256", "size")})
@@ -48,9 +97,14 @@ def collect(workspace, state, output, architecture="amd64", debs_directory=None)
         "resolution_sha256": records,
     }
     public_artifacts.safe_json(summary)
-    # Only values constrained by kernel.verify's exact package/source contract
-    # enter the summary. Complete metadata and raw diagnostic files are not
-    # uploaded; CI command diagnostics are visible in the Actions console.
+    if vs_handoff or from_vs_handoff:
+        # Make can legitimately retain packages compiled at an earlier commit.
+        # Bind their verified package set to the checkout that produced the VS installer.
+        receipt = {"schema": 1, "vs_revision": kernel.git(workspace, "rev-parse", "HEAD"), "summary": summary}
+        if from_vs_handoff:
+            supplied = public_artifacts.load_json(kernel.regular(packages / VS_RECEIPT).read_text())
+            kernel.require(supplied == receipt, "kernel handoff differs from this VS revision or its verified inputs")
+    # Publish only verified package bytes and the metadata needed for this handoff.
     output.mkdir(parents=True)
     try:
         for item in artifacts:
@@ -59,7 +113,20 @@ def collect(workspace, state, output, architecture="amd64", debs_directory=None)
             kernel.require(destination.stat().st_size == item["size"]
                            and kernel.sha256(destination) == item["sha256"],
                            "kernel artifact changed during artifact collection")
-        (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+        if vs_handoff:
+            # Make's handoff requires the original manifest and provenance bytes.
+            # The raw resolution lock and graph can contain private diagnostics.
+            config, _ = kernel.contract(workspace, architecture)
+            checked_metadata(packages, output, kernel.MANIFEST, summary["manifest_sha256"], set(config) | {
+                "source_date_epoch", "source_files", "source_archives", "source_tree_sha256",
+                "build_tools", "packages", "created_packages", "debug",
+            })
+            fields = {"schema", "source_commit", "kernel_gitlink", "launcher", "manifest_sha256", "target", "resolution"}
+            fields.update({"module_version"} if root else {"consumer_inputs_sha256", "modules", "kernel_config"})
+            checked_metadata(packages, output, kernel.PROVENANCE, summary["provenance_sha256"], fields)
+            (output / VS_RECEIPT).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        else:
+            (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     except Exception:
         shutil.rmtree(output)
         raise
@@ -69,13 +136,16 @@ def collect(workspace, state, output, architecture="amd64", debs_directory=None)
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--state-dir", type=Path)
+    evidence = parser.add_mutually_exclusive_group()
+    evidence.add_argument("--state-dir", type=Path, help="check the original native build evidence")
+    evidence.add_argument("--vs-handoff", action="store_true", help="export Make's verified VS kernel package inputs")
+    evidence.add_argument("--from-vs-handoff", action="store_true", help="verify the same-run VS kernel inputs")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--debs-directory", type=Path)
     parser.add_argument("--architecture", choices=("amd64", "arm64"), default=kernel.native_architecture())
     args = parser.parse_args()
-    collect(args.workspace.resolve(strict=True), args.state_dir.resolve(strict=True) if args.state_dir else None, args.output,
-            args.architecture, args.debs_directory)
+    collect(args.workspace.resolve(strict=True), args.state_dir, args.output, args.architecture,
+            args.debs_directory, vs_handoff=args.vs_handoff, from_vs_handoff=args.from_vs_handoff)
     print("Kernel artifacts and public validation summary verified.")
 
 

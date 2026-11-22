@@ -12,7 +12,8 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.bazel.kernel import packages, remote_bundle, root_request, root_resolution
+from tools.bazel.ci import kernel_artifacts
+from tools.bazel.kernel import packages, prepare, remote_bundle, root_request, root_resolution
 from tools.bazel.tests import kernel_test, kernel_cache_root_resolution_test as proof
 
 
@@ -95,6 +96,46 @@ class RootPackagesTest(unittest.TestCase):
         self.assertFalse((self.workspace / remote_bundle.OUTPUT_INDEX).exists())
         provenance = json.loads(self.original[packages.PROVENANCE])
         self.assertEqual(provenance['resolution']['lock_sha256'], hashlib.sha256(self.lock).hexdigest())
+
+    def collect_handoff(self):
+        handoff = self.workspace / 'vs-handoff'
+        summary = kernel_artifacts.collect(self.workspace, None, handoff, debs_directory=self.directory, vs_handoff=True)
+        output = self.workspace / 'tested-packages'
+        self.assertEqual(summary, kernel_artifacts.collect(self.workspace, None, output, debs_directory=handoff,
+                                                           from_vs_handoff=True))
+        self.assertEqual(summary['resolution_sha256'], {'MODULE.bazel.lock': hashlib.sha256(self.lock).hexdigest()})
+        self.assertEqual((handoff / packages.PROVENANCE).read_bytes(), (self.directory / packages.PROVENANCE).read_bytes())
+        return handoff
+
+    def test_restored_root_handoff_binds_verified_master_index_and_vs_revision(self):
+        self.build()
+        handoff = self.collect_handoff()
+        self.assertFalse(self.log.exists())
+        restored = self.workspace / remote_bundle.RESTORED_INDEX
+        self.assertEqual(restored.read_bytes(), self.index.read_bytes())
+        self.index.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'trusted master index'):
+            kernel_artifacts.collect(self.workspace, None, self.workspace / 'untrusted', debs_directory=self.directory,
+                                     vs_handoff=True)
+        receipt = handoff / kernel_artifacts.VS_RECEIPT
+        value = json.loads(receipt.read_bytes())
+        value['vs_revision'] = '0' * 40
+        receipt.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'kernel handoff differs'):
+            kernel_artifacts.collect(self.workspace, None, self.workspace / 'wrong-revision', debs_directory=handoff,
+                                     from_vs_handoff=True)
+
+    def test_plain_root_build_handoff_binds_lock_even_without_cache_publication(self):
+        self.index.unlink()
+        self.build()
+        self.assertEqual(self.log.read_text().splitlines(), ['build', 'cquery'])
+        (self.workspace / 'MODULE.bazel.lock').write_text('lock from another target')
+        self.collect_handoff()
+        lock = self.directory / prepare.RESOLUTION_DIRECTORY / hashlib.sha256(self.lock).hexdigest()
+        lock.write_text('tampered retained lock')
+        with self.assertRaisesRegex(ValueError, 'kernel dependency record differs'):
+            kernel_artifacts.collect(self.workspace, None, self.workspace / 'corrupt', debs_directory=self.directory,
+                                     vs_handoff=True)
 
     def test_transitive_change_or_lookup_failure_uses_bazel_before_fetching_debs(self):
         url = next(url for url in self.responses if '/patchelf/' in url and url.endswith('/source.json')
