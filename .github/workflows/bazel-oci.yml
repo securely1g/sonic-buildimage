@@ -374,6 +374,14 @@ jobs:
           PROBE_ARTIFACT_ID: ${{ steps.probe_upload.outputs.artifact-id }}
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" verify-probe
 
+      - name: Publish the measured seed-a receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-metrics-seed-a-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/seed-a
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Release this benchmark arm's stopped build containers
         run: |
           set -euo pipefail
@@ -395,6 +403,14 @@ jobs:
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" version-b-control
+
+      - name: Publish the measured version-b-control receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-metrics-version-b-control-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/version-b-control
+          if-no-files-found: error
+          retention-days: 2
 
       - name: Release this benchmark arm's stopped build containers
         run: |
@@ -418,6 +434,14 @@ jobs:
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" restored-b
 
+      - name: Publish the measured restored-b receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-metrics-restored-b-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/restored-b
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Release this benchmark arm's stopped build containers
         run: |
           set -euo pipefail
@@ -440,6 +464,14 @@ jobs:
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" paired-control-b
 
+      - name: Publish the measured paired-control-b receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-metrics-paired-control-b-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/paired-control-b
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Release this benchmark arm's stopped build containers
         run: |
           set -euo pipefail
@@ -461,6 +493,14 @@ jobs:
           SONIC_VS_FAST_ASSEMBLY: "1"
           TERM: dumb
         run: python3 -B "$GITHUB_WORKSPACE/configured-host-bench-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/.github/configured-host-benchmark.py" changed-deb-b
+
+      - name: Publish the measured changed-deb-b receipts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vs-host-metrics-changed-deb-b-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/configured-host-benchmark/changed-deb-b
+          if-no-files-found: error
+          retention-days: 2
 
       - name: Release this benchmark arm's stopped build containers
         run: |

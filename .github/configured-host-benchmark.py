@@ -171,6 +171,51 @@ def phase_receipt(log):
     return phases
 
 
+def transient_go_fetch(log):
+    # This narrowly identifies a failed public Go dependency fetch before the
+    # configured-host action/installer. Do not retry any semantic check.
+    fetch = analysis = assembled = False
+    with log.open(errors='replace') as stream:
+        for line in stream:
+            if ("ERROR: no such package '@@otelcol-contrib++go_deps+" in line and
+                    'fetch_repo:' in line and 'net/http: TLS handshake timeout' in line):
+                fetch = True
+            if 'ERROR: Analysis of target' in line and 'failed; build aborted' in line:
+                analysis = True
+            if '[ image phases ] [ target/sonic-vs.bin ] ' in line:
+                assembled = True
+    return fetch and analysis and not assembled and not CACHE_RECEIPT.exists() and not OUTPUT.exists()
+
+
+def build_with_retry(arm, case, log, work):
+    attempts = []
+    for number in (1, 2, 3):
+        started = time.monotonic()
+        with log.open('wb') as stdout:
+            process = subprocess.run(['bash', 'tools/bazel/ci/build_vs.sh'], env=case, stdout=stdout,
+                                     stderr=subprocess.STDOUT)
+        elapsed = time.monotonic() - started
+        entry = dict(number=number, seconds=elapsed, exit=process.returncode)
+        attempts.append(entry)
+        if process.returncode == 0:
+            write(work/'make-attempts.json', attempts)
+            return elapsed, attempts
+        retry = number < 3 and transient_go_fetch(log)
+        entry['retry_eligible'] = retry
+        write(work/'make-attempts.json', attempts)
+        if not retry:
+            raise RuntimeError(f'native Make failed for {arm}: exit {process.returncode}')
+        log.rename(PRIVATE/(arm + '-go-fetch-attempt-' + str(number) + '.log'))
+        cleanup_started = time.monotonic()
+        stopped = shell('docker', 'ps', '--all', '--quiet', '--filter', 'status=exited', '--filter',
+                        'label=' + case['SONIC_CI_CONTAINER_LABEL'], capture_output=True, text=True).stdout.split()
+        if stopped:
+            shell('docker', 'rm', *stopped, stdout=subprocess.DEVNULL)
+        entry['cleanup_seconds'] = time.monotonic() - cleanup_started
+        write(work/'make-attempts.json', attempts)
+        print(f'{arm}: retry Go dependency TLS handshake timeout with prepared sources and outputs', flush=True)
+
+
 def run(arm):
     require(CACHE and CACHE.is_dir() and not CACHE.is_symlink(), 'job-private native host cache missing')
     require(os.environ['SONIC_BAZEL_REMOTE_UPLOAD'] == 'n' and os.environ['SONIC_DPKG_CACHE_METHOD'] == 'rcache', 'shared caches must be read-only')
@@ -199,12 +244,7 @@ def run(arm):
         for previous in operations.glob('*.json'):
             previous.unlink()
     log = PRIVATE / (arm + '.log')
-    started = time.monotonic()
-    with log.open('wb') as stdout:
-        process = subprocess.run(['bash', 'tools/bazel/ci/build_vs.sh'], env=case, stdout=stdout, stderr=subprocess.STDOUT)
-    elapsed = time.monotonic() - started
-    if process.returncode:
-        raise RuntimeError(f'native Make failed for {arm}: exit {process.returncode}')
+    elapsed, attempts = build_with_retry(arm, case, log, work)
     require(OUTPUT.is_file(), 'Make produced no installer')
     phase = phase_receipt(log)
     write(work/'phases.json', phase)
@@ -229,7 +269,8 @@ def run(arm):
     if changed:
         require(digest(ROOT / changed['path']) == changed['modified_sha256'], 'another build replaced the diagnostic package')
     measurement = dict(arm=arm, runner=os.environ['RUNNER_NAME'], commit=commit, installed=package,
-        make_seconds=elapsed, assembly_seconds=phase['duration_seconds'],
+        make_seconds=elapsed, successful_attempt=len(attempts), all_attempts_seconds=sum(a['seconds'] + a.get('cleanup_seconds', 0) for a in attempts),
+        assembly_seconds=phase['duration_seconds'],
         step2_seconds=phase['segments'][1]['duration_seconds'], step4_seconds=phase['segments'][3]['duration_seconds'],
         restore_inclusive_make_seconds=elapsed+transfer.get('consumer_transfer_seconds', 0))
     write(work/'metrics.json', measurement)
