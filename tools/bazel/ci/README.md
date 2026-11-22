@@ -310,6 +310,23 @@ on success and failure; disabled timing and query-only commands are unchanged.
 No execution logging, cache-policy changes or BEP-derived dashboard analysis
 is enabled by this artifact publication.
 
+After the native build, `summarize_bep.py` reads those sanitized files once and
+adds `bep-summary.json` and `bep-summary.md` to the same artifact. The reports
+include per-invocation wall/CPU/analysis/execution timing when available, action
+and mnemonic counts, separate local action-cache statistics and runner counts,
+and target/test results. They do not infer per-target duration. Phase timings
+can overlap and must not be added together. Bazel's `actionsExecuted` includes
+cache-handled and internal actions; local cache misses do not establish remote
+cache misses. Missing metrics remain unavailable, and missing terminal/result
+events produce an incomplete status rather than success.
+
+Analysis uses no new Bazel invocation, profile processing or action logging.
+Its parsing/aggregation duration is recorded as `analysis_seconds`; report
+serialization and the existing artifact upload add a small unmeasured overhead.
+Malformed files produce an unavailable entry without raw exception details.
+The independent, always-run analysis step is non-blocking even if the build or
+profile summary fails. Existing profile summaries and dashboard data are unchanged.
+
 The active **VS installer in SONiC slave (AMD64)** job uses a host agent and
 the native Make wrapper to build `target/sonic-vs.bin`. After managed-identity
 registry login, Make reuses a local computed-tag slave image, pulls the matching

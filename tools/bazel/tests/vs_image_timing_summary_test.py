@@ -14,6 +14,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel.ci import time_vs_image
+from tools.bazel.ci import summarize_bep
+from tools.bazel.ci import public_artifacts
 from tools.bazel.ci.container_profile import batch_profile, combine_batches
 from tools.bazel.ci.summarize_vs_image_timings import (
     BUILD_EVIDENCE, build_evidence, build_explanation, build_nonlock,
@@ -30,6 +32,164 @@ def event(category, name, start, duration, tid=1, mnemonic=None):
 
 
 class ImageTimingSummaryTest(unittest.TestCase):
+    def test_bep_analysis_reports_timing_cache_domains_and_failed_results(self):
+        records = [
+            {"id": {"started": {}},
+             "started": {"command": "build", "buildToolVersion": "8.5.1"}},
+            {"id": {"targetCompleted": {"label": "//dockers/docker-nat:docker-nat.gz"}},
+             "completed": {"success": True}},
+            {"id": {"targetCompleted": {"label": "//tests:broken"}},
+             "completed": {"success": False}},
+            {"id": {"testSummary": {"label": "//tests:broken"}},
+             "testSummary": {"overallStatus": "FAILED", "totalRunCount": 1}},
+            {"id": {"buildMetrics": {}}, "buildMetrics": {
+                "timingMetrics": {"wallTimeInMs": "9000", "cpuTimeInMs": "12000",
+                                  "analysisPhaseTimeInMs": "3000",
+                                  "executionPhaseTimeInMs": "7000"},
+                "actionSummary": {
+                    "actionsCreated": "20", "actionsExecuted": "7",
+                    "actionCacheStatistics": {"hits": 12, "misses": 3},
+                    "runnerCount": [{"name": "total", "count": 7},
+                                    {"name": "remote cache hit", "count": 4},
+                                    {"name": "internal", "count": 2},
+                                    {"name": "linux-sandbox", "count": 1}],
+                    "actionData": [{"mnemonic": "CppCompile", "actionsExecuted": "5",
+                                    "actionsCreated": "9"}],
+                }}},
+            {"id": {"buildFinished": {}},
+             "finished": {"overallSuccess": False, "exitCode": {"code": 1}}},
+            {"id": {"buildToolLogs": {}}, "lastMessage": True},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recipe = root / "vs-container-images/recipe-fixture"
+            recipe.mkdir(parents=True)
+            path = recipe / "build.bep.json"
+            path.write_text("".join(json.dumps(item) + "\n" for item in records))
+            original = path.read_bytes()
+            report = summarize_bep.report(root)
+            stream, = report["streams"]
+            self.assertEqual(stream["status"], "failed")
+            self.assertTrue(stream["stream_complete"])
+            self.assertEqual(stream["build_result"]["exit_code"], 1)
+            self.assertEqual(stream["timing_seconds"],
+                             {"wall": 9, "cpu": 12, "analysis": 3, "execution": 7})
+            self.assertEqual(stream["actions"]["local_action_cache"],
+                             {"hits": 12, "misses": 3, "hit_rate": 0.8})
+            self.assertEqual(stream["actions"]["runners"]["remote cache hit"], 4)
+            self.assertEqual(stream["actions"]["executed"], 7)
+            self.assertEqual(stream["actions"]["mnemonics"],
+                             [{"name": "CppCompile", "created": 9, "executed": 5}])
+            self.assertFalse(stream["targets"]["//tests:broken"])
+            self.assertEqual(stream["tests"]["//tests:broken"]["status"], "FAILED")
+            text = summarize_bep.markdown(report)
+            self.assertIn("| wall | 9.000 |", text)
+            self.assertIn("not per-target duration", text)
+            self.assertIn("separate counter domains", text)
+            self.assertEqual(path.read_bytes(), original)
+            public_artifacts.safe_json(report)
+            self.assertGreaterEqual(report["analysis_seconds"], 0)
+
+    def test_bep_analysis_keeps_incomplete_streams_and_missing_metrics_distinct(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recipe = root / "kernel/recipe-fixture"
+            recipe.mkdir(parents=True)
+            path = recipe / "build.bep.json"
+            for records in (
+                    [{"id": {"buildMetrics": {}},
+                      "buildMetrics": {"actionSummary": {"actionsExecuted": "0"}}}],
+                    [{"id": {"buildFinished": {}},
+                      "finished": {"overallSuccess": True, "exitCode": {"code": 0}}}]):
+                path.write_text("".join(json.dumps(item) + "\n" for item in records))
+                report = summarize_bep.report(root)
+                stream, = report["streams"]
+                self.assertEqual(stream["status"], "incomplete")
+                self.assertFalse(stream["stream_complete"])
+                self.assertFalse(stream["terminal_marker_seen"])
+                self.assertEqual(stream["timing_seconds"], {})
+                self.assertEqual(stream["actions"]["local_action_cache"], {})
+                self.assertIn("| wall | n/a |", summarize_bep.markdown(report))
+            path.write_text('{"id":{"buildToolLogs":{}},"lastMessage":true}\n')
+            self.assertEqual(summarize_bep.analyze(path)["status"], "incomplete")
+            path.unlink()
+            self.assertEqual(summarize_bep.report(root)["streams"], [])
+
+    def test_bep_analysis_isolates_bad_files_and_never_exposes_private_fields(self):
+        private = "fixture_private_value_never_publish"
+        token = "ghs_" + "x" * 36
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recipe = root / "images/recipe-fixture"
+            recipe.mkdir(parents=True)
+            valid = recipe / "build.bep.json"
+            valid.write_text(json.dumps({
+                "id": {"progress": {}}, "progress": {"stderr": private + token},
+            }) + "\n" + json.dumps({
+                "id": {"buildMetrics": {}},
+                "buildMetrics": {"timingMetrics": {"wallTimeInMs": 1},
+                                 "privateMetadata": private},
+            }) + "\n")
+            malformed = recipe / "test.bep.json"
+            malformed.write_text('{"id":' + private)
+            report = summarize_bep.report(root)
+            self.assertEqual([item["status"] for item in report["streams"]],
+                             ["incomplete", "unavailable"])
+            encoded = json.dumps(report) + summarize_bep.markdown(report)
+            self.assertNotIn(private, encoded)
+            self.assertNotIn(token, encoded)
+            for content in (
+                    '{"id":{},"id":{}}\n',
+                    '{"id":{"buildMetrics":{}},"buildMetrics":'
+                    '{"timingMetrics":{"wallTimeInMs":NaN}}}\n',
+                    '{"id":{"buildMetrics":{}},"buildMetrics":'
+                    '{"timingMetrics":{"password":1}}}\n',
+                    json.dumps({
+                        "id": {"targetCompleted": {"label": "//:" + token}},
+                        "completed": {"success": True},
+                    }) + "\n",
+                    '{"id":{"buildMetrics":{}},"buildMetrics":{}}\n' * 2,
+                    '{"id":{"buildToolLogs":{}},"lastMessage":true}\n'
+                    '{"id":{"buildMetrics":{}},"buildMetrics":{}}\n'):
+                malformed.write_text(content)
+                self.assertEqual(summarize_bep.report(root)["streams"][1]["status"],
+                                 "unavailable")
+                self.assertNotIn(token, json.dumps(summarize_bep.report(root)))
+
+    def test_bep_analysis_bounds_inputs_and_rejects_symlink_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recipe = root / "images/recipe-fixture"
+            recipe.mkdir(parents=True)
+            outside = root / "outside.json"
+            outside.write_text('{"id":{"buildMetrics":{}},"buildMetrics":{}}\n')
+            (recipe / "build.bep.json").symlink_to(outside)
+            self.assertEqual(summarize_bep.report(root)["streams"][0]["status"],
+                             "unavailable")
+            source = recipe / "test.bep.json"
+            source.write_bytes(outside.read_bytes())
+            with mock.patch.object(summarize_bep, "MAX_FILE_BYTES", 1):
+                self.assertEqual(summarize_bep.report(root)["streams"][1]["status"],
+                                 "unavailable")
+            with mock.patch.object(summarize_bep, "MAX_RECORD_CHARS", 1):
+                self.assertEqual(summarize_bep.report(root)["streams"][1]["status"],
+                                 "unavailable")
+
+    def test_bep_analysis_cli_publishes_reports_and_write_failure_is_nonblocking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = [sys.executable, "-B", summarize_bep.__file__, tmp]
+            subprocess.run(command, check=True)
+            value = json.loads((root / "bep-summary.json").read_text())
+            self.assertEqual(value["streams"], [])
+            self.assertIn("0 event streams", (root / "bep-summary.md").read_text())
+            with mock.patch.object(sys, "argv", command[2:]), \
+                    mock.patch.object(summarize_bep, "write_report",
+                                      side_effect=OSError("private failure")), \
+                    mock.patch.object(summarize_bep.sys, "stderr") as output:
+                self.assertEqual(summarize_bep.main(), 0)
+                self.assertNotIn("private failure", str(output.write.call_args_list))
+
     def test_shared_command_and_individual_exports_have_distinct_timing_coverage(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
