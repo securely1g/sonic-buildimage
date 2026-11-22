@@ -182,6 +182,15 @@ authentication errors, certificate errors and invalid JSON are not retried.
 Exhausted retries retain the private journal and do not bypass cleanup/admission
 guards. This does not retry Docker cleanup commands.
 
+An interrupted ephemeral listener can leave local `.runner` metadata after
+GitHub retires its registration. Only after recovery has persisted an idle
+journal, a 404 from that exact runner lookup permits local-only removal using
+`config.sh remove --local`. The metadata must describe an ephemeral runner at
+the expected work root, and no listener/worker may remain. The supervisor then
+attempts one fresh registration, applying the normal identity/label checks.
+Other API errors and 404s outside this runner lookup do not reset registration
+or pending cleanup. No checkout or session archive is removed by this repair.
+
 Any failure leaves the host out of service. Check `journalctl`, the private
 record and the host state, fix the underlying problem, then restart the service.
 It recovers pending cleanup **before** registration/admission. To recover without

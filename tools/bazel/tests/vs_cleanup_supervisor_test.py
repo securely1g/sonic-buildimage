@@ -148,6 +148,101 @@ class SupervisorTest(unittest.TestCase):
         self.github.runner.return_value["labels"] = [{"name": "vs-cleanup-canary"}]
         self.assertEqual(self.supervisor.configure(), 456)
 
+    def stale_registration(self):
+        settings = self.runner / ".runner"
+        settings.write_text(json.dumps({"agentId": 456, "ephemeral": True,
+                                        "workFolder": str(self.work)}))
+        self.supervisor.state = {"phase": "idle"}
+        self.supervisor.save()
+        self.github.registration.return_value = "private-registration-token"
+        return settings
+
+    def test_retired_ephemeral_registration_is_replaced_only_after_idle_recovery(self):
+        settings = self.stale_registration()
+        self.github.runner.side_effect = [
+            module.GitHubAPIError(404),
+            {"name": "test-canary", "busy": False, "status": "offline",
+             "labels": [{"name": "vs-cleanup-canary"}]},
+        ]
+
+        def configure(arguments, **kwargs):
+            if arguments[-2:] == ["remove", "--local"]:
+                settings.unlink()
+            else:
+                settings.write_text(json.dumps({"agentId": 457, "ephemeral": True,
+                                                "workFolder": str(self.work)}))
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(module.subprocess, "run", side_effect=configure) as run, \
+                patch.object(self.supervisor, "launcher", return_value="/usr/sbin/runuser"):
+            self.assertEqual(self.supervisor.configure(), 457)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0][-3:],
+                         [str(self.runner / "config.sh"), "remove", "--local"])
+        self.assertIn("--ephemeral", run.call_args_list[1].args[0])
+        self.github.runner.assert_has_calls([unittest.mock.call(456), unittest.mock.call(457)])
+        self.guard.assert_called_once()
+        self.assertEqual(json.loads(self.supervisor.journal.read_text()), {"phase": "idle"})
+        self.assertTrue(self.checkout.exists())
+        self.remove.assert_not_called()
+        self.caches.assert_not_called()
+
+    def test_stale_registration_reset_requires_idle_state_and_no_workers(self):
+        settings = self.stale_registration()
+        self.github.runner.side_effect = module.GitHubAPIError(404)
+        with patch.object(module.subprocess, "run") as run:
+            for state in (None, {"phase": "listening"}, {"phase": "cleanup"},
+                          {"phase": "idle", "record": {"run_id": "123"}}):
+                with self.subTest(state=state):
+                    self.supervisor.state = state
+                    with self.assertRaisesRegex(ValueError, "idle"):
+                        self.supervisor.configure()
+                    self.assertTrue(settings.exists())
+            self.supervisor.state = {"phase": "idle"}
+            self.guard.side_effect = ValueError("worker remains")
+            with self.assertRaisesRegex(ValueError, "worker remains"):
+                self.supervisor.configure()
+        run.assert_not_called()
+        self.github.registration.assert_not_called()
+
+    def test_other_api_errors_do_not_reset_local_registration(self):
+        settings = self.stale_registration()
+        with patch.object(module.subprocess, "run") as run:
+            for code in (401, 403, 500):
+                with self.subTest(code=code):
+                    self.github.runner.side_effect = module.GitHubAPIError(code)
+                    with self.assertRaises(module.GitHubAPIError):
+                        self.supervisor.configure()
+                    self.assertTrue(settings.exists())
+        run.assert_not_called()
+        self.github.registration.assert_not_called()
+
+    def test_local_registration_replacement_fails_closed_and_is_bounded(self):
+        for case in ("remove_fails", "metadata_remains", "new_registration_missing"):
+            with self.subTest(case=case):
+                settings = self.stale_registration()
+                self.github.registration.reset_mock()
+                self.github.runner.side_effect = module.GitHubAPIError(404)
+
+                def configure(arguments, **kwargs):
+                    if case == "new_registration_missing":
+                        if arguments[-2:] == ["remove", "--local"]:
+                            settings.unlink()
+                        else:
+                            settings.write_text(json.dumps({"agentId": 457, "ephemeral": True,
+                                                            "workFolder": str(self.work)}))
+                    return SimpleNamespace(returncode=1 if case == "remove_fails" else 0)
+
+                with patch.object(module.subprocess, "run", side_effect=configure) as run, \
+                        patch.object(self.supervisor, "launcher", return_value="/usr/sbin/runuser"):
+                    with self.assertRaises(RuntimeError):
+                        self.supervisor.configure()
+                self.assertEqual(run.call_count, 2 if case == "new_registration_missing" else 1)
+                self.assertEqual(self.github.registration.call_count,
+                                 1 if case == "new_registration_missing" else 0)
+                self.assertEqual(json.loads(self.supervisor.journal.read_text()), {"phase": "idle"})
+                self.assertTrue(self.checkout.exists())
+
     def test_bom_prefixed_runner_metadata_is_accepted_without_relaxing_profile_checks(self):
         settings = {"agentId": 456, "ephemeral": True, "workFolder": str(self.work)}
         path = self.runner / ".runner"

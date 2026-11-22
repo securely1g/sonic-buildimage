@@ -72,6 +72,12 @@ def atomic_json(path, value):
         os.close(descriptor)
 
 
+class GitHubAPIError(RuntimeError):
+    def __init__(self, status_code):
+        self.status_code = status_code
+        super().__init__(f"Host GitHub API request failed (HTTP {status_code})")
+
+
 class GitHub:
     def __init__(self, config):
         self.repository = config["repository"]
@@ -93,12 +99,12 @@ class GitHub:
             method="POST" if post else "GET")
         delays = (5, 15)
         for attempt in range(len(delays) + 1):
-            message = "Host GitHub API request failed"
+            failure = RuntimeError("Host GitHub API request failed")
             try:
                 with urllib.request.urlopen(request, timeout=30) as response:
                     return json.load(response)
             except HTTPError as error:
-                message += f" (HTTP {error.code})"
+                failure = GitHubAPIError(error.code)
                 retry = error.code in (500, 502, 503, 504)
                 error.close()
             except (URLError, TimeoutError, ConnectionError) as error:
@@ -107,9 +113,9 @@ class GitHub:
                          or (isinstance(reason, socket.gaierror) and reason.errno == socket.EAI_AGAIN))
             except Exception:
                 # Do not include headers, credentials or HTTP response bodies in logs.
-                raise RuntimeError(message) from None
+                raise failure from None
             if post or not retry or attempt == len(delays):
-                raise RuntimeError(message) from None
+                raise failure from None
             print(f"Transient host GitHub API read failure; retrying attempt "
                   f"{attempt + 2}/3 in {delays[attempt]}s", flush=True)
             sleep(delays[attempt])
@@ -339,7 +345,7 @@ class Supervisor:
         if filesystem.f_bavail * filesystem.f_frsize < self.config["min_free_bytes"]:
             raise ValueError("Insufficient free build disk")
 
-    def configure(self):
+    def configure(self, *, replace_stale=True):
         settings = self.runner_dir / ".runner"
         if not settings.exists():
             token = self.github.registration()
@@ -360,7 +366,22 @@ class Supervisor:
             folder = self.runner_dir / folder
         if not value.get("ephemeral") or folder.resolve(strict=True) != self.work_root:
             raise ValueError("Registration is not ephemeral or has the wrong work root")
-        runner = self.github.runner(value["agentId"])
+        try:
+            runner = self.github.runner(value["agentId"])
+        except GitHubAPIError as error:
+            if error.status_code != 404 or not replace_stale:
+                raise
+            if self.state != {"phase": "idle"}:
+                raise ValueError("Stale registration requires completed recovery and an idle journal") from None
+            self.check_idle()
+            result = subprocess.run(
+                [self.launcher(), "-u", self.account.pw_name, "--",
+                 str(self.runner_dir / "config.sh"), "remove", "--local"],
+                cwd=self.runner_dir, capture_output=True, timeout=120)
+            if result.returncode or settings.exists():
+                raise RuntimeError("Stale local ephemeral registration could not be removed")
+            print("Retired ephemeral registration removed locally; registering a successor", flush=True)
+            return self.configure(replace_stale=False)
         if (runner["name"] != self.config["runner_name"] or runner["busy"]
                 or runner["status"] != "offline"):
             raise ValueError("Registration identity is unexpected or already active")
