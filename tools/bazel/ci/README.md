@@ -340,6 +340,52 @@ It does not update image pins or create commits. See the
 [host-agent image policy](../../ci/runner/container-vs.md#slave-image-publication-and-selection).
 The downstream installer verification job extracts the release and commit from the packaged filesystem.
 
+The host-driven VS job prepares only Trixie and sets `NOBOOKWORM=1` for
+initialization, configuration, build and validation. Generic Bookworm support,
+other jobs, legacy cleanup and the selected installer/container/P4 checks remain
+unchanged.
+
+The job defaults to direct NFS repository caching. Manual **Bazel OCI** runs
+with `source_image=none` and `skip_vs=false` expose `repository_cache_mode`:
+`off` clears the separate mounts, `downloads` shares downloaded archives, and
+`downloads-and-contents` also enables Bazel 8.5.1 prepared repository contents.
+Automatic VS PR/master builds and manual runs default to
+`downloads-and-contents`; the NFS root must therefore be provisioned first.
+
+After slave initialization, [`nfs_repository_cache.py`](nfs_repository_cache.py)
+runs in the Trixie slave as the actual builder, with a bind mount of the existing
+`/nfs/bazel/repository-caches` root. It requires actual NFS backing, verifies
+write/read and POSIX record locking on a new temporary file, rejects redirected
+or differently owned cache leaves, and never changes existing ownership/modes.
+The same-client lock probe does not establish cross-client NFS correctness.
+Preparation failure stops the build without importing stale exports or falling
+back to a local directory. Docker validates bind sources rather than requiring
+the host runner to traverse protected NFS parents.
+
+Stable paths are `downloads/uid-<uid>` and
+`contents/bazel-8.5.1/vs-amd64/uid-<uid>` beneath that root. Agents must use the
+same builder UID for reuse. Downloads are mounted at
+`/bazel_cache/repository_cache`; prepared contents use a separate
+`/bazel_cache/repo_contents_cache` mount and `--repo_contents_cache` only through
+`build_helpers.py`. Action `disk_cache`, Bazelisk, output bases and servers keep
+their existing local placement. Shared cache directories are outside this job's
+local cleanup and are populated during fetching, not by an end-of-job upload.
+
+The existing `sonic-vs-slave-evidence-amd64` upload includes
+`artifacts/vs/nfs-repository-cache.json`: mode, filesystem, selected UID-specific
+paths and preparation duration. This is configuration evidence, not a cache-hit
+counter. Bazel reuses only eligible repository rules declaring reproducible
+metadata; enabling this option does not make other rules eligible. Module
+versions and the published registry remain unchanged.
+
+Provision permissions, capacity, trusted writers and coordinated retention
+before use; do not delete a namespace while builds reference it. Compare `off`,
+`downloads`, then cold/warm `downloads-and-contents` on fresh agents at the same
+revision, retaining installer/container validation and checking LLVM-dependent
+images. Use `downloads` or `off` for manual rollback; automatic builds also
+require changing the workflow fallback. Real NFS cross-agent reuse and full
+image performance must be established in CI, not inferred from local tests.
+
 The host wrapper [`build_vs.sh`](build_vs.sh) runs one
 `make target/sonic-vs.bin` request
 with the native AMD64 Trixie VS configuration, Bazel, FIPS and DASH enabled.
