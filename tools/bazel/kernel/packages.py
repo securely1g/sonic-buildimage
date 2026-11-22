@@ -8,13 +8,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from tools.bazel import build_helpers
-from tools.bazel.kernel import prepare, remote_bundle
+from tools.bazel.kernel import prepare, remote_bundle, root_request
 
 TARGET = '@sonic_linux_kernel//:kernel_packages'
 MANIFEST = 'kernel-packages.json'
@@ -175,7 +176,7 @@ def restore_root(workspace, directory, architecture, config, endpoint, key, curr
 
 
 def build_packages(workspace, directory, architecture, config, bazel, options, endpoint, upload):
-    from tools.bazel.kernel import root_request, root_resolution
+    from tools.bazel.kernel import root_resolution
 
     def current_key():
         return root_request.request_key(workspace, architecture, config, options=options, bazel=bazel)
@@ -279,6 +280,8 @@ def main():
         if args.cache_directory:
             options += build_helpers.cache_options(args.cache_directory / "kernel-linux-sandbox")
         options += build_helpers.remote_cache_options()
+        options.extend(option for option in shlex.split(os.environ.get('BAZEL_CONTAINER_ARGS', ''))
+                       if root_request.is_cache_fallback_option(option))
         if args.remote_cache:
             options += ['--remote_cache=' + args.remote_cache,
                         '--remote_upload_local_results=' + str(args.upload_local_results).lower()]

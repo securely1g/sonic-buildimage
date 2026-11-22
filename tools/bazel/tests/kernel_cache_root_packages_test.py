@@ -46,8 +46,9 @@ class RootPackagesTest(unittest.TestCase):
         shutil.rmtree(self.directory)
         self.bazel = self.workspace / 'fixture-bazel'
         self.bazel.write_text(
-            '#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\n'
+            '#!' + sys.executable + '\nimport json, sys\nfrom pathlib import Path\n'
             "command = sys.argv[1]\nwith Path('bazel-calls').open('a') as log: print(command, file=log)\n"
+            "Path(command + '-argv').write_text(json.dumps(sys.argv[2:]))\n"
             "if command == 'build': Path('MODULE.bazel.lock').write_bytes(Path('producer.lock').read_bytes())\n"
             'elif command == "cquery": print(' + repr('\n'.join(paths)) + ')\n'
             'else: raise ValueError(command)\n')
@@ -67,7 +68,8 @@ class RootPackagesTest(unittest.TestCase):
         self.enterContext(patch.object(remote_bundle.cache_transport, 'BlobCache',
                                        return_value=contextlib.nullcontext(cache)))
         self.enterContext(patch.object(root_request, 'request_key', return_value='a' * 64))
-        self.enterContext(patch.dict(os.environ, {'SONIC_VS_KERNEL_REMOTE_REUSE': '1', 'BAZEL': str(self.bazel)}))
+        self.enterContext(patch.dict(os.environ, {'SONIC_VS_KERNEL_REMOTE_REUSE': '1', 'BAZEL': str(self.bazel),
+                                                  'BAZEL_CONTAINER_ARGS': ''}))
         real_validate = root_resolution.validate
         self.enterContext(patch.object(root_resolution, 'validate',
                                       side_effect=lambda data, workspace: real_validate(
@@ -130,6 +132,24 @@ class RootPackagesTest(unittest.TestCase):
                 with patch.object(sys, 'argv', [*args, *extra]), contextlib.redirect_stdout(output):
                     packages.main()
                 self.assertEqual(json.loads(output.getvalue())['CROSS_BUILD_ENVIRON'], expected)
+
+    def test_only_requested_cache_fallback_options_reach_build_and_cquery(self):
+        """Make can recover from cache outages without changing kernel flags or cache permissions."""
+        self.index.unlink()
+        original = {command: json.loads((self.workspace / (command + '-argv')).read_text())
+                    for command in ('build', 'cquery')}
+        local = '--remote_local_fallback'
+        compatible = '--incompatible_remote_local_fallback_for_remote_cache'
+        unrelated = '--config=other --define="quoted --remote_local_fallback" --remote_upload_local_results=false'
+        for requested in ([], [local], [local, compatible], [local, '--noremote_local_fallback', compatible + '=false']):
+            with self.subTest(requested=requested), patch.dict(os.environ, {
+                'BAZEL_CONTAINER_ARGS': ' '.join([unrelated, *requested]),
+            }):
+                self.build(upload=True)
+                for command, baseline in original.items():
+                    argv = json.loads((self.workspace / (command + '-argv')).read_text())
+                    self.assertEqual([arg for arg in argv if arg in requested], requested)
+                    self.assertEqual([arg for arg in argv if arg not in requested], baseline)
 
     def test_fresh_job_restores_original_five_debs_and_receipt_without_invoking_bazel(self):
         self.build()
