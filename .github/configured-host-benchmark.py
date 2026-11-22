@@ -223,7 +223,7 @@ def current_native(arm, version):
     root=ROOT/'fsroot-vs'; require(root.resolve()==root,'unexpected installer root on the runner')
     for line in Path('/proc/self/mountinfo').read_text().splitlines():
         mount=Path(line.split(' - ',1)[0].split()[4]);require(mount!=root and root not in mount.parents,'runner host has a mount under the installer scratch tree')
-    slot=os.environ.get('SONIC_HOSTBENCH_RESUME_SLOT','0');require(slot in ('0','1','2'),'unexpected recovery slot')
+    slot=os.environ.get('SONIC_HOSTBENCH_RESUME_SLOT','0');require(slot in ('0','1','2','3','4','5','6'),'unexpected recovery slot')
     return ['docker','exec','--env','SONIC_HOSTBENCH_CALLER_MNTNS='+str(os.stat('/proc/self/ns/mnt').st_ino),'--env','SONIC_HOSTBENCH_RECOVERY_SLOT='+slot,'--env','SONIC_HOSTBENCH_INNER_RESUME='+os.environ.get('SONIC_HOSTBENCH_RESUME','0'),'--user',str(session['uid']),'--workdir','/sonic',session['id'],
             'python3','-B','/sonic/.configured-host-bench/inside.py','run',arm,version]
 
@@ -419,7 +419,19 @@ if __name__ == '__main__':
         if arm == 'start-live': start_live()
         elif arm == 'stop-live': stop_live()
         elif arm in ARMS:
+            # Preserve the independent paired control if a previous warm arm
+            # failed at the stale-root preflight. Before any DEB mutation, use
+            # the preserved seed, cache-transfer receipt and original B inputs
+            # to complete and validate that warm installer in this same job.
             run(arm)
+            if arm=='paired-control-b' and not (EVIDENCE/'restored-b/metrics.json').is_file():
+                os.environ.update(SONIC_HOSTBENCH_RESUME='1',SONIC_HOSTBENCH_RESUME_SLOT=str(3+int(os.environ.get('SONIC_HOSTBENCH_RESUME_SLOT','0'))))
+                try:
+                    run('restored-b')
+                except Exception as warm_error:
+                    failure_details('restored-b',warm_error)
+                    shutil.copyfile(EVIDENCE/'restored-b/failure.json',EVIDENCE/arm/'late-warm-failure.json')
+                    raise
         else:
             equal_size_transfer(arm)
     except Exception as exc:
