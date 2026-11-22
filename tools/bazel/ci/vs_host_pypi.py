@@ -14,10 +14,13 @@ LOCK = Path(__file__).with_suffix(".lock")
 CONSTRAINTS = Path("files/build/versions/host-image/versions-py3")
 STOCK_CONFIG = Path("files/image_config/pip/pip.conf")
 STAGING = Path("var/lib/sonic-configured-host-pip")
+# pyangbind requires enum34 during installation. The host extension explicitly
+# uninstalls it immediately afterwards, so the final host constraints omit it.
+TRANSIENT_PINS = {"enum34==1.1.10"}
 
 
 def archives(lock, constraints):
-    pins = set(constraints.read_text().splitlines())
+    pins = set(constraints.read_text().splitlines()) | TRANSIENT_PINS
     seen = set()
     for line in lock.read_text().splitlines():
         if not line or line.startswith("#"):
@@ -32,6 +35,9 @@ def archives(lock, constraints):
             raise ValueError(f"invalid or stale configured-host Python lock: {requirement}")
         seen.add(requirement)
         yield filename, digest, url
+    missing = TRANSIENT_PINS - seen
+    if missing:
+        raise ValueError(f"missing transient configured-host Python archive: {', '.join(sorted(missing))}")
 
 
 def download(directory, archive):
