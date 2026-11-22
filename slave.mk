@@ -1727,8 +1727,8 @@ endif
 .PHONY: check-vs-boot-mode
 $(vs_boot_mode_stamp): check-vs-boot-mode
 	@mkdir -p "$(@D)"
-	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' | cmp -s - "$@" || \
-	    printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' > "$@"
+	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' | cmp -s - "$@" || \
+	    printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' > "$@"
 endif
 
 # targets for building installers with base image
@@ -1829,6 +1829,7 @@ $(addprefix $(TARGET_PATH)/, $(SONIC_INSTALLERS)) : $(TARGET_PATH)/% : \
 	export BUILD_WITH_BAZEL_WHEN_AVAILABLE="$(BUILD_WITH_BAZEL_WHEN_AVAILABLE)"
 	export SONIC_BOOT_LAYER_GZIP_LEVEL="$(or $(SONIC_BOOT_LAYER_GZIP_LEVEL),6)"
 	export SONIC_SQUASHFS_ZSTD_LEVEL="$(SONIC_SQUASHFS_ZSTD_LEVEL)"
+	export SONIC_VS_BATCH_PACKAGES="$(or $(SONIC_VS_BATCH_PACKAGES),0)"
 	# The receipt is private; only the completed summary bypasses the target log.
 	unset SONIC_IMAGE_TIMING_FILE SONIC_IMAGE_TIMING_CONTEXT
 	if [[ "$@" = "target/sonic-vs.img.gz" || ( "$@" = "target/sonic-vs.bin" && "$${SONIC_VS_IMAGE_TIMINGS:-}" = 1 ) ]]; then

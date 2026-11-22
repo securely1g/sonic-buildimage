@@ -47,6 +47,7 @@ with pathlib.Path("calls.jsonl").open("a") as output:
         "rootfs_handoff_session": os.environ.get("SONIC_VS_RFS_HANDOFF_SESSION"),
         "gzip_level": os.environ.get("SONIC_BOOT_LAYER_GZIP_LEVEL"),
         "zstd_level": os.environ.get("SONIC_SQUASHFS_ZSTD_LEVEL"),
+        "batch_packages": os.environ.get("SONIC_VS_BATCH_PACKAGES"),
         "build_vars": os.environ.get("SONIC_BUILD_VARS"),
         "build_revision": pathlib.Path("artifacts/vs/build-revision.txt").read_text().strip()}) + "\n")
 print("controlled " + action)
@@ -100,7 +101,8 @@ else:
                      "SONIC_VS_IMAGE_TIMINGS", "SONIC_VS_RETRY_GO_FETCH", "SONIC_ENABLE_DEBUG_LAYER",
                      "DOCKER_LOAD_ON_BOOT", "SONIC_VS_DEFER_BUILDER_CLEANUP"):
             self.environment.pop(name, None)
-        for name in ("SONIC_VS_FAST_ASSEMBLY", "SONIC_BOOT_LAYER_GZIP_LEVEL", "SONIC_SQUASHFS_ZSTD_LEVEL"):
+        for name in ("SONIC_VS_FAST_ASSEMBLY", "SONIC_BOOT_LAYER_GZIP_LEVEL", "SONIC_SQUASHFS_ZSTD_LEVEL",
+                     "SONIC_VS_BATCH_PACKAGES"):
             self.environment.pop(name, None)
         self.environment.pop("SONIC_VS_RFS_HANDOFF", None)
         self.environment.pop("SONIC_VS_RFS_HANDOFF_SESSION", None)
@@ -261,15 +263,20 @@ else:
         builder = next(arg for arg in call["args"] if arg.startswith("SONIC_BUILDER_EXTRA_CMDLINE="))
         self.assertIn("-e SONIC_BOOT_LAYER_GZIP_LEVEL", builder)
         self.assertIn("-e SONIC_SQUASHFS_ZSTD_LEVEL", builder)
+        self.assertIn("-e SONIC_VS_BATCH_PACKAGES", builder)
         self.assertEqual((call["gzip_level"], call["zstd_level"]), ("1", "3"))
+        self.assertEqual(call["batch_packages"], "1")
         result = self.run_script("build_vs.sh", SONIC_VS_FAST_ASSEMBLY="1",
-                                 SONIC_BOOT_LAYER_GZIP_LEVEL="6", SONIC_SQUASHFS_ZSTD_LEVEL="15")
+                                 SONIC_BOOT_LAYER_GZIP_LEVEL="6", SONIC_SQUASHFS_ZSTD_LEVEL="15",
+                                 SONIC_VS_BATCH_PACKAGES="0")
         self.assertEqual(result.returncode, 0, result.stderr)
         call = self.calls()[-1]
         self.assertEqual((call["gzip_level"], call["zstd_level"]), ("6", "15"))
+        self.assertEqual(call["batch_packages"], "0")
         for name, value in (("SONIC_BOOT_LAYER_GZIP_LEVEL", "0"), ("SONIC_SQUASHFS_ZSTD_LEVEL", "23"),
                             ("SONIC_BOOT_LAYER_GZIP_LEVEL", "1 --bad"),
-                            ("SONIC_SQUASHFS_ZSTD_LEVEL", "3 --bad")):
+                            ("SONIC_SQUASHFS_ZSTD_LEVEL", "3 --bad"),
+                            ("SONIC_VS_BATCH_PACKAGES", "2"), ("SONIC_VS_BATCH_PACKAGES", "1 --bad")):
             before = len(self.calls())
             result = self.run_script("build_vs.sh", **{name: value})
             self.assertEqual(result.returncode, 2, result.stderr)
@@ -278,6 +285,14 @@ else:
         enabled = [step["id"] for job in workflow["jobs"].values() for step in job.get("steps", [])
                    if step.get("env", {}).get("SONIC_VS_FAST_ASSEMBLY") == "1"]
         self.assertEqual(enabled, ["native_build"])
+
+    def test_package_batching_can_be_enabled_without_changing_compression(self):
+        result = self.run_script("build_vs.sh", SONIC_VS_BATCH_PACKAGES="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        call = self.calls()[-1]
+        self.assertEqual(call["batch_packages"], "1")
+        self.assertEqual((call["gzip_level"], call["zstd_level"]), (None, None))
+        self.assertIn("-e SONIC_VS_BATCH_PACKAGES", " ".join(call["args"]))
 
     def test_ci_builds_and_verifies_the_boot_bundle(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())

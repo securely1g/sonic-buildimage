@@ -90,6 +90,18 @@ sudo() {
                 cwd=self.work, check=True, capture_output=True, timeout=10)
         self.assertEqual((self.work / "builds").read_text().splitlines(), ["built"] * 5)
 
+    def test_package_batching_changes_rebuild_installer_but_unchanged_settings_do_not(self):
+        source = (ROOT / "slave.mk").read_text()
+        start = source.index("ifeq ($(CONFIGURED_PLATFORM),vs)\nvs_boot_mode_stamp :=")
+        block = source[start:source.index("\n# targets for building installers with base image", start)]
+        (self.work / "Makefile").write_text("SHELL=/bin/bash\nTARGET_PATH=target\nCONFIGURED_PLATFORM=vs\n"
+            + block + "\ntarget/image: $(vs_boot_mode_stamp)\n\t@echo built >> builds\n\t@touch $@\n")
+        for batching in ("", "", "1", "1", "0", "0"):
+            subprocess.run(["make", "--no-print-directory", "target/image",
+                f"SONIC_VS_BATCH_PACKAGES={batching}"], cwd=self.work, check=True,
+                capture_output=True, timeout=10)
+        self.assertEqual((self.work / "builds").read_text().splitlines(), ["built"] * 3)
+
 
 if __name__ == "__main__":
     unittest.main()

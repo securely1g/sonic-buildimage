@@ -354,6 +354,19 @@ The faster profile trades installer size for compression time, not a new
 compression format. Compare size, installation, first boot and total build
 time on matched runners before claiming an end-to-end improvement.
 
+The fast profile also defaults `SONIC_VS_BATCH_PACKAGES=1`. Native AMD64 VS
+extensions combine only adjacent APT pairs (`efitools`/`mokutil` and
+`python3-dev`/`j2cli`) and two contiguous pip blocks. Existing version constraints,
+dependency resolution, proxy handling and cleanup hooks remain unchanged.
+Other platforms, architectures and cross builds retain serial installation.
+Set `SONIC_VS_BATCH_PACKAGES=0` to disable batching independently of compression,
+or set it to `1` without the fast profile to test batching alone. Changing this
+setting invalidates the VS installer Make stamp, not container-layer actions.
+Repeated fresh-root lab tests with frozen inputs saved about 13 seconds in
+these blocks and preserved package state and Python payloads; downloads were
+excluded and this is not a full-image speedup claim. Batching does not change
+the offline-bundle format, image tags, first-start Docker import or ONIE wrapper.
+
 Archive publication and fallback member projection attempt Linux reflinks,
 then copy normally when the filesystem does not support them. The destination
 has an independent inode, so later writes cannot corrupt a Bazel/cache source.
