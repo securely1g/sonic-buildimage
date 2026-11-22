@@ -31,6 +31,10 @@ on:
         description: Route the VS build to the isolated cleanup supervisor canary
         type: boolean
         default: false
+      vs_test_fail_installer_upload:
+        description: Test branch only; fail installer upload on the cleanup canary without deleting outputs
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -1223,20 +1227,37 @@ jobs:
           echo "debug_layer=$SONIC_ENABLE_DEBUG_LAYER" >> "$GITHUB_OUTPUT"
           echo "prefix=vs-container-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
+      - name: Prepare intentional installer upload failure on the canary
+        id: vs_upload_failure_test
+        if: >-
+          github.event_name == 'workflow_dispatch' && inputs.vs_cleanup_canary &&
+          inputs.vs_test_fail_installer_upload
+        working-directory: ${{ runner.temp }}
+        env:
+          CLEANUP_DEFERRED: ${{ steps.vs_cleanup_handoff.outputs.enrolled }}
+        run: |
+          set -euo pipefail
+          test "$CLEANUP_DEFERRED" = true
+          prefix="${RUNNER_TEMP:?}/intentional-missing-vs-upload-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:?}/"
+          test ! -e "${prefix%/}"
+          test ! -L "${prefix%/}"
+          printf 'prefix=%s\n' "$prefix" >> "$GITHUB_OUTPUT"
+          printf 'Intentional upload failure: using an absent source prefix; built outputs are unchanged.\n'
+
       - name: Publish the installer and matching container archives
         id: vs_installer_upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sonic-vs-slave-amd64
           path: |
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/outputs.sha256
-            vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/containers/selection.json
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/target/sonic-vs.bin.dockers
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent.gz
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-orchagent-dbg.gz
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs.gz
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/target/docker-syncd-vs-dbg.gz
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/outputs.sha256
+            ${{ steps.vs_upload_failure_test.outputs.prefix }}vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/containers/selection.json
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

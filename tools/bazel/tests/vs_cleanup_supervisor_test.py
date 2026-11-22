@@ -419,6 +419,66 @@ class GitHubResultTest(unittest.TestCase):
 
 
 class CanaryWorkflowTest(unittest.TestCase):
+    def test_upload_failure_fixture_preserves_outputs_and_normal_upload_paths(self):
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
+        inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
+        self.assertFalse(inputs["vs_test_fail_installer_upload"]["default"])
+        steps = workflow["jobs"]["vs_container"]["steps"]
+        fixture = next(step for step in steps if step.get("id") == "vs_upload_failure_test")
+        upload = next(step for step in steps if step.get("id") == "vs_installer_upload")
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.vs_cleanup_canary",
+                      fixture["if"])
+        self.assertIn("inputs.vs_test_fail_installer_upload", fixture["if"])
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        template = upload["with"]["path"].replace("${{ github.run_id }}", "123").replace(
+            "${{ github.run_attempt }}", "2")
+        token = "${{ steps.vs_upload_failure_test.outputs.prefix }}"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = [root / line for line in template.replace(token, "").splitlines()]
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"built output")
+            output = root / "output"
+            result = subprocess.run(
+                ["bash", "-c", fixture["run"]], cwd=root, capture_output=True, text=True,
+                env=dict(os.environ, RUNNER_TEMP=directory, CLEANUP_DEFERRED="true",
+                         GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2", GITHUB_OUTPUT=str(output)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            prefix = output.read_text().strip().removeprefix("prefix=")
+            self.assertTrue(prefix.startswith(directory + "/"))
+            self.assertFalse(Path(prefix).exists())
+            for line in template.replace(token, prefix).splitlines():
+                self.assertFalse(Path(line).exists())
+            for path in paths:
+                self.assertEqual(path.read_bytes(), b"built output")
+
+    def test_upload_failure_fixture_refuses_fallback_and_existing_sources(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())[
+            "jobs"]["vs_container"]["steps"]
+        fixture = next(step for step in steps if step.get("id") == "vs_upload_failure_test")
+        for case in ("not_deferred", "existing_directory", "dangling_symlink"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prefix = root / "intentional-missing-vs-upload-123-2"
+                if case == "existing_directory":
+                    prefix.mkdir()
+                    (prefix / "evidence").write_text("retain")
+                elif case == "dangling_symlink":
+                    prefix.symlink_to(root / "absent")
+                output = root / "output"
+                result = subprocess.run(
+                    ["bash", "-c", fixture["run"]], cwd=root, capture_output=True, text=True,
+                    env=dict(os.environ, RUNNER_TEMP=directory,
+                             CLEANUP_DEFERRED="false" if case == "not_deferred" else "true",
+                             GITHUB_RUN_ID="123", GITHUB_RUN_ATTEMPT="2", GITHUB_OUTPUT=str(output)))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(output.exists())
+                if case == "existing_directory":
+                    self.assertEqual((prefix / "evidence").read_text(), "retain")
+                elif case == "dangling_symlink":
+                    self.assertTrue(prefix.is_symlink())
+
     def test_routing_enrollment_fallback_and_authorization_are_canary_only(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
         inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]

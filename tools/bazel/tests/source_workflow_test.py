@@ -147,6 +147,8 @@ class ArchiveCachePolicyTest(unittest.TestCase):
                 self.assertTrue(step["with"]["path"].startswith(directory + "/"))
             if "upload-artifact@" in step.get("uses", ""):
                 for path in step["with"]["path"].splitlines():
+                    if step.get("id") == "vs_installer_upload":
+                        path = path.removeprefix("${{ steps.vs_upload_failure_test.outputs.prefix }}")
                     self.assertTrue(path.startswith(directory + "/"), path)
         installer_paths = selected["Publish the installer and matching container archives"]["with"]["path"]
         for output in ("sonic-vs.bin", "sonic-vs.bin.dockers", "docker-orchagent.gz",
