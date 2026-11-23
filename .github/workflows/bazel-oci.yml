@@ -1084,6 +1084,14 @@ jobs:
       - name: Validate shared NFS package cache
         run: bash tools/ci/runner/nfs_package_cache.sh
 
+      - name: Remove stopped VS containers from completed attempts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VS_RUNNER_WORKSPACE: ${{ runner.workspace }}
+        run: |
+          python3 -B -m tools.bazel.ci.cleanup_stale_vs_containers \
+            --runner-workspace "$VS_RUNNER_WORKSPACE"
+
       - name: Reclaim unused images and build cache
         run: |
           set -euo pipefail
