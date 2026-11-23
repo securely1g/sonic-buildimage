@@ -1,3 +1,4 @@
+load("@aspect_bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
@@ -15,6 +16,14 @@ load("//tools/bazel/oci:oci_base_layout.bzl", "oci_base_layout")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
+
+# The source suites expect one directory with raw models and rendered templates.
+copy_to_directory(
+    name = "source_models",
+    include_srcs_packages = ["src/sonic-yang-models"],
+    srcs = ["//src/sonic-yang-models:native_model_sources"],
+    root_paths = ["src/sonic-yang-models/yang-models", "src/sonic-yang-models/rendered/py"],
+)
 
 exports_files(["integration/frr_python_wheel_probe.py"])
 

@@ -493,8 +493,18 @@ class PublicArtifactsTest(unittest.TestCase):
         for logical, event_path, count in artifacts.BEP["archive"]:
             with self.subTest(logical=logical):
                 command = workflow.split(event_path, 1)[1].split("2>&1 | tee", 1)[0]
-                labels = [line.strip().rstrip("\\").strip()
-                          for line in command.splitlines() if line.strip().startswith(("//", "@"))]
+                if logical == "python-tests":
+                    # Execute the same Bash arrays that feed the VS and standalone
+                    # commands; an audit-only target must not count as a test.
+                    self.assertIn('"${tests[@]}"', command)
+                    section = workflow.split("# Source suites consume", 1)[1].split("          tests=(", 1)[1]
+                    selection = "tests=(" + section.split("          python3 -B", 1)[0]
+                    script = selection + 'printf "%s\\n" "${tests[@]}"'
+                    labels = subprocess.check_output(["bash", "-eu", "-c", script], env={"FORK_PR": "false"},
+                                                     text=True).splitlines()
+                else:
+                    labels = [line.strip().rstrip("\\").strip()
+                              for line in command.splitlines() if line.strip().startswith(("//", "@"))]
                 self.assertEqual(len(labels), len(set(labels)))
                 self.assertEqual(count, len(labels))
 

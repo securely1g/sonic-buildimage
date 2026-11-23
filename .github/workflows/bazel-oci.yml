@@ -135,13 +135,11 @@ jobs:
             wheel_flags+=("$wheel_flag")
             audit_flags+=("--bazel-arg=$wheel_flag")
           fi
+          tests=(//src/sonic-dhcp-utilities:upstream_tests //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests)
+          if [[ ${FORK_PR:-false} != true ]]; then tests+=(//src/sonic-dhcp-utilities:installed_wheel_test); fi
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
-            --output artifacts/dhcp-relay/utility-action.validation.json \
-            //src/sonic-dhcp-utilities:upstream_tests //src/sonic-dhcp-utilities:installed_wheel_test \
-            //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests
-          "$BAZEL" test "${wheel_flags[@]}" //src/sonic-dhcp-utilities:upstream_tests \
-            //src/sonic-dhcp-utilities:installed_wheel_test \
-            //dockers/docker-dhcp-relay/cli-plugin-tests:upstream_tests --nocache_test_results \
+            --output artifacts/dhcp-relay/utility-action.validation.json "${tests[@]}"
+          "$BAZEL" test "${wheel_flags[@]}" "${tests[@]}" --nocache_test_results \
             --build_event_json_file="$PWD/artifacts/dhcp-relay/utility-test-events.json"
       - name: Build DHCP relay runtime and debug images from source owners
         id: dhcp_relay_build
@@ -252,7 +250,9 @@ jobs:
     if: >-
       !cancelled() && needs.checks.result == 'success' &&
       ((needs.vs_container.result == 'success' && fromJSON(needs.vs_container.outputs.plan).groups.archive) ||
-       (needs.vs_container.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.skip_vs))
+       (needs.vs_container.result == 'skipped' && ((github.event_name == 'workflow_dispatch' && inputs.skip_vs) ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository &&
+         fromJSON(needs.checks.outputs.plan).groups.archive))))
     name: Container package tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -271,6 +271,7 @@ jobs:
       # Reap the detached Bazel server so each Make archive can finish shutdown.
       options: --init
     env:
+      FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       USE_VS_WHEELS: ${{ needs.vs_container.result == 'success' }}
       VS_WHEELS_ARTIFACT_ID: ${{ needs.vs_container.outputs.python_packages_artifact_id }}
       BAZEL: &package_test_bazel ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
@@ -372,7 +373,7 @@ jobs:
           merge-multiple: true
           path: ${{ steps.host_inputs.outputs.directory }}
       - name: Verify native VS host installation interfaces
-        if: matrix.architecture == 'amd64'
+        if: matrix.architecture == 'amd64' && env.FORK_PR != 'true'
         env:
           HOST_INPUTS: ${{ steps.host_inputs.outputs.directory }}
         run: |
@@ -460,62 +461,41 @@ jobs:
             BUILD_WITH_BAZEL_WHEN_AVAILABLE=y BLDENV=trixie CONFIGURED_PLATFORM=vs \
             CONFIGURED_ARCH=amd64 ENABLE_ASAN=n DBG_IMAGE_MARK=dbg DOCKERS_PATH=dockers \
             2>&1 | tee artifacts/config-engine/make-manifests.log
+          # Source suites consume native bindings, CLI programs and rendered model fixtures.
+          tests=(
+            //tools/bazel/tests:apt_selection_test //tools/bazel/tests:sonic_py_common_test
+            //tools/bazel/tests:sonic_yang_mgmt_full_test //src/sonic-yang-mgmt:sonic_yang_mgmt_runtime_test
+            @sonic_yang_mgmt//:sonic_yang_mgmt_runtime_test //tools/bazel/tests:sonic_py_common_full_test
+            //tools/bazel/tests:sonic_config_engine_full_test //tools/bazel/tests:containercfgd_full_test
+            //tools/bazel/tests:supervisor_python_full_test //tools/bazel/tests:installed_wheel_fixture_test
+            //tools/bazel/tests:wheel_contract_test //src/sonic-config-engine:sonic_cfggen_cli_test
+            //tools/bazel/tests:manifest_labels_test //tools/bazel/image/vs/metadata:metadata_test
+            //tools/bazel/tests:manifest_labels_action_test //tools/bazel/tests:cfggen_template_test
+            //tools/bazel/tests:swss_manifest_render_test
+          )
+          audit_targets=()
+          if [[ $FORK_PR == true ]]; then
+            # The distribution packs a wheel together with its model directory. Run
+            # source tests against the independently rendered native model tree.
+            models=--@sonic_yang_models//:test_models=//tools/bazel/tests:source_models
+            wheel_flags+=("$models")
+            audit_flags+=("--bazel-arg=$models")
+          else
+            tests+=(//tools/bazel/tests:sonic_yang_mgmt_wheel_test //tools/bazel/tests:sonic_python_wheels_test
+              //tools/bazel/tests:containercfgd_wheel_test //tools/bazel/tests:supervisor_python_wheel_test)
+            audit_targets+=(//tools/bazel/tests:source_installation_test //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel
+              //src/sonic-py-common:sonic_py_common_wheel //src/sonic-config-engine:sonic_config_engine_wheel
+              //src/sonic-containercfgd:sonic_containercfgd_wheel
+              //src/sonic-supervisord-utilities:sonic_supervisord_utilities_wheel)
+          fi
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" "${audit_flags[@]}" \
             --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --output artifacts/config-engine/action-audit.json \
-            //tools/bazel/tests:apt_selection_test \
-            //tools/bazel/tests:sonic_py_common_test \
-            //tools/bazel/tests:sonic_yang_mgmt_full_test \
-            //tools/bazel/tests:sonic_yang_mgmt_wheel_test \
-            //src/sonic-yang-mgmt:sonic_yang_mgmt_runtime_test \
-            @sonic_yang_mgmt//:sonic_yang_mgmt_runtime_test \
-            //tools/bazel/tests:sonic_py_common_full_test \
-            //tools/bazel/tests:sonic_config_engine_full_test \
-            //tools/bazel/tests:sonic_python_wheels_test \
-            //tools/bazel/tests:source_installation_test \
-            //tools/bazel/tests:containercfgd_full_test \
-            //tools/bazel/tests:containercfgd_wheel_test \
-            //tools/bazel/tests:supervisor_python_full_test \
-            //tools/bazel/tests:supervisor_python_wheel_test \
-            //tools/bazel/tests:installed_wheel_fixture_test \
-            //tools/bazel/tests:wheel_contract_test \
-            //src/sonic-config-engine:sonic_cfggen_cli_test \
-            //tools/bazel/tests:manifest_labels_test \
-            //tools/bazel/image/vs/metadata:metadata_test \
-            //tools/bazel/tests:manifest_labels_action_test \
-            //tools/bazel/tests:cfggen_template_test \
-            //tools/bazel/tests:swss_manifest_render_test "${startup_test[@]}" \
-            //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel \
-            //src/sonic-py-common:sonic_py_common_wheel \
-            //src/sonic-config-engine:sonic_config_engine_wheel \
-            //src/sonic-containercfgd:sonic_containercfgd_wheel \
-            //src/sonic-supervisord-utilities:sonic_supervisord_utilities_wheel
+            --output artifacts/config-engine/action-audit.json "${tests[@]}" "${audit_targets[@]}" "${startup_test[@]}"
           "$BAZEL" test "${wheel_flags[@]}" --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --nocache_test_results --test_output=all \
-            --build_event_json_file="$PWD/artifacts/config-engine/test-events.jsonl" \
-            //tools/bazel/tests:apt_selection_test \
-            //tools/bazel/tests:sonic_py_common_test \
-            //tools/bazel/tests:sonic_yang_mgmt_full_test \
-            //tools/bazel/tests:sonic_yang_mgmt_wheel_test \
-            //src/sonic-yang-mgmt:sonic_yang_mgmt_runtime_test \
-            @sonic_yang_mgmt//:sonic_yang_mgmt_runtime_test \
-            //tools/bazel/tests:sonic_py_common_full_test \
-            //tools/bazel/tests:sonic_config_engine_full_test \
-            //tools/bazel/tests:sonic_python_wheels_test \
-            //tools/bazel/tests:containercfgd_full_test \
-            //tools/bazel/tests:containercfgd_wheel_test \
-            //tools/bazel/tests:supervisor_python_full_test \
-            //tools/bazel/tests:supervisor_python_wheel_test \
-            //tools/bazel/tests:installed_wheel_fixture_test \
-            //tools/bazel/tests:wheel_contract_test \
-            //src/sonic-config-engine:sonic_cfggen_cli_test \
-            //tools/bazel/tests:manifest_labels_test \
-            //tools/bazel/image/vs/metadata:metadata_test \
-            //tools/bazel/tests:manifest_labels_action_test \
-            //tools/bazel/tests:cfggen_template_test \
-            //tools/bazel/tests:swss_manifest_render_test \
+            --build_event_json_file="$PWD/artifacts/config-engine/test-events.jsonl" "${tests[@]}" \
             2>&1 | tee artifacts/config-engine/test.log
           if (( ${#startup_test[@]} )); then
             mkdir -p artifacts/swss-startup
@@ -528,6 +508,8 @@ jobs:
           git diff --exit-code
 
       - name: Exercise the alternate source installation TAR rules
+        # The comparison also needs the redis-dump-load wheel for setup.py metadata.
+        if: env.FORK_PR != 'true'
         env:
           VS_PACKAGE: ${{ steps.wheel_inputs.outputs.package }}
         run: |
@@ -550,7 +532,7 @@ jobs:
         run: *dhcp_utility_tests
 
       - name: Check the PDDF wheel against its independent setuptools reference
-        if: matrix.architecture == 'amd64'
+        if: matrix.architecture == 'amd64' && env.FORK_PR != 'true'
         env:
           VS_PACKAGE: ${{ steps.wheel_inputs.outputs.package }}
         run: |
@@ -612,16 +594,18 @@ jobs:
             //tools/bazel/tests:oci_inventory_test //tools/bazel/tests:oci_native_packages_test
             //tools/bazel/tests:oci_package_contract_test //tools/bazel/tests:oci_package_payloads_test
             //tools/bazel/tests:oci_package_receipts_test //tools/bazel/tests:oci_package_state_layer_test
-            "$libteam_test" @sonic_swss//crates/countersyncd:common_rust_test
-            @sonic_swss//bazel:protobuf_runtime_test "${scapy_tests[@]}"
+            @sonic_swss//crates/countersyncd:common_rust_test @sonic_swss//bazel:protobuf_runtime_test
             "${hsflowd_tests[@]}"
           )
-          if [[ ${USE_VS_WHEELS:-false} != true ]]; then targets+=(//tools/bazel/tests:swss_package_contract_test); fi
-          # The VS job validates the selected native packages against its exact TARs.
-          if [[ "${USE_VS_WHEELS:-false}" != true ]]; then
+          if [[ $FORK_PR != true ]]; then targets+=("$libteam_test" "${scapy_tests[@]}"); fi
+          if [[ ${USE_VS_WHEELS:-false} != true ]]; then
+            targets+=(@otelcol_contrib//distributions/otelcol-contrib:source_contract_test @otelcol_contrib//bazel:components_output_test)
+          fi
+          # Only explicit standalone packaging dispatch builds these deliverables.
+          if [[ $FORK_PR != true && ${USE_VS_WHEELS:-false} != true ]]; then
+            targets+=(//tools/bazel/tests:swss_package_contract_test)
             targets+=(@nnpy//:package_test @hsflowd//:package_test @sflowtool//:package_test @libpsample//:package_test)
-            targets+=(@otelcol_contrib//distributions/otelcol-contrib:source_contract_test
-                      @otelcol_contrib//bazel:components_output_test @otelcol_contrib//distributions/otelcol-contrib:package_test)
+            targets+=(@otelcol_contrib//distributions/otelcol-contrib:package_test)
           fi
           platform=@sonic_build_infra//platforms:x86_64_trixie
           python3 -B tools/bazel/ci/bazel_commands.py --bazel "$BAZEL" \
@@ -631,7 +615,7 @@ jobs:
             --build_event_json_file="$PWD/artifacts/owners/test-events.jsonl" "${targets[@]}"
 
       - name: Verify SWSS native link closure and symbol lookups
-        if: matrix.architecture == 'amd64' && env.USE_VS_WHEELS != 'true'
+        if: matrix.architecture == 'amd64' && env.USE_VS_WHEELS != 'true' && env.FORK_PR != 'true'
         env:
           BAZELISK_GITHUB_TOKEN: ""
         run: |
@@ -674,15 +658,15 @@ jobs:
         env:
           VS_WHEELS: ${{ steps.wheel_inputs.outputs.directory }}
         run: |
-          inputs=()
-          if [[ -n $VS_WHEELS ]]; then inputs=(--vs-packages "$VS_WHEELS"); fi
-          python3 -B tools/bazel/ci/python_packages.py "${inputs[@]}" \
-            --artifacts artifacts/config-engine \
-            --revision artifacts/archive/revision.json \
-            --architecture "${{ matrix.architecture }}" \
-            --bazel "$BAZEL" \
-            --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }}
+          if [[ $FORK_PR != true ]]; then
+            inputs=()
+            if [[ -n $VS_WHEELS ]]; then inputs=(--vs-packages "$VS_WHEELS"); fi
+            python3 -B tools/bazel/ci/python_packages.py "${inputs[@]}" \
+              --artifacts artifacts/config-engine --revision artifacts/archive/revision.json \
+              --architecture "${{ matrix.architecture }}" --bazel "$BAZEL" \
+              --bazel-arg=--platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
+              --bazel-arg=--host_platform=@sonic_build_infra//platforms:${{ matrix.platform }}
+          fi
           PYTHONPATH="$PWD" python3 - <<'PYTHON'
           from pathlib import Path
           import json
@@ -699,7 +683,7 @@ jobs:
         if: always() && steps.packages.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: container-packages-${{ matrix.architecture }}
+          name: ${{ env.FORK_PR == 'true' && 'container-source-tests' || 'container-packages' }}-${{ matrix.architecture }}
           path: |
             artifacts/*/test-summary.json
             artifacts/owners/action-audit.json
@@ -735,7 +719,9 @@ jobs:
     if: >-
       !cancelled() && needs.checks.result == 'success' &&
       ((needs.vs_container.result == 'success' && fromJSON(needs.vs_container.outputs.plan).groups.package_amd64) ||
-       (needs.vs_container.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.skip_vs))
+       (needs.vs_container.result == 'skipped' && ((github.event_name == 'workflow_dispatch' && inputs.skip_vs) ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository &&
+         fromJSON(needs.checks.outputs.plan).groups.package_amd64))))
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
@@ -753,6 +739,7 @@ jobs:
       VS_SWSS_ARTIFACT_ID: ${{ needs.vs_container.outputs.swss_artifact_id }}
       VS_COMPONENT_DEBUG: ${{ needs.vs_container.outputs.debug_layer }}
       BAZEL: *package_test_bazel
+      FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
       USE_VS_WHEELS: ${{ needs.vs_container.result == 'success' }}
       VS_WHEELS_ARTIFACT_ID: ${{ needs.vs_container.outputs.python_packages_artifact_id }}
     defaults: *package_test_defaults
@@ -2244,7 +2231,9 @@ jobs:
           VS: ${{ needs.vs_container.result }}
           PLAN: ${{ needs.vs_container.outputs.plan }}
           RESULT: ${{ needs.archive.result }}
-          SOURCE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_vs }}
+          SOURCE_ONLY: ${{ (github.event_name == 'workflow_dispatch' && inputs.skip_vs) ||
+            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository &&
+             fromJSON(needs.checks.outputs.plan).groups.archive) }}
         run: |
           set -euo pipefail
           test "$CHECKS" = success

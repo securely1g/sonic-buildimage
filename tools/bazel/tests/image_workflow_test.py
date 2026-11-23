@@ -229,6 +229,51 @@ class VerificationWorkflowTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "archive"):
             validation_results.verify(jobs)
 
+    def test_fork_packages_run_source_and_fixture_suites_on_the_existing_native_runners(self):
+        """Record the fork's actual test arguments. Release package fallbacks require an explicit dispatch."""
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        for job, runner in (("archive", "bazel-arm64"), ("package_amd64", "bazel-x64")):
+            self.assertIn("github.event.pull_request.head.repo.full_name != github.repository", jobs[job]["if"])
+            self.assertIn("fromJSON(needs.checks.outputs.plan).groups." + job, jobs[job]["if"])
+            self.assertIn(runner, jobs[job]["strategy"]["matrix"]["include"][0]["runner"])
+        steps = {s["name"]: s for s in jobs["package_amd64"]["steps"]}
+        for name in ("Exercise the alternate source installation TAR rules", "Verify native VS host installation interfaces",
+                     "Verify SWSS native link closure and symbol lookups",
+                     "Check the PDDF wheel against its independent setuptools reference"):
+            self.assertIn("env.FORK_PR != 'true'", steps[name]["if"])
+        self.assertIn("container-source-tests", steps["Upload package test results"]["with"]["name"])
+        self.assertIn('if [[ $FORK_PR != true ]]', steps["Retain wheels and required Python test evidence"]["run"])
+        scripts = [steps[name]["run"] for name in (
+            "Test archive rules against synthetic OCI fixtures", "Test Python packages and check startup generation",
+            "Check DHCP utilities and CLI tests without DEB generation", "Test SONiC component packages and their upstream suites",
+        )]
+        with tempfile.TemporaryDirectory() as work:
+            for directory in ("archive", "dhcp-relay"):
+                Path(work, "artifacts", directory).mkdir(parents=True)
+            mock_tools = """
+                set -eu
+                make() { :; }
+                python3() { :; }
+                git() { :; }
+                bazel_args() {
+                    if [[ $1 == query ]]; then seq 1 22; else printf '%s\n' "$@" >> calls; fi
+                }
+            """
+            env = dict(os.environ, FORK_PR="true", VS_WHEELS="", VS_PACKAGE="", USE_VS_WHEELS="false", BAZEL="bazel_args")
+            for script in scripts:
+                script = script.replace("${{ matrix.platform }}", "x86_64_trixie").replace("${{ matrix.architecture }}", "amd64")
+                subprocess.run(["bash", "-c", mock_tools + script], check=True, env=env, cwd=work, capture_output=True)
+            labels = set(Path(work, "calls").read_text().splitlines())
+            for label in ("//tools/bazel/tests:sonic_docker_archive_test", "//tools/bazel/tests:sonic_config_engine_full_test",
+                          "//tools/bazel/tests:swss_manifest_render_test", "//tools/bazel/tests:swss_init_test",
+                          "//src/sonic-dhcp-utilities:upstream_tests", "@sonic_swss//crates/countersyncd:common_rust_test",
+                          "@otelcol_contrib//bazel:components_output_test",
+                          "--@sonic_yang_models//:test_models=//tools/bazel/tests:source_models"):
+                self.assertIn(label, labels)
+            self.assertFalse(any(label.endswith(("installed_wheel_test", ":package_test", ":wheel_test",
+                                                 ":swss_package_contract_test", ":consumer_test")) for label in labels))
+            self.assertNotIn("//tools/bazel/tests:sonic_python_wheels_test", labels)
+
     def test_required_arm64_check_reports_for_empty_and_nonempty_package_selections(self):
         """Keep the fixed branch-protection check even when Actions schedules no matrix rows."""
         jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
