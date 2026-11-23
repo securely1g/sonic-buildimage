@@ -61,7 +61,10 @@ def main():
     parser.add_argument('--vs-directory', type=Path)
     parser.add_argument('--vs-debug', choices=('y', 'n'), default='n')
     parser.add_argument('--installed-only', action='store_true', help='Run the installed-package suite on a VS handoff')
+    parser.add_argument('--source-only', action='store_true', help='Run native source tests without release packages')
     args = parser.parse_args()
+    if args.source_only and (args.installed_only or args.vs_directory is not None):
+        parser.error('--source-only cannot select installed VS inputs')
     if args.installed_only and args.vs_directory is None:
         parser.error('--installed-only requires --vs-directory')
     tests = [INSTALLED_TEST] if args.installed_only else TESTS
@@ -83,6 +86,11 @@ def main():
 
     packages = PACKAGES
     build_targets = list(PACKAGES.values())
+    if args.source_only:
+        tests = [test for test in TESTS if test != INSTALLED_TEST]
+        options.append('--//tests:runtime_under_test=//rebootbackend:librebootgnoi.so.0')
+        packages = {}
+        build_targets = []
     if args.vs_directory is not None:
         flags, packages = vs_test_inputs(args.vs_directory, args.vs_debug == 'y')
         options.extend(flags)
@@ -195,7 +203,8 @@ def main():
                     path = MODULE / paths[0]
                     shutil.copyfile(path, output / name)
                 report['packages'][target] = {'path': name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-            report['package_source'] = 'vs' if args.vs_directory is not None else 'standalone'
+            report['package_source'] = ('source-tests-only' if args.source_only else
+                                        'vs' if args.vs_directory is not None else 'standalone')
             assert sources == {name: hashlib.sha256((REPO / name).read_bytes()).hexdigest() for name in sources}
             assert proto_sources == {name: hashlib.sha256((gnoi / name).read_bytes()).hexdigest() for name in proto_sources}
             assert not git('status', '--porcelain', '--untracked-files=no')

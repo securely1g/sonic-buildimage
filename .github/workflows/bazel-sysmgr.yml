@@ -139,6 +139,7 @@ jobs:
         env:
           BAZELISK_GITHUB_TOKEN: ""
           VS_DEBUG: ${{ inputs.vs_debug }}
+          SOURCE_ONLY: ${{ inputs.vs_artifact_id == '' && github.event_name == 'pull_request' }}
           RUN_SOURCE_TESTS: ${{ inputs.run_source_tests }}
           CI_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -148,6 +149,8 @@ jobs:
               --directory "$VS_SYSMGR_DIRECTORY" --revision "$GITHUB_SHA" --debug "$VS_DEBUG"
             package_args+=(--vs-directory "$VS_SYSMGR_DIRECTORY" --vs-debug "$VS_DEBUG")
             if [[ $RUN_SOURCE_TESTS != true ]]; then package_args+=(--installed-only); fi
+          elif [[ $SOURCE_ONLY == true ]]; then
+            package_args+=(--source-only)
           fi
           python3 -B src/sonic-sysmgr/bazel/ci.py "${package_args[@]}" \
             --startup-arg="--bazelrc=$GITHUB_WORKSPACE/.bazelrc.user" \

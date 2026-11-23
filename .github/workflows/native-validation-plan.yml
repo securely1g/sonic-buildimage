@@ -33,5 +33,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           WORKFLOW: ${{ inputs.workflow }}
+          PYTHONPATH: .
           INPUT_PATHS: ${{ inputs.paths }}
         run: /usr/bin/python3 -B -m tools.bazel.ci.native_validation "$WORKFLOW"

@@ -151,6 +151,7 @@ jobs:
         shell: bash
         env:
           NATIVE_PLATFORM: '@sonic_build_infra//platforms:${{ matrix.machine }}_trixie'
+          SOURCE_ONLY: ${{ inputs.vs_artifact_id == '' && github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
           test "$(uname -m)" = '${{ matrix.machine }}'
@@ -185,6 +186,12 @@ jobs:
             )
             cp "$GITHUB_WORKSPACE"/bazel-testlogs/src/sonic-yang-models/yang_models_package_test/test.xml artifacts/
             cp "$GITHUB_WORKSPACE/$VS_SCRATCH/download/"{sonic_yang_models-1.0-py3-none-any.whl,yang_models_pkg.tar} artifacts/
+          elif [[ "$SOURCE_ONLY" == true ]]; then
+            # Validate setup.py's source list and render both model variants without packaging.
+            bazel query "${options[@]}" 'kind("render_model rule", //:*)' > artifacts/source-template-targets.txt
+            mapfile -t templates < artifacts/source-template-targets.txt
+            (( ${#templates[@]} > 0 ))
+            bazel build "${options[@]}" //:validate_native_manifest "${templates[@]}"
           else
             bazel test "${options[@]}" --test_output=all //:yang_models_package_test
             bazel build "${options[@]}" //:yang_models_wheel //:yang_models_pkg
@@ -194,7 +201,9 @@ jobs:
             done
             cp bazel-testlogs/yang_models_package_test/test.xml artifacts/
           fi
-          sha256sum artifacts/*.whl artifacts/*.tar > artifacts/SHA256SUMS
+          if [[ "$SOURCE_ONLY" != true ]]; then
+            sha256sum artifacts/*.whl artifacts/*.tar > artifacts/SHA256SUMS
+          fi
           git diff --exit-code HEAD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: bazel_upload_yang_build
