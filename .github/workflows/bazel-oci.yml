@@ -31,6 +31,19 @@ on:
         description: Route the VS build to the isolated cleanup supervisor canary
         type: boolean
         default: false
+      vs_cleanup_benchmark_arm:
+        description: Approved isolated cleanup benchmark (never production routing)
+        type: choice
+        options: [none, A, B, C]
+        default: none
+      vs_benchmark_host_base_artifact:
+        description: Fixed trusted master host-base artifact ID; 0 explicitly disables reuse
+        type: string
+        default: ''
+      vs_benchmark_kernel_artifact:
+        description: Fixed trusted master kernel-index artifact ID; 0 explicitly disables reuse
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -46,7 +59,7 @@ env:
 jobs:
   dhcp_relay_source_image:
     name: DHCP relay source image (AMD64, K3s)
-    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'dhcp-relay'
+    if: github.event_name == 'workflow_dispatch' && inputs.source_image == 'dhcp-relay' && (!inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none')
     runs-on: [self-hosted, Linux, X64, sonic-slave-container-k3s]
     timeout-minutes: 360
     env:
@@ -742,7 +755,7 @@ jobs:
       vs_artifact_id: ${{ needs.vs_container.outputs.python_packages_artifact_id }}
 
   checks:
-    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
+    if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none' || (inputs.vs_cleanup_benchmark_arm && inputs.vs_cleanup_benchmark_arm != 'none')
     name: OCI regression checks (AMD64)
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     outputs:
@@ -756,6 +769,12 @@ jobs:
     env:
       # Draft catalog for root-module resolution; the full Make VS job is separate.
       BAZEL: ${{ github.workspace }}/tools/bazel/ci/libteam_draft_bazel.sh
+      VS_CLEANUP_BENCHMARK_ARM: ${{ inputs.vs_cleanup_benchmark_arm || 'none' }}
+      VS_BENCHMARK_CANARY: ${{ inputs.vs_cleanup_canary }}
+      VS_BENCHMARK_SKIP_VS: ${{ inputs.skip_vs }}
+      VS_BENCHMARK_SOURCE_IMAGE: ${{ inputs.source_image }}
+      VS_BENCHMARK_HOST_BASE_ARTIFACT: ${{ inputs.vs_benchmark_host_base_artifact }}
+      VS_BENCHMARK_KERNEL_ARTIFACT: ${{ inputs.vs_benchmark_kernel_artifact }}
     defaults:
       run:
         shell: bash
@@ -778,6 +797,9 @@ jobs:
         uses: ./.github/actions/bazel-post-job-cleanup
         with:
           migrated-job: 'true'
+      - name: Validate explicit VS benchmark inputs
+        run: python3 -B -m tools.bazel.ci.vs_cleanup_benchmark inputs
+
       - name: Check generated dependency state
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -983,6 +1005,12 @@ jobs:
         working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}
     env:
       SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs
+      VS_CLEANUP_BENCHMARK_ARM: ${{ inputs.vs_cleanup_benchmark_arm || 'none' }}
+      VS_BENCHMARK_CANARY: ${{ inputs.vs_cleanup_canary }}
+      VS_BENCHMARK_SKIP_VS: ${{ inputs.skip_vs }}
+      VS_BENCHMARK_SOURCE_IMAGE: ${{ inputs.source_image }}
+      VS_BENCHMARK_HOST_BASE_ARTIFACT: ${{ inputs.vs_benchmark_host_base_artifact }}
+      VS_BENCHMARK_KERNEL_ARTIFACT: ${{ inputs.vs_benchmark_kernel_artifact }}
       BAZEL: bazel
       # Use the explicitly selected gRPC service, not the legacy HTTPS override.
       BAZEL_REMOTE_AUTH: ""
@@ -1043,6 +1071,12 @@ jobs:
             printf 'Supervisor enrollment unavailable; retaining workflow cleanup.\n' >&2
           fi
 
+      - name: Verify the requested benchmark listener and deferral
+        id: vs_cleanup_benchmark
+        env:
+          VS_BENCHMARK_ENROLLED: ${{ steps.vs_cleanup_handoff.outputs.enrolled }}
+        run: python3 -B -m tools.bazel.ci.vs_cleanup_benchmark lifecycle
+
       - name: Download verified source archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1080,9 +1114,13 @@ jobs:
           CACHE_MAX_AGE_DAYS: ${{ vars.VS_REPO_CONTENTS_CACHE_MAX_AGE_DAYS || '14' }}
           CACHE_MIN_FREE_GIB: ${{ vars.VS_REPO_CONTENTS_CACHE_MIN_FREE_GIB || '220' }}
         run: |
+          retain=()
+          if [[ "${VS_CLEANUP_BENCHMARK_ARM:-none}" == none ]]; then
+            retain+=(--retain-repo-contents)
+          fi
           python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache \
             --runner-workspace "$VS_RUNNER_WORKSPACE" --remove-package-cache \
-            --retain-repo-contents --repo-contents-max-gib "$CACHE_MAX_GIB" \
+            "${retain[@]}" --repo-contents-max-gib "$CACHE_MAX_GIB" \
             --repo-contents-max-age-days "$CACHE_MAX_AGE_DAYS" \
             --repo-contents-min-free-gib "$CACHE_MIN_FREE_GIB"
 
@@ -1183,7 +1221,7 @@ jobs:
 
       - name: Prepare private VS host-base cache
         id: host_base_dir
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none' }}
         run: |
           set -euo pipefail
           snapshot="${GITHUB_WORKSPACE:?}/.sonic-vs-host-base-cache"
@@ -1193,7 +1231,7 @@ jobs:
       - name: Find a retained host base from this PR or master
         id: host_base_source
         if: steps.host_base_dir.outcome == 'success'
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 -B tools/bazel/ci/vs_host_base_snapshot.py
@@ -1201,7 +1239,7 @@ jobs:
       - name: Download the previous VS host-base snapshot
         id: host_base_download
         if: steps.host_base_source.outputs.read_artifact_id != ''
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
@@ -1211,15 +1249,16 @@ jobs:
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/host-base-transfer/download
 
       - name: Restore the VS host-base cache for Make
+        id: host_base_restore
         if: steps.host_base_download.outcome == 'success'
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none' }}
         run: |
           python3 -B tools/bazel/ci/vs_host_base_transfer.py restore \
             "$GITHUB_WORKSPACE/.sonic-vs-host-base-cache" artifacts/vs/host-base-transfer/download
 
       - name: Find the VS kernel index from a master push
         id: kernel_index_source
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none' }}
         timeout-minutes: 2
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -1230,7 +1269,7 @@ jobs:
       - name: Download the trusted VS kernel index
         id: kernel_index_download
         if: steps.kernel_index_source.outputs.artifact_id != ''
-        continue-on-error: true
+        continue-on-error: ${{ !inputs.vs_cleanup_benchmark_arm || inputs.vs_cleanup_benchmark_arm == 'none' }}
         timeout-minutes: 2
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1244,7 +1283,7 @@ jobs:
         id: native_build
         env:
           # The labeled cleanup step removes the stopped builder after artifact publication.
-          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          SONIC_VS_DEFER_BUILDER_CLEANUP: ${{ steps.vs_cleanup_benchmark.outputs.builder_cleanup || 'y' }}
           DOCKER_LOAD_ON_BOOT: "y"
           SONIC_VS_IMAGE_TIMINGS: "1"
           SONIC_VS_RETRY_GO_FETCH: "1"
@@ -1259,6 +1298,12 @@ jobs:
           # Accept only the index downloaded for this attempt, even if the checkout contains one.
           rm -rf -- artifacts/vs/kernel-cache-input artifacts/vs/kernel-cache-output
           index=artifacts/vs/kernel-cache-download/index.json
+          if [[ "${VS_CLEANUP_BENCHMARK_ARM:-none}" != none && "${VS_BENCHMARK_KERNEL_ARTIFACT:-0}" != 0 ]]; then
+            [[ "${KERNEL_INDEX_DOWNLOAD:-}" == success && -f "$index" && ! -L "$index" ]] || {
+              echo 'Pinned benchmark kernel index was not downloaded as expected.' >&2
+              exit 1
+            }
+          fi
           if [[ "${KERNEL_INDEX_DOWNLOAD:-}" == success && -f "$index" && ! -L "$index" ]]; then
             install -D -m 0644 -- "$index" artifacts/vs/kernel-cache-input/index.json
           fi

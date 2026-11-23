@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
+if __package__:
+    from .vs_cleanup_benchmark import configuration, pinned_artifact
+else:
+    from vs_cleanup_benchmark import configuration, pinned_artifact
+
 
 PREFIX = "sonic-vs-host-base-v1-"
 MASTER = PREFIX + "master"
@@ -103,6 +108,14 @@ def github_api(endpoint):
 
 def main():
     event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    if configuration(os.environ) != "none":
+        artifact = pinned_artifact(
+            github_api, os.environ, MASTER, "VS_BENCHMARK_HOST_BASE_ARTIFACT")
+        if artifact:
+            with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                print(f"read_artifact_id={artifact['id']}", file=output)
+                print(f"read_run_id={artifact['workflow_run']['id']}", file=output)
+        return
     names, write_name = scopes(os.environ, event)
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         if write_name:

@@ -163,6 +163,63 @@ daemon cannot verify its past listener output. Use the existing controlled
 with the enrolled journal intact. Do not run the new command against an old
 daemon or reset an unenrolled journal just to install the fix.
 
+## Controlled A/B/C benchmark inputs
+
+Benchmark authoring does not authorize a host switch, cache reset or build.
+Obtain explicit operator approval for the isolated profiles and measurement
+schedule first. Keep the original production service disabled throughout.
+Use one reviewed workflow/source revision for every arm.
+
+The manual `vs_cleanup_benchmark_arm` input defaults to `none`, preserving
+ordinary workflow behavior. Explicit arms require `source_image=none`,
+`skip_vs=false`, and `vs_cleanup_canary=true`:
+
+| Arm | Final builder removal | Required listener |
+| --- | --- | --- |
+| A | Docker auto-removal at Make exit | Isolated current-style persistent runner |
+| B | Workflow removal after uploads | Same current-style persistent runner |
+| C | Supervisor removal after listener exit | Existing ephemeral canary supervisor |
+
+A/B require the supervisor unit to be **inactive**, not failed, and no deferred
+handoff. Use a separately approved current-style runner package at
+`/opt/actions-runner-vs-benchmark`, with only the canary label and the same
+dedicated work root `/mnt/build/actions-runner-vs-canary-work`. Record and
+reproduce the original launcher's relevant
+hooks and service settings; do not restart the production-labelled original
+registration. C requires the active supervisor, successful deferred enrollment
+and the ephemeral profile at `/opt/actions-runner-vs-canary`. The operator must
+verify and retain `defer_cleanup=true` and `reclaim_caches=true` for C; the job
+does not read the private host configuration. The workflow checks
+the runner name and work root against the selected package's `.runner` metadata.
+Wrong lifecycle/deferral fails rather than silently measuring another arm.
+
+Both `vs_benchmark_host_base_artifact` and `vs_benchmark_kernel_artifact` must be
+explicit: use a fixed artifact ID from a previous trusted master push of this
+repository's Bazel OCI workflow, or `0` to disable that reuse for **all** arms.
+Use the same values throughout the series. Benchmark lookups do not search
+latest artifacts or fall back on API/download/restore failure. Record the input
+IDs and resulting cache receipts; matching an artifact ID does not guarantee
+that its cache key matches the tested source.
+
+Match cold local cache state with the existing guarded helpers before each
+measurement. Benchmark A/B startup cleanup does not retain the repository-content
+cache; normal non-benchmark retention remains unchanged. C uses its approved
+host reclamation policy. Preserve all failed checkouts, shared NFS, named
+volumes and remote caches. Record baseline disk use and a private host/boot
+fingerprint; do not flush the OS page cache. Verify sufficient **peak-build and
+pre-cleanup** disk headroom, not merely the admission threshold.
+
+An initial mirrored series is C, A, B, B, A, C, ending back on the supervisor.
+Service transitions require draining and guarded shutdown first. Report builder
+exit, assembly, installer upload completion, final GitHub job completion,
+cleanup and next readiness separately. C readiness comes from the successor's
+fresh native event; A/B need a queued probe or a documented availability bound.
+Report queue delay separately. Download/validate each installer and record its
+size/digest, cache receipts, peak/final disk and volume/checkout disposition.
+Check anonymous-volume behavior rather than assuming auto-removal and explicit
+container removal have identical volume semantics. An invalid or failed build
+is not a timing sample.
+
 ## First controlled job: retain workflow cleanup
 
 Keep `defer_cleanup=false` and `reclaim_caches=false`. Start the service manually
