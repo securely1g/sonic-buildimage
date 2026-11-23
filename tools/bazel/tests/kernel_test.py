@@ -1308,15 +1308,19 @@ class KernelWorkflowTest(unittest.TestCase):
             r"^      - name: ([^\n]+)\n(.*?)(?=^      - |\Z)",
             self.workflow, re.MULTILINE | re.DOTALL))
 
-    def test_self_hosted_kernel_ci_accepts_all_same_repository_prs(self):
-        self.assertEqual(re.findall(r"^    if: (.+)$", self.workflow, re.MULTILINE), [
-            "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository",
-        ])
+    def test_kernel_workflows_run_the_selected_architecture_on_trusted_events(self):
+        """The caller selects ARM64 once, and forks cannot launch the native kernel worker."""
+        caller = (ROOT / ".github/workflows/bazel-oci.yml").read_text().split("  kernel_arm64:\n", 1)[1].split("\n  checks:", 1)[0]
+        self.assertIn("plan).groups.kernel_arm64", caller)
+        self.assertIn("pull_request.head.repo.full_name == github.repository", caller)
+        self.assertIn("native_arm64: true", caller)
+        self.assertNotIn("  push:", self.workflow)
+        self.assertNotIn("  pull_request:", self.workflow)
 
     def test_amd64_vs_handoff_and_standalone_kernel_lanes(self):
-        self.assertIn("""inputs.vs_artifact_id && '["amd64"]' || github.event_name == 'workflow_dispatch' && '["amd64","arm64"]' || '["arm64"]'""", self.workflow)
+        self.assertIn("""inputs.vs_artifact_id && '["amd64"]' || inputs.native_arm64 && '["arm64"]' || '["amd64","arm64"]'""", self.workflow)
         self.assertIn("inputs.vs_artifact_id && 'vs' || 'standalone'", self.workflow)
-        self.assertIn("inputs.vs_artifact_id && github.sha || github.event.pull_request.head.sha", self.workflow)
+        self.assertIn("(inputs.vs_artifact_id || inputs.native_arm64) && github.sha || github.event.pull_request.head.sha", self.workflow)
         self.assertIn("artifact-ids: ${{ inputs.vs_artifact_id }}", self.steps["Download kernel DEBs consumed by the VS installer"])
         self.assertIn("if: inputs.vs_artifact_id == ''", self.steps["Build registry kernel outputs in the root module graph"])
         self.assertIn("--from-vs-handoff", self.steps["Verify the downloaded package set before exercising Make reuse"])

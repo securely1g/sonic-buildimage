@@ -11,7 +11,7 @@ import tarfile
 
 root, source = map(Path, sys.argv[1:])
 source = source.parent
-debs = list(root.glob('*.deb'))
+debs = [root] if root.is_file() else list(root.glob('*.deb'))
 assert [deb.name for deb in debs] == ['sonic-platform-vs_1.0_amd64.deb']
 with debs[0].open('rb') as stream:
     assert stream.read(8) == b'!<arch>\n'

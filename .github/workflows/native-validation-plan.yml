@@ -1,0 +1,37 @@
+name: Select native validation
+
+on:
+  workflow_call:
+    inputs:
+      workflow:
+        type: string
+        required: true
+      paths:
+        type: string
+        required: true
+    outputs:
+      selected:
+        value: ${{ jobs.select.outputs.selected }}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  select:
+    name: Check native validation inputs
+    runs-on: ubuntu-24.04
+    outputs:
+      selected: ${{ steps.plan.outputs.selected }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 128
+          sparse-checkout: tools/bazel
+      - id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          WORKFLOW: ${{ inputs.workflow }}
+          INPUT_PATHS: ${{ inputs.paths }}
+        run: /usr/bin/python3 -B -m tools.bazel.ci.native_validation "$WORKFLOW"

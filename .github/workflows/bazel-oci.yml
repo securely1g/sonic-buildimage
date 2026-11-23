@@ -251,8 +251,9 @@ jobs:
     needs: [checks, vs_container]
     if: >-
       !cancelled() && needs.checks.result == 'success' &&
-      (needs.vs_container.result == 'success' || needs.vs_container.result == 'skipped')
-    name: Container archive (${{ matrix.name }})
+      ((needs.vs_container.result == 'success' && fromJSON(needs.vs_container.outputs.plan).groups.archive) ||
+       (needs.vs_container.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.skip_vs))
+    name: Container package tests (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -356,25 +357,42 @@ jobs:
           }) + '\n')
           PYTHON
 
+      - name: Allocate a checkout-local directory for the VS host interfaces
+        id: host_inputs
+        if: matrix.architecture == 'amd64' && env.USE_VS_WHEELS == 'true'
+        run: |
+          [[ $VS_HOST_ARTIFACT_ID =~ ^[1-9][0-9]*$ ]]
+          mkdir -p target
+          echo "directory=$(mktemp -d target/vs-host-XXXXXXXX)" >> "$GITHUB_OUTPUT"
+      - name: Download native host inputs from the VS producer
+        if: steps.host_inputs.outcome == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ env.VS_HOST_ARTIFACT_ID }}
+          merge-multiple: true
+          path: ${{ steps.host_inputs.outputs.directory }}
       - name: Verify native VS host installation interfaces
         if: matrix.architecture == 'amd64'
+        env:
+          HOST_INPUTS: ${{ steps.host_inputs.outputs.directory }}
         run: |
-          bazel test --config=syncd-dash \
+          options=()
+          if [[ -n $HOST_INPUTS ]]; then
+            python3 -B -m tools.bazel.ci.components.host --package "$HOST_INPUTS" --revision "$GITHUB_SHA" \
+              --debug "$VS_COMPONENT_DEBUG" > artifacts/archive/host-input-flags
+            mapfile -t options < artifacts/archive/host-input-flags
+          else
+            # Explicit source-only mode also exercises generation of the native host metadata.
+            options+=(//src/sonic-ctrmgrd:ctrmgrd.runtime_metadata //src/sonic-ctrmgrd-rs:runtime_packages.json
+              //src/sonic-device-data:runtime_packages.json //src/sonic-eventd:bazel/rsyslog_plugin.runtime_packages.json
+              //src/sonic-nettools:runtime_packages.json //src/syslog-counter:runtime_packages.json
+              //src/system-health:system_health.runtime_metadata //src/systemd-sonic-generator:systemd-sonic-generator.runtime_metadata
+              @sonic_host_services//:sonic-host-services.runtime_metadata @sonic_host_services//:sonic-host-services-data.runtime_metadata
+              @sonic_host_services//:sonic-host-services-rs.runtime_metadata)
+          fi
+          bazel test --config=syncd-dash "${options[@]}" \
             --build_event_json_file=artifacts/archive/host-package-events.jsonl \
-            @bash_tacplus//:installation_test \
-            //src/radius/pam:installation_test \
-            //platform/vs/sonic-platform-modules-vs:deb_test \
-            //src/sonic-ctrmgrd:ctrmgrd.runtime_metadata \
-            //src/sonic-ctrmgrd-rs:runtime_packages.json \
-            //src/sonic-device-data:runtime_packages.json \
-            //src/sonic-eventd:bazel/rsyslog_plugin.runtime_packages.json \
-            //src/sonic-nettools:runtime_packages.json \
-            //src/syslog-counter:runtime_packages.json \
-            //src/system-health:system_health.runtime_metadata \
-            //src/systemd-sonic-generator:systemd-sonic-generator.runtime_metadata \
-            @sonic_host_services//:sonic-host-services.runtime_metadata \
-            @sonic_host_services//:sonic-host-services-data.runtime_metadata \
-            @sonic_host_services//:sonic-host-services-rs.runtime_metadata
+            @bash_tacplus//:installation_test //src/radius/pam:installation_test //platform/vs/sonic-platform-modules-vs:deb_test
 
       - name: Test archive rules against synthetic OCI fixtures
         run: |
@@ -434,6 +452,8 @@ jobs:
             mapfile -t wheel_flags < "$VS_PACKAGE/flags.txt"
             for flag in "${wheel_flags[@]}"; do audit_flags+=("--bazel-arg=$flag"); done
           fi
+          startup_test=()
+          if [[ -z $VS_WHEELS ]]; then startup_test+=(//tools/bazel/tests:swss_init_test); fi
           # Render SWSS metadata on either host; this does not build an ARM64 image.
           make -f tools/bazel/prepare_manifests.mk \
             MANIFEST_METADATA=rules/docker-orchagent.mk \
@@ -465,13 +485,12 @@ jobs:
             //tools/bazel/image/vs/metadata:metadata_test \
             //tools/bazel/tests:manifest_labels_action_test \
             //tools/bazel/tests:cfggen_template_test \
-            //tools/bazel/tests:swss_render_test \
+            //tools/bazel/tests:swss_manifest_render_test "${startup_test[@]}" \
             //src/sonic-yang-mgmt:sonic_yang_mgmt_wheel \
             //src/sonic-py-common:sonic_py_common_wheel \
             //src/sonic-config-engine:sonic_config_engine_wheel \
             //src/sonic-containercfgd:sonic_containercfgd_wheel \
-            //src/sonic-supervisord-utilities:sonic_supervisord_utilities_wheel \
-            //dockers/docker-orchagent/config:docker_init
+            //src/sonic-supervisord-utilities:sonic_supervisord_utilities_wheel
           "$BAZEL" test "${wheel_flags[@]}" --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
             --nocache_test_results --test_output=all \
@@ -496,15 +515,16 @@ jobs:
             //tools/bazel/image/vs/metadata:metadata_test \
             //tools/bazel/tests:manifest_labels_action_test \
             //tools/bazel/tests:cfggen_template_test \
-            //tools/bazel/tests:swss_render_test \
+            //tools/bazel/tests:swss_manifest_render_test \
             2>&1 | tee artifacts/config-engine/test.log
-          output=$("$BAZEL" cquery "${wheel_flags[@]}" --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
-            --output=files //dockers/docker-orchagent/config:docker_init)
-          test -s "$output"
-          bash -n "$output"
-          cp "$output" artifacts/config-engine/docker-init.sh
-          sha256sum artifacts/config-engine/docker-init.sh > artifacts/config-engine/sha256.txt
+          if (( ${#startup_test[@]} )); then
+            mkdir -p artifacts/swss-startup
+            "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
+              --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
+              --nocache_test_results --test_output=all \
+              --build_event_json_file="$PWD/artifacts/swss-startup/test-events.jsonl" \
+              "${startup_test[@]}" 2>&1 | tee artifacts/swss-startup/test.log
+          fi
           git diff --exit-code
 
       - name: Exercise the alternate source installation TAR rules
@@ -553,14 +573,31 @@ jobs:
           "$BAZEL" test "${flags[@]}" --test_output=errors \
             --build_event_json_file="$PWD/artifacts/pddf/test-events.jsonl" "$target"
 
+      - name: Allocate a clean SWSS package directory
+        id: swss_input
+        if: matrix.architecture == 'amd64' && env.USE_VS_WHEELS == 'true'
+        run: |
+          [[ $VS_SWSS_ARTIFACT_ID =~ ^[1-9][0-9]*$ ]]
+          echo "directory=$(mktemp -d)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        name: Download SWSS package inputs from VS
+        if: steps.swss_input.outcome == 'success'
+        with:
+          artifact-ids: ${{ env.VS_SWSS_ARTIFACT_ID }}
+          merge-multiple: true
+          path: ${{ steps.swss_input.outputs.directory }}
       - name: Test SONiC component packages and their upstream suites
         if: matrix.architecture == 'amd64'
         env:
+          SWSS_INPUTS: ${{ steps.swss_input.outputs.directory }}
           VS_PACKAGE: ${{ steps.wheel_inputs.outputs.package }}
         run: |
           mkdir -p artifacts/owners
+          libteam_test=@libteam//:consumer_test
           scapy_tests=(@scapy//:upstream_test @scapy//:wheel_test)
           if [[ -n "$VS_PACKAGE" ]]; then
+            libteam_test=$(python3 -B -m tools.bazel.ci.libteam_installed_test --bazel "$BAZEL" --vs-swss "$SWSS_INPUTS" \
+              --revision "$GITHUB_SHA" --debug "$VS_COMPONENT_DEBUG" --package "$VS_PACKAGE/libteam")
             python3 -B -m tools.bazel.ci.scapy_installed_tests --bazel "$BAZEL" --package "$VS_PACKAGE" \
               > artifacts/owners/scapy-tests.txt
             mapfile -t scapy_tests < artifacts/owners/scapy-tests.txt
@@ -575,7 +612,7 @@ jobs:
             //tools/bazel/tests:oci_inventory_test //tools/bazel/tests:oci_native_packages_test
             //tools/bazel/tests:oci_package_contract_test //tools/bazel/tests:oci_package_payloads_test
             //tools/bazel/tests:oci_package_receipts_test //tools/bazel/tests:oci_package_state_layer_test
-            @libteam//:consumer_test @sonic_swss//crates/countersyncd:common_rust_test
+            "$libteam_test" @sonic_swss//crates/countersyncd:common_rust_test
             @sonic_swss//bazel:protobuf_runtime_test "${scapy_tests[@]}"
             "${hsflowd_tests[@]}"
           )
@@ -624,19 +661,6 @@ jobs:
             --runtime "$runtime" --symbols "$symbols" --policy "$policy" \
             --link-graph "$graph" --output artifacts/owners/native-closure.json
           git diff --exit-code
-      - name: Allocate a clean SWSS package directory
-        id: swss_input
-        if: matrix.architecture == 'amd64' && env.USE_VS_WHEELS == 'true'
-        run: |
-          [[ $VS_SWSS_ARTIFACT_ID =~ ^[1-9][0-9]*$ ]]
-          echo "directory=$(mktemp -d)" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
-        name: Download SWSS package inputs from VS
-        if: steps.swss_input.outcome == 'success'
-        with:
-          artifact-ids: ${{ env.VS_SWSS_ARTIFACT_ID }}
-          merge-multiple: true
-          path: ${{ steps.swss_input.outputs.directory }}
       - name: Verify SWSS packages and configured native links from VS
         if: steps.swss_input.outcome == 'success'
         env:
@@ -692,6 +716,12 @@ jobs:
           SCRATCH: ${{ steps.wheel_inputs.outputs.scratch }}
         run: rm -rf -- "$SCRATCH"
 
+      - name: Remove downloaded VS host interfaces
+        if: always() && steps.host_inputs.outcome == 'success'
+        env:
+          HOST_INPUTS: ${{ steps.host_inputs.outputs.directory }}
+        run: rm -rf -- "$HOST_INPUTS"
+
       - name: Authorize published artifacts for post-job cleanup
         if: always() && steps.bazel_cleanup_register.outcome == 'success'
         env:
@@ -701,10 +731,11 @@ jobs:
   package_amd64:
     name: Container package tests (${{ matrix.name }})
     needs: [checks, vs_container]
-    # Fork PRs and explicit source-only runs retain their standalone package tests.
+    # Explicit source-only dispatch exercises the standalone packaging interfaces.
     if: >-
       !cancelled() && needs.checks.result == 'success' &&
-      (needs.vs_container.result == 'success' || needs.vs_container.result == 'skipped')
+      ((needs.vs_container.result == 'success' && fromJSON(needs.vs_container.outputs.plan).groups.package_amd64) ||
+       (needs.vs_container.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.skip_vs))
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
@@ -718,6 +749,7 @@ jobs:
             disk_cache: swss-layer-amd64
     container: *package_test_container
     env:
+      VS_HOST_ARTIFACT_ID: ${{ needs.vs_container.outputs.host_artifact_id }}
       VS_SWSS_ARTIFACT_ID: ${{ needs.vs_container.outputs.swss_artifact_id }}
       VS_COMPONENT_DEBUG: ${{ needs.vs_container.outputs.debug_layer }}
       BAZEL: *package_test_bazel
@@ -728,39 +760,55 @@ jobs:
 
   native_sysmgr_amd64:
     needs: vs_container
-    if: needs.vs_container.outputs.sysmgr_artifact_id != ''
+    if: needs.vs_container.outputs.sysmgr_artifact_id != '' && fromJSON(needs.vs_container.outputs.plan).groups.native_sysmgr_amd64
     uses: ./.github/workflows/bazel-sysmgr.yml
     with:
       vs_artifact_id: ${{ needs.vs_container.outputs.sysmgr_artifact_id }}
       vs_debug: ${{ needs.vs_container.outputs.debug_layer }}
-      run_source_tests: ${{ contains(fromJSON(needs.vs_container.outputs.source_workflows), 'bazel-sysmgr.yml') }}
+      run_source_tests: ${{ fromJSON(needs.vs_container.outputs.plan).groups.sysmgr_sources }}
 
   kernel_packages_amd64:
     needs: vs_container
+    if: fromJSON(needs.vs_container.outputs.plan).groups.kernel_packages_amd64
     uses: ./.github/workflows/bazel-kernel-bundle.yml
     with:
       vs_artifact_id: ${{ needs.vs_container.outputs.kernel_artifact_id }}
 
   frr_python_amd64:
     needs: vs_container
+    if: fromJSON(needs.vs_container.outputs.plan).groups.frr_python_amd64
     uses: ./.github/workflows/bazel-frr-python.yml
     with:
       vs_artifact_id: ${{ needs.vs_container.outputs.python_packages_artifact_id }}
 
   yang_models:
     needs: vs_container
-    if: needs.vs_container.outputs.python_packages_artifact_id != ''
+    if: fromJSON(needs.vs_container.outputs.plan).groups.yang_models
     uses: ./.github/workflows/bazel-yang-models.yml
     with:
       vs_artifact_id: ${{ needs.vs_container.outputs.python_packages_artifact_id }}
 
+  kernel_arm64:
+    needs: checks
+    if: >-
+      fromJSON(needs.checks.outputs.plan).groups.kernel_arm64 &&
+      ((github.event_name == 'push' || github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && !inputs.skip_vs))
+    uses: ./.github/workflows/bazel-kernel-bundle.yml
+    with:
+      native_arm64: true
+
   checks:
     if: github.event_name != 'workflow_dispatch' || inputs.source_image == 'none'
     name: OCI regression checks (AMD64)
+    permissions:
+      actions: read
+      contents: read
     runs-on: [self-hosted, Linux, X64, ubuntu-x64]
     outputs:
       p4_sources_artifact_id: ${{ steps.p4_sources_upload.outputs.artifact-id }}
-      source_workflows: ${{ steps.source_workflows.outputs.workflows }}
+      plan: ${{ steps.validation_plan.outputs.plan }}
     # No SWSS/Syncd package compilation: those checks reuse the full Make build.
     timeout-minutes: 60
     container:
@@ -785,6 +833,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 128
 
       - name: Register post-job cleanup
         id: runner_cleanup
@@ -799,16 +848,20 @@ jobs:
           test -z "$(git ls-files -- MODULE.bazel.lock)"
           git check-ignore MODULE.bazel.lock
 
-      - name: Select component source suites for the tested changes
-        id: source_workflows
+      - name: Select validations since the last successful VS build
+        id: validation_plan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          workflows=$(python3 -B -m tools.bazel.ci.source_workflows)
-          echo "workflows=$workflows" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          plan=$(python3 -B -m tools.bazel.ci.validation_changes plan)
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
 
       - name: Check hosted storage
         run: df -h "$GITHUB_WORKSPACE" "$HOME"
 
       - name: Test kernel CAS transport with the Trixie build slave's gRPC versions
+        if: fromJSON(steps.validation_plan.outputs.plan).groups.checks
         run: |
           client="$RUNNER_TEMP/kernel-transport"
           python3 -m pip install --target "$client" --only-binary=:all: grpcio==1.71.0 grpcio-tools==1.71.0 protobuf==5.29.6
@@ -838,6 +891,7 @@ jobs:
           printf 'common --downloader_config=%s\n' "$RUNNER_TEMP/sonic-source-mirrors.cfg" >> .bazelrc.user
 
       - name: Check Make handoff and archive validation
+        if: fromJSON(steps.validation_plan.outputs.plan).groups.checks
         env:
           SONIC_REQUIRE_HOST_BASE_TEST: "1"
         run: |
@@ -984,8 +1038,9 @@ jobs:
       contents: read
       actions: read
     outputs:
-      containers: ${{ steps.bundles.outputs.matrix }}
-      source_workflows: ${{ needs.checks.outputs.source_workflows }}
+      containers: ${{ steps.validation_plan.outputs.containers }}
+      plan: ${{ steps.validation_plan.outputs.plan }}
+      host_artifact_id: ${{ steps.component_host.outputs.artifact-id }}
       eventd_artifact_id: ${{ steps.component_eventd.outputs.artifact-id }}
       supervisor_rust_artifact_id: ${{ steps.component_supervisor_rust.outputs.artifact-id }}
       frr_native_artifact_id: ${{ steps.component_frr_native.outputs.artifact-id }}
@@ -1423,6 +1478,17 @@ jobs:
         run: |
           [[ $KERNEL_ID =~ ^[1-9][0-9]*$ && $PYTHON_ID =~ ^[1-9][0-9]*$ ]]
 
+      - name: Publish VS component host
+        id: component_host
+        if: contains(fromJSON(steps.bundles.outputs.components), 'host')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vs-component-host-${{ github.run_id }}-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/containers/components/host/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 1
+
       - name: Publish VS component eventd
         id: component_eventd
         if: contains(fromJSON(steps.bundles.outputs.components), 'eventd')
@@ -1555,13 +1621,47 @@ jobs:
           retention-days: 3
           compression-level: 1
 
+      - name: Compare the current VS inputs with the validated build
+        id: validation_plan
+        env:
+          PLAN: ${{ needs.checks.outputs.plan }}
+          MATRIX: ${{ steps.bundles.outputs.matrix }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          profile=artifacts/vs/validation-profile.json
+          python3 -B -m tools.bazel.ci.validation_changes profile --directory artifacts/vs/containers --output "$profile"
+          PLAN=$(python3 -B -m tools.bazel.ci.validation_changes plan --profile "$profile")
+          containers=$(python3 -B -m tools.bazel.ci.validation_changes filter --key image)
+          echo "plan=$PLAN" >> "$GITHUB_OUTPUT"
+          echo "containers=$containers" >> "$GITHUB_OUTPUT"
+          {
+            echo '### VS validation selection'
+            jq -r '"Baseline: " + (.baseline // "full validation"), "Reason: " + .reason,
+                   "Selected checks: " + ([.groups | to_entries[] | select(.value) | .key] | join(", "))' <<<"$PLAN"
+            jq -r '"Container probes: " + ([.include[].image] | join(", "))' <<<"$containers"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the VS validation profile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: validation-profile-v1-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/validation-profile.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Select component validators for the published artifacts
         id: component_matrix
         env:
           UPLOAD_STEPS: ${{ toJSON(steps) }}
+          PLAN: ${{ steps.validation_plan.outputs.plan }}
         run: |
-          matrix=$(python3 -B -m tools.bazel.ci.vs_component_artifacts matrix --directory artifacts/vs/containers/components)
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          export MATRIX
+          MATRIX=$(python3 -B -m tools.bazel.ci.vs_component_artifacts matrix --directory artifacts/vs/containers/components)
+          selected=$(python3 -B -m tools.bazel.ci.validation_changes filter --key component)
+          echo "matrix=$selected" >> "$GITHUB_OUTPUT"
+          jq -r '"Component probes: " + ([.include[].component] | join(", "))' <<<"$selected" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish the installer and matching container archives
         id: vs_installer_upload
@@ -2037,6 +2137,7 @@ jobs:
   validate_container:
     name: Validate ${{ matrix.image }} (AMD64)
     needs: [vs_container, installer_validation]
+    if: needs.vs_container.outputs.containers != '{"include":[]}'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.vs_container.outputs.containers) }}
@@ -2131,33 +2232,43 @@ jobs:
           python3 -B -m tools.bazel.ci.vs_component_artifacts test --component "$COMPONENT" \
             --revision "$GITHUB_SHA" --debug "$DEBUG" --directory "$BUNDLE"
 
+  arm64_acceptance:
+    name: Container archive (ARM64)
+    needs: [checks, vs_container, archive]
+    if: always() && !cancelled() && needs.checks.result != 'skipped'
+    runs-on: [self-hosted, linux, bazel-x64]
+    steps:
+      - name: Require the selected ARM64 package tests
+        env:
+          CHECKS: ${{ needs.checks.result }}
+          VS: ${{ needs.vs_container.result }}
+          PLAN: ${{ needs.vs_container.outputs.plan }}
+          RESULT: ${{ needs.archive.result }}
+          SOURCE_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_vs }}
+        run: |
+          set -euo pipefail
+          test "$CHECKS" = success
+          case "$VS" in
+            success) selected=$(jq -cer '.groups.archive | tostring' <<<"$PLAN") ;;
+            skipped) selected=$SOURCE_ONLY ;;
+            *) exit 1 ;;
+          esac
+          case "$selected/$RESULT" in
+            true/success|false/skipped) ;;
+            *) echo "Unexpected ARM64 package result: selected=$selected, result=$RESULT"; exit 1 ;;
+          esac
+
   archive_acceptance:
     name: Container archive (AMD64)
-    needs: [archive, package_amd64, kernel_packages_amd64, frr_python_amd64, vs_container, installer_validation, validate_container, validate_component, native_sysmgr_amd64, yang_models]
+    needs: [checks, archive, package_amd64, kernel_packages_amd64, kernel_arm64, frr_python_amd64, vs_container, installer_validation, validate_container, validate_component, native_sysmgr_amd64, yang_models]
     if: always() && !cancelled() && needs.vs_container.result != 'skipped'
     runs-on: [self-hosted, linux, bazel-x64]
     steps:
-      - name: Require the installer and every selected container
+      - *restore_workspace_access
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Require the installer and every selected validation
         env:
-          INSTALLER: ${{ needs.installer_validation.result }}
-          ARM64_PACKAGES: ${{ needs.archive.result }}
-          AMD64_PACKAGES: ${{ needs.package_amd64.result }}
-          KERNEL: ${{ needs.kernel_packages_amd64.result }}
-          FRR_PYTHON: ${{ needs.frr_python_amd64.result }}
-          PRODUCER: ${{ needs.vs_container.result }}
-          VALIDATION: ${{ needs.validate_container.result }}
-          YANG: ${{ needs.yang_models.result }}
-          SYSMGR: ${{ needs.native_sysmgr_amd64.result }}
-          EXPECT_SYSMGR: ${{ needs.vs_container.outputs.sysmgr_artifact_id != '' }}
-          EXPECT_COMPONENTS: ${{ needs.vs_container.outputs.component_matrix != '{"include":[]}' }}
-          COMPONENTS: ${{ needs.validate_component.result }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected_result() { if [[ "$1" == true ]]; then echo success; else echo skipped; fi; }
-          test "$SYSMGR" = "$(expected_result "$EXPECT_SYSMGR")"
-          test "$COMPONENTS" = "$(expected_result "$EXPECT_COMPONENTS")"
-          test "$YANG" = success
-          test "$ARM64_PACKAGES" = success && test "$AMD64_PACKAGES" = success &&
-          test "$KERNEL" = success && test "$FRR_PYTHON" = success &&
-          test "$PRODUCER" = success && test "$INSTALLER" = success && test "$VALIDATION" = success
+          VALIDATION_JOBS: ${{ toJSON(needs) }}
+        run: python3 -B -m tools.bazel.ci.validation_results

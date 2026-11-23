@@ -13,6 +13,7 @@ import unittest
 
 import yaml
 
+from tools.bazel.ci import validation_results
 from tools.bazel.ci.vs_probe_policy import FAMILIES
 from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES
 
@@ -28,7 +29,10 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertFalse(validation["strategy"]["fail-fast"])
         self.assertEqual(validation["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(set(validation["needs"]), {"vs_container", "installer_validation"})
-        self.assertEqual(producer["outputs"]["containers"], "${{ steps.bundles.outputs.matrix }}")
+        self.assertEqual(producer["outputs"]["containers"], "${{ steps.validation_plan.outputs.containers }}")
+        planner = next(s for s in producer["steps"] if s.get("id") == "validation_plan")
+        self.assertEqual(planner["env"]["MATRIX"], "${{ steps.bundles.outputs.matrix }}")
+        self.assertIn("filter --key image", planner["run"])
         uploads = {}
         for step in producer["steps"]:
             artifact = step.get("with", {}).get("name", "")
@@ -126,7 +130,7 @@ class VerificationWorkflowTest(unittest.TestCase):
 
         amd64 = jobs["package_amd64"]
         self.assertIn("vs_container", amd64["needs"])
-        for name, required in (("archive", "Container archive (ARM64)"), ("package_amd64", "Container package tests (AMD64)")):
+        for name, required in (("archive", "Container package tests (ARM64)"), ("package_amd64", "Container package tests (AMD64)")):
             job = jobs[name]
             row, = job["strategy"]["matrix"]["include"]
             self.assertIn("${{ matrix.name }}", job["name"])  # A literal name makes Actions append every matrix value.
@@ -168,28 +172,46 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(upload["with"]["name"], download["with"]["name"])
 
     def test_required_archive_status_propagates_each_validation_failure(self):
-        """A bad installer, an incomplete production job or any failed image row must block acceptance."""
-        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["archive_acceptance"]
-        self.assertEqual(job["name"], "Container archive (AMD64)")
-        self.assertEqual(set(job["needs"]), {
-            "archive", "package_amd64", "kernel_packages_amd64", "frr_python_amd64",
-            "vs_container", "installer_validation", "validate_container", "validate_component", "native_sysmgr_amd64", "yang_models",
-        })
-        gate, = job["steps"]
-        results = {name: expression for name, expression in gate["env"].items() if name not in ("EXPECT_COMPONENTS", "EXPECT_SYSMGR")}
-        self.assertEqual(set(results.values()), {"${{ needs." + need + ".result }}" for need in job["needs"]})
-        success = {**dict.fromkeys(results, "success"), "EXPECT_COMPONENTS": "true", "EXPECT_SYSMGR": "true"}
-        def status(env):
-            return subprocess.run(["bash", "-eu", "-c", gate["run"]], env=env).returncode
-        self.assertEqual(status(success), 0)
-        for dependency in results:
-            for outcome in ("failure", "skipped", "cancelled"):
-                with self.subTest(dependency=dependency, outcome=outcome):
-                    self.assertNotEqual(status(dict(success, **{dependency: outcome})), 0)
-        for dependency in ("COMPONENTS", "SYSMGR"):
-            unselected = dict(success, **{dependency: "skipped", "EXPECT_" + dependency: "false"})
-            self.assertEqual(status(unselected), 0)
-            self.assertNotEqual(status(dict(unselected, **{dependency: "failure"})), 0)
+        """A missing selected check fails. Only an intentionally unselected check may skip."""
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        gate = workflow["archive_acceptance"]
+        self.assertEqual(gate["name"], "Container archive (AMD64)")
+        self.assertEqual(gate["steps"][-1]["env"]["VALIDATION_JOBS"], "${{ toJSON(needs) }}")
+        groups = dict.fromkeys(("archive", "package_amd64", "kernel_packages_amd64", "kernel_arm64",
+                                "frr_python_amd64", "yang_models", "native_sysmgr_amd64"), True)
+        jobs = {key: {"result": "success"} for key in gate["needs"]}
+        jobs["checks"]["outputs"] = {"plan": json.dumps({"groups": groups})}
+        matrix = json.dumps({"include": [{"image": "docker-orchagent"}]})
+        outputs = {"plan": json.dumps({"groups": groups}), "sysmgr_artifact_id": "123",
+                   "containers": matrix, "component_matrix": matrix}
+        jobs["vs_container"]["outputs"] = outputs
+        validation_results.verify(jobs)
+        for key, job in jobs.items():
+            for result in ("failure", "cancelled", "skipped"):
+                with self.subTest(job=key, result=result), self.assertRaises(ValueError):
+                    validation_results.verify({**jobs, key: {**job, "result": result}})
+        empty_plan = json.dumps({"groups": dict.fromkeys(groups, False)})
+        jobs["checks"]["outputs"]["plan"] = empty_plan
+        outputs.update(plan=empty_plan, containers='{"include":[]}', component_matrix='{"include":[]}')
+        for key in jobs.keys() - {"vs_container", "checks", "installer_validation"}:
+            jobs[key]["result"] = "skipped"
+        validation_results.verify(jobs)
+        jobs["archive"]["result"] = "failure"
+        with self.assertRaisesRegex(ValueError, "archive"):
+            validation_results.verify(jobs)
+
+    def test_required_arm64_check_reports_for_empty_and_nonempty_package_selections(self):
+        """Keep the fixed branch-protection check even when Actions schedules no matrix rows."""
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        gate = jobs["arm64_acceptance"]
+        self.assertEqual(gate["name"], "Container archive (ARM64)")
+        step, = gate["steps"]
+        for selected, result, passed in ((True, "success", True), (False, "skipped", True),
+                                         (True, "skipped", False), (False, "failure", False)):
+            with self.subTest(selected=selected, result=result):
+                env = dict(os.environ, CHECKS="success", VS="success", RESULT=result, SOURCE_ONLY="false",
+                           PLAN=json.dumps({"groups": {"archive": selected}}))
+                self.assertEqual(subprocess.run(["bash", "-c", step["run"]], env=env).returncode == 0, passed)
 
     def test_runtime_pruning_commands_stop_on_errors_without_using_a_real_daemon(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
