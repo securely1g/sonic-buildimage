@@ -98,17 +98,32 @@ def configure_startup(workspace, home, runner_temp, directory):
     with ExitStack() as descriptors:
         parent = open_directory(directory, descriptors)
         os.mkdir(state.name, 0o700, dir_fd=parent)
-    settings = (
-        f"startup --output_user_root={shlex.quote(str(state / 'user-root'))}\n"
-        f"startup --output_base={shlex.quote(str(state / 'output-base'))}\n")
+    settings = f"startup --output_user_root={shlex.quote(str(state / 'user-root'))}\n"
     for rc in (home / ".bazelrc", workspace / ".bazelrc.user"):
-        with rc.open("a") as output:
-            output.write("\n" + settings)
+        lines = []
+        for line in rc.read_text().splitlines() if rc.exists() else []:
+            tokens = shlex.split(line, comments=True)
+            if tokens and tokens[0] == "startup":
+                options = iter(tokens[1:])
+                retained = []
+                for option in options:
+                    if option == "--output_base":
+                        if next(options, None) is None:
+                            raise ValueError("Startup output_base is missing its value")
+                    elif not option.startswith("--output_base="):
+                        retained.append(option)
+                if len(retained) != len(tokens) - 1:
+                    # Drop setup-bazel's fixed base; nested workspaces need separate hashes.
+                    line = shlex.join(["startup", *retained]) if retained else ""
+            lines.append(line)
+        rc.write_text("\n".join(lines) + "\n" + settings)
     result = subprocess.run(
         ["bazel", "info", "output_base"], cwd=workspace, text=True,
         stdout=subprocess.PIPE, check=True, timeout=120)
-    if result.stdout.strip() != str(state / "output-base"):
-        raise ValueError("Bazel did not select the registered job-private output base")
+    base = Path(result.stdout.strip())
+    if (base.parent != state / "user-root" or
+            not re.fullmatch(r"[0-9a-f]{32}", base.name)):
+        raise ValueError(f"Bazel did not select the registered job-private output base: {base}")
     print(f"Verified job-private Bazel startup: {state}")
 
 
