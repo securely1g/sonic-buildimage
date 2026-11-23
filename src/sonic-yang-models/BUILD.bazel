@@ -115,6 +115,13 @@ validate_manifest(
     validation = ":validate_native_manifest",
 ) for p in _MODEL_TEMPLATES]
 
+# Source consumers exercise these render actions without invoking wheel assembly.
+filegroup(
+    name = "native_model_sources",
+    srcs = glob(["yang-models/*.yang"]) + [":rendered/py/" + p.split("/")[-1][:-3] for p in _MODEL_TEMPLATES],
+    visibility = ["//tools/bazel/tests:__pkg__"],
+)
+
 [filegroup(
     name = "cvl_" + p.split("/")[-1],
     srcs = [p],

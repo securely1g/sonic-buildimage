@@ -93,7 +93,8 @@ def private(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--private", action="store_true")
-    for flag in ("binary", "dependencies", "runtime-tar", "loader", "library-path"):
+    parser.add_argument("--runtime", "--runtime-tar", type=Path)
+    for flag in ("binary", "dependencies", "loader", "library-path"):
         parser.add_argument("--" + flag)
     args = parser.parse_args()
     if args.private:
@@ -107,8 +108,15 @@ def main():
     evidence.mkdir(parents=True, exist_ok=True)
     with tarfile.open(args.dependencies) as archive:
         archive.extractall(runtime, filter=installed_member)
-    with tarfile.open(args.runtime_tar) as archive:
-        archive.extractall(runtime, filter="data")
+    if args.runtime.name == "librebootgnoi.so.0":
+        # The original GTests link against this SONAME. Source tests can supply
+        # the built library directly to the same private runtime fixture.
+        directory = runtime / "usr/lib/x86_64-linux-gnu"
+        directory.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(args.runtime, directory / args.runtime.name)
+    else:
+        with tarfile.open(args.runtime) as archive:
+            archive.extractall(runtime, filter="data")
     loaders = {p.resolve() for p in runtime.rglob("ld-linux-x86-64.so.2") if p.is_file()}
     assert len(loaders) == 1
     loader = loaders.pop()

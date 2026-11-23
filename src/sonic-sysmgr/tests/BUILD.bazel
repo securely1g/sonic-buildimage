@@ -125,7 +125,7 @@ py_test(
     args = [
         "--binary=$(rootpath :original_unit_tests_binary)",
         "--dependencies=$(rootpath :test_runtime)",
-        "--runtime-tar=$(rootpath :runtime_under_test)",
+        "--runtime=$(rootpath :runtime_under_test)",
     ],
     data = [
         ":original_unit_tests_binary",

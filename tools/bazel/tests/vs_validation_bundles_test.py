@@ -246,7 +246,7 @@ class BundleSelectionTest(unittest.TestCase):
                 families = bundles.validation_targets(installer, set(), False)
             targets = {label: root / archive for label in bundles.extra_targets(families)}
             layer = {"digest": "sha256:" + bundles.sha(root / archive), "size": (root / archive).stat().st_size}
-            config = {"rootfs": {"type": "layers", "diff_ids": [layer["digest"]]}}
+            config = {"config": {"Labels": {"Tag": "test"}}, "rootfs": {"type": "layers", "diff_ids": [layer["digest"]]}}
             metadata = (layer, {"config": layer, "layers": [layer]}, config, [root / archive])
             with patch.object(bundles, "layout_metadata", return_value=metadata):
                 bundles.write_bundles(args, families, targets, {"//tools/bazel/oci:image_version": "test",

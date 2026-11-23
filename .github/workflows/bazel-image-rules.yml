@@ -2,41 +2,8 @@ name: Image assembly rule contracts
 
 on:
   pull_request:
-    paths:
-      - src/sonic-device-data/**
-      - scripts/install_device_data.py
-      - rules/sonic-device-data.mk
-      - tools/bazel/tests/device_data_install_test.py
-      - tools/bazel/ci/device_data_benchmark.py
-      - tools/bazel/ci/resources.py
-      - tools/bazel/image/**
-      - tools/bazel/build_container_batch.py
-      - tools/bazel/common.bazelrc
-      - tools/bazel/ci/source_mirrors.py
-      - tools/bazel/debian_mirrors.cfg
-      - tools/bazel/tests/integration/container_batch.py
-      - tools/bazel/tests/integration/boot_bundle_cache.py
-      - tools/bazel/image-assembly-design.md
-      - MODULE.bazel
-      - .github/workflows/bazel-image-rules.yml
   push:
     branches: [master]
-    paths:
-      - src/sonic-device-data/**
-      - scripts/install_device_data.py
-      - rules/sonic-device-data.mk
-      - tools/bazel/tests/device_data_install_test.py
-      - tools/bazel/ci/device_data_benchmark.py
-      - tools/bazel/ci/resources.py
-      - tools/bazel/image/**
-      - tools/bazel/build_container_batch.py
-      - tools/bazel/common.bazelrc
-      - tools/bazel/ci/source_mirrors.py
-      - tools/bazel/debian_mirrors.cfg
-      - tools/bazel/tests/integration/container_batch.py
-      - tools/bazel/tests/integration/boot_bundle_cache.py
-      - MODULE.bazel
-      - .github/workflows/bazel-image-rules.yml
   workflow_dispatch:
     inputs:
       device_data_cache:
@@ -49,6 +16,31 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/native-validation-plan.yml
+    with:
+      workflow: bazel-image-rules.yml
+      paths: |
+        src/sonic-device-data/**
+        scripts/install_device_data.py
+        rules/sonic-device-data.mk
+        tools/bazel/tests/device_data_install_test.py
+        tools/bazel/ci/device_data_benchmark.py
+        tools/bazel/ci/resources.py
+        tools/bazel/image/**
+        tools/bazel/build_container_batch.py
+        tools/bazel/common.bazelrc
+        tools/bazel/ci/source_mirrors.py
+        tools/bazel/debian_mirrors.cfg
+        tools/bazel/tests/integration/container_batch.py
+        tools/bazel/tests/integration/boot_bundle_cache.py
+        tools/bazel/image-assembly-design.md
+        MODULE.bazel
+        .github/workflows/bazel-image-rules.yml
+
   device-data-cache:
     name: VS device data TAR (${{ inputs.device_data_cache }})
     if: github.event_name == 'workflow_dispatch' && (inputs.device_data_cache == 'populate' || inputs.device_data_cache == 'restore')
@@ -76,7 +68,8 @@ jobs:
           retention-days: 14
 
   contracts:
-    if: github.event_name != 'workflow_dispatch' || inputs.device_data_cache == 'off'
+    needs: plan
+    if: (github.event_name != 'workflow_dispatch' || inputs.device_data_cache == 'off') && needs.plan.outputs.selected == 'true'
     name: Image assembly contracts (${{ matrix.architecture }})
     strategy:
       fail-fast: false

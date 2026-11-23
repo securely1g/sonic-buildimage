@@ -13,6 +13,7 @@ import unittest
 
 import yaml
 
+from tools.bazel.ci import validation_results
 from tools.bazel.ci.vs_probe_policy import FAMILIES
 from tools.bazel.ci.vs_standalone_probes import STANDALONE_IMAGES
 
@@ -28,7 +29,10 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertFalse(validation["strategy"]["fail-fast"])
         self.assertEqual(validation["runs-on"], ["self-hosted", "linux", "bazel-x64"])
         self.assertEqual(set(validation["needs"]), {"vs_container", "installer_validation"})
-        self.assertEqual(producer["outputs"]["containers"], "${{ steps.bundles.outputs.matrix }}")
+        self.assertEqual(producer["outputs"]["containers"], "${{ steps.validation_plan.outputs.containers }}")
+        planner = next(s for s in producer["steps"] if s.get("id") == "validation_plan")
+        self.assertEqual(planner["env"]["MATRIX"], "${{ steps.bundles.outputs.matrix }}")
+        self.assertIn("filter --key image", planner["run"])
         uploads = {}
         for step in producer["steps"]:
             artifact = step.get("with", {}).get("name", "")
@@ -126,7 +130,7 @@ class VerificationWorkflowTest(unittest.TestCase):
 
         amd64 = jobs["package_amd64"]
         self.assertIn("vs_container", amd64["needs"])
-        for name, required in (("archive", "Container archive (ARM64)"), ("package_amd64", "Container package tests (AMD64)")):
+        for name, required in (("archive", "Container package tests (ARM64)"), ("package_amd64", "Container package tests (AMD64)")):
             job = jobs[name]
             row, = job["strategy"]["matrix"]["include"]
             self.assertIn("${{ matrix.name }}", job["name"])  # A literal name makes Actions append every matrix value.
@@ -142,6 +146,35 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertIn('vs_python_packages stage', installed)
         self.assertIn('"$BAZEL" test "${wheel_flags[@]}"', installed)
         self.assertIn('--vs-packages "$VS_WHEELS"', steps["Retain wheels and required Python test evidence"]["run"])
+
+    def test_fork_source_checks_leave_release_package_validation_to_vs(self):
+        """Forks run independent source tests, trusted jobs inspect VS inputs, and dispatch can build."""
+        workflow_dir = ROOT / ".github/workflows"
+        runs_with_packages = (
+            "inputs.vs_artifact_id != '' || github.event_name == 'workflow_dispatch' || "
+            "(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)"
+        )
+        source_without_vs = "${{ inputs.vs_artifact_id == '' && github.event_name == 'pull_request' }}"
+        for owner, name, bundle in (("frr-python", "packages", "VS_PACKAGES"),
+                                    ("yang-models", "package", "VS_SCRATCH"),
+                                    ("sysmgr", "native", "VS_SYSMGR_DIRECTORY")):
+            with self.subTest(owner=owner):
+                job = yaml.safe_load((workflow_dir / f"bazel-{owner}.yml").read_text())["jobs"][name]
+                self.assertEqual(" ".join(job["if"].split()), runs_with_packages)
+                step, = [s for s in job["steps"] if f'if [[ -n "${{{bundle}:-}}" ]]' in s.get("run", "")]
+                self.assertEqual((job.get("env", {}) | step.get("env", {}))["SOURCE_ONLY"], source_without_vs)
+                script = step["run"]
+                if owner == "frr-python":
+                    self.assertRegex(script, r'elif \[\[ "\$SOURCE_ONLY" != true \]\]; then\s+bazel build')
+                    self.assertIn('if [[ "$NATIVE_ARCHITECTURE" == amd64 && "$SOURCE_ONLY" != true ]]', script)
+                    self.assertIn("//src/sonic-frr-mgmt-framework:upstream_tests", script)
+                elif owner == "yang-models":
+                    source = script.split('elif [[ "$SOURCE_ONLY" == true ]]; then')[1].split("else")[0]
+                    self.assertIn("//:validate_native_manifest", source)
+                    self.assertNotRegex(source, "yang_models_(wheel|pkg|package_test)")
+                else:
+                    self.assertRegex(script, r'elif \[\[ \$SOURCE_ONLY == true \]\]; then\s+package_args\+=\(--source-only\)')
+                    self.assertIn('--vs-directory "$VS_SYSMGR_DIRECTORY"', script)
 
     def test_dhcp_source_builds_are_confined_to_the_dedicated_worker(self):
         """The normal relay probe uses the installer; only a source qualification builds both variants."""
@@ -168,28 +201,91 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertEqual(upload["with"]["name"], download["with"]["name"])
 
     def test_required_archive_status_propagates_each_validation_failure(self):
-        """A bad installer, an incomplete production job or any failed image row must block acceptance."""
-        job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]["archive_acceptance"]
-        self.assertEqual(job["name"], "Container archive (AMD64)")
-        self.assertEqual(set(job["needs"]), {
-            "archive", "package_amd64", "kernel_packages_amd64", "frr_python_amd64",
-            "vs_container", "installer_validation", "validate_container", "validate_component", "native_sysmgr_amd64", "yang_models",
-        })
-        gate, = job["steps"]
-        results = {name: expression for name, expression in gate["env"].items() if name not in ("EXPECT_COMPONENTS", "EXPECT_SYSMGR")}
-        self.assertEqual(set(results.values()), {"${{ needs." + need + ".result }}" for need in job["needs"]})
-        success = {**dict.fromkeys(results, "success"), "EXPECT_COMPONENTS": "true", "EXPECT_SYSMGR": "true"}
-        def status(env):
-            return subprocess.run(["bash", "-eu", "-c", gate["run"]], env=env).returncode
-        self.assertEqual(status(success), 0)
-        for dependency in results:
-            for outcome in ("failure", "skipped", "cancelled"):
-                with self.subTest(dependency=dependency, outcome=outcome):
-                    self.assertNotEqual(status(dict(success, **{dependency: outcome})), 0)
-        for dependency in ("COMPONENTS", "SYSMGR"):
-            unselected = dict(success, **{dependency: "skipped", "EXPECT_" + dependency: "false"})
-            self.assertEqual(status(unselected), 0)
-            self.assertNotEqual(status(dict(unselected, **{dependency: "failure"})), 0)
+        """A missing selected check fails. Only an intentionally unselected check may skip."""
+        workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        gate = workflow["archive_acceptance"]
+        self.assertEqual(gate["name"], "Container archive (AMD64)")
+        self.assertEqual(gate["steps"][-1]["env"]["VALIDATION_JOBS"], "${{ toJSON(needs) }}")
+        groups = dict.fromkeys(("archive", "package_amd64", "kernel_packages_amd64", "kernel_arm64",
+                                "frr_python_amd64", "yang_models", "native_sysmgr_amd64"), True)
+        jobs = {key: {"result": "success"} for key in gate["needs"]}
+        jobs["checks"]["outputs"] = {"plan": json.dumps({"groups": groups})}
+        matrix = json.dumps({"include": [{"image": "docker-orchagent"}]})
+        outputs = {"plan": json.dumps({"groups": groups}), "sysmgr_artifact_id": "123",
+                   "containers": matrix, "component_matrix": matrix}
+        jobs["vs_container"]["outputs"] = outputs
+        validation_results.verify(jobs)
+        for key, job in jobs.items():
+            for result in ("failure", "cancelled", "skipped"):
+                with self.subTest(job=key, result=result), self.assertRaises(ValueError):
+                    validation_results.verify({**jobs, key: {**job, "result": result}})
+        empty_plan = json.dumps({"groups": dict.fromkeys(groups, False)})
+        jobs["checks"]["outputs"]["plan"] = empty_plan
+        outputs.update(plan=empty_plan, containers='{"include":[]}', component_matrix='{"include":[]}')
+        for key in jobs.keys() - {"vs_container", "checks", "installer_validation"}:
+            jobs[key]["result"] = "skipped"
+        validation_results.verify(jobs)
+        jobs["archive"]["result"] = "failure"
+        with self.assertRaisesRegex(ValueError, "archive"):
+            validation_results.verify(jobs)
+
+    def test_fork_packages_run_source_and_fixture_suites_on_the_existing_native_runners(self):
+        """Record the fork's actual test arguments. Release package fallbacks require an explicit dispatch."""
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        for job, runner in (("archive", "bazel-arm64"), ("package_amd64", "bazel-x64")):
+            self.assertIn("github.event.pull_request.head.repo.full_name != github.repository", jobs[job]["if"])
+            self.assertIn("fromJSON(needs.checks.outputs.plan).groups." + job, jobs[job]["if"])
+            self.assertIn(runner, jobs[job]["strategy"]["matrix"]["include"][0]["runner"])
+        steps = {s["name"]: s for s in jobs["package_amd64"]["steps"]}
+        for name in ("Exercise the alternate source installation TAR rules", "Verify native VS host installation interfaces",
+                     "Verify SWSS native link closure and symbol lookups",
+                     "Check the PDDF wheel against its independent setuptools reference"):
+            self.assertIn("env.FORK_PR != 'true'", steps[name]["if"])
+        self.assertIn("container-source-tests", steps["Upload package test results"]["with"]["name"])
+        self.assertIn('if [[ $FORK_PR != true ]]', steps["Retain wheels and required Python test evidence"]["run"])
+        scripts = [steps[name]["run"] for name in (
+            "Test archive rules against synthetic OCI fixtures", "Test Python packages and check startup generation",
+            "Check DHCP utilities and CLI tests without DEB generation", "Test SONiC component packages and their upstream suites",
+        )]
+        with tempfile.TemporaryDirectory() as work:
+            for directory in ("archive", "dhcp-relay"):
+                Path(work, "artifacts", directory).mkdir(parents=True)
+            mock_tools = """
+                set -eu
+                make() { :; }
+                python3() { :; }
+                git() { :; }
+                bazel_args() {
+                    if [[ $1 == query ]]; then seq 1 22; else printf '%s\n' "$@" >> calls; fi
+                }
+            """
+            env = dict(os.environ, FORK_PR="true", VS_WHEELS="", VS_PACKAGE="", USE_VS_WHEELS="false", BAZEL="bazel_args")
+            for script in scripts:
+                script = script.replace("${{ matrix.platform }}", "x86_64_trixie").replace("${{ matrix.architecture }}", "amd64")
+                subprocess.run(["bash", "-c", mock_tools + script], check=True, env=env, cwd=work, capture_output=True)
+            labels = set(Path(work, "calls").read_text().splitlines())
+            for label in ("//tools/bazel/tests:sonic_docker_archive_test", "//tools/bazel/tests:sonic_config_engine_full_test",
+                          "//tools/bazel/tests:swss_manifest_render_test", "//tools/bazel/tests:swss_init_test",
+                          "//src/sonic-dhcp-utilities:upstream_tests", "@sonic_swss//crates/countersyncd:common_rust_test",
+                          "@otelcol_contrib//bazel:components_output_test",
+                          "--@sonic_yang_models//:test_models=//tools/bazel/tests:source_models"):
+                self.assertIn(label, labels)
+            self.assertFalse(any(label.endswith(("installed_wheel_test", ":package_test", ":wheel_test",
+                                                 ":swss_package_contract_test", ":consumer_test")) for label in labels))
+            self.assertNotIn("//tools/bazel/tests:sonic_python_wheels_test", labels)
+
+    def test_required_arm64_check_reports_for_empty_and_nonempty_package_selections(self):
+        """Keep the fixed branch-protection check even when Actions schedules no matrix rows."""
+        jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
+        gate = jobs["arm64_acceptance"]
+        self.assertEqual(gate["name"], "Container archive (ARM64)")
+        step, = gate["steps"]
+        for selected, result, passed in ((True, "success", True), (False, "skipped", True),
+                                         (True, "skipped", False), (False, "failure", False)):
+            with self.subTest(selected=selected, result=result):
+                env = dict(os.environ, CHECKS="success", VS="success", RESULT=result, SOURCE_ONLY="false",
+                           PLAN=json.dumps({"groups": {"archive": selected}}))
+                self.assertEqual(subprocess.run(["bash", "-c", step["run"]], env=env).returncode == 0, passed)
 
     def test_runtime_pruning_commands_stop_on_errors_without_using_a_real_daemon(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())

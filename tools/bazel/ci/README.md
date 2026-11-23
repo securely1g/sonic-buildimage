@@ -287,6 +287,21 @@ probe against those exact bytes. When Make enables debug images, a container
 with a registered debug target also gets its debug archive checked in the
 same job.
 
+The installer still builds and publishes its selected images on each VS run.
+Before scheduling probes, CI compares the source and test changes since a
+successful ancestor on master and the inputs actually produced by this build.
+It compares runtime and debug configurations separately. A missing or
+incompatible baseline, or an input with unknown consumers, selects the full suite.
+The installer check verifies the revision and published checksums on every build.
+
+For example, a change to libteam selects its component check and the Orchagent
+and Teamd runtime probes. An edit to the installed libteam test alone selects
+that test. A documentation-only change with identical validation inputs can
+skip both. The package checks consume VS TARs and wheels by artifact ID.
+Independent builds exercise a different architecture, packaging interface or
+rebuild condition, such as changing a bgpcfgd source and restoring its wheel
+checksum. See the VS producer's validation selection in the workflow summary.
+
 The owning BUILD files sit beside the original container inputs:
 [`dockers/docker-orchagent/BUILD.bazel`](../../../dockers/docker-orchagent/BUILD.bazel)
 and [`platform/vs/docker-syncd-vs/BUILD.bazel`](../../../platform/vs/docker-syncd-vs/BUILD.bazel).

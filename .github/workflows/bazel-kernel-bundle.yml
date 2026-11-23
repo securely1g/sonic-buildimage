@@ -1,15 +1,16 @@
 name: Bazel kernel DEBs
 
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_call:
     inputs:
+      native_arm64:
+        description: Exercise the native ARM64 build selected by VS CI
+        type: boolean
+        default: false
       vs_artifact_id:
         description: Same-run artifact containing the AMD64 kernel DEBs consumed by Make
         type: string
-        required: true
+        required: false
   workflow_dispatch:
     inputs:
       verify_cold_cache:
@@ -30,8 +31,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: ${{ fromJSON(inputs.vs_artifact_id && '["amd64"]' || github.event_name == 'workflow_dispatch' && '["amd64","arm64"]' || '["arm64"]') }}
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        arch: ${{ fromJSON(inputs.vs_artifact_id && '["amd64"]' || inputs.native_arm64 && '["arm64"]' || '["amd64","arm64"]') }}
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (inputs.native_arm64 || inputs.vs_artifact_id != '' || github.event_name == 'workflow_dispatch')
     runs-on: [self-hosted, linux, "${{ matrix.arch == 'amd64' && 'bazel-x64' || 'bazel-arm64' }}"]
     timeout-minutes: 300
     env:
@@ -74,7 +77,7 @@ jobs:
             -exec chown --no-dereference -- "$owner" {} +
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.vs_artifact_id && github.sha || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ (inputs.vs_artifact_id || inputs.native_arm64) && github.sha || github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Initialize the pinned kernel source
         run: git submodule update --init -- src/sonic-linux-kernel src/sonic-frr src/sonic-supervisord-utilities-rs

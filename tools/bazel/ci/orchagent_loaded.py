@@ -18,6 +18,7 @@ from tools.bazel.ci import artifact_validation as check
 from tools.bazel.ci import validate_runtime
 from tools.bazel.ci.public_artifacts import safe_json
 from tools.bazel.ci.orchagent_image import identity
+from tools.bazel.tests.integration.swss_init_test import verify as verify_init
 
 
 def main():
@@ -71,6 +72,10 @@ def main():
             container_name = "sonic-orchagent-probe-" + probe_id
             try:
                 loaded, config, _ = validate_runtime.load_archive(archive, tag, expected["config_digest"])
+                if name == "docker-orchagent":
+                    startup = subprocess.check_output(["docker", "run", "--rm", "--network=none",
+                                                       "--entrypoint", "/bin/cat", tag, "/usr/bin/docker-init.sh"])
+                    verify_init(startup)
                 validate_runtime.verify_loaded_image(loaded, config, expected["config_digest"])
                 check.require(loaded["Os"] == "linux" and loaded["Architecture"] == "amd64", "loaded platform differs")
                 check.require(config["rootfs"] == expected["rootfs"], "loaded layers differ from validated OCI")

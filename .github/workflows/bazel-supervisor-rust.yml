@@ -2,46 +2,8 @@ name: Bazel Rust supervisor
 
 on:
   pull_request:
-    paths:
-      - tools/bazel/ci/resources.py
-      - .github/actions/bazel-post-job-cleanup/**
-      - tools/bazel/ci/cleanup_container_bazel.py
-      - .github/workflows/bazel-supervisor-rust.yml
-      - .bazelrc
-      - .bazelversion
-      - MODULE.bazel
-      - tools/bazel/common.bazelrc
-      - tools/bazel/go-lock
-      - tools/bazel/go/**
-      - tools/bazel/tests/**
-      - tools/bazel/debian_mirrors.cfg
-      - tools/bazel/ci/libteam_draft_bazel.sh
-      - tools/bazel/ci/prepare_image_submodules.sh
-      - tools/bazel/ci/preserve_setup_bazel_cache.py
-      - tools/bazel/ci/repair_bazel_startup.py
-      - tools/bazel/ci/source_mirrors.py
-      - src/sonic-supervisord-utilities-rs/**
   push:
     branches: [master]
-    paths:
-      - tools/bazel/ci/resources.py
-      - .github/actions/bazel-post-job-cleanup/**
-      - tools/bazel/ci/cleanup_container_bazel.py
-      - .github/workflows/bazel-supervisor-rust.yml
-      - .bazelrc
-      - .bazelversion
-      - MODULE.bazel
-      - tools/bazel/common.bazelrc
-      - tools/bazel/go-lock
-      - tools/bazel/go/**
-      - tools/bazel/tests/**
-      - tools/bazel/debian_mirrors.cfg
-      - tools/bazel/ci/libteam_draft_bazel.sh
-      - tools/bazel/ci/prepare_image_submodules.sh
-      - tools/bazel/ci/preserve_setup_bazel_cache.py
-      - tools/bazel/ci/repair_bazel_startup.py
-      - tools/bazel/ci/source_mirrors.py
-      - src/sonic-supervisord-utilities-rs/**
   workflow_dispatch:
 
 permissions:
@@ -52,7 +14,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/native-validation-plan.yml
+    with:
+      workflow: bazel-supervisor-rust.yml
+      paths: |
+        tools/bazel/ci/resources.py
+        .github/actions/bazel-post-job-cleanup/**
+        tools/bazel/ci/cleanup_container_bazel.py
+        .github/workflows/bazel-supervisor-rust.yml
+        .bazelrc
+        .bazelversion
+        MODULE.bazel
+        tools/bazel/common.bazelrc
+        tools/bazel/go-lock
+        tools/bazel/go/**
+        tools/bazel/tests/**
+        tools/bazel/debian_mirrors.cfg
+        tools/bazel/ci/libteam_draft_bazel.sh
+        tools/bazel/ci/prepare_image_submodules.sh
+        tools/bazel/ci/preserve_setup_bazel_cache.py
+        tools/bazel/ci/repair_bazel_startup.py
+        tools/bazel/ci/source_mirrors.py
+        src/sonic-supervisord-utilities-rs/**
+
   native:
+    needs: plan
+    if: needs.plan.outputs.selected == 'true'
     name: Rust listener (${{ matrix.arch }})
     strategy:
       fail-fast: false

@@ -18,7 +18,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.bazel.ci import vs_component_artifacts
+from tools.bazel.ci import validation_profile, vs_component_artifacts
 from tools.bazel.ci.build import execution_root_from_bep
 from tools.bazel.ci.artifact_validation import require, sha
 from tools.bazel.ci.vs_container_validation import PMON, static_i386_files
@@ -439,8 +439,9 @@ def write_bundles(args, families, paths, build_settings, *, native_archives=()):
                 digest = stage_archive(source, bundle / archive, paths[label],
                                        os.environ.get("SONIC_VS_BOOT_HANDOFF") if selected_archive else None)
                 archive_specs[variant] = {
-                    "file": archive, "sha256": digest,
+                    "file": archive, "sha256": digest, "size": (bundle / archive).stat().st_size,
                     "config_digest": manifest["config"]["digest"],
+                    "validation_config": validation_profile.image_config(config, version),
                     "layers": manifest["layers"], "rootfs": config["rootfs"],
                 }
                 artifacts = vs_probe_policy.prepare(image, version, variant, layout_path, source_paths, bundle,

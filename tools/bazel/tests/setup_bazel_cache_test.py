@@ -40,6 +40,19 @@ PRIVATE_CACHE_SETTINGS = [
 
 
 class SetupBazelCacheTest(unittest.TestCase):
+    def assert_selects_cache_helper(self, document, helper):
+        events = document.get("on", document.get(True))
+        plan = document["jobs"].get("plan", {})
+        for event in ("pull_request", "push"):
+            if event not in events:
+                continue
+            if plan.get("uses") == "./.github/workflows/native-validation-plan.yml":
+                self.assertNotIn("paths", events[event] or {})
+                paths = plan["with"]["paths"].splitlines()
+            else:
+                paths = events[event]["paths"]
+            self.assertIn(helper, paths)
+
     def test_workspace_defaults_do_not_enable_private_remote_services(self):
         for relative in (".bazelrc", "tools/bazel/common.bazelrc", "tools/bazel/kernel/.bazelrc"):
             with self.subTest(rc=relative):
@@ -173,9 +186,7 @@ Path(os.environ['RECORD']).write_text(json.dumps(sys.argv[1:]))
                 self.assertEqual(handoff["run"], "python3 " + HELPER + " --private-remote-cache")
                 self.assertEqual(job["steps"].index(repairs[0]), job["steps"].index(handoff) + 1)
                 if filename != "bazel-oci.yml":
-                    events = document.get("on", document.get(True))
-                    for event in ("pull_request", "push"):
-                        self.assertIn(repair_helper, events[event]["paths"])
+                    self.assert_selects_cache_helper(document, repair_helper)
                 root = Path(temporary)
                 env = self.prepare(root, "build --disk_cache=/disk\ncommon --repository_cache=/repo\n")
                 subprocess.run(["bash", "-euc", handoff["run"]], cwd=root, env=env, check=True)
@@ -245,10 +256,7 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                                  (" --private-remote-cache" if private_cache else ""))
                 self.assertTrue(setup["with"]["repository-cache"])
                 if filename != "bazel-oci.yml":
-                    events = document.get("on", document.get(True))
-                    for event in ("pull_request", "push"):
-                        if event in events:
-                            self.assertIn(HELPER, events[event]["paths"])
+                    self.assert_selects_cache_helper(document, HELPER)
                 home = ("build --disk_cache=/retained/disk\n"
                         "common --repository_cache=/retained/repository\n"
                         "common --remote_cache=grpc://unrelated.invalid\n"
@@ -322,7 +330,10 @@ Path(os.environ['RECORD']).write_text(json.dumps({'argv': args, 'user': Path('.b
                     if "-m unittest discover -s tools/bazel/tests" in line]
         self.assertEqual(len(commands), 1)
         index, step, command = commands[0]
-        self.assertNotIn("if", step)
+        self.assertEqual(step["if"], "fromJSON(steps.validation_plan.outputs.plan).groups.checks")
+        from tools.bazel.ci.validation_changes import select
+        for path in ("tools/bazel/tests/setup_bazel_cache_test.py", "tools/bazel/ci/repair_bazel_startup.py"):
+            self.assertTrue(select([path])["groups"]["checks"], path)
         self.assertTrue(any("python3-yaml" in s.get("run", "") for s in steps[:index]))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -29,6 +29,8 @@ jobs:
       matrix:
         architecture: [amd64, arm64]
     env:
+      # A fork has no VS bundle for installed-package checks.
+      SOURCE_ONLY: ${{ inputs.vs_artifact_id == '' && github.event_name == 'pull_request' }}
       NATIVE_ARCHITECTURE: ${{ matrix.architecture }}
       NATIVE_PLATFORM: ${{ matrix.architecture == 'amd64' && 'x86_64_trixie' || 'aarch64_trixie' }}
       NATIVE_MACHINE: ${{ matrix.architecture == 'amd64' && 'x86_64' || 'aarch64' }}
@@ -131,7 +133,7 @@ jobs:
             flags="$VS_BAZEL_PACKAGE/probe-flags.txt"
             python3 -m tools.bazel.ci.vs_python_packages flags --group frr --architecture "$NATIVE_ARCHITECTURE" --package "$VS_BAZEL_PACKAGE" > "$flags"
             mapfile -t installed_inputs < "$flags"
-          else
+          elif [[ "$SOURCE_ONLY" != true ]]; then
             bazel build "${options[@]}" \
               //src/sonic-frr-mgmt-framework:sonic_frr_mgmt_framework_wheel \
               //src/sonic-frr-mgmt-framework:runtime \
@@ -141,7 +143,7 @@ jobs:
           bazel test "${options[@]}" --nocache_test_results --test_output=errors \
             //src/sonic-frr-mgmt-framework:upstream_tests \
             //src/sonic-bgpcfgd:upstream_tests
-          if [[ "$NATIVE_ARCHITECTURE" == amd64 ]]; then
+          if [[ "$NATIVE_ARCHITECTURE" == amd64 && "$SOURCE_ONLY" != true ]]; then
             bazel test "${options[@]}" "${installed_inputs[@]}" --nocache_test_results --test_output=errors \
               //src/sonic-frr-mgmt-framework:installed_wheel_test \
               //src/sonic-bgpcfgd:installed_wheel_test
@@ -175,7 +177,8 @@ jobs:
               "architecture": os.environ["NATIVE_ARCHITECTURE"], "components": {},
           }
           bundle = os.environ.get("VS_PACKAGES")
-          receipt["package_source"] = "vs-installer" if bundle else "native-build"
+          source_only = os.environ["SOURCE_ONLY"] == "true"
+          receipt["package_source"] = "source-tests-only" if source_only else ("vs-installer" if bundle else "native-build")
           for component in FRR_COMPONENTS:
               package = "//src/" + component
               source = Path("bazel-testlogs/src") / component / "upstream_tests"
@@ -186,6 +189,12 @@ jobs:
                       or counts["tests"] <= counts["skipped"]
                       or not inventory["python"].startswith("3.13.")):
                   raise ValueError("Incomplete Python 3.13 upstream suite: " + component)
+              receipt["components"][component] = {
+                  "test_target": package + ":upstream_tests", "tests": counts,
+                  "python": inventory["python"].split()[0],
+              }
+              if source_only:
+                  continue
               outputs = []
               for filename, target in frr_outputs(component).items():
                   if bundle:
@@ -206,10 +215,7 @@ jobs:
                                   "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()})
               wheel, runtime = (directory / output["path"] for output in outputs)
               verify_frr_runtime(wheel, runtime)
-              receipt["components"][component] = {
-                  "test_target": package + ":upstream_tests", "tests": counts,
-                  "python": inventory["python"].split()[0], "outputs": outputs,
-              }
+              receipt["components"][component]["outputs"] = outputs
               if os.environ["NATIVE_ARCHITECTURE"] == "amd64":
                   source = Path("bazel-testlogs/src") / component / "installed_wheel_test"
                   installed_counts = test_result(source / "test.xml")

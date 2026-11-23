@@ -62,10 +62,12 @@ runtime_packages(
 filegroup(name = "control", srcs = [":runtime_metadata"], output_group = "controls")
 sonic_deb(name = "deb", data = ":runtime", control = ":control")
 
+label_flag(name = "test_deb", build_setting_default = ":deb")
+
 py_test(
     name = "deb_test",
     srcs = ["deb_test.py"],
     main = "deb_test.py",
-    data = [":deb"] + glob(["sonic_platform/*.py"]),
-    args = ["$(rootpath :deb)", "$(rootpath sonic_platform/__init__.py)"],
+    data = [":test_deb"] + glob(["sonic_platform/*.py"]),
+    args = ["$(rootpath :test_deb)", "$(rootpath sonic_platform/__init__.py)"],
 )

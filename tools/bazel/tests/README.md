@@ -166,7 +166,8 @@ container boot, live service health or forwarding behavior.
 | [`sonic_cfggen_cli_test`](../../../src/sonic-config-engine/README.bazel.md) | Run the real config-engine command with Common/YANG imports and check input merging, filters, includes, multiple output destinations, namespace input and failure exits. |
 | [sonic_py_common_native_test.py](integration/sonic_py_common_native_test.py) | Import every selected Python helper and exercise the real source-built Common extension. The shared [pytest runner](integration/pytest_runner.py) also runs 44 existing interface, BGP and EEPROM cases from the component tree, for 46 cases total; it disables legacy source-mutating conftest hooks and coverage defaults. |
 | [sonic_docker_archive_test.py](integration/sonic_docker_archive_test.py) | Check Docker archive metadata and payload for the selected AMD64/ARM64 fixture and require reproducible gzip exports despite source names or requested timestamps changing. |
-| [swss_render_test.py](integration/swss_render_test.py) | Check Make's prepared SWSS runtime/debug manifests against the service contract and corresponding OCI labels, and preserve required runtime commands in the generated non-ASAN startup script. |
+| [swss_render_test.py](integration/swss_render_test.py) | Check Make's prepared SWSS runtime/debug manifests against the service contract and corresponding OCI labels. |
+| [swss_init_test.py](integration/swss_init_test.py) | Check shell syntax and required startup commands in the Orchagent script. The VS job checks the copy inside the installed runtime image. |
 | [`test_dpkg_patterns_up_to_date`](BUILD.bazel) | Compare the generated dpkg **include** patterns with the checked-in `PATH_INCLUDES` list so they cannot drift silently. This comparison does not build Debian packages. |
 
 [archive_fixture.py](archive_fixture.py) supplies small archive inputs for cache

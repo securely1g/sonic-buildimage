@@ -22,8 +22,8 @@ def selected(families):
     result = {}
     for name, module in components().items():
         images = sorted(families.keys() & set(module.IMAGES))
-        if images:
-            debug = any("debug" in families[image]["members"] for image in images)
+        if images or not module.IMAGES:
+            debug = any("debug" in families[image]["members"] for image in (images or families))
             result[name] = (module, images, debug)
     return result
 
@@ -47,6 +47,10 @@ def publish(root, families, outputs, revision, architecture, settings):
         files = {}
         for filename, label in labels(module, debug).items():
             source = outputs[label]
+            if source.is_dir():
+                # sonic_deb returns a tree containing its named binary package.
+                require({p.name for p in source.iterdir()} == {filename}, "Unexpected VS package directory: " + label)
+                source = source / filename
             copy_output(source, bundle / filename)
             files[filename] = {"target": label, "sha256": sha(source), "size": source.stat().st_size}
         manifest = {"component": name, "revision": revision, "architecture": architecture, "debug": debug,
@@ -61,7 +65,7 @@ def verify_inputs(name, directory, revision, debug):
     require(manifest["component"] == name and manifest["revision"] == revision and
             re.fullmatch(r"[0-9a-f]{40}", revision) and manifest["architecture"] == "amd64" and
             manifest["debug"] is debug, "VS component revision or configuration differs: " + name)
-    require(bool(manifest["images"]) and set(manifest["images"]) <= set(module.IMAGES) and
+    require(bool(manifest["images"]) == bool(module.IMAGES) and set(manifest["images"]) <= set(module.IMAGES) and
             bool(manifest["build_settings"].get("//tools/bazel/oci:image_version")),
             "Missing VS configuration or consuming image: " + name)
     require(set(manifest["files"]) == expected.keys() and

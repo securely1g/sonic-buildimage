@@ -1,3 +1,4 @@
+load("@aspect_bazel_lib//lib:copy_to_directory.bzl", "copy_to_directory")
 load("@aspect_bazel_lib//lib:run_binary.bzl", "run_binary")
 load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
@@ -16,6 +17,14 @@ load("//tools/bazel/oci:shared_runtime_layers.bzl", "shared_runtime_layers")
 load("//tools/bazel/oci:sonic_docker_archive.bzl", "sonic_docker_archive")
 
 package(default_visibility = ["//visibility:public"])
+
+# The source suites expect one directory with raw models and rendered templates.
+copy_to_directory(
+    name = "source_models",
+    include_srcs_packages = ["src/sonic-yang-models"],
+    srcs = ["//src/sonic-yang-models:native_model_sources"],
+    root_paths = ["src/sonic-yang-models/yang-models", "src/sonic-yang-models/rendered/py"],
+)
 
 exports_files(["integration/frr_python_wheel_probe.py"])
 
@@ -1073,17 +1082,15 @@ py_test(
 
 # Validate SWSS startup and labels against the selected manifests.
 py_test(
-    name = "swss_render_test",
+    name = "swss_manifest_render_test",
     srcs = ["integration/swss_render_test.py"],
     args = [
-        "$(location //dockers/docker-orchagent/config:docker-init.sh)",
         "$(location //dockers/docker-orchagent/config:manifest.json)",
         "$(location //dockers/docker-orchagent/config:manifest-dbg.json)",
         "$(location //dockers/docker-orchagent/config:manifest.labels)",
         "$(location //dockers/docker-orchagent/config:manifest-dbg.labels)",
     ],
     data = [
-        "//dockers/docker-orchagent/config:docker-init.sh",
         "//dockers/docker-orchagent/config:manifest.json",
         "//dockers/docker-orchagent/config:manifest.labels",
         "//dockers/docker-orchagent/config:manifest-dbg.json",
@@ -1094,6 +1101,20 @@ py_test(
     toolchains = _IMAGE_VERSION_FLAGS,
     deps = [":manifest_label_assertions"],
 )
+
+py_test(
+    name = "swss_init_test",
+    srcs = ["integration/swss_init_test.py"],
+    main = "integration/swss_init_test.py",
+    args = ["$(rootpath //dockers/docker-orchagent/config:docker-init.sh)"],
+    data = ["//dockers/docker-orchagent/config:docker-init.sh"],
+)
+
+test_suite(
+    name = "swss_render_test",
+    tests = [":swss_manifest_render_test", ":swss_init_test"],
+)
+
 
 # Keep the checked-in dpkg include patterns aligned with Make's source list.
 write_file(
