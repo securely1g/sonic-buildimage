@@ -2,6 +2,7 @@
 
 import argparse
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,30 @@ class BuildMetadataResolver(MetadataResolver):
         if image in self.labels and not (use_local_manifest or use_edit):
             return self.from_labels(self.labels[image])
         return super().from_local(image, use_local_manifest, name, use_edit)
+
+
+class VerifiedFiles:
+    """Reuse digests only for unchanged file identities within one batch."""
+
+    def __init__(self):
+        self.digests = {}
+
+    @staticmethod
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def digest(self, path):
+        with path.open("rb") as stream:
+            identity = self.identity(os.fstat(stream.fileno()))
+            if identity not in self.digests:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            else:
+                digest = self.digests[identity]
+            if (self.identity(os.fstat(stream.fileno())) != identity
+                    or self.identity(path.stat()) != identity):
+                raise ValueError("OCI blob changed while verifying: " + str(path))
+            self.digests[identity] = digest
+            return digest
 
 
 class LayoutPackageSource(PackageSource):
@@ -82,10 +107,11 @@ class LayoutPackageSource(PackageSource):
         os.utime(target, (node.meta.mtime, node.meta.mtime))
 
 
-def install_layout(manager, layout_path, tag, platform, inventory, options):
+def install_layout(manager, layout_path, tag, platform, inventory, options, verified=None):
     from oci_layout import validate_layout
 
-    layout = validate_layout(Path(layout_path), platform)
+    layout = validate_layout(
+        Path(layout_path), platform, digest_file=verified.digest if verified is not None else None)
     with ExitStack() as stack:
         source = LayoutPackageSource(manager, tag, layout, stack)
         if source.image_id != inventory[tag]:
@@ -113,23 +139,41 @@ def main():
     source.add_argument("--expression")
     install.add_argument("--enable", action="store_true")
     install.add_argument("--set-owner")
+    batch = commands.add_parser("install-batch")
+    batch.add_argument("plan", type=argparse.FileType("r"))
     args = parser.parse_args()
     manager = PackageManager.get_manager()
-    labels = json.load(args.labels)
-    inventory = json.load(args.inventory)
+    with args.labels, args.inventory:
+        labels = json.load(args.labels)
+        inventory = json.load(args.inventory)
     # The local package database looks up an installed package by image ID.
     labels.update({image_id: labels[tag] for tag, image_id in inventory.items()})
     manager.metadata_resolver = BuildMetadataResolver(manager, labels)
     if args.command == "shutdown-order":
         manager.service_creator.generate_shutdown_sequence_files(manager.get_installed_packages())
+    elif args.command == "install-batch":
+        verified = VerifiedFiles()
+        with args.plan:
+            for line in args.plan:
+                argv = json.loads(line)
+                if not isinstance(argv, list) or not argv or any(not isinstance(arg, str) for arg in argv):
+                    raise ValueError("Expected a JSON array of package installation arguments")
+                operation = install.parse_args(argv)
+                if operation.from_layout is None:
+                    raise ValueError("Batch installation requires OCI layout inputs")
+                install_package(manager, operation, inventory, verified)
     else:
-        options = {"enable": args.enable}
-        if args.set_owner:
-            options["default_owner"] = args.set_owner
-        if args.from_layout:
-            install_layout(manager, *args.from_layout, inventory, options)
-        else:
-            manager.install(expression=args.expression, tarball=args.from_tarball, **options)
+        install_package(manager, args, inventory)
+
+
+def install_package(manager, args, inventory, verified=None):
+    options = {"enable": args.enable}
+    if args.set_owner:
+        options["default_owner"] = args.set_owner
+    if args.from_layout:
+        install_layout(manager, *args.from_layout, inventory, options, verified)
+    else:
+        manager.install(expression=args.expression, tarball=args.from_tarball, **options)
 
 
 if __name__ == "__main__":

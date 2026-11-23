@@ -1,5 +1,28 @@
 # Shared Bazel CI helpers
 
+## Native VS package registration batching
+
+`SONIC_VS_FAST_ASSEMBLY=1` also enables `SONIC_VS_BATCH_REGISTRATIONS=1`.
+Explicit `0` retains one helper process per package. Without the profile or
+explicit flag, behavior is unchanged. This is separate from APT/wheel batching
+controlled by `SONIC_VS_BATCH_PACKAGES`.
+
+For native AMD64 VS Bazel builds with `DOCKER_LOAD_ON_BOOT=y`, consecutive
+layout-backed local packages register serially in one target package-manager
+process. Their original order, owner/enable options, service creation, CLI
+extraction, database commits and per-package rollback remain unchanged.
+Queued registrations finish before any legacy tarball install and before
+final inventory publication. Remote packages, legacy image stores, other
+platforms and cross-built installers retain their original calls.
+
+The batch reuses SHA256 digests for unchanged device/inode/size/mtime/ctime
+identities, checking the opened file and pathname again before accepting a
+digest. Replacement or modification triggers fresh verification; a change
+during verification fails the build. Metadata, platform, blob-size/digest and
+bundle image-ID checks remain enabled. There is no persistent digest cache,
+layer-index reuse, parallel registration, shared-cache mutation, compression
+change or payload-staging change.
+
 ## Unsigned VS ONIE payload streaming
 
 The existing `SONIC_VS_FAST_ASSEMBLY=1` profile enables

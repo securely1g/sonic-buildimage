@@ -29,6 +29,14 @@ if [[ ${SONIC_VS_FAST_ASSEMBLY:-0} == 1 ]]; then
     export SONIC_SQUASHFS_ZSTD_LEVEL=${SONIC_SQUASHFS_ZSTD_LEVEL:-3}
     export SONIC_VS_BATCH_PACKAGES=${SONIC_VS_BATCH_PACKAGES:-1}
     export SONIC_VS_STREAM_ONIE=${SONIC_VS_STREAM_ONIE:-1}
+    export SONIC_VS_BATCH_REGISTRATIONS=${SONIC_VS_BATCH_REGISTRATIONS:-1}
+fi
+if [[ -n ${SONIC_VS_BATCH_REGISTRATIONS:-} ]]; then
+    [[ $SONIC_VS_BATCH_REGISTRATIONS =~ ^[01]$ ]] || {
+        echo 'SONIC_VS_BATCH_REGISTRATIONS must be 0 or 1' >&2
+        exit 2
+    }
+    builder_args+=" -e SONIC_VS_BATCH_REGISTRATIONS"
 fi
 if [[ -n ${SONIC_VS_STREAM_ONIE:-} ]]; then
     [[ $SONIC_VS_STREAM_ONIE =~ ^[01]$ ]] || {

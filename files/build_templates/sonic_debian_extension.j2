@@ -39,6 +39,22 @@ if [[ ${SONIC_VS_BATCH_PACKAGES:-0} == 1 && $CONFIGURED_PLATFORM == vs && $CONFI
     batch_packages=y
 fi
 
+batch_registrations=n
+case "${SONIC_VS_BATCH_REGISTRATIONS:-0}" in
+    0) ;;
+    1)
+        if [[ $CONFIGURED_PLATFORM == vs && $CONFIGURED_ARCH == amd64 &&
+              ${DOCKER_LOAD_ON_BOOT:-n} == y && ${BUILD_WITH_BAZEL_WHEN_AVAILABLE:-n} == y &&
+              ${MULTIARCH_QEMU_ENVIRON:-n} != y && ${CROSS_BUILD_ENVIRON:-n} != y ]]; then
+            batch_registrations=y
+        fi
+        ;;
+    *)
+        echo 'SONIC_VS_BATCH_REGISTRATIONS must be 0 or 1' >&2
+        exit 1
+        ;;
+esac
+
 . functions.sh
 BUILD_SCRIPTS_DIR=files/build_scripts
 BUILD_TEMPLATES=files/build_templates
@@ -1226,6 +1242,15 @@ fi
 sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT "${package_install[@]}" "${package_ref[@]}" {{ get_install_options(set_owner, enabled) }}
 {% endfor -%}
 
+flush_boot_registrations() {
+    if [[ $batch_registrations == y && -s "$boot_work/registrations.jsonl" ]]; then
+        sudo install -m 0644 "$boot_work/registrations.jsonl" "$FILESYSTEM_ROOT$boot_helper/registrations.jsonl"
+        sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot "$FILESYSTEM_ROOT" \
+            "${boot_package_manager[@]}" install-batch "$boot_helper/registrations.jsonl"
+        : > "$boot_work/registrations.jsonl"
+    fi
+}
+
 {% for package in sonic_local_packages.strip().split() -%}
 {% set name, path, set_owner, enabled = package.split('|') -%}
 name_repo=$(basename "{{name}}" .gz)
@@ -1235,9 +1260,16 @@ if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y && " ${SONIC_VS_LAYOUT_INPUTS:-} " == *" {{
 fi
 if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y && -d "$package_input" ]]; then
     # The bundle already includes both tags. Install the service and CLI from these same image layers.
-    sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot "$FILESYSTEM_ROOT" "${package_install[@]}" \
-        --from-layout "$package_input" "$name_repo:latest" "linux/$CONFIGURED_ARCH" {{ get_install_options(set_owner, enabled) }}
+    if [[ $batch_registrations == y ]]; then
+        registration_args=(--from-layout "$package_input" "$name_repo:latest" \
+            "linux/$CONFIGURED_ARCH" {{ get_install_options(set_owner, enabled) }})
+        jq -cn --args '$ARGS.positional' -- "${registration_args[@]}" >> "$boot_work/registrations.jsonl"
+    else
+        sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot "$FILESYSTEM_ROOT" "${package_install[@]}" \
+            --from-layout "$package_input" "$name_repo:latest" "linux/$CONFIGURED_ARCH" {{ get_install_options(set_owner, enabled) }}
+    fi
 else
+    flush_boot_registrations
     sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT "${package_install[@]}" --from-tarball "$package_input" {{ get_install_options(set_owner, enabled) }}
     image_tags=$(sudo LANG=C DOCKER_HOST="$DOCKER_HOST" chroot $FILESYSTEM_ROOT docker images --format "{% raw %}{{.Tag}}{% endraw %}" $name_repo | grep -v "<none>")
     if echo "$image_tags" | grep -q "latest"; then
@@ -1253,6 +1285,8 @@ else
     fi
 fi
 {% endfor -%}
+
+flush_boot_registrations
 
 if [[ ${DOCKER_LOAD_ON_BOOT:-n} == y ]]; then
     # Preserve any extra tags and images pulled by optional packages or Kubernetes.

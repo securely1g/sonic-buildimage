@@ -1728,8 +1728,8 @@ endif
 .PHONY: check-vs-boot-mode
 $(vs_boot_mode_stamp): check-vs-boot-mode
 	@mkdir -p "$(@D)"
-	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' '$(vs_device_data_tar)' '$(SONIC_VS_STREAM_ONIE)' | cmp -s - "$@" || \
-	    printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' '$(vs_device_data_tar)' '$(SONIC_VS_STREAM_ONIE)' > "$@"
+	@printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' '$(vs_device_data_tar)' '$(SONIC_VS_STREAM_ONIE)' '$(SONIC_VS_BATCH_REGISTRATIONS)' | cmp -s - "$@" || \
+	    printf '%s\n' '$(DOCKER_LOAD_ON_BOOT)' '$(SONIC_BOOT_LAYER_GZIP_LEVEL)' '$(SONIC_SQUASHFS_ZSTD_LEVEL)' '$(SONIC_VS_BATCH_PACKAGES)' '$(vs_device_data_tar)' '$(SONIC_VS_STREAM_ONIE)' '$(SONIC_VS_BATCH_REGISTRATIONS)' > "$@"
 endif
 
 # targets for building installers with base image
