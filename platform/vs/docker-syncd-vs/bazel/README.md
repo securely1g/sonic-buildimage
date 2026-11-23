@@ -62,6 +62,41 @@ bazel build --config=syncd-dash \
   //platform/vs/docker-syncd-vs:docker-syncd-vs-dbg.gz
 ```
 
+## Shared Syncd/gearbox APT payload
+
+The source-built Syncd and Gbsyncd images factor byte-identical regular files
+from their checked APT layers into one common gzip layer, followed by a separate
+delta for each image. File contents, numeric ownership, modes, timestamps and
+PAX metadata must match before sharing. Matching parent directories precede the
+shared files; files with missing or differing parent directories stay in the
+original delta, as do links and hardlink targets. Whiteouts, duplicate
+paths, sparse files or no movable overlap retain the original TAR payloads with
+an empty common layer.
+
+APT selection, source contracts, package-state generation and runtime/debug
+validation still use each image's original receipts. No packages, compiler
+tools, licenses, firmware or service files are removed. Image IDs and layer
+DiffIDs change normally with the new composition. The boot bundle can then
+store the common blob once instead of carrying two mostly overlapping layers.
+
+The partitioning/compression is a declared, cacheable producer action before
+installer assembly. Outputs use deterministic gzip level 6 with `pigz -p 2`;
+the boot packager reuses these gzip blobs without recompressing them.
+A cold build performs additional reads and compression;
+this is not a guaranteed total-build or assembly-time reduction. Its small
+`shared_apt_runtime/receipt.json` reports the movable overlap and output sizes.
+Disable sharing for both images with:
+
+```sh
+bazel build --config=syncd-dash \
+  --//platform/vs/docker-syncd-vs:share_runtime_apt_layers=false \
+  //platform/vs/docker-syncd-vs:docker-syncd-vs.gz \
+  //platform/vs/docker-gbsyncd-vs:docker-gbsyncd-vs.gz
+```
+
+For Make builds, append that setting to the existing `BAZEL_CONTAINER_ARGS`.
+Rollback selects the original layer inputs and does not run the partition action.
+
 ## Runtime and debug inputs
 
 | Input | Producer |
