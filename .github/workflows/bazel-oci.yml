@@ -1098,7 +1098,7 @@ jobs:
         run: bash tools/ci/runner/nfs_package_cache.sh
 
       - name: Reclaim unused images and build cache
-        if: steps.vs_cleanup_handoff.outputs.enrolled != 'true'
+        if: steps.vs_cleanup_handoff.outputs.enrolled != 'true' || (inputs.vs_cleanup_benchmark_arm && inputs.vs_cleanup_benchmark_arm != 'none')
         run: |
           set -euo pipefail
           docker system df
@@ -1107,20 +1107,16 @@ jobs:
           docker system df
 
       - name: Reclaim local build caches
-        if: steps.vs_cleanup_handoff.outputs.enrolled != 'true'
+        if: steps.vs_cleanup_handoff.outputs.enrolled != 'true' || (inputs.vs_cleanup_benchmark_arm && inputs.vs_cleanup_benchmark_arm != 'none')
         env:
           VS_RUNNER_WORKSPACE: ${{ runner.workspace }}
           CACHE_MAX_GIB: ${{ vars.VS_REPO_CONTENTS_CACHE_MAX_GIB || '70' }}
           CACHE_MAX_AGE_DAYS: ${{ vars.VS_REPO_CONTENTS_CACHE_MAX_AGE_DAYS || '14' }}
           CACHE_MIN_FREE_GIB: ${{ vars.VS_REPO_CONTENTS_CACHE_MIN_FREE_GIB || '220' }}
         run: |
-          retain=()
-          if [[ "${VS_CLEANUP_BENCHMARK_ARM:-none}" == none ]]; then
-            retain+=(--retain-repo-contents)
-          fi
           python3 -B -m tools.bazel.ci.cleanup_runner_bazel_cache \
             --runner-workspace "$VS_RUNNER_WORKSPACE" --remove-package-cache \
-            "${retain[@]}" --repo-contents-max-gib "$CACHE_MAX_GIB" \
+            --retain-repo-contents --repo-contents-max-gib "$CACHE_MAX_GIB" \
             --repo-contents-max-age-days "$CACHE_MAX_AGE_DAYS" \
             --repo-contents-min-free-gib "$CACHE_MIN_FREE_GIB"
 

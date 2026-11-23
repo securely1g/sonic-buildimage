@@ -3,9 +3,9 @@
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -172,23 +172,23 @@ class CleanupBenchmarkTest(unittest.TestCase):
                         self.api, self.env, host.MASTER, benchmark.PINS[0])
                 self.artifact, self.run, self.workflow = artifact, run, workflow
 
-    def test_real_workflow_cache_command_preserves_default_but_clears_benchmark_cache(self):
+    def test_benchmark_preparation_runs_for_all_arms_without_changing_normal_deferral(self):
         workflow = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())
-        script = next(s["run"] for s in workflow["jobs"]["vs_container"]["steps"]
-                      if s["name"] == "Reclaim local build caches")
-        command = self.directory / "python3"
-        command.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
-        command.chmod(0o755)
-        for arm in ("none", "A", "B", "C"):
-            with self.subTest(arm=arm):
-                result = subprocess.run(
-                    ["bash", "-euc", script], text=True, capture_output=True,
-                    env=dict(PATH=str(self.directory) + os.pathsep + os.defpath,
-                             VS_CLEANUP_BENCHMARK_ARM=arm, VS_RUNNER_WORKSPACE="/fixture",
-                             CACHE_MAX_GIB="70", CACHE_MAX_AGE_DAYS="14", CACHE_MIN_FREE_GIB="220"))
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual("--retain-repo-contents" in result.stdout.splitlines(),
-                                 arm == "none")
+        steps = workflow["jobs"]["vs_container"]["steps"]
+        preparation = [step for step in steps if step["name"] in (
+            "Reclaim unused images and build cache", "Reclaim local build caches")]
+        for arm in (None, "none", "A", "B", "C"):
+            for enrolled in ("false", "true"):
+                context = {
+                    "inputs": SimpleNamespace(vs_cleanup_benchmark_arm=arm),
+                    "steps": SimpleNamespace(vs_cleanup_handoff=SimpleNamespace(
+                        outputs=SimpleNamespace(enrolled=enrolled))),
+                }
+                for step in preparation:
+                    with self.subTest(arm=arm, enrolled=enrolled, step=step["name"]):
+                        expression = step["if"].replace("||", " or ").replace("&&", " and ")
+                        enabled = bool(eval(expression, {"__builtins__": {}}, context))
+                        self.assertEqual(enabled, enrolled != "true" or arm in ("A", "B", "C"))
 
 
 if __name__ == "__main__":

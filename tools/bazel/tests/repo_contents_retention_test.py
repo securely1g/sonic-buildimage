@@ -264,6 +264,55 @@ class RepoContentsRetentionTest(unittest.TestCase):
                 subject.acquire_lock(stack, scope)
             chown.assert_not_called()
 
+    def test_benchmark_workflow_preserves_warm_repositories_and_applies_master_expiry(self):
+        steps = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())[
+            "jobs"]["vs_container"]["steps"]
+        script = next(step["run"] for step in steps
+                      if step["name"] == "Reclaim local build caches")
+        commands = self.workspace / "commands"
+        commands.mkdir()
+        python = commands / "python3"
+        python.write_text(
+            "#!" + sys.executable + "\n"
+            "import json,sys\n"
+            "print(json.dumps(sys.argv[1:]))\n")
+        python.chmod(0o755)
+        runner_temp = self.workspace / "_temp"
+        runner_temp.mkdir()
+        sentinels = [self.workspace / name / "sentinel"
+                     for name in ("vs-123-1", "shared-nfs")]
+        for path in sentinels:
+            path.parent.mkdir()
+            path.write_text("preserve")
+        usage = shutil.disk_usage(self.workspace)._replace(free=1024 * subject.GIB)
+        for index, arm in enumerate(("none", "A", "B", "C"), 1):
+            with self.subTest(arm=arm):
+                expired, old_marker = self.entry(
+                    scope="dispatch", group=str(index) * 64, age_days=15)
+                warm, warm_marker = self.entry(
+                    scope="dispatch", group=str(index) * 64, number=2)
+                environment = dict(
+                    PATH=str(commands) + os.pathsep + os.defpath,
+                    VS_CLEANUP_BENCHMARK_ARM=arm, VS_RUNNER_WORKSPACE=str(self.workspace),
+                    CACHE_MAX_GIB="70", CACHE_MAX_AGE_DAYS="14", CACHE_MIN_FREE_GIB="220")
+                result = self.original_run(
+                    ["bash", "-euc", script], env=environment, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(result.stdout)
+                with mock.patch.object(sys, "argv",
+                                       [cleanup_runner_bazel_cache.__name__] + arguments[3:]), \
+                        mock.patch.dict(os.environ, {"RUNNER_TEMP": str(runner_temp)}, clear=True), \
+                        mock.patch.object(subject.shutil, "disk_usage", return_value=usage), \
+                        redirect_stdout(io.StringIO()):
+                    cleanup_runner_bazel_cache.main()
+                self.assertTrue(warm.exists())
+                self.assertTrue(warm_marker.exists())
+                self.assertFalse(expired.exists())
+                self.assertFalse(old_marker.exists())
+                self.assertTrue(self.cache.exists())
+                for path in sentinels:
+                    self.assertEqual(path.read_text(), "preserve")
+
     def test_workflow_reuses_cleanup_and_keeps_headroom_check_before_build(self):
         job = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())[
             "jobs"]["vs_container"]

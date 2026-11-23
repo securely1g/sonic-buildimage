@@ -103,7 +103,8 @@ sudo install -d -m 0755 /opt/sonic-vs-cleanup/tools/ci/runner \
 sudo install -m 0644 tools/ci/runner/vs_cleanup_supervisor.py \
   tools/ci/runner/vs_cleanup_client.py /opt/sonic-vs-cleanup/tools/ci/runner/
 sudo install -m 0644 tools/bazel/ci/cleanup_vs_workspace.py \
-  tools/bazel/ci/cleanup_runner_bazel_cache.py /opt/sonic-vs-cleanup/tools/bazel/ci/
+  tools/bazel/ci/cleanup_runner_bazel_cache.py \
+  tools/bazel/ci/retain_repo_contents_cache.py /opt/sonic-vs-cleanup/tools/bazel/ci/
 sudo install -m 0644 tools/ci/runner/sonic-vs-cleanup.service \
   /etc/systemd/system/sonic-vs-cleanup.service
 sudo systemctl daemon-reload
@@ -201,13 +202,23 @@ latest artifacts or fall back on API/download/restore failure. Record the input
 IDs and resulting cache receipts; matching an artifact ID does not guarantee
 that its cache key matches the tested source.
 
-Match cold local cache state with the existing guarded helpers before each
-measurement. Benchmark A/B startup cleanup does not retain the repository-content
-cache; normal non-benchmark retention remains unchanged. C uses its approved
-host reclamation policy. Preserve all failed checkouts, shared NFS, named
-volumes and remote caches. Record baseline disk use and a private host/boot
-fingerprint; do not flush the OS page cache. Verify sufficient **peak-build and
-pre-cleanup** disk headroom, not merely the admission threshold.
+Every explicit benchmark arm uses the same pre-build preparation: reclaim unused
+Docker images/build cache and selected local download/action/package caches,
+while preserving prepared-repository reuse through master's existing bounded
+`--retain-repo-contents` policy. Use identical age, size and free-space limits.
+The policy may evict expired or excess entries; it does not blanket-delete
+`vs-cache/repo-contents`. This common preparation also runs for benchmark C after
+enrollment; ordinary non-benchmark deferred jobs still skip workflow reclamation.
+C's existing host cleanup remains unchanged. This is not deployment of post-job
+prepared-repository retention into the supervisor.
+
+Match prepared-repository cache reuse before timing, using an approved untimed
+warm-up or equivalent cache-hit evidence, not a repository-cache wipe. Warm-up
+builds need separate approval. Preserve failed checkouts, shared NFS, named
+volumes and remote caches. Record common preparation time separately from
+assembly and retain it in total job time. Record baseline disk use and a private
+host/boot fingerprint; do not flush the OS page cache. Verify sufficient
+**peak-build and pre-cleanup** disk headroom, not merely the admission threshold.
 
 An initial mirrored series is C, A, B, B, A, C, ending back on the supervisor.
 Service transitions require draining and guarded shutdown first. Report builder
