@@ -63,7 +63,7 @@ bazel_dep(name = "rules_pkg", version = "1.1.0")
 bazel_dep(name = "net-snmp", version = "5.9.3.sonic.1", repo_name = "net_snmp")
 
 # Share APT lock metadata across dependency sets.
-bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.25")
+bazel_dep(name = "rules_distroless", version = "0.9.4.sonic.26")
 # Preserve system and quote headers in the P4/DASH Make builds.
 bazel_dep(name = "rules_foreign_cc", version = "0.16.0.sonic.1")
 bazel_dep(name = "rules_gzip", version = "1.0.0")
@@ -81,7 +81,7 @@ register_toolchains("@sonic_build_infra//tools/gzip:toolchain")
 # submodules selected by the rest of the Make image build.
 bazel_dep(
     name = "sonic-build-infra",
-    version = "0.0.42-da5f4c8d370f501572f435ade330ec209c9c0203",
+    version = "0.0.44-35726399908a3beb947174e9359f902077928289",
     repo_name = "sonic_build_infra",
 )
 bazel_dep(name = "grub", version = "2.12.sonic.1")
@@ -369,8 +369,15 @@ single_version_override(
     version = "0.0.5-5bf69bc0a7d9ea9f4a5606264be592867cd29d1e",
 )
 
-bazel_dep(name = "sonic-fips", version = "0.0.6-18a778db501d455f8a1b6d1e3ef8e17121661177", repo_name = "sonic_fips")
+bazel_dep(name = "sonic-fips", version = "1.11.0-2ed0920f2fea7940f4b2b7f5c37e51e225eb1ea6", repo_name = "sonic_fips")
 bazel_dep(name = "sonic-wpa-supplicant", version = "2.9.0.sonic.1", repo_name = "sonic_wpa_supplicant")
+single_version_override(
+    module_name = "sonic-wpa-supplicant",
+    version = "2.9.0.sonic.1",
+    patches = ["//tools/bazel/registry:wpa-supplicant-fips-openssl.patch"],
+    patch_strip = 1,
+)
+
 
 # MACsec runtime/debug and private Redis checks share the production APT lock.
 use_repo(apt, "macsec_debian")
@@ -653,7 +660,7 @@ apt_inputs(
 
 # LLDP runtime comes from lldpd and DBSyncd. Select its six external runtime
 # library roots from the reviewed native build dependencies.
-bazel_dep(name = "lldpd", version = "1.0.16.sonic.1")
+bazel_dep(name = "lldpd", version = "1.0.16.sonic.3")
 bazel_dep(name = "sonic-dbsyncd", version = "2.0.0-8a3830704d3f6067823f7c10b3b31913965add81", repo_name = "sonic_dbsyncd")
 use_repo(apt, "lldpd_deps")
 
