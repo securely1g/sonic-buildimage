@@ -18,6 +18,9 @@ if [[ ${SONIC_VS_IMAGE_TIMINGS:-} == 1 ]]; then
         builder_args+=" -e SONIC_BOOT_BUNDLE_EVIDENCE_DIR=artifacts/vs/image-timings/boot-bundle"
     fi
 fi
+if [[ ${SONIC_VS_CACHE_REPORT:-} == 1 ]]; then
+    builder_args+=" -e SONIC_VS_CACHE_REPORT"
+fi
 if [[ ${SONIC_VS_REUSE_BAZEL_PRODUCERS:-} == 1 ]]; then
     builder_args+=" -e SONIC_VS_REUSE_BAZEL_PRODUCERS"
 fi

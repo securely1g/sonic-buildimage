@@ -199,7 +199,13 @@ def build_packages(workspace, directory, architecture, config, bazel, options, e
             print(f'Kernel root cache unavailable; using Bazel: {error}', file=sys.stderr)
 
     (workspace / remote_bundle.RESTORED_INDEX).unlink(missing_ok=True)
-    subprocess.run([bazel, 'build', *options, TARGET], cwd=workspace, check=True)
+    command = [bazel, 'build', *options, TARGET]
+    if os.environ.get('SONIC_VS_CACHE_REPORT') == '1':
+        from tools.bazel.ci import time_vs_image
+        timing = time_vs_image.start_recipe(workspace, 'kernel', ['build'], ['build'], [])
+        time_vs_image.run_phase(timing, 'build', command, cwd=workspace)
+    else:
+        subprocess.run(command, cwd=workspace, check=True)
     resolution = None
     lock_path = workspace / 'MODULE.bazel.lock'
     if lock_path.exists():

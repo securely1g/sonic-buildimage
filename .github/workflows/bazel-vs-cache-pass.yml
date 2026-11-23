@@ -1,0 +1,233 @@
+name: Fresh VS cache-probe pass
+
+on:
+  workflow_call:
+    inputs:
+      revision:
+        required: true
+        type: string
+      pass_number:
+        required: true
+        type: number
+      upload_cache:
+        description: Enable Bazel and Make cache writes on trusted diagnostic branches.
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, bazel-x64, vs]
+    timeout-minutes: 720
+    defaults:
+      run:
+        shell: bash
+        working-directory: vs-${{ github.run_id }}-${{ github.run_attempt }}-cache-${{ inputs.pass_number }}
+    env:
+      PROBE_PASS: ${{ inputs.pass_number }}
+      PROBE_REVISION: ${{ inputs.revision }}
+      PROBE_WRITE_CACHE: ${{ inputs.upload_cache && '1' || '0' }}
+      SONIC_CI_CONTAINER_LABEL: io.sonic-buildimage.ci-job=${{ github.repository }}:${{ github.run_id }}:${{ github.run_attempt }}:vs-cache-${{ inputs.pass_number }}
+      BAZEL: bazel
+      BAZEL_REMOTE_AUTH: ""
+      DOCKER_CONFIG: ""
+      SONIC_BAZEL_REMOTE_CACHE: grpc://172.16.0.4:9092
+      SONIC_BAZEL_REMOTE_UPLOAD: "n"
+      SONIC_CONFIG_USE_DOCKER_CACHE: "y"
+      SONIC_DPKG_CACHE_METHOD: rcache
+      SONIC_DPKG_CACHE_SOURCE: /nfs/dpkg_cache/vs
+      SONIC_BUILD_JOBS: "1"
+      SONIC_ENABLE_DEBUG_LAYER: "n"
+      ENABLE_DOCKER_BASE_PULL: "y"
+      REGISTRY_SERVER: sonicdev-microsoft.azurecr.io
+      ACR_REGISTRY_NAME: sonicdev
+      AZURE_SUBSCRIPTION_ID: ${{ vars.ACR_SUBSCRIPTION_ID }}
+      REGISTRY_PORT: "443"
+      INCLUDE_FIPS: "y"
+      SONIC_VERSION_CONTROL_COMPONENTS: py2,py3,web,git,docker
+      MIRROR_SNAPSHOT: "y"
+      SONIC_BUILD_SLAVE_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      SONIC_BUILD_VARS: P4LANG_SOURCE_BASE_URL=file:/sonic/artifacts/vs/p4-source-inputs/sources
+      PREFER_DEBIAN_REPO: "y"
+      SONIC_VS_REUSE_BAZEL_PRODUCERS: "1"
+      SONIC_VS_VALIDATION_BUNDLES: "1"
+      SONIC_VS_IMAGE_TIMINGS: "1"
+      SONIC_VS_CACHE_REPORT: "1"
+      # Exercise the ordinary Bazel graph, not the retained kernel/host-base shortcut.
+      SONIC_VS_KERNEL_REMOTE_REUSE: "0"
+      BAZEL_CONTAINER_ARGS: >-
+        --disk_cache=
+        --repo_contents_cache=/bazel_repo_contents_cache
+        --remote_local_fallback
+        --incompatible_remote_local_fallback_for_remote_cache
+        --experimental_remote_downloader=grpc://172.16.0.4:9092
+        --experimental_remote_downloader_local_fallback
+        --distdir=/bazel_cache/distdir/ape-1.0.1
+        --distdir=/bazel_cache/distdir/download_utils-1.0.1
+        --distdir=/bazel_cache/distdir/rules_coreutils-1.0.1
+        --distdir=/bazel_cache/distdir/rules_gzip-1.0.0
+        --distdir=/bazel_cache/distdir/toolchain_utils-1.0.2
+    steps:
+      - name: Validate immutable build identity
+        working-directory: ${{ github.workspace }}
+        run: |
+          [[ $PROBE_REVISION =~ ^[0-9a-f]{40}$ ]]
+          [[ $PROBE_PASS =~ ^[12]$ ]]
+      - name: Configure trusted diagnostic cache access
+        working-directory: ${{ github.workspace }}
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          upload=n
+          method=rcache
+          if [[ $PROBE_WRITE_CACHE == 1 &&
+                ($GITHUB_EVENT_NAME == push || $GITHUB_EVENT_NAME == schedule ||
+                 $GITHUB_EVENT_NAME == workflow_dispatch) &&
+                ($GITHUB_REF == "refs/heads/$DEFAULT_BRANCH" ||
+                 $GITHUB_REF == refs/heads/ci/vs-daily-cache-report) ]]; then
+            upload=y
+            method=rwcache
+          fi
+          printf 'SONIC_BAZEL_REMOTE_UPLOAD=%s\nSONIC_DPKG_CACHE_METHOD=%s\n' \
+            "$upload" "$method" >> "$GITHUB_ENV"
+      - name: Checkout a separate build workspace
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.revision }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}-cache-${{ inputs.pass_number }}
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: vs-cache-probe-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}-cache-${{ inputs.pass_number }}/artifacts/vs/cache-inputs
+      - name: Initialize private caches and stable image metadata
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PROBE_REVISION"
+          test ! -e target
+          test ! -e .vs-cache-probe
+          install -d -m 0700 .vs-cache-probe/bazel .vs-cache-probe/repo-contents .vs-cache-probe/docker
+          printf 'SONIC_BAZEL_CACHE_SOURCE=%s\nSONIC_BAZEL_REPO_CONTENTS_SOURCE=%s\nDOCKER_CONFIG=%s\n' \
+            "$PWD/.vs-cache-probe/bazel" "$PWD/.vs-cache-probe/repo-contents" \
+            "$PWD/.vs-cache-probe/docker" >> "$GITHUB_ENV"
+          printf 'SONIC_IMAGE_VERSION=cache-probe-%s\nSOURCE_DATE_EPOCH=%s\nBUILD_TIMESTAMP=%s\n' \
+            "$PROBE_REVISION" "$(git show -s --format=%ct HEAD)" \
+            "$(git show -s --format=%cd --date=format:%Y%m%d.%H%M%S HEAD)" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          from pathlib import Path
+          from tools.bazel.ci import resources
+          resources.configure(Path.cwd(), Path.cwd())
+          PY
+          printf 'build --disk_cache=\n' >> .bazelrc.user
+          python3 -B tools/bazel/gzip/source_archive.py \
+            --archives-dir artifacts/vs/cache-inputs/repositories \
+            --output "$PWD/.vs-cache-probe/bazel/distdir" > artifacts/vs/source-download-receipt.json
+          install -d artifacts/vs/p4-source-inputs
+          cp -a artifacts/vs/cache-inputs/p4/sources artifacts/vs/p4-source-inputs/
+          python3 -B tools/ci/p4_source_inputs.py \
+            --manifest src/p4lang/source-inputs.json \
+            --directory artifacts/vs/p4-source-inputs/sources \
+            --receipt artifacts/vs/p4-source-inputs-verified.json
+          memory_option=$(python3 -B tools/bazel/ci/resources.py)
+          printf 'BAZEL_CONTAINER_ARGS=%s %s\n' "$BAZEL_CONTAINER_ARGS" "$memory_option" >> "$GITHUB_ENV"
+      - name: Validate package cache and authenticate to slave registry
+        env:
+          AZURE_CONFIG_DIR: ${{ runner.temp }}/vs-cache-azure-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.pass_number }}
+        run: |
+          bash tools/ci/runner/nfs_package_cache.sh
+          bash tools/ci/runner/azure_acr_login.sh "${ACR_REGISTRY_NAME:?}"
+      - name: Prepare the native SONiC slave
+        run: |
+          set -euo pipefail
+          make init 2>&1 | tee artifacts/vs/init.log
+          make configure PLATFORM=vs PLATFORM_ARCH=amd64 \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            2>&1 | tee artifacts/vs/configure.log
+          for build_env in bookworm trixie; do
+            make -f Makefile.work BLDENV="$build_env" docker-start \
+              SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+              2>&1 | tee "artifacts/vs/docker-start-$build_env.log"
+          done
+          make -f Makefile.work BLDENV=trixie sonic-slave-run \
+            SONIC_BUILDER_EXTRA_CMDLINE="--label $SONIC_CI_CONTAINER_LABEL" \
+            SONIC_RUN_CMDS='python3 -B tools/bazel/ci/check_kernel_sandbox.py'
+      - name: Build the VS installer
+        id: installer
+        env:
+          SONIC_VS_DEFER_BUILDER_CLEANUP: "y"
+          DOCKER_LOAD_ON_BOOT: "y"
+          SONIC_VS_RETRY_GO_FETCH: "1"
+          SONIC_VS_RFS_HANDOFF: "1"
+          SONIC_VS_FAST_ASSEMBLY: "1"
+          TERM: dumb
+        run: |
+          set -uo pipefail
+          started=$SECONDS
+          status=0
+          bash tools/bazel/ci/build_vs.sh 2>&1 | tee artifacts/vs/build.log |
+            python3 -B tools/bazel/ci/vs_cache_report.py record-make \
+              --output artifacts/vs/make-targets.json || status=$?
+          if (( status == 0 )); then
+            test -s target/sonic-vs.bin && test -s target/sonic-vs.bin.dockers &&
+              test "$(git rev-parse HEAD)" = "$PROBE_REVISION" || status=1
+          fi
+          printf 'duration_seconds=%s\n' "$((SECONDS - started))" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Preserve sanitized cache evidence even on build failure
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          BUILD_STATUS: ${{ steps.installer.outcome }}
+          BUILD_SECONDS: ${{ steps.installer.outputs.duration_seconds || '0' }}
+        run: |
+          python3 -B tools/bazel/ci/vs_cache_report.py summarize \
+            --root artifacts/vs/image-timings --revision "$PROBE_REVISION" \
+            --pass-number "$PROBE_PASS" --status "$BUILD_STATUS" --duration "$BUILD_SECONDS" \
+            --build-log artifacts/vs/build.log \
+            --make-records artifacts/vs/make-targets.json \
+            --output "artifacts/vs/cache-probe/cache-pass-$PROBE_PASS.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: report_upload
+        if: always() && steps.checkout.outcome == 'success'
+        with:
+          name: vs-cache-probe-pass-${{ inputs.pass_number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}-cache-${{ inputs.pass_number }}/artifacts/vs/cache-probe/cache-pass-${{ inputs.pass_number }}.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Remove only this pass's containers and registry credentials
+        id: container_cleanup
+        if: always()
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          containers=$(docker ps --all --quiet --filter "label=$SONIC_CI_CONTAINER_LABEL")
+          while IFS= read -r container; do
+            test -n "$container" || continue
+            if ! docker rm --force "$container"; then
+              remaining=$(docker ps --all --quiet \
+                --filter "label=$SONIC_CI_CONTAINER_LABEL" --filter "id=$container")
+              if test -n "$remaining"; then
+                echo "Unable to remove this pass's container" >&2
+                exit 1
+              fi
+            fi
+          done <<< "$containers"
+          status=0
+          if [[ -n ${DOCKER_CONFIG:-} ]]; then
+            docker logout "$REGISTRY_SERVER:$REGISTRY_PORT" || status=$?
+            rm -f -- "$DOCKER_CONFIG/config.json"
+          fi
+          exit "$status"
+      - name: Remove only this pass's private checkout and caches
+        if: always() && steps.container_cleanup.outcome == 'success' && steps.report_upload.outcome == 'success'
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -B "vs-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-cache-$PROBE_PASS/tools/bazel/ci/cleanup_vs_workspace.py" \
+            --workspace "$GITHUB_WORKSPACE" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --cache-pass "$PROBE_PASS"

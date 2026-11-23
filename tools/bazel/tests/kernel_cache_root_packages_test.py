@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tools.bazel.ci import kernel_artifacts
+from tools.bazel.ci import kernel_artifacts, time_vs_image
 from tools.bazel.kernel import packages, prepare, remote_bundle, root_request, root_resolution
 from tools.bazel.tests import kernel_test, kernel_cache_root_resolution_test as proof
 
@@ -98,6 +98,18 @@ class RootPackagesTest(unittest.TestCase):
         self.assertFalse((self.workspace / remote_bundle.OUTPUT_INDEX).exists())
         provenance = json.loads(self.original[packages.PROVENANCE])
         self.assertEqual(provenance['resolution']['lock_sha256'], hashlib.sha256(self.lock).hexdigest())
+
+    def test_cache_probe_exercises_and_instruments_the_root_graph_instead_of_restoring(self):
+        with patch.dict(os.environ, {'SONIC_VS_KERNEL_REMOTE_REUSE': '0', 'SONIC_VS_CACHE_REPORT': '1'}), \
+                patch.object(time_vs_image, 'run_phase', wraps=time_vs_image.run_phase) as capture:
+            self.build()
+        self.assertEqual(self.log.read_text().splitlines(), ['build', 'cquery'])
+        self.assertEqual(capture.call_count, 1)
+        self.assertEqual(capture.call_args.args[1], 'build')
+        self.assertEqual(capture.call_args.args[2][0], str(self.bazel))
+        records = list((self.workspace / 'artifacts/vs/image-timings/kernel').glob('recipe-*/build.cache.json'))
+        self.assertEqual(len(records), 1)
+        self.assertFalse(json.loads(records[0].read_text())['complete'])
 
     def collect_handoff(self):
         handoff = self.workspace / 'vs-handoff'

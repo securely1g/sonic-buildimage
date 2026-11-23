@@ -53,10 +53,30 @@ def capture_bep(directory, phase, command, *, cwd):
             source = Path(temporary) / "events.json"
             index = command.index("--") if "--" in command else len(command)
             command = [*command[:index], "--build_event_json_file=" + str(source), *command[index:]]
+        execution_log = None
+        if phase == "build" and os.environ.get("SONIC_VS_CACHE_REPORT") == "1":
+            for index, argument in enumerate(command):
+                if argument.startswith("--execution_log_json_file="):
+                    execution_log = Path(cwd or Path.cwd()) / argument.split("=", 1)[1]
+                elif argument == "--execution_log_json_file" and index + 1 < len(command):
+                    execution_log = Path(cwd or Path.cwd()) / command[index + 1]
+            if execution_log is None:
+                execution_log = Path(temporary) / "execution.raw.json"
+                execution_log.touch(mode=0o600)
+                index = command.index("--") if "--" in command else len(command)
+                command = [*command[:index], f"--execution_log_json_file={execution_log}",
+                           "--execution_log_sort=false", *command[index:]]
         try:
             yield command
         finally:
             preserve_bep(source, directory / f"{phase}.bep.json")
+            if execution_log is not None:
+                from tools.bazel.ci import vs_cache_report
+                try:
+                    vs_cache_report.capture(execution_log, directory / f"{phase}.bep.json",
+                                            directory / f"{phase}.cache.json")
+                except OSError:
+                    print("Public cache capture unavailable.", file=sys.stderr)
 
 
 @contextmanager

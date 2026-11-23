@@ -8,12 +8,15 @@ import re
 import subprocess
 
 
-def checkout_path(workspace, run_id, run_attempt):
+def checkout_path(workspace, run_id, run_attempt, cache_pass=None):
     if not workspace.is_absolute() or not workspace.is_dir():
         raise ValueError("Cleanup workspace must be an existing absolute directory")
     if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (run_id, run_attempt)):
         raise ValueError("Cleanup requires positive numeric run ID and attempt")
-    checkout = workspace.resolve(strict=True) / f"vs-{run_id}-{run_attempt}"
+    if cache_pass is not None and (type(cache_pass) is not int or cache_pass not in (1, 2)):
+        raise ValueError("Cleanup cache pass must be 1 or 2")
+    suffix = "" if cache_pass is None else f"-cache-{cache_pass}"
+    checkout = workspace.resolve(strict=True) / f"vs-{run_id}-{run_attempt}{suffix}"
     if checkout.is_symlink():
         raise ValueError(f"Refusing redirected VS checkout: {checkout}")
     if checkout.exists() and not checkout.is_dir():
@@ -45,15 +48,15 @@ def check_container_users(checkout):
                 raise ValueError(f"A Docker container still references the cleanup path: {source}")
 
 
-def cleanup(workspace, run_id, run_attempt):
-    checkout = checkout_path(workspace, run_id, run_attempt)
+def cleanup(workspace, run_id, run_attempt, cache_pass=None):
+    checkout = checkout_path(workspace, run_id, run_attempt, cache_pass)
     if not checkout.exists():
         print(f"No VS checkout to remove: {checkout}")
         return
     identity = checkout.stat()
     check_container_users(checkout)
     check_mounts(checkout)
-    current = checkout_path(workspace, run_id, run_attempt).stat()
+    current = checkout_path(workspace, run_id, run_attempt, cache_pass).stat()
     if (identity.st_dev, identity.st_ino) != (current.st_dev, current.st_ino):
         raise ValueError("VS checkout changed during cleanup checks")
     print(f"Removing this run's VS checkout: {checkout}", flush=True)
@@ -71,9 +74,10 @@ def main():
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-attempt", required=True)
+    parser.add_argument("--cache-pass", type=int, choices=(1, 2))
     args = parser.parse_args()
     try:
-        cleanup(args.workspace, args.run_id, args.run_attempt)
+        cleanup(args.workspace, args.run_id, args.run_attempt, args.cache_pass)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"VS checkout cleanup failed: {error}\n")
 

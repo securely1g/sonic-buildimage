@@ -251,6 +251,13 @@ def build(args):
                 shutil.copyfile(build_timing / "batch-targets.json", retry / "batch-targets.json")
                 build_timing = retry
             time_vs_image.run_phase(build_timing, "build", command)
+        if build_timing and settings.get("SONIC_VS_CACHE_REPORT") == "1":
+            from tools.bazel.ci import vs_cache_report
+            roots = {name: list(dict.fromkeys(
+                ([labels[name]] if name in labels else []) +
+                ([layout_labels[name]] if name in layout_labels else []))) for name in archives}
+            vs_cache_report.capture_container_dependencies(
+                workspace, build_timing, settings.get("BAZEL", "bazel"), [EXPORT_POLICY], options, roots)
         outputs = archive_outputs(events, set(labels.values()) | set(layout_labels.values()), set(layout_labels.values()))
         published_layouts = {}
         for name in archives:

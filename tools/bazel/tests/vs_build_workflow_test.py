@@ -17,6 +17,15 @@ from tools.ci.build_dashboard.breakdown import parse_recipe_log
 
 
 class VsBuildWorkflowTest(unittest.TestCase):
+    def test_cache_capture_flag_is_forwarded_only_when_opted_in(self):
+        for value in (None, "1"):
+            with self.subTest(value=value):
+                result = self.run_script("build_vs.sh", SONIC_VS_CACHE_REPORT=value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+                options = " ".join(calls[-1]["args"])
+                self.assertEqual("-e SONIC_VS_CACHE_REPORT" in options, value == "1")
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="vs-build-workflow-")
         self.addCleanup(temporary.cleanup)

@@ -59,6 +59,23 @@ class VsWorkspaceCleanupTest(unittest.TestCase):
         self.docker.assert_not_called()
         self.remove.assert_not_called()
 
+    def test_cache_pass_cleanup_preserves_other_pass_and_standard_checkout(self):
+        first = self.workspace / "vs-123-2-cache-1"
+        second = self.workspace / "vs-123-2-cache-2"
+        first.mkdir()
+        second.mkdir()
+        self.remove.side_effect = lambda command, **kwargs: shutil.rmtree(command[-1])
+        cleanup.cleanup(self.workspace, "123", "2", 1)
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+        self.assertTrue(self.checkout.exists())
+
+    def test_cache_pass_must_be_a_bounded_integer(self):
+        for value in (0, 3, True, "1", "../"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "cache pass"):
+                cleanup.cleanup(self.workspace, "123", "2", value)
+        self.remove.assert_not_called()
+
     def test_rejects_redirected_checkout_including_dangling_symlink(self):
         self.checkout.rmdir()
         for target in (self.workspace.parent, self.workspace / "missing"):
