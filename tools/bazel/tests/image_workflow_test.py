@@ -147,6 +147,35 @@ class VerificationWorkflowTest(unittest.TestCase):
         self.assertIn('"$BAZEL" test "${wheel_flags[@]}"', installed)
         self.assertIn('--vs-packages "$VS_WHEELS"', steps["Retain wheels and required Python test evidence"]["run"])
 
+    def test_fork_source_checks_leave_release_package_validation_to_vs(self):
+        """Forks run independent source tests, trusted jobs inspect VS inputs, and dispatch can build."""
+        workflow_dir = ROOT / ".github/workflows"
+        runs_with_packages = (
+            "inputs.vs_artifact_id != '' || github.event_name == 'workflow_dispatch' || "
+            "(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)"
+        )
+        source_without_vs = "${{ inputs.vs_artifact_id == '' && github.event_name == 'pull_request' }}"
+        for owner, name, bundle in (("frr-python", "packages", "VS_PACKAGES"),
+                                    ("yang-models", "package", "VS_SCRATCH"),
+                                    ("sysmgr", "native", "VS_SYSMGR_DIRECTORY")):
+            with self.subTest(owner=owner):
+                job = yaml.safe_load((workflow_dir / f"bazel-{owner}.yml").read_text())["jobs"][name]
+                self.assertEqual(" ".join(job["if"].split()), runs_with_packages)
+                step, = [s for s in job["steps"] if f'if [[ -n "${{{bundle}:-}}" ]]' in s.get("run", "")]
+                self.assertEqual((job.get("env", {}) | step.get("env", {}))["SOURCE_ONLY"], source_without_vs)
+                script = step["run"]
+                if owner == "frr-python":
+                    self.assertRegex(script, r'elif \[\[ "\$SOURCE_ONLY" != true \]\]; then\s+bazel build')
+                    self.assertIn('if [[ "$NATIVE_ARCHITECTURE" == amd64 && "$SOURCE_ONLY" != true ]]', script)
+                    self.assertIn("//src/sonic-frr-mgmt-framework:upstream_tests", script)
+                elif owner == "yang-models":
+                    source = script.split('elif [[ "$SOURCE_ONLY" == true ]]; then')[1].split("else")[0]
+                    self.assertIn("//:validate_native_manifest", source)
+                    self.assertNotRegex(source, "yang_models_(wheel|pkg|package_test)")
+                else:
+                    self.assertRegex(script, r'elif \[\[ \$SOURCE_ONLY == true \]\]; then\s+package_args\+=\(--source-only\)')
+                    self.assertIn('--vs-directory "$VS_SYSMGR_DIRECTORY"', script)
+
     def test_dhcp_source_builds_are_confined_to_the_dedicated_worker(self):
         """The normal relay probe uses the installer; only a source qualification builds both variants."""
         jobs = yaml.safe_load((ROOT / ".github/workflows/bazel-oci.yml").read_text())["jobs"]
