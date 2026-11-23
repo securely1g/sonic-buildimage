@@ -244,6 +244,7 @@ sonic_layer(
 
 shared_runtime_layers(
     name = "shared_apt_runtime",
+    base = ":config_engine_base_layout",
     first = ":apt_deps",
     second = "//platform/vs/docker-gbsyncd-vs:runtime_layer",
     target_compatible_with = _COMPATIBLE_WITH,

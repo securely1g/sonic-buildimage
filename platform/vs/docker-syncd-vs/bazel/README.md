@@ -66,12 +66,18 @@ bazel build --config=syncd-dash \
 
 The source-built Syncd and Gbsyncd images factor byte-identical regular files
 from their checked APT layers into one common gzip layer, followed by a separate
-delta for each image. File contents, numeric ownership, modes, timestamps and
-PAX metadata must match before sharing. Matching parent directories precede the
-shared files; files with missing or differing parent directories stay in the
-original delta, as do links and hardlink targets. Whiteouts, duplicate
-paths, sparse files or no movable overlap retain the original TAR payloads with
-an empty common layer.
+delta for each image. The splitter accepts plain TAR (used by both VS producers)
+and gzip TAR. Other encodings fail before the action writes any output.
+
+File contents, numeric ownership, modes, timestamps and PAX metadata must
+match before sharing. TAR order also matters: a write through a symlink can
+affect a file with a different archive path, and replacing a symlink with a
+directory can change where later writes land. A separate Bazel action scans the
+shared config-engine base for paths that may be non-directories. The splitter
+uses that information and the order of headers in both APT layers to decide
+which files it can move safely. Links and hardlink targets stay in the delta.
+Whiteouts, duplicate paths, sparse files or no movable overlap retain the
+original TAR payloads with an empty common layer.
 
 APT selection, source contracts, package-state generation and runtime/debug
 validation still use each image's original receipts. No packages, compiler

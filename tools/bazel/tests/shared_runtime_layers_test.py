@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import shlex
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -58,10 +59,27 @@ with gzip.GzipFile(filename="", fileobj=sys.stdout.buffer, mode="wb", mtime=0) a
                 tar.addfile(info, io.BytesIO(data) if info.isfile() else None)
         return path
 
-    def run_split(self, first, second):
+    def run_split(self, first, second, base_non_dirs=None):
         outputs = [self.root / name for name in ("common.gz", "delta-first.gz", "delta-second.gz", "receipt.json")]
-        layers.split(first, second, *outputs, str(self.pigz))
+        layers.split(first, second, *outputs, str(self.pigz), base_non_dirs=base_non_dirs)
         return outputs[:3], json.loads(outputs[3].read_text())
+
+    def installed_tree(self, *archives):
+        with tempfile.TemporaryDirectory(dir=self.root) as destination:
+            for archive in archives:
+                subprocess.run(["tar", "--extract", "--file", archive, "--directory", destination,
+                                "--no-same-owner"], check=True)
+            root = Path(destination)
+            tree = {}
+            for path in root.rglob("*"):
+                name = path.relative_to(root).as_posix()
+                if path.is_symlink():
+                    tree[name] = ("symlink", str(path.readlink()))
+                elif path.is_dir():
+                    tree[name] = ("directory",)
+                else:
+                    tree[name] = ("file", path.read_bytes())
+            return tree
 
     def test_shared_content_and_per_image_differences_preserve_exact_file_metadata(self):
         common = self.member("usr/lib/shared.so", b"shared" * 1000,
@@ -89,15 +107,13 @@ with gzip.GzipFile(filename="", fileobj=sys.stdout.buffer, mode="wb", mtime=0) a
         for original, delta in ((first, left), (second, right)):
             self.assertEqual(gzip.decompress(delta.read_bytes()), original.read_bytes())
 
-    def test_hardlink_targets_and_symlink_ancestors_stay_in_original_layer(self):
+    def test_hardlinks_and_their_targets_stay_in_original_layer(self):
         members = [
             self.member("usr", type=tarfile.DIRTYPE),
             self.member("usr/lib", type=tarfile.DIRTYPE),
             self.member("usr/lib/target"),
             self.member("usr/lib/link", type=tarfile.LNKTYPE, linkname="usr/lib/target"),
             self.member("usr/lib/absolute-link", type=tarfile.LNKTYPE, linkname="/usr/lib/target"),
-            self.member("alias", type=tarfile.SYMTYPE, linkname="usr/lib"),
-            self.member("alias/child"),
             self.member("usr/lib/movable"),
         ]
         first = self.archive("first.tar", members)
@@ -155,21 +171,65 @@ with gzip.GzipFile(filename="", fileobj=sys.stdout.buffer, mode="wb", mtime=0) a
             self.assertEqual(layers.inventory(shared)[0] | layers.inventory(delta)[0],
                              layers.inventory(original)[0])
 
-    def test_shared_directories_precede_files_even_if_original_order_is_reversed(self):
-        members = [self.member("usr/lib/file"),
-                   self.member("usr/lib", type=tarfile.DIRTYPE, mode=0o750),
+    def test_write_through_symlink_keeps_original_order(self):
+        directory = self.member("lib", type=tarfile.DIRTYPE)
+        alias = self.member("alias", type=tarfile.SYMTYPE, linkname="lib")
+        last = self.member("lib/x", b"last")
+        plain = self.archive("plain.tar", [directory, last])
+        for inherited_alias in (False, True):
+            base = self.archive("base.tar", [directory, alias] if inherited_alias else [])
+            prefix = [directory] if inherited_alias else [directory, alias]
+            aliased = self.archive("aliased.tar", [*prefix, self.member("alias/x", b"first"), last])
+            for first, second in ((aliased, plain), (plain, aliased)):
+                with self.subTest(inherited_alias=inherited_alias, first=first.name):
+                    base_non_dirs = {"alias"} if inherited_alias else set()
+                    (shared, left, right), _ = self.run_split(first, second, base_non_dirs)
+                    for original, delta in ((first, left), (second, right)):
+                        expected = self.installed_tree(base, original)
+                        self.assertEqual(expected["lib/x"], ("file", b"last"))
+                        self.assertEqual(self.installed_tree(base, shared, delta), expected)
+
+    def test_late_directory_keeps_writes_through_base_symlink_in_place(self):
+        base = self.archive("base.tar", [
+            self.member("usr", type=tarfile.DIRTYPE),
+            self.member("usr/lib", type=tarfile.DIRTYPE),
+            self.member("lib", type=tarfile.SYMTYPE, linkname="usr/lib")])
+        directory = self.member("lib", type=tarfile.DIRTYPE)
+        payload = self.member("lib/x")
+        late = self.archive("late.tar", [payload, directory])
+        early = self.archive("early.tar", [directory, payload])
+        for first, second in ((late, early), (early, late)):
+            with self.subTest(first=first.name):
+                (shared, left, right), _ = self.run_split(first, second, {"lib"})
+                for original, delta in ((first, left), (second, right)):
+                    expected = self.installed_tree(base, original)
+                    location = "usr/lib/x" if original == late else "lib/x"
+                    self.assertEqual(expected[location], ("file", b"payload"))
+                    self.assertEqual(self.installed_tree(base, shared, delta), expected)
+
+    def test_files_can_still_be_shared_before_late_real_directory_headers(self):
+        safe = self.member("usr/lib/safe")
+        members = [safe, self.member("usr/lib", type=tarfile.DIRTYPE),
                    self.member("usr", type=tarfile.DIRTYPE)]
-        first = self.archive("first.tar", members)
-        second = self.archive("second.tar", members)
-        (shared, left, right), receipt = self.run_split(first, second)
+        source = self.archive("source.tar", members)
+        (shared, delta, _), receipt = self.run_split(source, source, set())
         self.assertEqual(receipt["common_files"], 1)
-        with tarfile.open(shared) as archive:
-            self.assertEqual([(member.name, member.type) for member in archive],
-                             [("usr", tarfile.DIRTYPE), ("usr/lib", tarfile.DIRTYPE),
-                              ("usr/lib/file", tarfile.REGTYPE)])
-        for original, delta in ((first, left), (second, right)):
-            self.assertEqual(layers.inventory(shared)[0] | layers.inventory(delta)[0],
-                             layers.inventory(original)[0])
+        self.assertEqual(set(layers.inventory(shared)[0]), {"usr/lib/safe"})
+        self.assertEqual(self.installed_tree(source), self.installed_tree(shared, delta))
+
+    def test_hardlink_reads_base_contents_before_overwrite_through_alias(self):
+        directory = self.member("lib", type=tarfile.DIRTYPE)
+        base = self.archive("base.tar", [
+            directory, self.member("alias", type=tarfile.SYMTYPE, linkname="lib"),
+            self.member("lib/x", b"inherited")])
+        source = self.archive("source.tar", [
+            directory, self.member("safe"), self.member("keep", type=tarfile.LNKTYPE, linkname="alias/x"),
+            self.member("lib/x", b"overwritten")])
+        (shared, delta, _), receipt = self.run_split(source, source, {"alias", "lib/x"})
+        self.assertEqual(receipt["common_files"], 1)
+        expected = self.installed_tree(base, source)
+        self.assertEqual(expected["keep"], ("file", b"inherited"))
+        self.assertEqual(self.installed_tree(base, shared, delta), expected)
 
     def test_missing_or_different_parent_directories_keep_files_in_original_layers(self):
         parent = self.member("usr", type=tarfile.DIRTYPE)
@@ -191,6 +251,21 @@ with gzip.GzipFile(filename="", fileobj=sys.stdout.buffer, mode="wb", mtime=0) a
         for original, delta in (("first", "left"), ("second", "right")):
             self.assertEqual(shared | layers.inventory(ACTION_FILES[delta])[0],
                              layers.inventory(ACTION_FILES[original])[0])
+
+    def test_rejects_unsupported_compression_before_writing_outputs(self):
+        plain = self.archive("plain.tar", [self.member("shared")])
+        compressed = self.root / "other.tar"
+        outputs = ("common.gz", "delta-first.gz", "delta-second.gz", "receipt.json")
+        for codec in ("bz2", "xz"):
+            for name in ("shared", "different"):
+                with self.subTest(codec=codec, name=name):
+                    info, data = self.member(name)
+                    with tarfile.open(compressed, "w:" + codec) as archive:
+                        archive.addfile(info, io.BytesIO(data))
+                    for inputs in ((compressed, plain), (plain, compressed)):
+                        with self.assertRaisesRegex(ValueError, "expected a plain tar or gzip-compressed tar"):
+                            self.run_split(*inputs)
+                        self.assertFalse(any((self.root / path).exists() for path in outputs))
 
 
 if __name__ == "__main__":

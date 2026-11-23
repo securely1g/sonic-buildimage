@@ -20,6 +20,15 @@ package(default_visibility = ["//visibility:public"])
 exports_files(["integration/frr_python_wheel_probe.py"])
 
 py_test(
+    name = "shared_runtime_base_test",
+    srcs = ["shared_runtime_base_test.py"],
+    deps = [
+        ":oci_base_fixture_lib",
+        "//tools/bazel/oci:shared_runtime_base_lib",
+    ],
+)
+
+py_test(
     name = "shared_runtime_layers_test",
     srcs = ["shared_runtime_layers_test.py"],
     args = [
@@ -59,6 +68,7 @@ run_binary(
 
 shared_runtime_layers(
     name = "shared_runtime_action",
+    base = ":oci-consumer-first",
     first = ":shared_apt_first.tar",
     second = ":shared_apt_second.tar",
 )
