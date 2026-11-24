@@ -2,6 +2,7 @@ load("@base_apt_inputs//:apt_inputs.bzl", "APT_INPUTS")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
 load("@config_engine_pip//:requirements.bzl", "whl_requirement")
 load("@rules_oci//oci:defs.bzl", "oci_image")
+load("@sonic_build_infra//oci:base_inventory.bzl", "oci_base_inventory")
 load("@sonic_build_infra//oci:debug_symbols_layer.bzl", "debug_symbols_layer")
 load("@sonic_build_infra//oci:installed_packages.bzl", "installed_packages")
 load("@sonic_build_infra//python:wheel_layer.bzl", "wheel_layer")
@@ -108,18 +109,23 @@ wheel_layer(
 )
 
 # Source-owned runtime and development payloads that Make installs in this base.
-_SOURCE_TARS = {
+_NON_FIPS_SOURCE_TARS = {
     "socat": "@socat//:socat_pkg",
     "iproute2": "@iproute2//:iproute2_pkg",
-    "libssl3t64": "@sonic_fips//openssl:libssl3t64_pkg",
-    "libssl-dev": "@sonic_fips//openssl:libssl_dev_pkg",
-    "openssl": "@sonic_fips//openssl:openssl_pkg",
-    "libk5crypto3": "@sonic_fips//krb5:libk5crypto3_pkg",
-    "libkrb5support0": "@sonic_fips//krb5:libkrb5support0_pkg",
-    "libkrb5-3": "@sonic_fips//krb5:libkrb5_3_pkg",
-    "libgssapi-krb5-2": "@sonic_fips//krb5:libgssapi_krb5_2_pkg",
-    "symcrypt-openssl": "@sonic_fips//symcrypt:runtime",
 }
+
+_FIPS_SOURCE_TARS = {
+    "libssl3t64": "@sonic_fips//openssl:libssl3t64.runtime",
+    "libssl-dev": "@sonic_fips//openssl:libssl-dev.runtime",
+    "openssl": "@sonic_fips//openssl:openssl.runtime",
+    "libk5crypto3": "@sonic_fips//krb5:libk5crypto3.runtime",
+    "libkrb5support0": "@sonic_fips//krb5:libkrb5support0.runtime",
+    "libkrb5-3": "@sonic_fips//krb5:libkrb5-3.runtime",
+    "libgssapi-krb5-2": "@sonic_fips//krb5:libgssapi-krb5-2.runtime",
+    "symcrypt-openssl": "@sonic_fips//symcrypt:symcrypt-openssl.runtime",
+}
+
+_SOURCE_TARS = _NON_FIPS_SOURCE_TARS | _FIPS_SOURCE_TARS
 
 sonic_layer(
     name = "source_runtime",
@@ -141,8 +147,7 @@ installed_packages(
     owner_metadata = [
         "@socat//:runtime_packages.json",
         "@iproute2//:runtime_packages.json",
-        "@sonic_fips//:runtime_packages.json",
-    ],
+    ] + [tar + "_metadata" for tar in _FIPS_SOURCE_TARS.values()],
     source_modules = {
         "socat": "@image_source_modules//:socat.MODULE.bazel",
         "iproute2": "@image_source_modules//:iproute2.MODULE.bazel",
@@ -246,4 +251,11 @@ alias(
         "@platforms//cpu:x86_64": ":installed_checks_amd64",
         "@platforms//cpu:arm64": ":installed_checks_arm64",
     }),
+)
+
+oci_base_inventory(
+    name = "base_inventory",
+    architecture = _ARCH,
+    base = ":docker-base-trixie",
+    tool = "//tools/bazel/oci:base_inventory",
 )

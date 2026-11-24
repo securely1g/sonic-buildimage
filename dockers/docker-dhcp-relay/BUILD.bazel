@@ -134,7 +134,7 @@ oci_image(
     name = "docker-dhcp-relay",
     base = "//dockers/docker-config-engine-trixie:docker-config-engine-trixie",
     entrypoint = ["/usr/bin/docker_init.sh"],
-    env = "//:target/bazel-manifests/docker-dhcp-relay/image.env",
+    env = "//tools/bazel/image/vs/metadata:docker-dhcp-relay.environment",
     labels = "//dockers/docker-dhcp-relay/config:labels",
     target_compatible_with = _COMPATIBLE,
     tars = [
@@ -171,7 +171,7 @@ sonic_layer(
 
 sonic_layer(
     name = "debug_client",
-    tars = ["@sonic_fips//openssh:openssh_client_pkg"],
+    tars = ["@sonic_fips//openssh:openssh-client.runtime"],
 )
 
 debug_symbols_layer(
@@ -191,10 +191,10 @@ installed_packages(
     architecture = "amd64",
     base = ":docker-dhcp-relay",
     controls = [label + ":control" for label in APT_INPUTS["sysmgr_debug_debian"]["amd64"].values()],
-    owner_metadata = ["@sonic_fips//:runtime_packages.json"],
+    owner_metadata = ["@sonic_fips//openssh:openssh-client.runtime_metadata"],
     source_modules = {"sonic-fips": "@image_source_modules//:sonic-fips.MODULE.bazel"},
     source_spec = "//dockers/docker-dhcp-relay/config:debug_source_paths.json",
-    sources = {"openssh-client": "@sonic_fips//openssh:openssh_client_pkg"},
+    sources = {"openssh-client": "@sonic_fips//openssh:openssh-client.runtime"},
 )
 
 filegroup(
