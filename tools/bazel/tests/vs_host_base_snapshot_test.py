@@ -121,7 +121,8 @@ class HostBaseSnapshotTest(unittest.TestCase):
             event = Path(work) / "event.json"
             event.write_text(json.dumps(self.event))
             output = Path(work) / "output"
-            with patch.dict(os.environ, dict(self.env, GITHUB_OUTPUT=str(output), GITHUB_EVENT_PATH=str(event))), \
+            with patch.dict(os.environ, dict(self.env, GITHUB_OUTPUT=str(output), GITHUB_EVENT_PATH=str(event)),
+                            clear=True), \
                     patch.object(snapshot, "github_api", self.api):
                 snapshot.main()
             self.assertEqual(output.read_text().splitlines(),

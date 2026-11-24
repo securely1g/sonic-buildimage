@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from tools.bazel.ci.vs_host_base_snapshot import github_api
+from tools.bazel.ci.vs_cleanup_benchmark import configuration, pinned_artifact
 
 
 ARTIFACT = "vs-kernel-cache-index-amd64-v1"
@@ -37,11 +38,25 @@ def select(api, repository, current_run_number):
 
 
 def main():
+    if configuration(os.environ) != "none":
+        artifact = pinned_artifact(
+            github_api, os.environ, ARTIFACT, "VS_BENCHMARK_KERNEL_ARTIFACT")
+    else:
+        discover()
+        return
+    publish(artifact)
+
+
+def discover():
     try:
         artifact = select(github_api, os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_RUN_NUMBER"]))
     except (HTTPException, OSError, RuntimeError) as error:
         print(f"VS kernel index lookup unavailable ({error}). Make will prepare the kernel normally.")
         return
+    publish(artifact)
+
+
+def publish(artifact):
     if artifact is None:
         print("No retained VS kernel index from a previous master push.")
         return

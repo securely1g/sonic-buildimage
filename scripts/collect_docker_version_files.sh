@@ -35,7 +35,11 @@ export DOCKER_CLI_EXPERIMENTAL=enabled
 if docker container inspect $DOCKER_IMAGE > /dev/null 2>&1; then
     docker container rm $DOCKER_IMAGE > /dev/null
 fi
-docker create --name $DOCKER_CONTAINER --entrypoint /bin/bash $DOCKER_IMAGE_TAG
+DOCKER_LABEL_ARGS=()
+if [[ -n "${SONIC_CI_CONTAINER_LABEL:-}" ]]; then
+    DOCKER_LABEL_ARGS=(--label "$SONIC_CI_CONTAINER_LABEL")
+fi
+docker create "${DOCKER_LABEL_ARGS[@]}" --name "$DOCKER_CONTAINER" --entrypoint /bin/bash "$DOCKER_IMAGE_TAG"
 docker cp -L $DOCKER_CONTAINER:/etc/os-release $TARGET_VERSIONS_PATH/
 docker cp -L $DOCKER_CONTAINER:/usr/local/share/buildinfo/pre-versions $TARGET_VERSIONS_PATH/
 docker cp -L $DOCKER_CONTAINER:/usr/local/share/buildinfo/post-versions $TARGET_VERSIONS_PATH/

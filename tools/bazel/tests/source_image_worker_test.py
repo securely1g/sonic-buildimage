@@ -32,7 +32,8 @@ class ImageWorkerTest(unittest.TestCase):
         jobs = workflow['jobs']
         selected = {}
         github = SimpleNamespace(event_name='workflow_dispatch')
-        inputs = SimpleNamespace(source_image='dhcp-relay', source_inputs_run='', skip_vs=True)
+        inputs = SimpleNamespace(source_image='dhcp-relay', source_inputs_run='', skip_vs=True,
+                                 vs_cleanup_benchmark_arm='none')
         pending = dict(jobs)
         while pending:
             before = len(pending)

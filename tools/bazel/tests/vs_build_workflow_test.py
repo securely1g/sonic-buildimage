@@ -318,7 +318,8 @@ else:
         self.assertEqual(builders, ["vs_container"])
         build = next(step for step in jobs["vs_container"]["steps"] if step.get("id") == "native_build")
         self.assertEqual(build["env"]["DOCKER_LOAD_ON_BOOT"], "y")
-        self.assertEqual(build["env"]["SONIC_VS_DEFER_BUILDER_CLEANUP"], "y")
+        self.assertEqual(build["env"]["SONIC_VS_DEFER_BUILDER_CLEANUP"],
+                         "${{ steps.vs_cleanup_benchmark.outputs.builder_cleanup || 'y' }}")
         verify = jobs["installer_validation"]
         self.assertEqual(verify["needs"], "vs_container")
         self.assertTrue(any("--expect-boot-bundle" in step.get("run", "") for step in verify["steps"]))

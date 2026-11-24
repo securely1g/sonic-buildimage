@@ -1,0 +1,22 @@
+[Unit]
+Description=Single-job SONiC VS canary runner and post-job cleanup
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+RequiresMountsFor=/mnt/build
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 -B /opt/sonic-vs-cleanup/tools/ci/runner/vs_cleanup_supervisor.py
+Restart=no
+KillMode=control-group
+TimeoutStopSec=120
+UMask=0077
+RuntimeDirectory=sonic-vs-cleanup
+RuntimeDirectoryMode=0755
+StateDirectory=sonic-vs-cleanup
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
