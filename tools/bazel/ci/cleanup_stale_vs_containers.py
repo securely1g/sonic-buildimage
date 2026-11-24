@@ -87,7 +87,8 @@ def cleanup(workspace, repository, run_id, attempt):
             raise ValueError(f"Container changed while verifying its owning attempt: {container}")
         print(f"Removing stopped VS container {container} from completed attempt {owner[0]}/{owner[1]}",
               flush=True)
-        subprocess.run(["docker", "rm", container], check=True, timeout=30)
+        # Removing a build slave's writable layer can outlast metadata/API queries.
+        subprocess.run(["docker", "rm", container], check=True, timeout=300)
         removed += 1
     print(f"Removed {removed} verified stale VS containers")
 
