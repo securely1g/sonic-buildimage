@@ -63,7 +63,7 @@ class KernelCacheSnapshotTest(unittest.TestCase):
             output = Path(directory) / "outputs"
             with patch.object(snapshot, "github_api", self.api), patch.dict(os.environ, {
                 "GITHUB_RUN_NUMBER": "100", "GITHUB_REPOSITORY": self.repo, "GITHUB_OUTPUT": str(output),
-            }):
+            }, clear=True):
                 snapshot.main()
             self.assertEqual(output.read_text(), "run_id=11\nartifact_id=1011\n")
         self.assertEqual(len(self.calls), 3)
@@ -79,7 +79,8 @@ class KernelCacheSnapshotTest(unittest.TestCase):
 
     def test_transient_api_error_keeps_the_normal_make_path(self):
         with patch.object(snapshot, "github_api", side_effect=TimeoutError("request timed out")), \
-                patch.dict(os.environ, {"GITHUB_RUN_NUMBER": "100", "GITHUB_REPOSITORY": self.repo}), \
+                patch.dict(os.environ, {"GITHUB_RUN_NUMBER": "100", "GITHUB_REPOSITORY": self.repo},
+                           clear=True), \
                 patch.object(Path, "open", mock_open()) as output:
             snapshot.main()
         output.assert_not_called()
