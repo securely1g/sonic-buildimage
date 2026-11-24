@@ -1,6 +1,7 @@
 """Exercise fresh-build cache evidence without building an installer."""
 
 import io
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -49,6 +51,97 @@ class VsCacheReportTest(unittest.TestCase):
     def report(self, number=1, status="success"):
         return vs_cache_report.summarize(self.root / "artifacts/vs/image-timings",
                                          "b" * 40, number, status, 15)
+
+    def runner_metrics(self):
+        events = self.events.read_text().splitlines()
+        events[-1] = json.dumps({
+            "id": {"buildMetrics": {}}, "lastMessage": True,
+            "buildMetrics": {"actionSummary": {
+                "actionsExecuted": "439",
+                "actionCacheStatistics": {"hits": 9999, "misses": 1},
+                "runnerCount": [{"name": "total", "count": 439},
+                                {"name": "remote cache hit", "count": 412},
+                                {"name": "linux-sandbox", "count": 1},
+                                {"name": "internal", "count": 26}],
+            }},
+        })
+        self.events.write_text("\n".join(events) + "\n")
+
+    def test_rejected_spawn_details_keep_verified_runner_counts_separate_from_local_cache_hits(self):
+        self.runner_metrics()
+        data = self.capture([{**self.record, "listedOutputs": ["/home/private/output"]}])
+        self.assertFalse(data["available"])
+        self.assertTrue(data["usable_complete"])
+        self.assertEqual(data["reason"], "invalid-spawn-outputs")
+        first, second = self.report(1), self.report(2)
+        self.assertTrue(second["complete"])
+        self.assertFalse(second["spawn_details_complete"])
+        self.assertEqual(second["counts"]["remote_hits"], 412)
+        self.assertEqual(second["counts"]["executed"], 1)
+        self.assertIsNone(second["counts"]["explicitly_ineligible"])
+        self.assertEqual(second["phases"][0]["source"], "BEP runner metrics")
+        comparison = vs_cache_report.compare(first, second)
+        self.assertTrue(comparison["comparable"])
+        text = vs_cache_report.markdown(comparison)
+        self.assertIn("Per-action detail is incomplete", text)
+        self.assertIn("412", text)
+        self.assertNotIn("9999", text)
+        self.assertNotIn("Dependency target |", text)
+        self.assertNotIn("private", json.dumps(comparison))
+
+    def test_empty_spawn_log_cannot_override_nonzero_structured_remote_hits(self):
+        self.runner_metrics()
+        data = self.capture([])
+        self.assertEqual(data["reason"], "spawn-metrics-mismatch")
+        self.assertFalse(data["available"])
+        self.assertTrue(self.report()["complete"])
+        self.assertEqual(self.report()["counts"]["remote_hits"], 412)
+
+    def test_large_private_spawn_log_uses_bounded_structured_metrics(self):
+        self.runner_metrics()
+        with self.log.open("wb") as stream:
+            stream.truncate(513 * 1024 * 1024)
+        vs_cache_report.capture(self.log, self.events, self.destination)
+        data = json.loads(self.destination.read_text())
+        self.assertEqual(data["reason"], "oversized-execution-log")
+        self.assertTrue(data["usable_complete"])
+        self.assertEqual(self.report()["counts"]["remote_hits"], 412)
+
+    def test_incomplete_events_do_not_authorize_aggregate_comparison(self):
+        self.runner_metrics()
+        self.events.write_text(self.events.read_text().replace('"lastMessage": true', '"lastMessage": false'))
+        self.log.write_text("{")
+        vs_cache_report.capture(self.log, self.events, self.destination)
+        self.assertFalse(self.report()["complete"])
+        self.assertIsNone(self.report()["counts"]["remote_hits"])
+        self.assertFalse(vs_cache_report.compare(self.report(1), self.report(2))["comparable"])
+
+    def test_runner_names_are_reported_without_changing_build_comparability(self):
+        self.capture([self.record])
+        with mock.patch.dict(os.environ, {"RUNNER_NAME": "GitHub Actions 1000062452"}):
+            first = self.report(1)
+        with mock.patch.dict(os.environ, {"RUNNER_NAME": "sonic-vs-runner-2"}):
+            second = self.report(2)
+        comparison = vs_cache_report.compare(first, second)
+        self.assertTrue(comparison["comparable"])
+        text = vs_cache_report.markdown(comparison)
+        self.assertIn("GitHub Actions 1000062452", text)
+        self.assertIn("sonic-vs-runner-2", text)
+
+    def test_legacy_failed_capture_summary_shows_successful_builds_but_unknown_cache_counts(self):
+        self.capture([])
+        first, second = self.report(1), self.report(2)
+        for value, seconds in ((first, 3196), (second, 2801)):
+            value["complete"] = False
+            value["duration_seconds"] = seconds
+            value.pop("phases")
+            value.pop("spawn_details_complete")
+        text = vs_cache_report.markdown(vs_cache_report.compare(first, second))
+        self.assertIn("| 1 | **success** | 53m 16s | n/a | n/a | n/a |", text)
+        self.assertIn("| 2 | **success** | 46m 41s | n/a | n/a | n/a |", text)
+        self.assertIn("6m 35s (faster by 12.4%)", text)
+        self.assertIn("Pass 1 cache telemetry is incomplete", text)
+        self.assertNotIn("Container or phase | Dependency component", text)
 
     def test_reports_remote_disk_executed_and_ineligible_without_private_fields(self):
         self.capture([
@@ -257,6 +350,70 @@ class VsCacheReportTest(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("SONIC_CACHE_REPORT_QUERY_TEST") == "1",
                          "opt-in configured-query smoke check; no installer build")
+    def test_real_fresh_builds_capture_remote_hits_without_publishing_private_fields(self):
+        stored = {}
+
+        class CacheHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_PUT(self):
+                stored[self.path] = self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self):
+                data = stored.get(self.path)
+                self.send_response(404 if data is None else 200)
+                self.send_header("Content-Length", str(len(data or b"")))
+                self.end_headers()
+                if data is not None:
+                    self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CacheHandler)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        workspace = self.root / "spawn"
+        workspace.mkdir()
+        (workspace / ".bazelversion").write_text("8.5.1\n")
+        (workspace / "WORKSPACE").write_text('workspace(name = "cache_probe")\n')
+        (workspace / "BUILD.bazel").write_text(
+            'load(":probe.bzl", "probe")\nplatform(name = "host")\nprobe(name = "example")\n')
+        (workspace / "probe.bzl").write_text(
+            'def _impl(ctx):\n'
+            '    out = ctx.actions.declare_file(ctx.label.name + ".txt")\n'
+            '    ctx.actions.run(executable = "/bin/sh", '
+            'arguments = ["-c", \'printf cache-probe > "$1"\', "probe", out.path], '
+            'outputs = [out], mnemonic = "CacheProbe")\n'
+            '    return [DefaultInfo(files = depset([out]))]\n'
+            'probe = rule(implementation = _impl)\n')
+        for number in (1, 2):
+            directory = time_vs_image.start_recipe(self.root, "kernel", ["build"], ["build"], [])
+            command = [
+                shutil.which("bazel"), "--batch", "--ignore_all_rc_files",
+                "--output_user_root=" + str(self.root / f"spawn-state-{number}"), "build",
+                "--enable_bzlmod=false", "--enable_workspace=true", "--incompatible_autoload_externally=",
+                "--platforms=//:host", "--host_platform=//:host",
+                f"--remote_cache=http://127.0.0.1:{server.server_port}",
+                "--remote_timeout=10", f"--remote_upload_local_results={'true' if number == 1 else 'false'}",
+                "//:example",
+            ]
+            with mock.patch.dict(os.environ, {"SONIC_VS_CACHE_REPORT": "1"}):
+                time_vs_image.run_phase(directory, "build", command, cwd=workspace)
+            destination = directory / "build.cache.json"
+            capture = json.loads(destination.read_text())
+            self.assertTrue(capture["complete"], capture)
+            self.assertEqual(vs_cache_report.counts(capture["actions"])[
+                "executed" if number == 1 else "remote_hits"], 1)
+            self.assertNotIn("commandArgs", destination.read_text())
+
+    @unittest.skipUnless(os.environ.get("SONIC_CACHE_REPORT_QUERY_TEST") == "1",
+                         "opt-in configured-query smoke check; no installer build")
     def test_real_configured_dependency_query_without_building_actions(self):
         workspace = self.root / "query"
         workspace.mkdir()
@@ -266,19 +423,17 @@ class VsCacheReportTest(unittest.TestCase):
         (workspace / "BUILD.bazel").write_text(
             'platform(name = "host")\nfilegroup(name = "leaf", srcs = [])\n'
             'filegroup(name = "top", srcs = [":leaf"])\n')
-        startup = ["--ignore_all_rc_files", "--output_user_root=" + str(self.root / "bazel-state")]
+        startup = ["--batch", "--ignore_all_rc_files",
+                   "--output_user_root=" + str(self.root / "bazel-state")]
         options = ["--enable_bzlmod=false", "--enable_workspace=true", "--incompatible_autoload_externally=",
                    "--platforms=//:host", "--host_platform=//:host"]
         bazel = shutil.which("bazel")
         self.assertIsNotNone(bazel)
-        try:
-            vs_cache_report.capture_container_dependencies(
-                workspace, self.directory, bazel, startup, options, {"container.gz": ["//:top"]})
-            graph = json.loads((self.directory / "container-dependencies.json").read_text())
-            self.assertTrue(graph["containers"]["container"]["available"], graph)
-            self.assertTrue({"//:top", "//:leaf"}.issubset(graph["containers"]["container"]["dependencies"]))
-        finally:
-            subprocess.run([bazel, *startup, "shutdown"], cwd=workspace, check=True, timeout=60)
+        vs_cache_report.capture_container_dependencies(
+            workspace, self.directory, bazel, startup, options, {"container.gz": ["//:top"]})
+        graph = json.loads((self.directory / "container-dependencies.json").read_text())
+        self.assertTrue(graph["containers"]["container"]["available"], graph)
+        self.assertTrue({"//:top", "//:leaf"}.issubset(graph["containers"]["container"]["dependencies"]))
 
     def test_capture_is_opt_in_per_invocation_and_removes_private_logs_on_failure(self):
         private = []

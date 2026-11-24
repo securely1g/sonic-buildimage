@@ -22,11 +22,13 @@ LOCAL_CACHES = (*CACHE_NAMES, "bazelisk")
 UPLOAD_PREFIX = "bazel_upload_"
 AUTHORIZATION = "bazel-cleanup-authorization.json"
 IDENTITY = "job-identity.json"
-CONTAINER_JOBS = {"archive", "package_amd64", "gearbox_archive", "dash_engine_archive", "radv_native", "native", "otel_archive"}
+CONTAINER_JOBS = {"archive", "package_amd64", "gearbox_archive", "dash_engine_archive",
+                  "radv_native", "native", "otel_archive", "sources"}
 SUPPORTED_JOBS = CONTAINER_JOBS | {"package"}
 MIGRATED_JOBS = {
     "bazel-frr-python.yml": {"packages"},
     "bazel-frr.yml": {"native"},
+    "bazel-image-rules.yml": {"native-vs-installer"},
     "bazel-libteam.yml": {"native"},
     "bazel-sysmgr.yml": {"native"},
     "bazel-make-cache.yml": {"checks"},

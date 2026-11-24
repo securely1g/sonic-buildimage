@@ -41,6 +41,8 @@ jobs:
           persist-credentials: false
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: bash tools/bazel/ci/prepare_image_submodules.sh
+      - uses: ./.github/actions/bazel-post-job-cleanup
+        id: bazel_cleanup_register
       - uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
           bazelisk-version: 1.29.0
@@ -50,7 +52,10 @@ jobs:
           cache-version: "8.5.1"
       - run: python3 -B tools/bazel/ci/resources.py --configure
       - run: python3 -B tools/bazel/ci/preserve_setup_bazel_cache.py --repository-only
+      - name: Configure and verify job-private Bazel startup
+        run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --configure-startup
       - name: Prepare download mirrors and verified archives
+        id: sources_prepare
         run: |
           set -euo pipefail
           mkdir -p artifacts/vs-cache-inputs/repositories
@@ -76,6 +81,8 @@ jobs:
             --directory artifacts/vs-cache-inputs/p4/sources \
             --receipt artifacts/vs-cache-inputs/p4/receipt.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: bazel_upload_sources_prepare
+        if: always() && steps.sources_prepare.outcome == 'success'
         with:
           name: vs-cache-probe-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -85,6 +92,11 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
+      - name: Record post-job cleanup eligibility
+        if: always() && steps.bazel_cleanup_register.outcome == 'success'
+        env:
+          BAZEL_CLEANUP_STEPS: ${{ toJSON(steps) }}
+        run: python3 -B -m tools.bazel.ci.cleanup_container_bazel --mark-artifacts
 
   first:
     name: First fresh VS build (seed cache)
