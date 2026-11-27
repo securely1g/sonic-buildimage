@@ -11,6 +11,7 @@ VS_IMAGES = {
     "docker-gbsyncd-vs": "//platform/vs/docker-gbsyncd-vs:docker-gbsyncd-vs",
     "docker-gnmi-sidecar": "//dockers/docker-gnmi-sidecar:docker-gnmi-sidecar",
     "docker-gnmi-watchdog": "//dockers/docker-gnmi-watchdog:docker-gnmi-watchdog",
+    "docker-hft": "//dockers/docker-hft:docker-hft",
     "docker-lldp": "//dockers/docker-lldp:docker-lldp",
     "docker-macsec": "//dockers/docker-macsec:docker-macsec",
     "docker-mux": "//dockers/docker-mux:docker-mux",

@@ -398,6 +398,12 @@ jobs:
             //tools/bazel/oci/tests:normalize_layer_rule_test \
             2>&1 | tee artifacts/archive/test.log
 
+      - name: Test the original HFT launcher and entrypoint
+        run: |
+          "$BAZEL" test --platforms=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --host_platform=@sonic_build_infra//platforms:${{ matrix.platform }} \
+            --nocache_test_results --test_output=errors //dockers/docker-hft:upstream_tests
+
       - name: Allocate a directory for the VS wheels
         id: wheel_inputs
         if: env.USE_VS_WHEELS == 'true'
@@ -1727,6 +1733,16 @@ jobs:
         with:
           name: ${{ steps.bundles.outputs.prefix }}-docker-eventd
           path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/containers/docker-eventd/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Publish docker-hft for validation
+        if: contains(fromJSON(steps.bundles.outputs.matrix).include.*.image, 'docker-hft')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.bundles.outputs.prefix }}-docker-hft
+          path: vs-${{ github.run_id }}-${{ github.run_attempt }}/artifacts/vs/containers/docker-hft/
           if-no-files-found: error
           compression-level: 0
           retention-days: 3

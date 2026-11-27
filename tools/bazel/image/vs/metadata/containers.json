@@ -580,6 +580,53 @@
       "default_feature_owner": "",
       "default_feature_state_enabled": ""
     },
+    "docker-hft": {
+      "manifest": {
+        "version": "1.0.0",
+        "package": {
+          "version": "1.0.0",
+          "depends": [],
+          "name": "hft"
+        },
+        "service": {
+          "name": "hft",
+          "requires": [],
+          "after": [],
+          "before": [],
+          "dependent-of": [],
+          "post-start-action": "",
+          "pre-shutdown-action": "",
+          "asic-service": true,
+          "host-service": false,
+          "warm-shutdown": {
+            "after": [],
+            "before": []
+          },
+          "fast-shutdown": {
+            "after": [],
+            "before": []
+          },
+          "syslog": {
+            "support-rate-limit": true
+          }
+        },
+        "container": {
+          "privileged": false,
+          "volumes": [],
+          "tmpfs": []
+        },
+        "cli": {
+          "config": "",
+          "show": "",
+          "clear": ""
+        }
+      },
+      "run_options": "-t --cap-add=NET_ADMIN -v /etc/sonic:/etc/sonic:ro -v /etc/localtime:/etc/localtime:ro",
+      "local_package": false,
+      "installed": true,
+      "default_feature_owner": "",
+      "default_feature_state_enabled": ""
+    },
     "docker-lldp": {
       "manifest": {
         "version": "1.0.0",

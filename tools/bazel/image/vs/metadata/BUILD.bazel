@@ -13,7 +13,7 @@ bool_flag(name = "include_system_eventd", build_setting_default = True)
 py_library(name = "render_lib", srcs = ["generate.py"], imports = ["."], deps = ["//tools/bazel/oci:manifest_labels_lib"])
 py_binary(name = "generate", srcs = ["generate.py"], deps = ["//tools/bazel/oci:manifest_labels_lib"])
 
-_CONTAINERS = ["docker-base-trixie", "docker-bmp-watchdog", "docker-config-engine-trixie", "docker-dash-engine", "docker-dash-ha", "docker-database", "docker-dhcp-relay", "docker-eventd", "docker-fpm-frr", "docker-gbsyncd-vs", "docker-gnmi-sidecar", "docker-gnmi-watchdog", "docker-lldp", "docker-macsec", "docker-mux", "docker-nat", "docker-orchagent", "docker-platform-monitor", "docker-restapi-sidecar", "docker-router-advertiser", "docker-sflow", "docker-snmp", "docker-sonic-bmp", "docker-sonic-gnmi", "docker-sonic-mgmt-framework", "docker-sonic-otel", "docker-sonic-p4rt", "docker-swss-layer-trixie", "docker-syncd-vs", "docker-sysmgr", "docker-teamd"]
+_CONTAINERS = ["docker-base-trixie", "docker-bmp-watchdog", "docker-config-engine-trixie", "docker-dash-engine", "docker-dash-ha", "docker-database", "docker-dhcp-relay", "docker-eventd", "docker-fpm-frr", "docker-gbsyncd-vs", "docker-gnmi-sidecar", "docker-gnmi-watchdog", "docker-hft", "docker-lldp", "docker-macsec", "docker-mux", "docker-nat", "docker-orchagent", "docker-platform-monitor", "docker-restapi-sidecar", "docker-router-advertiser", "docker-sflow", "docker-snmp", "docker-sonic-bmp", "docker-sonic-gnmi", "docker-sonic-mgmt-framework", "docker-sonic-otel", "docker-sonic-p4rt", "docker-swss-layer-trixie", "docker-syncd-vs", "docker-sysmgr", "docker-teamd"]
 
 [
     container_metadata(name = image + suffix + ".native", image = image, debug = suffix == "-dbg")

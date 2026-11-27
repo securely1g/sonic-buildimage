@@ -24,6 +24,7 @@ ENTRYPOINTS = {
     "docker-database": "/usr/local/bin/docker-database-init.sh", "docker-eventd": SUPERVISORD,
     "docker-dhcp-relay": "/usr/bin/docker_init.sh",
     "docker-fpm-frr": "/usr/bin/docker_init.sh", "docker-gbsyncd-vs": SUPERVISORD,
+    "docker-hft": "/usr/bin/docker_init.sh",
     "docker-lldp": "/usr/bin/docker-lldp-init.sh", "docker-macsec": SUPERVISORD,
     "docker-mux": "/usr/bin/docker-init.sh", "docker-nat": SUPERVISORD,
     "docker-orchagent": "/usr/bin/docker-init.sh", PMON: "/usr/bin/docker_init.sh",
@@ -41,7 +42,7 @@ ENTRYPOINTS = {
 # These services check their inherited empty ExposedPorts on master. SNMP's
 # EXPOSE is in the build stage, and its final stage inherits from Config Engine.
 INHERITED_PORTS = {
-    "docker-dash-ha", "docker-fpm-frr", "docker-macsec", "docker-sflow", "docker-snmp",
+    "docker-dash-ha", "docker-fpm-frr", "docker-hft", "docker-macsec", "docker-sflow", "docker-snmp",
     "docker-sonic-otel", "docker-sysmgr", "docker-teamd",
 }
 

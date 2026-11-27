@@ -106,6 +106,29 @@ class VSContainerValidationTest(unittest.TestCase):
         self.add_image("runtime", [b"runtime"], settings | {"Cmd": []})
         self.validate()  # An empty OCI command supplies no arguments to Teamd.
 
+    def test_hft_runtime_contains_only_the_make_files_over_swss(self):
+        from tools.bazel.ci import hft_image, vs_validation_bundles
+
+        image = "docker-hft"
+        service = hft_image.make_files()
+        binary = {"kind": "file", "mode": 0o755, "sha256": "original SWSS"}
+        parent = {"usr/bin/countersyncd": binary}
+        files = parent | service
+        owners = {"service.files.tar": service}
+        self.assertEqual(vs_validation_bundles.PARENT_IMAGES[image], vs_standalone_probes.SWSS)
+        hft_image.verify_payload(parent, files, owners, False)
+        with self.assertRaisesRegex(ValueError, "changed inherited"):
+            hft_image.verify_payload(parent, files | {"usr/bin/countersyncd": dict(binary, mode=0o644)}, owners, False)
+        with self.assertRaisesRegex(ValueError, "outside the Make Dockerfile"):
+            hft_image.verify_payload(parent, files | {"usr/bin/redis-server": binary}, owners, False)
+        changed = dict(service)
+        changed.pop("usr/bin/readiness_probe_hook")
+        with self.assertRaisesRegex(ValueError, "Make COPY files"):
+            hft_image.verify_payload(parent, files, {"service.files.tar": changed}, False)
+        runtime = vs_probe_policy.preparation_targets(image, False)
+        self.assertEqual(set(runtime), {"source-runtime.tar", "service.files.tar", "test-redis.tar"})
+        self.assertIn("hft-debug.status", vs_probe_policy.preparation_targets(image, True))
+
     def test_unknown_family_keeps_the_common_archive_checks(self):
         self.image = self.bundle["image"] = "docker-future-service"
         self.add_image("runtime", [b"runtime"], {"Labels": {"Tag": self.version}, "Entrypoint": ["/future"]})

@@ -52,6 +52,7 @@ class ConfigurationTest(unittest.TestCase):
         source = Path(os.environ.get("VS_HOST_TEST_WORKSPACE", Path(__file__).resolve().parents[5]))
         if "TEST_SRCDIR" in os.environ:
             source = Path(os.environ["TEST_SRCDIR"]) / os.environ["TEST_WORKSPACE"]
+        self.source = source
         templates = []
         for parent in ["files/build_templates", "files/build_templates/per_namespace", "files/build_templates/share_image"]:
             templates.extend((source / parent).glob("*.j2"))
@@ -112,6 +113,22 @@ class ConfigurationTest(unittest.TestCase):
     def produce(self):
         build(self.spec)
         return tarfile.open(self.spec["out"])
+
+    def test_hft_is_installed_and_disabled_by_default(self):
+        catalog = json.loads((self.source / "tools/bazel/image/vs/metadata/containers.json").read_bytes())
+        self.metadata["containers"]["docker-hft"] = catalog["containers"]["docker-hft"]
+        Path(self.spec["containers"]).write_text(json.dumps(self.metadata))
+        self.spec["image_repositories"]["docker-hft"] = "docker-hft"
+        with self.produce() as archive:
+            feature = json.load(archive.extractfile("etc/sonic/init_cfg.json"))["FEATURE"]["hft"]
+            self.assertEqual(feature["state"], "disabled")
+            self.assertEqual(feature["has_per_asic_scope"], "True")
+            self.assertFalse(feature["has_global_scope"])
+            self.assertEqual(archive.getmember("etc/systemd/system/hft.service").linkname, "/dev/null")
+            self.assertIn(b"hft@.service", archive.extractfile("etc/sonic/generated_services.conf").read().splitlines())
+            control = archive.extractfile("usr/bin/hft.sh").read()
+            for option in (b"--cap-add=NET_ADMIN", b"/etc/sonic:/etc/sonic:ro", b"/etc/localtime:/etc/localtime:ro"):
+                self.assertIn(option, control)
 
     def test_package_registration_binds_real_image_and_preserves_account_hash(self):
         with self.produce() as archive:
