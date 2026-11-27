@@ -45,7 +45,7 @@ class StaleVsContainerCleanupTest(unittest.TestCase):
             self.cleanup()
         self.assertEqual(inspect.call_args_list, [mock.call(self.container)] * 2)
         completed.assert_called_once_with("securely1g/sonic-buildimage", "123", "1")
-        remove.assert_called_once_with(["docker", "rm", self.container], check=True, timeout=30)
+        remove.assert_called_once_with(["docker", "rm", self.container], check=True, timeout=300)
         self.assertTrue(self.cache.is_dir())
 
     def test_live_current_foreign_unlabelled_and_unrelated_containers_are_preserved(self):
@@ -98,13 +98,16 @@ class StaleVsContainerCleanupTest(unittest.TestCase):
             remove.assert_not_called()
 
     def test_docker_removal_error_is_not_ignored(self):
-        with mock.patch.object(subject.subprocess, "check_output", return_value=self.container), \
-                mock.patch.object(subject, "inspect", return_value=self.record), \
-                mock.patch.object(subject, "completed", return_value=True), \
-                mock.patch.object(subject.subprocess, "run",
-                                  side_effect=subprocess.CalledProcessError(1, "docker")):
-            with self.assertRaises(subprocess.CalledProcessError):
-                self.cleanup()
+        for error in (subprocess.CalledProcessError(1, "docker"),
+                      subprocess.TimeoutExpired(["docker", "rm", self.container], 300)):
+            with self.subTest(error=error), \
+                    mock.patch.object(subject.subprocess, "check_output", return_value=self.container), \
+                    mock.patch.object(subject, "inspect", return_value=self.record), \
+                    mock.patch.object(subject, "completed", return_value=True), \
+                    mock.patch.object(subject.subprocess, "run", side_effect=error) as remove:
+                with self.assertRaises(type(error)):
+                    self.cleanup()
+                remove.assert_called_once_with(["docker", "rm", self.container], check=True, timeout=300)
 
     def test_redirected_cache_is_rejected_before_docker(self):
         self.cache.rmdir()
