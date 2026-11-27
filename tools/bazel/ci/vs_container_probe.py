@@ -27,6 +27,7 @@ DEBUG_ONLY_PAYLOADS = {
     **dict.fromkeys(("docker-gnmi-sidecar", "docker-restapi-sidecar",
                      "docker-gnmi-watchdog", "docker-bmp-watchdog"), ("all-debug.tar",)),
     "docker-orchagent": ("openssh.source.tar",),
+    "docker-hft": ("all-debug.tar",),
     "docker-dhcp-relay": ("all-debug.tar",),
     "docker-sonic-p4rt": ("p4rt.debug.tar", "sairedis.source.tar", "saimetadata.source.tar"),
 }
@@ -189,6 +190,9 @@ def runtime_report(directory, bundle):
             report["source_debug_pairs"] = pairs
         env = dict(row.split("=", 1) for row in inventory["config"]["config"].get("Env", []))
         manifest = variant + ".make.manifest.json"
+        if image == "docker-hft":
+            check.require(manifest in bundle["fixtures"] and "runtime.make.image.env" in bundle["fixtures"],
+                          "HFT archive is missing its Make inputs: " + name)
         if image == "docker-nat":
             check.require(manifest in bundle["fixtures"], "NAT archive is missing its Make manifest: " + name)
             verify_execution_settings(inventory["config"]["config"], ["/usr/local/bin/supervisord"])
@@ -198,6 +202,8 @@ def runtime_report(directory, bundle):
             check.require(json.loads(actual) == declared, "OCI manifest label differs from the Make input: " + name)
         for filename, settings in (("image.env", env), ("components.labels", inventory["config"]["config"]["Labels"])):
             fixture = variant + ".make." + filename
+            if image == "docker-hft" and filename == "image.env":
+                fixture = "runtime.make.image.env"  # The debug image inherits this Make environment.
             if fixture in bundle["fixtures"]:
                 for line in (directory / fixture).read_text().splitlines():
                     key, value = line.split("=", 1)

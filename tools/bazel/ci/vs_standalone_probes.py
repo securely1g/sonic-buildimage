@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[3]
 OCI = ROOT / "tools/bazel/oci"
 BASE = "docker-base-trixie"
 CONFIG = "docker-config-engine-trixie"
+HFT = "docker-hft"
 SWSS = "docker-swss-layer-trixie"
 SYNCD = "docker-syncd-vs"
 TEAM = "docker-teamd"
@@ -24,7 +25,7 @@ NAT = "docker-nat"
 BMP = "docker-sonic-bmp"
 SUPERVISED = {"docker-gnmi-sidecar", "docker-restapi-sidecar", "docker-gnmi-watchdog", "docker-bmp-watchdog"}
 WATCHDOGS = {"docker-gnmi-watchdog": "gnmi_watchdog", "docker-bmp-watchdog": "bmp_watchdog"}
-STANDALONE_IMAGES = {BASE, CONFIG, SWSS, SYNCD, TEAM, FRR, NAT, BMP, PMON} | SUPERVISED
+STANDALONE_IMAGES = {BASE, CONFIG, SWSS, SYNCD, TEAM, FRR, NAT, BMP, PMON, HFT} | SUPERVISED
 
 
 def extra_standalone_targets(image, debug_selected):
@@ -64,6 +65,17 @@ def extra_standalone_targets(image, debug_selected):
         if debug_selected:
             targets.update({"syncd-debug.packages.json": package + "debug_package_metadata",
                             "syncd-debug.status": package + "debug_installed_packages"})
+    if image == HFT:
+        package = "//dockers/docker-hft:"
+        targets.update({"service.files.tar": package + "service_files",
+                        "source-runtime.tar": "//dockers/docker-swss-layer-trixie:source_runtime",
+                        "test-redis.tar": package + "test_redis"})
+        if debug_selected:
+            targets.update({"all-debug.tar": package + "docker-hft.debug_symbols",
+                            "hft.debug-tools.tar": package + "debug_tools",
+                            "hft.debug-accounts.tar": package + "debug_accounts",
+                            "hft-debug.status": package + "debug_installed_packages",
+                            "hft-debug.packages.json": package + "debug_package_metadata"})
     if image in SUPERVISED:
         package = "//dockers/" + image + ":"
         targets.update({"service.files.tar": package + "service_files",
@@ -171,7 +183,10 @@ def verify_full_parent(directory, bundle, variant, tag):
         packages = json.loads((directory / "config-engine.packages.json").read_bytes())
         artifact_validation.verify_swss_component_labels(current["config"]["config"]["Labels"],
                                                          packages["dependency_check"]["packages"])
-    if image in SUPERVISED:
+    if image == HFT:
+        from tools.bazel.ci import hft_image
+        hft_image.verify_payload(inherited, files, owners, debug)
+    elif image in SUPERVISED:
         artifact_validation.verify_inherited_files(inherited, files, owners["service.files.tar"], set(), image)
     elif image == SWSS:
         artifact_validation.verify_inherited_files(inherited, files, {}, {"var/lib/dpkg/status"}, "SWSS layer")
@@ -259,7 +274,7 @@ def validate_base(directory, variant, name, summary):
 def standalone(image, directory, bundle, report):
     with tempfile.TemporaryDirectory(prefix="vs-installed-probe-") as temporary:
         work = Path(temporary)
-        if image in (FRR, TEAM):
+        if image in (FRR, TEAM, HFT):
             redis = work / "redis"
             redis.mkdir()
             with tarfile.open(directory / "test-redis.tar") as archive:
@@ -273,7 +288,7 @@ def standalone(image, directory, bundle, report):
             summary = {**report["images"][name], "architecture": bundle["architecture"],
                        "runtime_native": report["runtime_native"]}
             with vs_container_validation.loaded_image(directory, spec, bundle) as tag:
-                if image in (SWSS, FRR, TEAM) or image in SUPERVISED:
+                if image in (SWSS, FRR, TEAM, HFT) or image in SUPERVISED:
                     verify_full_parent(directory, bundle, variant, tag)
                 if image in (BASE, CONFIG, SYNCD):
                     verify_installed_declaration(directory, bundle, variant, tag)
@@ -295,6 +310,19 @@ def standalone(image, directory, bundle, report):
                     require(result["status"] == "passed", name + " installed service probe did not pass")
                     if variant == "debug" and image in WATCHDOGS:
                         result["debug"] = verify_watchdog_symbols(directory, image, tag, work)
+                    (directory / (name + ".runtime.json")).write_text(json.dumps(result) + "\n")
+                elif image == HFT:
+                    require("usr/bin/countersyncd" in summary["native"], "Missing source-built SWSS countersyncd")
+                    options = bind(Path(__file__).with_name("hft_runtime_probe.py"), "/probe/check.py")
+                    options += bind(redis, "/probe/redis")
+                    options += ["--mount", "type=volume,dst=/run", "--tmpfs", "/var/log",
+                                "--tmpfs", "/var/sonic", "--env", "RUNTIME_OWNER=local"]
+                    arguments = ["-B", "/probe/check.py"]
+                    if variant == "debug":
+                        arguments.append(summary["native"]["usr/bin/countersyncd"]["build_id"])
+                    output = run(tag, "/usr/bin/python3", arguments, options=options)
+                    result = json.loads(output)
+                    require(result["status"] == "passed", name + " installed countersyncd probe did not pass")
                     (directory / (name + ".runtime.json")).write_text(json.dumps(result) + "\n")
                 elif image == NAT:
                     script = (ROOT / "dockers/docker-nat/verify-installed.sh").read_text()

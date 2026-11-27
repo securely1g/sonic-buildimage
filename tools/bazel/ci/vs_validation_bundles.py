@@ -51,7 +51,7 @@ PARENT_IMAGES = {
     "docker-syncd-vs": CONFIG, "docker-sysmgr": CONFIG,
     "docker-gnmi-sidecar": CONFIG, "docker-restapi-sidecar": CONFIG,
     "docker-gnmi-watchdog": CONFIG, "docker-bmp-watchdog": CONFIG,
-    "docker-dash-ha": SWSS, "docker-fpm-frr": SWSS, "docker-macsec": SWSS,
+    "docker-dash-ha": SWSS, "docker-fpm-frr": SWSS, "docker-hft": SWSS, "docker-macsec": SWSS,
     "docker-sflow": SWSS, "docker-teamd": SWSS,
 }
 FULL_PARENT_INVENTORY = PARENT_IMAGES.keys() - {CONFIG, PMON, "docker-syncd-vs"}
@@ -263,8 +263,9 @@ def stage_probe_fixtures(image, artifacts, bundle):
     if image in STANDALONE_IMAGES:
         for name in ("base.source.tar", "config-engine.source.tar", "syncd.source.tar", "source-runtime.tar"):
             artifacts.pop(name, None)
-    if image in SUPERVISED:
-        for name in ("service.files.tar", "watchdog.source.tar", "all-debug.tar"):
+    if image in SUPERVISED or image == "docker-hft":
+        for name in ("service.files.tar", "watchdog.source.tar", "all-debug.tar", "hft.debug-tools.tar",
+                     "hft.debug-accounts.tar"):
             artifacts.pop(name, None)
     elif image not in STANDALONE_IMAGES and image != "docker-sonic-p4rt":
         for name in ("config-engine-source.tar", "config-engine.source.tar"):

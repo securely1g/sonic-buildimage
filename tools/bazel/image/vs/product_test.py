@@ -37,14 +37,14 @@ class Region(io.RawIOBase):
 
 
 parser = argparse.ArgumentParser()
-for name in ('image', 'squashfs', 'docker', 'kernel', 'containers', 'identity', 'fips', 'version', 'variant', 'unsquashfs', 'expected-host', 'localedef'):
+for name in ('image', 'squashfs', 'docker', 'kernel', 'containers', 'identity', 'fips', 'version', 'variant', 'unsquashfs', 'expected-host', 'localedef', 'hft-settings', 'hft-service-script'):
     parser.add_argument('--' + name, required=True)
 parser.add_argument('--image-reference', action='append', required=True)
 a = parser.parse_args()
 kernel, spec, identity = [json.loads(Path(path).read_text()) for path in (a.kernel, a.containers, a.identity)]
 version = Path(a.version).read_text().strip(); release = kernel['kernel_release']
 selected = {name: value for name, value in spec['containers'].items() if value['installed']}
-assert len(selected) == 28, 'first acceptance profile is the mainline default 28-container VS build'
+assert len(selected) == 29 and 'docker-hft' in selected, 'default VS must include all 29 Make images'
 image_repositories = dict(reference.split('=', 1) for reference in a.image_reference)
 # Independently reviewed original Make selection: one-image.mk:8-12 uses
 # installed debug archives with runtime fallback; docker-dash-engine.mk keeps
@@ -120,6 +120,19 @@ shadow = next(line.split(':') for line in cat('etc/shadow').decode().splitlines(
 users = json.loads(cat('etc/sonic/default_users.json'))
 assert users['admin']['password'] == shadow[1] and shadow[1].startswith('$y$')
 assert int(shadow[2]) == identity['lastchg_day']
+hft = json.loads(cat('etc/sonic/init_cfg.json'))['FEATURE']['hft']
+assert hft['state'] == 'disabled' and hft['auto_restart'] == 'enabled'
+assert hft['has_global_scope'] is False and hft['has_per_asic_scope'] == 'True'
+assert b'hft@.service' in cat('etc/sonic/generated_services.conf').splitlines()
+assert b'-> /dev/null' in subprocess.check_output([a.unsquashfs, '-lln', a.squashfs, 'etc/systemd/system/hft.service'])
+assert cat('etc/sonic/hft/hft.env') == Path(a.hft_settings).read_bytes()
+assert cat('usr/local/bin/hft.sh') == Path(a.hft_service_script).read_bytes()
+assert b'--cap-add=NET_ADMIN' in cat('usr/bin/hft.sh')
+for instance in ('', '@'):
+    unit = cat(f'usr/lib/systemd/system/hft{instance}.service')
+    dependency = 'swss@%i.service' if instance else 'swss.service'
+    assert ('After=' + dependency).encode() in unit
+    assert b'ExecStart=/usr/local/bin/hft.sh wait' in unit
 packages = json.loads(cat('var/lib/sonic-package-manager/packages.json'))
 assert set(packages) == {value['manifest']['package']['name'] for value in selected.values()}
 for repository, value in selected.items():
@@ -170,4 +183,4 @@ with Path(a.image).open('rb') as source:
             docker = payload.open('dockerfs.tar.gz') if 'dockerfs.tar.gz' in payload.namelist() else outer.extractfile('installer/dockerfs.tar.gz')
             with gzip.GzipFile(fileobj=docker) as installed, Path(a.docker).open('rb') as expected:
                 assert digest(installed) == digest(expected)
-print(a.variant + ' VS AMD64 Trixie FIPS DASH installer: 28 containers, source identities, kernel/crash artifacts and nested formats passed')
+print(a.variant + ' VS AMD64 Trixie FIPS DASH installer: 29 containers, source identities, kernel/crash artifacts and nested formats passed')
