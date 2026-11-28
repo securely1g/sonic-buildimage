@@ -108,6 +108,7 @@ common_runtime_test(
     env = {"PYTEST_ADDOPTS": "-p pytest_cov --cov=dhcp_utilities --cov-fail-under=80"},
     binary = ":upstream_test_runner",
     data = [":setup.py"],
+    runtime = "@sonic_swss_common//tools/bazel/runtime:python_test_runtime",
     target_compatible_with = ["@platforms//cpu:x86_64"],
     test_args = ["--component-setup=$(rootpath :setup.py)"],
 )
@@ -134,6 +135,7 @@ py_binary(
 common_runtime_test(
     name = "installed_wheel_test",
     binary = ":installed_wheel_probe",
+    runtime = "@sonic_swss_common//tools/bazel/runtime:python_test_runtime",
     data = [
         ":setup.py",
         "//tools/bazel/tests:sonic_dhcp_utilities_test_wheel",

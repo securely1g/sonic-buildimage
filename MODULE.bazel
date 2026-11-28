@@ -43,7 +43,7 @@ bazel_dep(name = "googletest", version = "1.16.0")
 bazel_dep(name = "patchelf", version = "0.18.0.bcr.1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "redis-dump-load", version = "1.1.sonic.2", repo_name = "redis_dump_load")
-bazel_dep(name = "sonic-linux-kernel", version = "0.0.4-96c621843a2bc9dbbe17eb890c8c6e1cea5e834b", repo_name = "sonic_linux_kernel")
+bazel_dep(name = "sonic-linux-kernel", version = "0.0.5-dea1b2300ab2ec706810817d97ff3761379eb3f0", repo_name = "sonic_linux_kernel")
 
 # PI, BMv2, P4C and DASH export their native Bazel outputs as installation TARs.
 bazel_dep(name = "p4lang-pi", version = "0.1.3.sonic.7", repo_name = "p4lang_pi")
@@ -231,7 +231,7 @@ rust.toolchain(
         "aarch64-unknown-linux-gnu",
         "x86_64-unknown-linux-gnu",
     ],
-    versions = ["1.90.0"],
+    versions = ["1.95.0"],
 )
 use_repo(rust, "rust_toolchains")
 
@@ -358,17 +358,16 @@ pip.parse(
 )
 use_repo(pip, "database_pip")
 
-bazel_dep(name = "socat", version = "1.8.0.2.sonic.7")
+bazel_dep(name = "socat", version = "1.8.0.3.sonic.1")
 bazel_dep(name = "iproute2", version = "6.15.0.sonic.9")
 bazel_dep(name = "libnl3", version = "3.7.0.sonic.8")
 # Preserve the versions selected by the published SWSS dependency graph.
-bazel_dep(name = "libteam", version = "1.31.0.sonic.2")
-bazel_dep(name = "libyang", version = "3.12.2.sonic.9")
-single_version_override(module_name = "sai", version = "1.18.0.sonic.2")
+bazel_dep(name = "libteam", version = "1.31.0.sonic.3")
+bazel_dep(name = "libyang", version = "3.12.2.sonic.10")
 
 single_version_override(
     module_name = "sonic-rust-deps",
-    version = "0.0.5-5bf69bc0a7d9ea9f4a5606264be592867cd29d1e",
+    version = "0.0.5-4064a814e8530300a7acbad4a9aff0621e2fb98e",
 )
 
 bazel_dep(name = "sonic-fips", version = "1.11.0-2ed0920f2fea7940f4b2b7f5c37e51e225eb1ea6", repo_name = "sonic_fips")
@@ -534,7 +533,7 @@ bazel_dep(name = "openconfig_goyang", version = "0.0.0.sonic.1-20200309174518-a0
 bazel_dep(name = "openconfig_ygot", version = "0.7.1.sonic.1", repo_name = "com_github_openconfig_ygot")
 
 go_sdk = use_extension("@io_bazel_rules_go//go:extensions.bzl", "go_sdk")
-go_sdk.download(version = "1.25.9")
+go_sdk.download(version = "1.26.7")
 
 use_repo(apt, "gnmi_debian", "gnmi_debug_debian", "gnmi_test_debian")
 
@@ -844,12 +843,33 @@ radius_patch_tools_repository(name="radius_source_patch_tools",lock="@sonic_buil
 
 radius_prepared_source(name="freeradius_pam_src",gnu_tools="@radius_source_patch_tools//:ROOT",build_file="//src/radius/pam:freeradius.BUILD.bazel",inputs={'freeradius_configure.patch': '//src/radius/pam:freeradius/patches/freeradius_configure.patch', 'freeradius_2007-04-06.patch': '//src/radius/pam:freeradius/patches/freeradius_2007-04-06.patch', 'freeradius_libeap_deprecated_openssl_1_0.patch': '//src/radius/pam:freeradius/patches/freeradius_libeap_deprecated_openssl_1_0.patch', 'libltdl_config_sub.patch': '//src/radius/pam:freeradius/patches/libltdl_config_sub.patch', 'config.sub': '//src/radius/pam:freeradius/patches/config.sub', 'config.guess': '//src/radius/pam:freeradius/patches/config.guess'},steps=['{"op": "archive", "urls": ["https://github.com/FreeRADIUS/freeradius-server/archive/5f715dba4d2dbdb268bf60fcc656352274930941.tar.gz"], "sha256": "8f95c10749877ff00e03a58aad4662063e30de57f8eb45cc9094d2f2028b82b9", "strip_prefix": "freeradius-server-5f715dba4d2dbdb268bf60fcc656352274930941"}', '{"op": "patch", "input": "freeradius_configure.patch"}', '{"op": "patch", "input": "freeradius_2007-04-06.patch", "format": "gnu", "fuzz": 2}', '{"op": "patch", "input": "freeradius_libeap_deprecated_openssl_1_0.patch"}', '{"op": "patch", "input": "libltdl_config_sub.patch"}', '{"op": "file", "input": "config.sub", "path": "config.sub"}', '{"op": "file", "input": "config.guess", "path": "config.guess"}'])
 
-radius_prepared_source(name="pam_radius_src",build_file="//src/radius/pam:pam_radius.BUILD.bazel",inputs={'0001-chap-support.patch': '//src/radius/pam:debian/patches/0001-chap-support.patch', '0002-peap-mschapv2-support.patch': '//src/radius/pam:debian/patches/0002-peap-mschapv2-support.patch', '0003-nas-ip-address-config.patch': '//src/radius/pam:debian/patches/0003-nas-ip-address-config.patch', '0004-fix-blastradius.patch': '//src/radius/pam:debian/patches/0004-fix-blastradius.patch'},steps=['{"op": "archive", "urls": ["https://github.com/FreeRADIUS/pam_radius/archive/149c25df84cf5cd0e9addd9346699a9ca8fdddd2.tar.gz"], "sha256": "3b45c13f4fa009a68b391338484050b91f9f37363ddb88c4cba59b137e932b3a", "strip_prefix": "pam_radius-149c25df84cf5cd0e9addd9346699a9ca8fdddd2"}', '{"op": "patch", "input": "0001-chap-support.patch"}', '{"op": "patch", "input": "0002-peap-mschapv2-support.patch"}', '{"op": "patch", "input": "0003-nas-ip-address-config.patch"}', '{"op": "patch", "input": "0004-fix-blastradius.patch"}'])
+pam_radius_patches = [
+    "0001-chap-support.patch",
+    "0002-peap-mschapv2-support.patch",
+    "0003-nas-ip-address-config.patch",
+    "0004-fix-blastradius.patch",
+    "0005-peap-validation-and-bounds.patch",
+    "0006-bound-peap-response-wait.patch",
+]
+
+radius_prepared_source(
+    name = "pam_radius_src",
+    gnu_tools = "@radius_source_patch_tools//:ROOT",
+    build_file = "//src/radius/pam:pam_radius.BUILD.bazel",
+    inputs = {
+        name: "//src/radius/pam:debian/patches/" + name
+        for name in ["series"] + pam_radius_patches
+    },
+    steps = [
+        '{"op": "archive", "urls": ["https://github.com/FreeRADIUS/pam_radius/archive/149c25df84cf5cd0e9addd9346699a9ca8fdddd2.tar.gz"], "sha256": "3b45c13f4fa009a68b391338484050b91f9f37363ddb88c4cba59b137e932b3a", "strip_prefix": "pam_radius-149c25df84cf5cd0e9addd9346699a9ca8fdddd2"}',
+        '{"op": "patch_series", "series_input": "series", "patch_inputs": %s, "format": "gnu"}' % repr(pam_radius_patches),
+    ],
+)
 
 use_repo(apt, "radius_pam_build_debian")
 
 # Buildimage owns the Bash TACACS plugin sources.
-bazel_dep(name = "pam-tacplus", version = "1.4.1.sonic.1")
+bazel_dep(name = "pam-tacplus", version = "1.4.1.sonic.3")
 bazel_dep(name = "bash-tacplus", version = "1.0.0.sonic.1", repo_name = "bash_tacplus")
 local_path_override(module_name = "bash-tacplus", path = "src/tacacs/bash_tacplus")
 

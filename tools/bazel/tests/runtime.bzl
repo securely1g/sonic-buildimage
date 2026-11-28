@@ -2,9 +2,14 @@
 
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
-def common_runtime_test(name, binary, test_args = [], data = [], **kwargs):
+def common_runtime_test(
+        name,
+        binary,
+        test_args = [],
+        data = [],
+        runtime = "@sonic_swss_common//tools/bazel/runtime:test_runtime",
+        **kwargs):
     """Wrap a native test without relying on libraries installed on the host."""
-    runtime = "@sonic_swss_common//tools/bazel/runtime:test_runtime"
     sh_test(
         name = name,
         srcs = ["@sonic_swss_common//tools/bazel/runtime:run_with_runtime.py"],

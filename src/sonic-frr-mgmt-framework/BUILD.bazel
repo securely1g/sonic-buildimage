@@ -68,7 +68,7 @@ py_test(
     legacy_create_init = False,
     main = "//tools/bazel/tests:integration/component_pytest_runner.py",
     python_version = "3.13",
-    deps = [":frrcfgd", requirement("pytest")],
+    deps = [":frrcfgd", requirement("jinja2"), requirement("pytest")],
 )
 
 py_binary(
@@ -86,6 +86,7 @@ common_runtime_test(
     name = "installed_wheel_test",
     binary = ":installed_wheel_probe",
     data = [":setup.py", "//tools/bazel/tests:sonic_frr_mgmt_framework_test_wheel"],
+    runtime = "@sonic_swss_common//tools/bazel/runtime:python_test_runtime",
     test_args = [
         "$(rootpath //tools/bazel/tests:sonic_frr_mgmt_framework_test_wheel)",
         "$(rootpath :setup.py)",

@@ -54,6 +54,7 @@ common_runtime_test(
     name = "upstream_tests",
     size = "large",
     binary = ":suite_runner",
+    runtime = "@sonic_swss_common//tools/bazel/runtime:python_test_runtime",
     data = [
         "pytest.ini",
         "@sonic_utilities//:sonic_utilities_wheel",
