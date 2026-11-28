@@ -120,6 +120,7 @@ common_runtime_test(
     name = "installed_wheel_test",
     binary = ":installed_wheel_probe",
     data = [":setup.py", "//tools/bazel/tests:sonic_bgpcfgd_test_wheel"],
+    runtime = "@sonic_swss_common//tools/bazel/runtime:python_test_runtime",
     test_args = [
         "$(rootpath //tools/bazel/tests:sonic_bgpcfgd_test_wheel)",
         "$(rootpath :setup.py)",
